@@ -41,6 +41,9 @@ impl AwsService for SqsService {
             "PurgeQueue" => self.purge_queue(&req),
             "ChangeMessageVisibility" => self.change_message_visibility(&req),
             "ChangeMessageVisibilityBatch" => self.change_message_visibility_batch(&req),
+            "ListQueueTags" => self.list_queue_tags(&req),
+            "TagQueue" => self.tag_queue(&req),
+            "UntagQueue" => self.untag_queue(&req),
             _ => Err(AwsServiceError::action_not_implemented("sqs", &req.action)),
         }
     }
@@ -1270,6 +1273,82 @@ impl SqsService {
                 "Successful": successful,
                 "Failed": failed,
             }),
+            &req.request_id,
+            req.is_query_protocol,
+        ))
+    }
+
+    fn list_queue_tags(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = parse_body(req);
+        let queue_url = body["QueueUrl"]
+            .as_str()
+            .ok_or_else(|| missing_param("QueueUrl"))?;
+
+        let state = self.state.read();
+        let queue = state.queues.get(queue_url).ok_or_else(queue_not_found)?;
+        let tags = &queue.tags;
+
+        Ok(sqs_response(
+            "ListQueueTags",
+            json!({ "Tags": tags }),
+            &req.request_id,
+            req.is_query_protocol,
+        ))
+    }
+
+    fn tag_queue(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = parse_body(req);
+        let queue_url = body["QueueUrl"]
+            .as_str()
+            .ok_or_else(|| missing_param("QueueUrl"))?;
+        let tags = body["Tags"].as_object();
+
+        let mut state = self.state.write();
+        let queue = state
+            .queues
+            .get_mut(queue_url)
+            .ok_or_else(queue_not_found)?;
+
+        if let Some(tags_obj) = tags {
+            for (k, v) in tags_obj {
+                if let Some(s) = v.as_str() {
+                    queue.tags.insert(k.clone(), s.to_string());
+                }
+            }
+        }
+
+        Ok(sqs_response(
+            "TagQueue",
+            json!({}),
+            &req.request_id,
+            req.is_query_protocol,
+        ))
+    }
+
+    fn untag_queue(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = parse_body(req);
+        let queue_url = body["QueueUrl"]
+            .as_str()
+            .ok_or_else(|| missing_param("QueueUrl"))?;
+        let tag_keys = body["TagKeys"].as_array();
+
+        let mut state = self.state.write();
+        let queue = state
+            .queues
+            .get_mut(queue_url)
+            .ok_or_else(queue_not_found)?;
+
+        if let Some(keys) = tag_keys {
+            for k in keys {
+                if let Some(s) = k.as_str() {
+                    queue.tags.remove(s);
+                }
+            }
+        }
+
+        Ok(sqs_response(
+            "UntagQueue",
+            json!({}),
             &req.request_id,
             req.is_query_protocol,
         ))
