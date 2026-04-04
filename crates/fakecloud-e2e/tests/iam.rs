@@ -179,6 +179,44 @@ async fn iam_roles() {
 }
 
 #[tokio::test]
+async fn sts_assume_role_unique_credentials() {
+    let server = TestServer::start().await;
+    let client = server.sts_client().await;
+
+    let resp1 = client
+        .assume_role()
+        .role_arn("arn:aws:iam::000000000000:role/role-a")
+        .role_session_name("session-a")
+        .send()
+        .await
+        .unwrap();
+    let creds1 = resp1.credentials().unwrap();
+
+    let resp2 = client
+        .assume_role()
+        .role_arn("arn:aws:iam::000000000000:role/role-b")
+        .role_session_name("session-b")
+        .send()
+        .await
+        .unwrap();
+    let creds2 = resp2.credentials().unwrap();
+
+    // Access key IDs should be different
+    assert_ne!(creds1.access_key_id(), creds2.access_key_id());
+    // Secret access keys should be different
+    assert_ne!(creds1.secret_access_key(), creds2.secret_access_key());
+    // Session tokens should be different
+    assert_ne!(creds1.session_token(), creds2.session_token());
+
+    // Access key IDs should start with ASIA
+    assert!(creds1.access_key_id().starts_with("ASIA"));
+    assert!(creds2.access_key_id().starts_with("ASIA"));
+
+    // Session token should be realistic length (>100 chars)
+    assert!(creds1.session_token().len() > 100);
+}
+
+#[tokio::test]
 async fn sts_get_caller_identity_cli() {
     let server = TestServer::start().await;
     let output = server.aws_cli(&["sts", "get-caller-identity"]).await;

@@ -1,3 +1,5 @@
+use base64::Engine;
+
 use crate::state::{IamAccessKey, IamPolicy, IamRole, IamUser};
 
 pub fn create_user_response(user: &IamUser, request_id: &str) -> String {
@@ -360,14 +362,18 @@ pub fn get_caller_identity_response(
 }
 
 pub fn assume_role_response(arn: &str, role_session_name: &str, request_id: &str) -> String {
+    let access_key_id = format!("ASIA{}", generate_id());
+    let secret_access_key = format!("fakecloud/{}", uuid::Uuid::new_v4());
+    let session_token = generate_session_token();
+
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <AssumeRoleResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
   <AssumeRoleResult>
     <Credentials>
-      <AccessKeyId>ASIAIOSFODNN7EXAMPLE</AccessKeyId>
-      <SecretAccessKey>wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY</SecretAccessKey>
-      <SessionToken>FakeSessionToken</SessionToken>
+      <AccessKeyId>{access_key_id}</AccessKeyId>
+      <SecretAccessKey>{secret_access_key}</SecretAccessKey>
+      <SessionToken>{session_token}</SessionToken>
       <Expiration>2099-12-31T23:59:59Z</Expiration>
     </Credentials>
     <AssumedRoleUser>
@@ -379,10 +385,32 @@ pub fn assume_role_response(arn: &str, role_session_name: &str, request_id: &str
     <RequestId>{request_id}</RequestId>
   </ResponseMetadata>
 </AssumeRoleResponse>"#,
+        access_key_id = access_key_id,
+        secret_access_key = secret_access_key,
+        session_token = session_token,
         arn = arn,
         session = role_session_name,
         request_id = request_id,
     )
+}
+
+fn generate_id() -> String {
+    uuid::Uuid::new_v4()
+        .to_string()
+        .replace('-', "")
+        .to_uppercase()[..16]
+        .to_string()
+}
+
+fn generate_session_token() -> String {
+    let raw = format!(
+        "{}{}{}{}",
+        uuid::Uuid::new_v4(),
+        uuid::Uuid::new_v4(),
+        uuid::Uuid::new_v4(),
+        uuid::Uuid::new_v4(),
+    );
+    base64::engine::general_purpose::STANDARD.encode(raw.as_bytes())
 }
 
 fn xml_escape(s: &str) -> String {
