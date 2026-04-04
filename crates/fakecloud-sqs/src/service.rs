@@ -455,8 +455,17 @@ impl SqsService {
                 // If caller passed attributes, check for conflicts
                 if !new_attributes.is_empty() {
                     for (k, v) in &new_attributes {
-                        if let Some(existing_val) = existing.attributes.get(k) {
-                            if existing_val != v {
+                        if let Some(existing_val) = existing.attributes.get(k.trim()) {
+                            // Normalize JSON values for comparison (e.g. RedrivePolicy)
+                            let val_matches = if let (Ok(a), Ok(b)) = (
+                                serde_json::from_str::<Value>(existing_val),
+                                serde_json::from_str::<Value>(v),
+                            ) {
+                                a == b
+                            } else {
+                                existing_val == v
+                            };
+                            if !val_matches {
                                 return Err(AwsServiceError::aws_error(
                                     StatusCode::BAD_REQUEST,
                                     "QueueAlreadyExists",
@@ -524,13 +533,13 @@ impl SqsService {
 
         // Normalize RedrivePolicy JSON (convert maxReceiveCount to integer)
         if let Some(ref rp) = redrive_policy {
-            let normalized = json!({
-                "deadLetterTargetArn": rp.dead_letter_target_arn,
-                "maxReceiveCount": rp.max_receive_count,
-            });
+            // Format like Python json.dumps: {"key": value, "key": value}
             attributes.insert(
                 "RedrivePolicy".to_string(),
-                serde_json::to_string(&normalized).unwrap(),
+                format!(
+                    "{{\"deadLetterTargetArn\": \"{}\", \"maxReceiveCount\": {}}}",
+                    rp.dead_letter_target_arn, rp.max_receive_count
+                ),
             );
         }
 
@@ -1493,14 +1502,13 @@ impl SqsService {
                                 dead_letter_target_arn: dead_letter_target_arn.clone(),
                                 max_receive_count,
                             });
-                            // Normalize the stored JSON
-                            let normalized = json!({
-                                "deadLetterTargetArn": dead_letter_target_arn,
-                                "maxReceiveCount": max_receive_count,
-                            });
+                            // Normalize the stored JSON (Python json.dumps format)
                             queue.attributes.insert(
                                 "RedrivePolicy".to_string(),
-                                serde_json::to_string(&normalized).unwrap(),
+                                format!(
+                                    "{{\"deadLetterTargetArn\": \"{}\", \"maxReceiveCount\": {}}}",
+                                    dead_letter_target_arn, max_receive_count
+                                ),
                             );
                         }
                     }
