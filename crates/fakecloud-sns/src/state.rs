@@ -8,6 +8,8 @@ pub struct SnsTopic {
     pub topic_arn: String,
     pub name: String,
     pub attributes: HashMap<String, String>,
+    pub tags: HashMap<String, String>,
+    pub is_fifo: bool,
     pub created_at: DateTime<Utc>,
 }
 
@@ -21,12 +23,21 @@ pub struct SnsSubscription {
     pub confirmed: bool,
 }
 
+/// An SNS message attribute (key-value with a data type).
+#[derive(Debug, Clone)]
+pub struct MessageAttribute {
+    pub data_type: String,
+    pub string_value: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct PublishedMessage {
     pub message_id: String,
     pub topic_arn: String,
     pub message: String,
     pub subject: Option<String>,
+    pub message_attributes: HashMap<String, MessageAttribute>,
+    pub message_group_id: Option<String>,
     pub timestamp: DateTime<Utc>,
 }
 

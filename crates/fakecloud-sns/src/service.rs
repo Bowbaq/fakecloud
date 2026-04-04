@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use fakecloud_core::delivery::DeliveryBus;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
 
-use crate::state::{PublishedMessage, SharedSnsState, SnsSubscription, SnsTopic};
+use crate::state::{MessageAttribute, PublishedMessage, SharedSnsState, SnsSubscription, SnsTopic};
 
 pub struct SnsService {
     state: SharedSnsState,
@@ -42,6 +42,9 @@ impl AwsService for SnsService {
             "ListSubscriptionsByTopic" => self.list_subscriptions_by_topic(&req),
             "GetSubscriptionAttributes" => self.get_subscription_attributes(&req),
             "SetSubscriptionAttributes" => self.set_subscription_attributes(&req),
+            "TagResource" => self.tag_resource(&req),
+            "UntagResource" => self.untag_resource(&req),
+            "ListTagsForResource" => self.list_tags_for_resource(&req),
             _ => Err(AwsServiceError::action_not_implemented("sns", &req.action)),
         }
     }
@@ -60,6 +63,9 @@ impl AwsService for SnsService {
             "ListSubscriptionsByTopic",
             "GetSubscriptionAttributes",
             "SetSubscriptionAttributes",
+            "TagResource",
+            "UntagResource",
+            "ListTagsForResource",
         ]
     }
 }
@@ -108,15 +114,26 @@ fn xml_resp(inner: &str, request_id: &str) -> AwsResponse {
 impl SnsService {
     fn create_topic(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let name = required(req, "Name")?;
+        let is_fifo = name.ends_with(".fifo");
+
+        // Parse tags from request: Tags.member.N.Key / Tags.member.N.Value
+        let tags = parse_tags(req);
+
         let mut state = self.state.write();
 
         let topic_arn = format!("arn:aws:sns:{}:{}:{}", state.region, state.account_id, name);
 
         if !state.topics.contains_key(&topic_arn) {
+            let mut attributes = HashMap::new();
+            if is_fifo {
+                attributes.insert("FifoTopic".to_string(), "true".to_string());
+            }
             let topic = SnsTopic {
                 topic_arn: topic_arn.clone(),
                 name,
-                attributes: HashMap::new(),
+                attributes,
+                tags,
+                is_fifo,
                 created_at: Utc::now(),
             };
             state.topics.insert(topic_arn.clone(), topic);
@@ -315,10 +332,24 @@ impl SnsService {
         let topic_arn = required(req, "TopicArn")?;
         let message = required(req, "Message")?;
         let subject = param(req, "Subject");
+        let message_group_id = param(req, "MessageGroupId");
+
+        // Parse MessageAttributes from query params
+        let message_attributes = parse_message_attributes(req);
 
         let mut state = self.state.write();
-        if !state.topics.contains_key(&topic_arn) {
-            return Err(not_found("Topic"));
+        let topic = state
+            .topics
+            .get(&topic_arn)
+            .ok_or_else(|| not_found("Topic"))?;
+
+        // FIFO topic enforcement
+        if topic.is_fifo && message_group_id.is_none() {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidParameter",
+                "The request must contain the parameter MessageGroupId for FIFO topics",
+            ));
         }
 
         let msg_id = uuid::Uuid::new_v4().to_string();
@@ -327,19 +358,33 @@ impl SnsService {
             topic_arn: topic_arn.clone(),
             message: message.clone(),
             subject: subject.clone(),
+            message_attributes: message_attributes.clone(),
+            message_group_id,
             timestamp: Utc::now(),
         });
 
-        // Fan out to SQS subscribers
+        // Fan out to SQS subscribers, checking filter policies
         let sqs_subscribers: Vec<String> = state
             .subscriptions
             .values()
             .filter(|s| s.topic_arn == topic_arn && s.protocol == "sqs" && s.confirmed)
+            .filter(|s| matches_filter_policy(s, &message_attributes))
             .map(|s| s.endpoint.clone())
             .collect();
         drop(state);
 
         if !sqs_subscribers.is_empty() {
+            // Build MessageAttributes for the envelope
+            let mut envelope_attrs = serde_json::Map::new();
+            for (key, attr) in &message_attributes {
+                let mut attr_obj = serde_json::Map::new();
+                attr_obj.insert("Type".to_string(), Value::String(attr.data_type.clone()));
+                if let Some(ref sv) = attr.string_value {
+                    attr_obj.insert("Value".to_string(), Value::String(sv.clone()));
+                }
+                envelope_attrs.insert(key.clone(), Value::Object(attr_obj));
+            }
+
             let sns_envelope = serde_json::json!({
                 "Type": "Notification",
                 "MessageId": msg_id,
@@ -347,6 +392,7 @@ impl SnsService {
                 "Subject": subject.as_deref().unwrap_or(""),
                 "Message": message,
                 "Timestamp": Utc::now().to_rfc3339(),
+                "MessageAttributes": envelope_attrs,
             });
             let envelope_str = sns_envelope.to_string();
 
@@ -500,6 +546,91 @@ impl SnsService {
             &req.request_id,
         ))
     }
+
+    fn tag_resource(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let resource_arn = required(req, "ResourceArn")?;
+        let tags = parse_tags(req);
+
+        let mut state = self.state.write();
+        let topic = state
+            .topics
+            .get_mut(&resource_arn)
+            .ok_or_else(|| not_found("Topic"))?;
+        for (k, v) in tags {
+            topic.tags.insert(k, v);
+        }
+
+        Ok(xml_resp(
+            &format!(
+                r#"<TagResourceResponse xmlns="http://sns.amazonaws.com/doc/2010-03-31/">
+  <ResponseMetadata>
+    <RequestId>{}</RequestId>
+  </ResponseMetadata>
+</TagResourceResponse>"#,
+                req.request_id
+            ),
+            &req.request_id,
+        ))
+    }
+
+    fn untag_resource(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let resource_arn = required(req, "ResourceArn")?;
+        let tag_keys = parse_tag_keys(req);
+
+        let mut state = self.state.write();
+        let topic = state
+            .topics
+            .get_mut(&resource_arn)
+            .ok_or_else(|| not_found("Topic"))?;
+        for key in tag_keys {
+            topic.tags.remove(&key);
+        }
+
+        Ok(xml_resp(
+            &format!(
+                r#"<UntagResourceResponse xmlns="http://sns.amazonaws.com/doc/2010-03-31/">
+  <ResponseMetadata>
+    <RequestId>{}</RequestId>
+  </ResponseMetadata>
+</UntagResourceResponse>"#,
+                req.request_id
+            ),
+            &req.request_id,
+        ))
+    }
+
+    fn list_tags_for_resource(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let resource_arn = required(req, "ResourceArn")?;
+        let state = self.state.read();
+        let topic = state
+            .topics
+            .get(&resource_arn)
+            .ok_or_else(|| not_found("Topic"))?;
+
+        let members: String = topic
+            .tags
+            .iter()
+            .map(|(k, v)| format!("      <member><Key>{k}</Key><Value>{v}</Value></member>"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        Ok(xml_resp(
+            &format!(
+                r#"<ListTagsForResourceResponse xmlns="http://sns.amazonaws.com/doc/2010-03-31/">
+  <ListTagsForResourceResult>
+    <Tags>
+{members}
+    </Tags>
+  </ListTagsForResourceResult>
+  <ResponseMetadata>
+    <RequestId>{}</RequestId>
+  </ResponseMetadata>
+</ListTagsForResourceResponse>"#,
+                req.request_id
+            ),
+            &req.request_id,
+        ))
+    }
 }
 
 fn format_attr(name: &str, value: &str) -> String {
@@ -517,4 +648,113 @@ fn format_sub_member(sub: &SnsSubscription) -> String {
       </member>"#,
         sub.subscription_arn, sub.topic_arn, sub.protocol, sub.endpoint,
     )
+}
+
+/// Parse MessageAttributes from query params.
+/// Format: MessageAttributes.entry.N.Name, MessageAttributes.entry.N.Value.DataType,
+///         MessageAttributes.entry.N.Value.StringValue
+fn parse_message_attributes(req: &AwsRequest) -> HashMap<String, MessageAttribute> {
+    let mut attrs = HashMap::new();
+    for n in 1..=10 {
+        let name_key = format!("MessageAttributes.entry.{n}.Name");
+        let data_type_key = format!("MessageAttributes.entry.{n}.Value.DataType");
+        if let (Some(name), Some(data_type)) = (
+            req.query_params.get(&name_key),
+            req.query_params.get(&data_type_key),
+        ) {
+            let string_value_key = format!("MessageAttributes.entry.{n}.Value.StringValue");
+            let string_value = req.query_params.get(&string_value_key).cloned();
+            attrs.insert(
+                name.clone(),
+                MessageAttribute {
+                    data_type: data_type.clone(),
+                    string_value,
+                },
+            );
+        } else {
+            break;
+        }
+    }
+    attrs
+}
+
+/// Parse tags from query params.
+/// Format: Tags.member.N.Key / Tags.member.N.Value
+fn parse_tags(req: &AwsRequest) -> HashMap<String, String> {
+    let mut tags = HashMap::new();
+    for n in 1..=50 {
+        let key_param = format!("Tags.member.{n}.Key");
+        let val_param = format!("Tags.member.{n}.Value");
+        if let Some(key) = req.query_params.get(&key_param) {
+            let value = req
+                .query_params
+                .get(&val_param)
+                .cloned()
+                .unwrap_or_default();
+            tags.insert(key.clone(), value);
+        } else {
+            break;
+        }
+    }
+    tags
+}
+
+/// Parse tag keys for UntagResource.
+/// Format: TagKeys.member.N
+fn parse_tag_keys(req: &AwsRequest) -> Vec<String> {
+    let mut keys = Vec::new();
+    for n in 1..=50 {
+        let key_param = format!("TagKeys.member.{n}");
+        if let Some(key) = req.query_params.get(&key_param) {
+            keys.push(key.clone());
+        } else {
+            break;
+        }
+    }
+    keys
+}
+
+/// Check if a message's attributes match the subscription's FilterPolicy.
+///
+/// The FilterPolicy is a JSON object where keys are attribute names and values
+/// are arrays of allowed values. A message matches if for every key in the filter,
+/// the message has that attribute and its value is in the allowed list.
+/// If the subscription has no FilterPolicy, all messages match.
+fn matches_filter_policy(
+    sub: &SnsSubscription,
+    message_attributes: &HashMap<String, MessageAttribute>,
+) -> bool {
+    let filter_json = match sub.attributes.get("FilterPolicy") {
+        Some(fp) => fp,
+        None => return true, // no filter = match all
+    };
+
+    let filter: HashMap<String, Value> = match serde_json::from_str(filter_json) {
+        Ok(f) => f,
+        Err(_) => return true, // invalid filter = match all (lenient)
+    };
+
+    for (attr_name, allowed_values) in &filter {
+        let allowed = match allowed_values.as_array() {
+            Some(arr) => arr,
+            None => continue, // skip non-array values
+        };
+
+        let msg_attr = match message_attributes.get(attr_name) {
+            Some(a) => a,
+            None => return false, // attribute missing from message
+        };
+
+        let attr_value = msg_attr.string_value.as_deref().unwrap_or("");
+        let matched = allowed.iter().any(|v| match v {
+            Value::String(s) => s == attr_value,
+            Value::Number(n) => n.to_string() == attr_value,
+            _ => false,
+        });
+        if !matched {
+            return false;
+        }
+    }
+
+    true
 }

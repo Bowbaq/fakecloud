@@ -127,3 +127,64 @@ async fn sns_cli_create_topic() {
     let json = output.stdout_json();
     assert!(json["TopicArn"].as_str().unwrap().contains("cli-topic"));
 }
+
+#[tokio::test]
+async fn sns_publish_with_message_attributes() {
+    use aws_sdk_sns::types::MessageAttributeValue;
+
+    let server = TestServer::start().await;
+    let client = server.sns_client().await;
+
+    let resp = client
+        .create_topic()
+        .name("attr-topic")
+        .send()
+        .await
+        .unwrap();
+    let topic_arn = resp.topic_arn().unwrap().to_string();
+
+    let attr = MessageAttributeValue::builder()
+        .data_type("String")
+        .string_value("test-value")
+        .build()
+        .unwrap();
+
+    let resp = client
+        .publish()
+        .topic_arn(&topic_arn)
+        .message("hello with attrs")
+        .message_attributes("myAttr", attr)
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.message_id().is_some());
+}
+
+#[tokio::test]
+async fn sns_fifo_topic_creation() {
+    let server = TestServer::start().await;
+    let client = server.sns_client().await;
+
+    // Create a FIFO topic
+    let resp = client
+        .create_topic()
+        .name("my-topic.fifo")
+        .send()
+        .await
+        .unwrap();
+    let topic_arn = resp.topic_arn().unwrap().to_string();
+    assert!(topic_arn.ends_with(".fifo"));
+
+    // Verify FifoTopic attribute is set
+    let attrs = client
+        .get_topic_attributes()
+        .topic_arn(&topic_arn)
+        .send()
+        .await
+        .unwrap();
+    let attributes = attrs.attributes().unwrap();
+    assert_eq!(
+        attributes.get("FifoTopic").map(|s| s.as_str()),
+        Some("true")
+    );
+}
