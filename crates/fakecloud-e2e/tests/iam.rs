@@ -259,7 +259,7 @@ async fn sts_get_access_key_info() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.account().unwrap(), "000000000000");
+    assert_eq!(resp.account().unwrap(), "123456789012");
 }
 
 #[tokio::test]
@@ -269,7 +269,7 @@ async fn sts_assume_role_with_web_identity() {
 
     let resp = client
         .assume_role_with_web_identity()
-        .role_arn("arn:aws:iam::000000000000:role/test-role")
+        .role_arn("arn:aws:iam::123456789012:role/test-role")
         .role_session_name("test-session")
         .web_identity_token("fake-token")
         .send()
@@ -288,7 +288,7 @@ async fn sts_assume_role_returns_correct_arn() {
     let iam = server.iam_client().await;
 
     // Create a role first
-    let trust_policy = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::000000000000:root"},"Action":"sts:AssumeRole"}]}"#;
+    let trust_policy = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::123456789012:root"},"Action":"sts:AssumeRole"}]}"#;
     let role = iam
         .create_role()
         .role_name("my-role")
