@@ -1,1 +1,5 @@
 /target
+
+examples/terraform/.terraform/
+examples/terraform/.terraform.lock.hcl
+examples/terraform/terraform.tfstate*
