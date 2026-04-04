@@ -834,9 +834,27 @@ impl SqsService {
             }
         }
 
-        // FIFO dedup
+        // FIFO dedup - use content-based dedup if no explicit ID
+        let effective_dedup_id = if queue.is_fifo {
+            message_dedup_id.clone().or_else(|| {
+                if queue
+                    .attributes
+                    .get("ContentBasedDeduplication")
+                    .map(|v| v.as_str())
+                    == Some("true")
+                {
+                    // Use SHA-256 of message body as dedup ID
+                    Some(md5_hex(&message_body))
+                } else {
+                    None
+                }
+            })
+        } else {
+            None
+        };
+
         if queue.is_fifo {
-            if let Some(ref dedup_id) = message_dedup_id {
+            if let Some(ref dedup_id) = effective_dedup_id {
                 let now = Utc::now();
                 queue.dedup_cache.retain(|_, expiry| *expiry > now);
                 if queue.dedup_cache.contains_key(dedup_id) {
@@ -933,7 +951,7 @@ impl SqsService {
             visible_at,
             receive_count: 0,
             message_group_id,
-            message_dedup_id,
+            message_dedup_id: effective_dedup_id,
             created_at: now,
             sequence_number: sequence_number.clone(),
         };
@@ -1111,10 +1129,17 @@ impl SqsService {
         let mut dlq_messages = Vec::new();
 
         if is_fifo {
-            // FIFO: per-group ordering, deliver one message per group, preserving order
+            // FIFO: deliver messages in order, respecting group locking.
+            // Groups that already have inflight messages are skipped.
+            // Multiple messages from the same group CAN be delivered in one batch.
             let mut remaining = VecDeque::new();
-            let mut delivered_groups: std::collections::HashSet<String> =
-                std::collections::HashSet::new();
+
+            // Build set of groups that have pre-existing inflight messages
+            let inflight_groups: std::collections::HashSet<String> = queue
+                .inflight
+                .iter()
+                .filter_map(|m| m.message_group_id.clone())
+                .collect();
 
             while let Some(mut msg) = queue.messages.pop_front() {
                 if let Some(visible_at) = msg.visible_at {
@@ -1124,14 +1149,10 @@ impl SqsService {
                     }
                 }
 
-                // Check if this group already has an inflight message
                 let group = msg.message_group_id.as_deref().unwrap_or("").to_string();
-                let group_has_inflight = queue
-                    .inflight
-                    .iter()
-                    .any(|m| m.message_group_id.as_deref() == Some(&group));
 
-                if group_has_inflight || delivered_groups.contains(&group) {
+                // Skip groups that already have inflight messages from previous receives
+                if inflight_groups.contains(&group) {
                     remaining.push_back(msg);
                     continue;
                 }
@@ -1146,7 +1167,6 @@ impl SqsService {
                     }
                     msg.receipt_handle = Some(uuid::Uuid::new_v4().to_string());
                     msg.visible_at = Some(now + chrono::Duration::seconds(visibility_timeout));
-                    delivered_groups.insert(group);
                     received.push(msg);
                 } else {
                     remaining.push_back(msg);
@@ -1245,27 +1265,13 @@ impl SqsService {
             .get_mut(queue_url)
             .ok_or_else(queue_not_found)?;
 
-        let before = queue.inflight.len();
+        // Delete is idempotent - silently succeed even if handle not found
         queue
             .inflight
             .retain(|m| m.receipt_handle.as_deref() != Some(receipt_handle));
-        let deleted = before != queue.inflight.len();
-
-        // Also check if it's in the messages queue (already visible again)
-        if !deleted {
-            let before2 = queue.messages.len();
-            queue
-                .messages
-                .retain(|m| m.receipt_handle.as_deref() != Some(receipt_handle));
-            let deleted2 = queue.messages.len() != before2;
-            if !deleted2 {
-                return Err(AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "ReceiptHandleIsInvalid",
-                    "The input receipt handle is invalid.",
-                ));
-            }
-        }
+        queue
+            .messages
+            .retain(|m| m.receipt_handle.as_deref() != Some(receipt_handle));
 
         Ok(sqs_response(
             "DeleteMessage",
