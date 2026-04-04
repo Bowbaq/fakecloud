@@ -532,7 +532,6 @@ fn empty_response(action: &str, request_id: &str) -> String {
 
 // ========= User operations =========
 
-
 impl IamService {
     /// Determine the effective account ID for this request.
     /// If the caller has assumed a role into a different account, use that account ID.
