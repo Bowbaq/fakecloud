@@ -727,7 +727,7 @@ pub fn generate_role_id() -> String {
 
 /// Generate a session token that is exactly 356 characters starting with "FQoGZXIvYXdzE".
 pub fn generate_session_token() -> String {
-    // Moto expects session tokens to be 356 chars and start with "FQoGZXIvYXdzE"
+    // AWS session tokens are typically 356 chars and start with "FQoGZXIvYXdzE"
     let prefix = "FQoGZXIvYXdzE";
     let remaining = 356 - prefix.len(); // 343 chars needed
                                         // Generate enough random bytes: we need at least ceil(343*3/4) = 258 bytes

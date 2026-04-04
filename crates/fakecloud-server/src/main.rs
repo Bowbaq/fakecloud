@@ -85,11 +85,15 @@ async fn main() {
             .with_sns(sns_delivery),
     );
 
-    // Clone state for reset endpoint before moving into services
+    // Clone state for reset endpoints before moving into services
     let reset_iam = iam_state.clone();
     let reset_sqs = sqs_state.clone();
     let reset_sns = sns_state.clone();
     let reset_ssm = ssm_state.clone();
+    let reset_iam2 = iam_state.clone();
+    let reset_sqs2 = sqs_state.clone();
+    let reset_sns2 = sns_state.clone();
+    let reset_ssm2 = ssm_state.clone();
 
     // Register services
     let mut registry = ServiceRegistry::new();
@@ -150,7 +154,27 @@ async fn main() {
                     sns.write().subscriptions.clear();
                     sns.write().published.clear();
                     ssm.write().parameters.clear();
-                    tracing::info!("state reset via /moto-api/reset");
+                    tracing::info!("state reset via reset API");
+                    axum::Json(serde_json::json!({"status": "ok"}))
+                }
+            }),
+        )
+        .route(
+            "/_reset",
+            axum::routing::post({
+                let iam = reset_iam2;
+                let sqs = reset_sqs2;
+                let sns = reset_sns2;
+                let ssm = reset_ssm2;
+                move || async move {
+                    iam.write().reset();
+                    sqs.write().queues.clear();
+                    sqs.write().name_to_url.clear();
+                    sns.write().topics.clear();
+                    sns.write().subscriptions.clear();
+                    sns.write().published.clear();
+                    ssm.write().parameters.clear();
+                    tracing::info!("state reset via reset API");
                     axum::Json(serde_json::json!({"status": "ok"}))
                 }
             }),

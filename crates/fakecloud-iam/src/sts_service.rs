@@ -115,7 +115,7 @@ impl StsService {
         }
 
         // Default identity
-        let arn = format!("arn:{}:sts::{}:user/moto", partition, state.account_id);
+        let arn = format!("arn:{}:iam::{}:root", partition, state.account_id);
         let user_id = "AKIAIOSFODNN7EXAMPLE";
         let xml = xml_responses::get_caller_identity_response(
             &state.account_id,
