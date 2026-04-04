@@ -376,6 +376,84 @@ pub fn attach_role_policy_response(request_id: &str) -> String {
     )
 }
 
+pub fn get_policy_response(policy: &IamPolicy, request_id: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<GetPolicyResponse xmlns="https://iam.amazonaws.com/doc/2010-05-08/">
+  <GetPolicyResult>
+    <Policy>
+      <PolicyName>{name}</PolicyName>
+      <PolicyId>{id}</PolicyId>
+      <Arn>{arn}</Arn>
+      <Path>{path}</Path>
+      <CreateDate>{date}</CreateDate>
+      <AttachmentCount>0</AttachmentCount>
+      <IsAttachable>true</IsAttachable>
+      <DefaultVersionId>v1</DefaultVersionId>
+    </Policy>
+  </GetPolicyResult>
+  <ResponseMetadata>
+    <RequestId>{request_id}</RequestId>
+  </ResponseMetadata>
+</GetPolicyResponse>"#,
+        name = policy.policy_name,
+        id = policy.policy_id,
+        arn = policy.arn,
+        path = policy.path,
+        date = policy.created_at.format("%Y-%m-%dT%H:%M:%SZ"),
+        request_id = request_id,
+    )
+}
+
+pub fn delete_policy_response(request_id: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<DeletePolicyResponse xmlns="https://iam.amazonaws.com/doc/2010-05-08/">
+  <ResponseMetadata>
+    <RequestId>{request_id}</RequestId>
+  </ResponseMetadata>
+</DeletePolicyResponse>"#,
+        request_id = request_id,
+    )
+}
+
+pub fn list_role_policies_response(policy_names: &[String], request_id: &str) -> String {
+    let members: String = policy_names
+        .iter()
+        .map(|name| format!("      <member>{name}</member>"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<ListRolePoliciesResponse xmlns="https://iam.amazonaws.com/doc/2010-05-08/">
+  <ListRolePoliciesResult>
+    <IsTruncated>false</IsTruncated>
+    <PolicyNames>
+{members}
+    </PolicyNames>
+  </ListRolePoliciesResult>
+  <ResponseMetadata>
+    <RequestId>{request_id}</RequestId>
+  </ResponseMetadata>
+</ListRolePoliciesResponse>"#,
+        members = members,
+        request_id = request_id,
+    )
+}
+
+pub fn detach_role_policy_response(request_id: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<DetachRolePolicyResponse xmlns="https://iam.amazonaws.com/doc/2010-05-08/">
+  <ResponseMetadata>
+    <RequestId>{request_id}</RequestId>
+  </ResponseMetadata>
+</DetachRolePolicyResponse>"#,
+        request_id = request_id,
+    )
+}
+
 pub fn get_caller_identity_response(
     account_id: &str,
     arn: &str,

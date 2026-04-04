@@ -37,8 +37,12 @@ impl AwsService for IamService {
             "DeleteRole" => self.delete_role(&req),
             "ListRoles" => self.list_roles(&req),
             "CreatePolicy" => self.create_policy(&req),
+            "GetPolicy" => self.get_policy(&req),
+            "DeletePolicy" => self.delete_policy(&req),
             "ListPolicies" => self.list_policies(&req),
             "AttachRolePolicy" => self.attach_role_policy(&req),
+            "DetachRolePolicy" => self.detach_role_policy(&req),
+            "ListRolePolicies" => self.list_role_policies(&req),
             _ => Err(AwsServiceError::action_not_implemented("iam", &req.action)),
         }
     }
@@ -57,8 +61,12 @@ impl AwsService for IamService {
             "DeleteRole",
             "ListRoles",
             "CreatePolicy",
+            "GetPolicy",
+            "DeletePolicy",
             "ListPolicies",
             "AttachRolePolicy",
+            "DetachRolePolicy",
+            "ListRolePolicies",
         ]
     }
 }
@@ -342,6 +350,84 @@ impl IamService {
             .push(policy_arn);
 
         let xml = xml_responses::attach_role_policy_response(&req.request_id);
+        Ok(AwsResponse::xml(StatusCode::OK, xml))
+    }
+
+    fn get_policy(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let policy_arn = required_param(&req.query_params, "PolicyArn")?;
+        let state = self.state.read();
+
+        let policy = state.policies.get(&policy_arn).ok_or_else(|| {
+            AwsServiceError::aws_error(
+                StatusCode::NOT_FOUND,
+                "NoSuchEntity",
+                format!("Policy {policy_arn} does not exist."),
+            )
+        })?;
+
+        let xml = xml_responses::get_policy_response(policy, &req.request_id);
+        Ok(AwsResponse::xml(StatusCode::OK, xml))
+    }
+
+    fn delete_policy(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let policy_arn = required_param(&req.query_params, "PolicyArn")?;
+        let mut state = self.state.write();
+
+        if state.policies.remove(&policy_arn).is_none() {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::NOT_FOUND,
+                "NoSuchEntity",
+                format!("Policy {policy_arn} does not exist."),
+            ));
+        }
+
+        // Also remove from any role attachments
+        for arns in state.role_policies.values_mut() {
+            arns.retain(|a| a != &policy_arn);
+        }
+
+        let xml = xml_responses::delete_policy_response(&req.request_id);
+        Ok(AwsResponse::xml(StatusCode::OK, xml))
+    }
+
+    fn list_role_policies(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let role_name = required_param(&req.query_params, "RoleName")?;
+        let state = self.state.read();
+
+        if !state.roles.contains_key(&role_name) {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::NOT_FOUND,
+                "NoSuchEntity",
+                format!("The role with name {role_name} cannot be found."),
+            ));
+        }
+
+        // ListRolePolicies returns inline policy names, not managed policies.
+        // We only support managed policies, so return an empty list.
+        let empty: Vec<String> = Vec::new();
+        let xml = xml_responses::list_role_policies_response(&empty, &req.request_id);
+        Ok(AwsResponse::xml(StatusCode::OK, xml))
+    }
+
+    fn detach_role_policy(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let role_name = required_param(&req.query_params, "RoleName")?;
+        let policy_arn = required_param(&req.query_params, "PolicyArn")?;
+
+        let mut state = self.state.write();
+
+        if !state.roles.contains_key(&role_name) {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::NOT_FOUND,
+                "NoSuchEntity",
+                format!("The role with name {role_name} cannot be found."),
+            ));
+        }
+
+        if let Some(arns) = state.role_policies.get_mut(&role_name) {
+            arns.retain(|a| a != &policy_arn);
+        }
+
+        let xml = xml_responses::detach_role_policy_response(&req.request_id);
         Ok(AwsResponse::xml(StatusCode::OK, xml))
     }
 }
