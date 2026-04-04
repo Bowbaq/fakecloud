@@ -280,3 +280,99 @@ async fn ssm_add_list_remove_tags() {
     assert_eq!(tags[0].key(), "Environment");
     assert_eq!(tags[0].value(), "Production");
 }
+
+#[tokio::test]
+async fn ssm_pagination_get_parameters_by_path() {
+    let server = TestServer::start().await;
+    let client = server.ssm_client().await;
+
+    // Create 15 parameters under /page/
+    for i in 0..15 {
+        client
+            .put_parameter()
+            .name(format!("/page/param{i:02}"))
+            .value(format!("val{i}"))
+            .r#type(ParameterType::String)
+            .send()
+            .await
+            .unwrap();
+    }
+
+    // First page: MaxResults=5
+    let resp = client
+        .get_parameters_by_path()
+        .path("/page")
+        .max_results(5)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.parameters().len(), 5);
+    assert!(
+        resp.next_token().is_some(),
+        "should have NextToken for more results"
+    );
+
+    // Second page
+    let resp2 = client
+        .get_parameters_by_path()
+        .path("/page")
+        .max_results(5)
+        .next_token(resp.next_token().unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp2.parameters().len(), 5);
+    assert!(resp2.next_token().is_some());
+
+    // Third page
+    let resp3 = client
+        .get_parameters_by_path()
+        .path("/page")
+        .max_results(5)
+        .next_token(resp2.next_token().unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp3.parameters().len(), 5);
+    assert!(
+        resp3.next_token().is_none(),
+        "should have no NextToken on last page"
+    );
+}
+
+#[tokio::test]
+async fn ssm_secure_string_with_decryption() {
+    let server = TestServer::start().await;
+    let client = server.ssm_client().await;
+
+    // Put a SecureString parameter
+    client
+        .put_parameter()
+        .name("/secret/password")
+        .value("super-secret-123")
+        .r#type(ParameterType::SecureString)
+        .send()
+        .await
+        .unwrap();
+
+    // Get WITHOUT WithDecryption (default) - should be masked
+    let resp = client
+        .get_parameter()
+        .name("/secret/password")
+        .send()
+        .await
+        .unwrap();
+    let param = resp.parameter().unwrap();
+    assert_eq!(param.value().unwrap(), "****");
+
+    // Get WITH WithDecryption=true - should return actual value
+    let resp = client
+        .get_parameter()
+        .name("/secret/password")
+        .with_decryption(true)
+        .send()
+        .await
+        .unwrap();
+    let param = resp.parameter().unwrap();
+    assert_eq!(param.value().unwrap(), "super-secret-123");
+}

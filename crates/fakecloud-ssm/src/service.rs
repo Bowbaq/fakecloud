@@ -69,7 +69,7 @@ fn json_resp(body: Value) -> AwsResponse {
     AwsResponse::json(StatusCode::OK, serde_json::to_string(&body).unwrap())
 }
 
-fn param_to_json(p: &SsmParameter, with_value: bool) -> Value {
+fn param_to_json(p: &SsmParameter, with_value: bool, with_decryption: bool) -> Value {
     let mut v = json!({
         "Name": p.name,
         "Type": p.param_type,
@@ -79,7 +79,11 @@ fn param_to_json(p: &SsmParameter, with_value: bool) -> Value {
         "DataType": "text",
     });
     if with_value {
-        v["Value"] = json!(p.value);
+        if p.param_type == "SecureString" && !with_decryption {
+            v["Value"] = json!("****");
+        } else {
+            v["Value"] = json!(p.value);
+        }
     }
     v
 }
@@ -153,6 +157,7 @@ impl SsmService {
     fn get_parameter(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
+        let with_decryption = body["WithDecryption"].as_bool().unwrap_or(false);
 
         let state = self.state.read();
         let param = state
@@ -161,13 +166,14 @@ impl SsmService {
             .ok_or_else(|| param_not_found(name))?;
 
         Ok(json_resp(json!({
-            "Parameter": param_to_json(param, true),
+            "Parameter": param_to_json(param, true, with_decryption),
         })))
     }
 
     fn get_parameters(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
         let names = body["Names"].as_array().ok_or_else(|| missing("Names"))?;
+        let with_decryption = body["WithDecryption"].as_bool().unwrap_or(false);
 
         let state = self.state.read();
         let mut parameters = Vec::new();
@@ -176,7 +182,7 @@ impl SsmService {
         for name_val in names {
             if let Some(name) = name_val.as_str() {
                 if let Some(param) = state.parameters.get(name) {
-                    parameters.push(param_to_json(param, true));
+                    parameters.push(param_to_json(param, true, with_decryption));
                 } else {
                     invalid.push(name.to_string());
                 }
@@ -193,7 +199,13 @@ impl SsmService {
         let body = parse_body(req);
         let path = body["Path"].as_str().ok_or_else(|| missing("Path"))?;
         let recursive = body["Recursive"].as_bool().unwrap_or(false);
+        let with_decryption = body["WithDecryption"].as_bool().unwrap_or(false);
         let filters = body["ParameterFilters"].as_array().cloned();
+        let max_results = body["MaxResults"].as_i64().unwrap_or(10) as usize;
+        let next_token_offset: usize = body["NextToken"]
+            .as_str()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
 
         let state = self.state.read();
         let prefix = if path.ends_with('/') {
@@ -202,7 +214,7 @@ impl SsmService {
             format!("{path}/")
         };
 
-        let parameters: Vec<Value> = state
+        let all_params: Vec<&SsmParameter> = state
             .parameters
             .range(prefix.clone()..)
             .take_while(|(k, _)| k.starts_with(&prefix))
@@ -210,15 +222,27 @@ impl SsmService {
                 if recursive {
                     true
                 } else {
-                    // Only direct children (no more slashes after prefix)
                     !k[prefix.len()..].contains('/')
                 }
             })
             .filter(|(_, p)| apply_parameter_filters(p, filters.as_ref()))
-            .map(|(_, p)| param_to_json(p, true))
+            .map(|(_, p)| p)
             .collect();
 
-        Ok(json_resp(json!({ "Parameters": parameters })))
+        let page = &all_params[next_token_offset..];
+        let has_more = page.len() > max_results;
+        let parameters: Vec<Value> = page
+            .iter()
+            .take(max_results)
+            .map(|p| param_to_json(p, true, with_decryption))
+            .collect();
+
+        let mut resp = json!({ "Parameters": parameters });
+        if has_more {
+            resp["NextToken"] = json!((next_token_offset + max_results).to_string());
+        }
+
+        Ok(json_resp(resp))
     }
 
     fn delete_parameter(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
@@ -260,16 +284,33 @@ impl SsmService {
     fn describe_parameters(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
         let filters = body["ParameterFilters"].as_array().cloned();
+        let max_results = body["MaxResults"].as_i64().unwrap_or(10) as usize;
+        let next_token_offset: usize = body["NextToken"]
+            .as_str()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
 
         let state = self.state.read();
-        let parameters: Vec<Value> = state
+        let all_params: Vec<&SsmParameter> = state
             .parameters
             .values()
             .filter(|p| apply_parameter_filters(p, filters.as_ref()))
-            .map(|p| param_to_json(p, false))
             .collect();
 
-        Ok(json_resp(json!({ "Parameters": parameters })))
+        let page = &all_params[next_token_offset..];
+        let has_more = page.len() > max_results;
+        let parameters: Vec<Value> = page
+            .iter()
+            .take(max_results)
+            .map(|p| param_to_json(p, false, false))
+            .collect();
+
+        let mut resp = json!({ "Parameters": parameters });
+        if has_more {
+            resp["NextToken"] = json!((next_token_offset + max_results).to_string());
+        }
+
+        Ok(json_resp(resp))
     }
 
     fn get_parameter_history(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
