@@ -223,7 +223,7 @@ async fn sts_get_session_token() {
 
     let resp = client.get_session_token().send().await.unwrap();
     let creds = resp.credentials().unwrap();
-    assert!(creds.access_key_id().starts_with("ASIA"));
+    assert!(creds.access_key_id().starts_with("AKIA"));
     assert!(!creds.secret_access_key().is_empty());
     assert!(creds.session_token().starts_with("AQoEXAMPLEH4"));
 }
@@ -240,7 +240,7 @@ async fn sts_get_federation_token() {
         .await
         .unwrap();
     let creds = resp.credentials().unwrap();
-    assert!(creds.access_key_id().starts_with("ASIA"));
+    assert!(creds.access_key_id().starts_with("AKIA"));
     let fed_user = resp.federated_user().unwrap();
     assert!(fed_user.arn().contains("federated-user/Bob"));
     assert!(fed_user.federated_user_id().contains("Bob"));
