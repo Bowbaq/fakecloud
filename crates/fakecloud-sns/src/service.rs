@@ -697,7 +697,7 @@ impl SnsService {
                 return Err(AwsServiceError::aws_error(
                     StatusCode::BAD_REQUEST,
                     "InvalidParameter",
-                    "Invalid parameter: Subject",
+                    "Subject must be less than 100 characters",
                 ));
             }
         }
@@ -797,25 +797,8 @@ impl SnsService {
                     "Invalid parameter: The topic should either have ContentBasedDeduplication enabled or the MessageDeduplicationId provided explicitly",
                 ));
             }
-        } else {
-            // Non-FIFO: MessageGroupId should not be set
-            if message_group_id.is_some() {
-                return Err(AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "InvalidParameter",
-                    "Invalid parameter: MessageGroupId Reason: The request includes MessageGroupId parameter that is not valid for this topic type",
-                ));
-            }
-            if message_dedup_id.is_some() {
-                return Err(AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "InvalidParameter",
-                    "Invalid parameter: MessageDeduplicationId Reason: The request includes MessageDeduplicationId parameter that is not valid for this topic type",
-                ));
-            }
         }
-
-        let is_fifo = topic.is_fifo;
+        // Non-FIFO: MessageGroupId and DeduplicationId are allowed (used for SQS fair queuing)
 
         let msg_id = uuid::Uuid::new_v4().to_string();
         state.published.push(PublishedMessage {
@@ -925,33 +908,18 @@ impl SnsService {
                     queue_arn,
                     &sqs_message,
                     &sqs_msg_attrs,
-                    if is_fifo {
-                        message_group_id.as_deref()
-                    } else {
-                        None
-                    },
-                    if is_fifo {
-                        message_dedup_id.as_deref()
-                    } else {
-                        None
-                    },
+                    message_group_id.as_deref(),
+                    message_dedup_id.as_deref(),
                 );
             } else {
                 // Standard delivery: wrap in SNS envelope
-                let sns_envelope = serde_json::json!({
-                    "Type": "Notification",
-                    "MessageId": msg_id,
-                    "TopicArn": topic_arn,
-                    "Subject": subject.as_deref().unwrap_or(""),
-                    "Message": sqs_message,
-                    "Timestamp": Utc::now().to_rfc3339(),
-                    "SignatureVersion": "1",
-                    "Signature": "FAKE_SIGNATURE",
-                    "SigningCertURL": "https://sns.us-east-1.amazonaws.com/SimpleNotificationService-0000000000000000000000.pem",
-                    "UnsubscribeURL": format!("http://localhost:4566/?Action=Unsubscribe&SubscriptionArn={}", topic_arn),
-                    "MessageAttributes": envelope_attrs,
-                });
-                let envelope_str = sns_envelope.to_string();
+                let envelope_str = build_sns_envelope(
+                    &msg_id,
+                    &topic_arn,
+                    &subject,
+                    &sqs_message,
+                    &envelope_attrs,
+                );
                 self.delivery
                     .send_to_sqs(queue_arn, &envelope_str, &HashMap::new());
             }
@@ -959,20 +927,14 @@ impl SnsService {
 
         // Deliver to HTTP/HTTPS subscribers (fire-and-forget)
         for endpoint_url in http_subscribers {
-            let sns_envelope = serde_json::json!({
-                "Type": "Notification",
-                "MessageId": msg_id,
-                "TopicArn": topic_arn,
-                "Subject": subject.as_deref().unwrap_or(""),
-                "Message": default_message,
-                "Timestamp": Utc::now().to_rfc3339(),
-                "SignatureVersion": "1",
-                "Signature": "FAKE_SIGNATURE",
-                "SigningCertURL": "https://sns.us-east-1.amazonaws.com/SimpleNotificationService-0000000000000000000000.pem",
-                "UnsubscribeURL": format!("http://localhost:4566/?Action=Unsubscribe&SubscriptionArn={}", topic_arn),
-                "MessageAttributes": envelope_attrs.clone(),
-            });
-            let body = sns_envelope.to_string();
+            let sns_envelope_str = build_sns_envelope(
+                &msg_id,
+                &topic_arn,
+                &subject,
+                &default_message,
+                &envelope_attrs,
+            );
+            let body = sns_envelope_str;
             let topic = topic_arn.clone();
             tokio::spawn(async move {
                 let client = reqwest::Client::new();
@@ -2278,6 +2240,61 @@ impl SnsService {
     }
 }
 
+/// Build an SNS notification envelope as JSON string.
+/// Subject and MessageAttributes are only included when present.
+fn build_sns_envelope(
+    message_id: &str,
+    topic_arn: &str,
+    subject: &Option<String>,
+    message: &str,
+    message_attributes: &serde_json::Map<String, Value>,
+) -> String {
+    let mut map = serde_json::Map::new();
+    map.insert(
+        "Type".to_string(),
+        Value::String("Notification".to_string()),
+    );
+    map.insert(
+        "MessageId".to_string(),
+        Value::String(message_id.to_string()),
+    );
+    map.insert("TopicArn".to_string(), Value::String(topic_arn.to_string()));
+    if let Some(ref subj) = subject {
+        map.insert("Subject".to_string(), Value::String(subj.clone()));
+    }
+    map.insert("Message".to_string(), Value::String(message.to_string()));
+    map.insert(
+        "Timestamp".to_string(),
+        Value::String(Utc::now().to_rfc3339()),
+    );
+    map.insert(
+        "SignatureVersion".to_string(),
+        Value::String("1".to_string()),
+    );
+    map.insert(
+        "Signature".to_string(),
+        Value::String("FAKE_SIGNATURE".to_string()),
+    );
+    map.insert(
+        "SigningCertURL".to_string(),
+        Value::String("https://sns.us-east-1.amazonaws.com/SimpleNotificationService-0000000000000000000000.pem".to_string()),
+    );
+    map.insert(
+        "UnsubscribeURL".to_string(),
+        Value::String(format!(
+            "http://localhost:4566/?Action=Unsubscribe&SubscriptionArn={}",
+            topic_arn
+        )),
+    );
+    if !message_attributes.is_empty() {
+        map.insert(
+            "MessageAttributes".to_string(),
+            Value::Object(message_attributes.clone()),
+        );
+    }
+    Value::Object(map).to_string()
+}
+
 fn format_attr(name: &str, value: &str) -> String {
     format!("      <entry><key>{name}</key><value>{value}</value></entry>")
 }
@@ -2502,6 +2519,25 @@ fn matches_filter_policy(
         };
 
         let attr_value = msg_attr.string_value.as_deref().unwrap_or("");
+
+        // Handle String.Array data type: parse the JSON array and check each element
+        if msg_attr.data_type.starts_with("String.Array") || msg_attr.data_type == "String.Array" {
+            if let Ok(arr) = serde_json::from_str::<Vec<Value>>(attr_value) {
+                let any_match = arr.iter().any(|elem| {
+                    let elem_str = match elem {
+                        Value::String(s) => s.clone(),
+                        Value::Number(n) => n.to_string(),
+                        _ => elem.to_string(),
+                    };
+                    check_filter_values(allowed, &elem_str)
+                });
+                if !any_match {
+                    return false;
+                }
+                continue;
+            }
+        }
+
         let matched = check_filter_values(allowed, attr_value);
         if !matched {
             return false;
@@ -2581,7 +2617,7 @@ fn check_filter_values(allowed: &[Value], attr_value: &str) -> bool {
             // Number comparison: try to parse the attribute value as a number too
             if let Ok(attr_num) = attr_value.parse::<f64>() {
                 if let Some(filter_num) = n.as_f64() {
-                    (attr_num - filter_num).abs() < f64::EPSILON
+                    numbers_equal(attr_num, filter_num)
                 } else {
                     false
                 }
@@ -2616,7 +2652,7 @@ fn check_filter_values(allowed: &[Value], attr_value: &str) -> bool {
                             Value::Number(n) => {
                                 if let Ok(attr_num) = attr_value.parse::<f64>() {
                                     if let Some(filter_num) = n.as_f64() {
-                                        (attr_num - filter_num).abs() < f64::EPSILON
+                                        numbers_equal(attr_num, filter_num)
                                     } else {
                                         false
                                     }
@@ -2660,6 +2696,13 @@ fn check_filter_values(allowed: &[Value], attr_value: &str) -> bool {
     })
 }
 
+/// Compare two f64 values with limited precision (5 decimal places).
+/// AWS SNS uses limited precision for number comparisons.
+fn numbers_equal(a: f64, b: f64) -> bool {
+    // Compare with ~5 decimal digit precision
+    (a - b).abs() < 1e-5
+}
+
 /// Evaluate a numeric filter
 fn matches_numeric_filter(value: f64, conditions: &[Value]) -> bool {
     let mut i = 0;
@@ -2673,7 +2716,7 @@ fn matches_numeric_filter(value: f64, conditions: &[Value]) -> bool {
             None => return false,
         };
         let passes = match op {
-            "=" => (value - threshold).abs() < f64::EPSILON,
+            "=" => numbers_equal(value, threshold),
             ">" => value > threshold,
             ">=" => value >= threshold,
             "<" => value < threshold,
