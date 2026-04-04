@@ -437,7 +437,7 @@ impl SnsService {
             "SignatureVersion": "1",
             "Signature": "FAKE_SIGNATURE",
             "SigningCertURL": "https://sns.us-east-1.amazonaws.com/SimpleNotificationService-0000000000000000000000.pem",
-            "UnsubscribeURL": format!("http://localhost:4566/?Action=Unsubscribe&SubscriptionArn=fake"),
+            "UnsubscribeURL": format!("http://localhost:4566/?Action=Unsubscribe&SubscriptionArn={}", topic_arn),
             "MessageAttributes": envelope_attrs,
         });
         let envelope_str = sns_envelope.to_string();
