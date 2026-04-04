@@ -123,6 +123,10 @@ fn param_to_json(p: &SsmParameter, with_value: bool, with_decryption: bool) -> V
     if with_value {
         if p.param_type == "SecureString" && !with_decryption {
             v["Value"] = json!("****");
+        } else if p.param_type == "SecureString" && with_decryption {
+            // Moto returns kms:KEY_ID:VALUE for decrypted secure strings
+            let key_id = p.key_id.as_deref().unwrap_or("alias/aws/ssm");
+            v["Value"] = json!(format!("kms:{}:{}", key_id, p.value));
         } else {
             v["Value"] = json!(p.value);
         }
@@ -738,7 +742,7 @@ impl SsmService {
         } else {
             &[]
         };
-        let has_more = page.len() > max_results;
+        let has_more = page.len() >= max_results;
         let parameters: Vec<Value> = page
             .iter()
             .take(max_results)
@@ -812,7 +816,7 @@ impl SsmService {
         } else {
             &[]
         };
-        let has_more = page.len() > max_results;
+        let has_more = page.len() >= max_results;
         let parameters: Vec<Value> = page
             .iter()
             .take(max_results)
@@ -876,9 +880,7 @@ impl SsmService {
                     entry["KeyId"] = json!(kid);
                 }
                 let labels = param.labels.get(&h.version).cloned().unwrap_or_default();
-                if !labels.is_empty() {
-                    entry["Labels"] = json!(labels);
-                }
+                entry["Labels"] = json!(labels);
                 entry
             })
             .collect();
@@ -902,9 +904,7 @@ impl SsmService {
             .get(&param.version)
             .cloned()
             .unwrap_or_default();
-        if !current_labels.is_empty() {
-            current["Labels"] = json!(current_labels);
-        }
+        current["Labels"] = json!(current_labels);
         all_history.push(current);
 
         let page = if next_token_offset < all_history.len() {
@@ -912,7 +912,7 @@ impl SsmService {
         } else {
             &[]
         };
-        let has_more = page.len() > max_results;
+        let has_more = page.len() >= max_results;
         let result: Vec<Value> = page.iter().take(max_results).cloned().collect();
 
         let mut resp = json!({ "Parameters": result });
@@ -1097,11 +1097,15 @@ impl SsmService {
             .filter_map(|l| l.as_str().map(|s| s.to_string()))
             .collect();
 
-        // Validate invalid labels (aws/ssm prefix)
+        // Validate invalid labels (aws/ssm prefix, starts with digit, contains /)
         let mut invalid_labels = Vec::new();
         for label in &label_strings {
             let lower = label.to_lowercase();
-            if lower.starts_with("aws") || lower.starts_with("ssm") {
+            let is_invalid = lower.starts_with("aws")
+                || lower.starts_with("ssm")
+                || label.starts_with(|c: char| c.is_ascii_digit())
+                || label.contains('/');
+            if is_invalid {
                 invalid_labels.push(label.clone());
             }
         }
@@ -1507,7 +1511,7 @@ impl SsmService {
         } else {
             &[]
         };
-        let has_more = page.len() > max_results;
+        let has_more = page.len() >= max_results;
         let result: Vec<Value> = page.iter().take(max_results).cloned().collect();
 
         let mut resp = json!({ "DocumentIdentifiers": result });
@@ -1895,7 +1899,10 @@ fn apply_parameter_filters(param: &SsmParameter, filters: Option<&Vec<Value>>) -
                 if values.is_empty() {
                     true
                 } else {
-                    values.iter().any(|v| param.param_type == *v)
+                    match option {
+                        "BeginsWith" => values.iter().any(|v| param.param_type.starts_with(v)),
+                        _ => values.iter().any(|v| param.param_type == *v),
+                    }
                 }
             }
             "KeyId" => {
