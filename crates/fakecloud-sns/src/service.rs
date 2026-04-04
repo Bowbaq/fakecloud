@@ -218,10 +218,37 @@ impl SnsService {
             .get(&topic_arn)
             .ok_or_else(|| not_found("Topic"))?;
 
+        // Count confirmed and pending subscriptions for this topic
+        let subs_confirmed = state
+            .subscriptions
+            .values()
+            .filter(|s| s.topic_arn == topic_arn && s.confirmed)
+            .count();
+        let subs_pending = state
+            .subscriptions
+            .values()
+            .filter(|s| s.topic_arn == topic_arn && !s.confirmed)
+            .count();
+
+        // Build default policy document that Terraform expects as valid JSON
+        let default_policy = format!(
+            r#"{{"Version":"2012-10-17","Statement":[{{"Effect":"Allow","Principal":"*","Action":"sns:Publish","Resource":"{topic_arn}"}}]}}"#,
+        );
+
         let mut entries = vec![
             format_attr("TopicArn", &topic.topic_arn),
             format_attr("DisplayName", &topic.name),
+            format_attr("Owner", &state.account_id),
+            format_attr("SubscriptionsConfirmed", &subs_confirmed.to_string()),
+            format_attr("SubscriptionsPending", &subs_pending.to_string()),
+            format_attr("SubscriptionsDeleted", "0"),
         ];
+
+        // Add Policy: use existing attribute if set, otherwise provide default
+        if !topic.attributes.contains_key("Policy") {
+            entries.push(format_attr("Policy", &default_policy));
+        }
+
         for (k, v) in &topic.attributes {
             entries.push(format_attr(k, v));
         }
