@@ -1679,6 +1679,15 @@ impl IamService {
             ));
         }
 
+        // Check policy exists (allow AWS managed policies)
+        if !policy_arn.contains(":aws:policy/") && !state.policies.contains_key(&policy_arn) {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::NOT_FOUND,
+                "NoSuchEntity",
+                format!("Policy {policy_arn} does not exist or is not attachable."),
+            ));
+        }
+
         let arns = state.role_policies.entry(role_name).or_default();
         if !arns.contains(&policy_arn) {
             arns.push(policy_arn.clone());
@@ -1905,6 +1914,15 @@ impl IamService {
                 StatusCode::NOT_FOUND,
                 "NoSuchEntity",
                 format!("The user with name {user_name} cannot be found."),
+            ));
+        }
+
+        // Check policy exists (allow AWS managed policies)
+        if !policy_arn.contains(":aws:policy/") && !state.policies.contains_key(&policy_arn) {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::NOT_FOUND,
+                "NoSuchEntity",
+                format!("Policy {policy_arn} does not exist or is not attachable."),
             ));
         }
 
