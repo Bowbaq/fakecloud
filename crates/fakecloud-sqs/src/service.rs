@@ -40,6 +40,7 @@ impl AwsService for SqsService {
             "DeleteMessageBatch" => self.delete_message_batch(&req),
             "PurgeQueue" => self.purge_queue(&req),
             "ChangeMessageVisibility" => self.change_message_visibility(&req),
+            "ChangeMessageVisibilityBatch" => self.change_message_visibility_batch(&req),
             _ => Err(AwsServiceError::action_not_implemented("sqs", &req.action)),
         }
     }
@@ -59,6 +60,7 @@ impl AwsService for SqsService {
             "DeleteMessageBatch",
             "PurgeQueue",
             "ChangeMessageVisibility",
+            "ChangeMessageVisibilityBatch",
         ]
     }
 }
@@ -204,6 +206,14 @@ impl SqsService {
             queue.inflight.len().to_string(),
         );
 
+        // Filter by requested AttributeNames if present
+        if let Some(requested) = body["AttributeNames"].as_array() {
+            let names: Vec<&str> = requested.iter().filter_map(|v| v.as_str()).collect();
+            if !names.is_empty() && !names.contains(&"All") {
+                attrs.retain(|k, _| names.contains(&k.as_str()));
+            }
+        }
+
         Ok(json_response(json!({ "Attributes": attrs })))
     }
 
@@ -271,7 +281,32 @@ impl SqsService {
             }
         }
 
-        let delay: i64 = body["DelaySeconds"].as_i64().unwrap_or(0);
+        // MaximumMessageSize validation
+        let max_message_size: usize = queue
+            .attributes
+            .get("MaximumMessageSize")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(262144);
+        if message_body.len() > max_message_size {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidParameterValue",
+                format!(
+                    "One or more parameters are invalid. Reason: Message must be shorter than {} bytes.",
+                    max_message_size
+                ),
+            ));
+        }
+
+        let delay: i64 = body["DelaySeconds"]
+            .as_i64()
+            .or_else(|| {
+                queue
+                    .attributes
+                    .get("DelaySeconds")
+                    .and_then(|s| s.parse().ok())
+            })
+            .unwrap_or(0);
         let now = Utc::now();
         let visible_at = if delay > 0 {
             Some(now + chrono::Duration::seconds(delay))
@@ -293,6 +328,7 @@ impl SqsService {
             receive_count: 0,
             message_group_id,
             message_dedup_id,
+            created_at: now,
         };
 
         let resp = json!({
@@ -359,6 +395,19 @@ impl SqsService {
 
         let is_fifo = queue.is_fifo;
         let now = Utc::now();
+
+        // MessageRetentionPeriod expiry: remove messages older than the retention period
+        let retention_seconds: i64 = queue
+            .attributes
+            .get("MessageRetentionPeriod")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(345600); // default 4 days
+        queue
+            .messages
+            .retain(|m| (now - m.created_at).num_seconds() < retention_seconds);
+        queue
+            .inflight
+            .retain(|m| (now - m.created_at).num_seconds() < retention_seconds);
 
         // Return expired inflight messages
         let mut returned = Vec::new();
@@ -518,6 +567,87 @@ impl SqsService {
         Ok(json_response(json!({})))
     }
 
+    fn change_message_visibility_batch(
+        &self,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let body = parse_body(req);
+        let queue_url = body["QueueUrl"]
+            .as_str()
+            .ok_or_else(|| missing_param("QueueUrl"))?;
+
+        let entries = body["Entries"]
+            .as_array()
+            .ok_or_else(|| missing_param("Entries"))?
+            .clone();
+
+        let mut state = self.state.write();
+        let queue = state
+            .queues
+            .get_mut(queue_url)
+            .ok_or_else(queue_not_found)?;
+
+        let now = Utc::now();
+        let mut successful = Vec::new();
+        let mut failed: Vec<Value> = Vec::new();
+
+        for entry in &entries {
+            let id = match entry["Id"].as_str() {
+                Some(id) => id.to_string(),
+                None => continue,
+            };
+            let receipt_handle = match entry["ReceiptHandle"].as_str() {
+                Some(rh) => rh,
+                None => {
+                    failed.push(json!({
+                        "Id": id,
+                        "SenderFault": true,
+                        "Code": "MissingParameter",
+                        "Message": "ReceiptHandle is required",
+                    }));
+                    continue;
+                }
+            };
+            let visibility_timeout = match entry["VisibilityTimeout"].as_i64() {
+                Some(vt) => vt,
+                None => {
+                    failed.push(json!({
+                        "Id": id,
+                        "SenderFault": true,
+                        "Code": "MissingParameter",
+                        "Message": "VisibilityTimeout is required",
+                    }));
+                    continue;
+                }
+            };
+
+            let mut found = false;
+            for msg in &mut queue.inflight {
+                if msg.receipt_handle.as_deref() == Some(receipt_handle) {
+                    msg.visible_at = Some(now + chrono::Duration::seconds(visibility_timeout));
+                    found = true;
+                    break;
+                }
+            }
+
+            if found {
+                successful.push(json!({ "Id": id }));
+            } else {
+                failed.push(json!({
+                    "Id": id,
+                    "SenderFault": true,
+                    "Code": "ReceiptHandleIsInvalid",
+                    "Message": "The input receipt handle is invalid.",
+                }));
+            }
+        }
+
+        Ok(json_response(json!({
+            "Successful": successful,
+            "Failed": failed,
+        })))
+    }
+
     fn set_queue_attributes(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
         let queue_url = body["QueueUrl"]
@@ -589,6 +719,15 @@ impl SqsService {
             .get("ContentBasedDeduplication")
             .map(|v| v.as_str())
             == Some("true");
+        let max_message_size: usize = queue
+            .attributes
+            .get("MaximumMessageSize")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(262144);
+        let queue_delay: Option<i64> = queue
+            .attributes
+            .get("DelaySeconds")
+            .and_then(|s| s.parse().ok());
 
         for entry in &entries {
             let id = match entry["Id"].as_str() {
@@ -607,6 +746,20 @@ impl SqsService {
                     continue;
                 }
             };
+
+            // MaximumMessageSize validation
+            if message_body.len() > max_message_size {
+                failed.push(json!({
+                    "Id": id,
+                    "SenderFault": true,
+                    "Code": "InvalidParameterValue",
+                    "Message": format!(
+                        "One or more parameters are invalid. Reason: Message must be shorter than {} bytes.",
+                        max_message_size
+                    ),
+                }));
+                continue;
+            }
 
             let message_group_id = entry["MessageGroupId"].as_str().map(|s| s.to_string());
             let message_dedup_id = entry["MessageDeduplicationId"]
@@ -635,7 +788,7 @@ impl SqsService {
                 }
             }
 
-            let delay: i64 = entry["DelaySeconds"].as_i64().unwrap_or(0);
+            let delay: i64 = entry["DelaySeconds"].as_i64().or(queue_delay).unwrap_or(0);
             let visible_at = if delay > 0 {
                 Some(now + chrono::Duration::seconds(delay))
             } else {
@@ -656,6 +809,7 @@ impl SqsService {
                 receive_count: 0,
                 message_group_id,
                 message_dedup_id,
+                created_at: now,
             };
 
             successful.push(json!({

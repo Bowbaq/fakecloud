@@ -43,6 +43,7 @@ impl SqsDelivery for SqsDeliveryImpl {
                 receive_count: 0,
                 message_group_id: None,
                 message_dedup_id: None,
+                created_at: now,
             };
             queue.messages.push_back(msg);
             tracing::debug!(queue_arn, "delivered message to SQS queue");

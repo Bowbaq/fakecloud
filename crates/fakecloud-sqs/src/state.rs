@@ -25,6 +25,8 @@ pub struct SqsMessage {
     pub message_group_id: Option<String>,
     /// For FIFO: dedup ID
     pub message_dedup_id: Option<String>,
+    /// When the message was created (for retention period expiry)
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone)]

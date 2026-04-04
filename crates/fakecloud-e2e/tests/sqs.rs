@@ -1,8 +1,8 @@
 mod helpers;
 
 use aws_sdk_sqs::types::{
-    DeleteMessageBatchRequestEntry, MessageAttributeValue, QueueAttributeName,
-    SendMessageBatchRequestEntry,
+    ChangeMessageVisibilityBatchRequestEntry, DeleteMessageBatchRequestEntry,
+    MessageAttributeValue, QueueAttributeName, SendMessageBatchRequestEntry,
 };
 use helpers::TestServer;
 use std::time::Duration;
@@ -521,4 +521,76 @@ async fn sqs_long_polling_wait_time_seconds() {
     let messages = recv.messages();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].body().unwrap(), "delayed hello");
+}
+
+#[tokio::test]
+async fn sqs_change_message_visibility_batch() {
+    let server = TestServer::start().await;
+    let client = server.sqs_client().await;
+
+    let resp = client
+        .create_queue()
+        .queue_name("cmvb-queue")
+        .attributes(QueueAttributeName::VisibilityTimeout, "30")
+        .send()
+        .await
+        .unwrap();
+    let queue_url = resp.queue_url().unwrap().to_string();
+
+    // Send 3 messages
+    for i in 0..3 {
+        client
+            .send_message()
+            .queue_url(&queue_url)
+            .message_body(format!("vis-msg-{i}"))
+            .send()
+            .await
+            .unwrap();
+    }
+
+    // Receive all messages (they become inflight)
+    let recv_resp = client
+        .receive_message()
+        .queue_url(&queue_url)
+        .max_number_of_messages(10)
+        .send()
+        .await
+        .unwrap();
+    let messages = recv_resp.messages();
+    assert_eq!(messages.len(), 3);
+
+    // Change visibility of all messages in a batch (set to 0 to make them immediately visible)
+    let entries: Vec<ChangeMessageVisibilityBatchRequestEntry> = messages
+        .iter()
+        .enumerate()
+        .map(|(i, m)| {
+            ChangeMessageVisibilityBatchRequestEntry::builder()
+                .id(format!("chg-{i}"))
+                .receipt_handle(m.receipt_handle().unwrap())
+                .visibility_timeout(0)
+                .build()
+                .unwrap()
+        })
+        .collect();
+
+    let batch_resp = client
+        .change_message_visibility_batch()
+        .queue_url(&queue_url)
+        .set_entries(Some(entries))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(batch_resp.successful().len(), 3);
+    assert!(batch_resp.failed().is_empty());
+
+    // Messages should now be visible again since visibility was set to 0
+    let recv_resp2 = client
+        .receive_message()
+        .queue_url(&queue_url)
+        .max_number_of_messages(10)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(recv_resp2.messages().len(), 3);
 }
