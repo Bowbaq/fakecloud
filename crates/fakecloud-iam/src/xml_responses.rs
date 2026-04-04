@@ -656,12 +656,21 @@ pub fn get_session_token_response(request_id: &str) -> String {
     )
 }
 
-pub fn get_federation_token_response(name: &str, account_id: &str, request_id: &str) -> String {
+pub fn get_federation_token_response(
+    name: &str,
+    account_id: &str,
+    partition: &str,
+    request_id: &str,
+) -> String {
     let access_key_id = generate_access_key_id();
     let secret_access_key = generate_secret_access_key();
     let session_token = generate_session_token();
 
-    let federated_user_arn = format!("arn:aws:sts::{}:federated-user/{}", account_id, name);
+    let name = xml_escape(name);
+    let federated_user_arn = format!(
+        "arn:{}:sts::{}:federated-user/{}",
+        partition, account_id, name
+    );
     let federated_user_id = format!("{}:{}", account_id, name);
 
     format!(

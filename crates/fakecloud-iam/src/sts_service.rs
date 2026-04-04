@@ -346,14 +346,19 @@ impl StsService {
             }
         }
 
+        let partition = partition_for_region(&req.region);
         let state = self.state.read();
-        let xml =
-            xml_responses::get_federation_token_response(name, &state.account_id, &req.request_id);
+        let xml = xml_responses::get_federation_token_response(
+            name,
+            &state.account_id,
+            partition,
+            &req.request_id,
+        );
         Ok(AwsResponse::xml(StatusCode::OK, xml))
     }
 
     fn get_access_key_info(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let _access_key_id = req.query_params.get("AccessKeyId").ok_or_else(|| {
+        let access_key_id = req.query_params.get("AccessKeyId").ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
                 "MissingParameter",
@@ -361,8 +366,23 @@ impl StsService {
             )
         })?;
 
+        // Try to resolve account from known access keys, fall back to default
         let state = self.state.read();
-        let xml = xml_responses::get_access_key_info_response(&state.account_id, &req.request_id);
+        let account_id = state
+            .access_keys
+            .values()
+            .flatten()
+            .find(|k| k.access_key_id == *access_key_id)
+            .map(|_| state.account_id.clone())
+            .or_else(|| {
+                state
+                    .credential_identities
+                    .get(access_key_id.as_str())
+                    .map(|ci| ci.account_id.clone())
+            })
+            .unwrap_or_else(|| state.account_id.clone());
+
+        let xml = xml_responses::get_access_key_info_response(&account_id, &req.request_id);
         Ok(AwsResponse::xml(StatusCode::OK, xml))
     }
 }

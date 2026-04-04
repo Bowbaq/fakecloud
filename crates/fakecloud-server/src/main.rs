@@ -89,10 +89,12 @@ async fn main() {
     let reset_iam = iam_state.clone();
     let reset_sqs = sqs_state.clone();
     let reset_sns = sns_state.clone();
+    let reset_eb = eb_state.clone();
     let reset_ssm = ssm_state.clone();
     let reset_iam2 = iam_state.clone();
     let reset_sqs2 = sqs_state.clone();
     let reset_sns2 = sns_state.clone();
+    let reset_eb2 = eb_state.clone();
     let reset_ssm2 = ssm_state.clone();
 
     // Register services
@@ -145,6 +147,7 @@ async fn main() {
                 let iam = reset_iam;
                 let sqs = reset_sqs;
                 let sns = reset_sns;
+                let eb = reset_eb;
                 let ssm = reset_ssm;
                 move || async move {
                     iam.write().reset();
@@ -153,6 +156,12 @@ async fn main() {
                     sns.write().topics.clear();
                     sns.write().subscriptions.clear();
                     sns.write().published.clear();
+                    {
+                        let mut eb = eb.write();
+                        eb.rules.clear();
+                        eb.events.clear();
+                        eb.buses.retain(|name, _| name == "default");
+                    }
                     ssm.write().parameters.clear();
                     tracing::info!("state reset via reset API");
                     axum::Json(serde_json::json!({"status": "ok"}))
@@ -165,6 +174,7 @@ async fn main() {
                 let iam = reset_iam2;
                 let sqs = reset_sqs2;
                 let sns = reset_sns2;
+                let eb = reset_eb2;
                 let ssm = reset_ssm2;
                 move || async move {
                     iam.write().reset();
@@ -173,6 +183,12 @@ async fn main() {
                     sns.write().topics.clear();
                     sns.write().subscriptions.clear();
                     sns.write().published.clear();
+                    {
+                        let mut eb = eb.write();
+                        eb.rules.clear();
+                        eb.events.clear();
+                        eb.buses.retain(|name, _| name == "default");
+                    }
                     ssm.write().parameters.clear();
                     tracing::info!("state reset via reset API");
                     axum::Json(serde_json::json!({"status": "ok"}))
