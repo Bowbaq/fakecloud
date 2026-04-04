@@ -501,7 +501,7 @@ mod tests {
     fn test_access_key_id_format() {
         let key = xml_responses::generate_access_key_id();
         assert_eq!(key.len(), 20);
-        assert!(key.starts_with("ASIA"));
+        assert!(key.starts_with("FSIA"));
     }
 
     #[test]
