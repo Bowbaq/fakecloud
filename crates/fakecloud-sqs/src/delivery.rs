@@ -70,6 +70,7 @@ impl SqsDelivery for SqsDeliveryImpl {
                 message_group_id: message_group_id.map(|s| s.to_string()),
                 message_dedup_id: message_dedup_id.map(|s| s.to_string()),
                 created_at: now,
+                sequence_number: None,
             };
             queue.messages.push_back(msg);
             tracing::debug!(queue_arn, "delivered message to SQS queue");
