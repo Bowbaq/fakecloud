@@ -34,7 +34,7 @@ impl SqsDelivery for SqsDeliveryImpl {
             let msg = SqsMessage {
                 message_id: uuid::Uuid::new_v4().to_string(),
                 receipt_handle: None,
-                md5_of_body: format!("{:032x}", crate::service::fxhash(message_body)),
+                md5_of_body: crate::service::md5_hex(message_body),
                 body: message_body.to_string(),
                 sent_timestamp: now.timestamp_millis(),
                 attributes: HashMap::new(),

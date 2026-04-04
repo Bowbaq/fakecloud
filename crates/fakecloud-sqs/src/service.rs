@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use http::StatusCode;
+use md5::{Digest, Md5};
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 
@@ -34,7 +35,7 @@ impl AwsService for SqsService {
             "SetQueueAttributes" => self.set_queue_attributes(&req),
             "SendMessage" => self.send_message(&req),
             "SendMessageBatch" => self.send_message_batch(&req),
-            "ReceiveMessage" => self.receive_message(&req),
+            "ReceiveMessage" => self.receive_message(&req).await,
             "DeleteMessage" => self.delete_message(&req),
             "DeleteMessageBatch" => self.delete_message_batch(&req),
             "PurgeQueue" => self.purge_queue(&req),
@@ -228,6 +229,30 @@ impl SqsService {
             .get_mut(&queue_url)
             .ok_or_else(queue_not_found)?;
 
+        // FIFO validations
+        if queue.is_fifo {
+            if message_group_id.is_none() {
+                return Err(AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "MissingParameter",
+                    "The request must contain the parameter MessageGroupId.",
+                ));
+            }
+            if message_dedup_id.is_none()
+                && queue
+                    .attributes
+                    .get("ContentBasedDeduplication")
+                    .map(|v| v.as_str())
+                    != Some("true")
+            {
+                return Err(AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "MissingParameter",
+                    "The request must contain the parameter MessageDeduplicationId.",
+                ));
+            }
+        }
+
         // FIFO dedup
         if queue.is_fifo {
             if let Some(ref dedup_id) = message_dedup_id {
@@ -279,22 +304,51 @@ impl SqsService {
         Ok(json_response(resp))
     }
 
-    fn receive_message(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+    async fn receive_message(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
         let queue_url = body["QueueUrl"]
             .as_str()
             .ok_or_else(|| missing_param("QueueUrl"))?
             .to_string();
         let max_messages = body["MaxNumberOfMessages"].as_i64().unwrap_or(1).min(10) as usize;
+        let visibility_timeout = body["VisibilityTimeout"].as_i64();
+        let wait_time_seconds = body["WaitTimeSeconds"].as_i64().unwrap_or(0).clamp(0, 20) as u64;
 
+        let deadline = if wait_time_seconds > 0 {
+            Some(tokio::time::Instant::now() + std::time::Duration::from_secs(wait_time_seconds))
+        } else {
+            None
+        };
+
+        loop {
+            let result = self.try_receive_messages(&queue_url, max_messages, visibility_timeout)?;
+
+            if !result.is_empty() || deadline.is_none() {
+                return Ok(format_receive_response(&result));
+            }
+
+            let deadline = deadline.unwrap();
+            if tokio::time::Instant::now() >= deadline {
+                return Ok(format_receive_response(&result));
+            }
+
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+
+    fn try_receive_messages(
+        &self,
+        queue_url: &str,
+        max_messages: usize,
+        req_visibility_timeout: Option<i64>,
+    ) -> Result<Vec<SqsMessage>, AwsServiceError> {
         let mut state = self.state.write();
         let queue = state
             .queues
-            .get_mut(&queue_url)
+            .get_mut(queue_url)
             .ok_or_else(queue_not_found)?;
 
-        let visibility_timeout: i64 = body["VisibilityTimeout"]
-            .as_i64()
+        let visibility_timeout: i64 = req_visibility_timeout
             .or_else(|| {
                 queue
                     .attributes
@@ -303,6 +357,7 @@ impl SqsService {
             })
             .unwrap_or(30);
 
+        let is_fifo = queue.is_fifo;
         let now = Utc::now();
 
         // Return expired inflight messages
@@ -328,11 +383,28 @@ impl SqsService {
         let mut remaining = VecDeque::new();
         let mut dlq_messages = Vec::new();
 
+        // For FIFO queues, track the chosen message group
+        let mut fifo_group: Option<String> = None;
+
         while let Some(mut msg) = queue.messages.pop_front() {
             if let Some(visible_at) = msg.visible_at {
                 if visible_at > now {
                     remaining.push_back(msg);
                     continue;
+                }
+            }
+
+            // FIFO: only deliver from one message group per request
+            if is_fifo {
+                if let Some(ref group) = msg.message_group_id {
+                    match fifo_group {
+                        None => fifo_group = Some(group.clone()),
+                        Some(ref chosen) if chosen != group => {
+                            remaining.push_back(msg);
+                            continue;
+                        }
+                        _ => {}
+                    }
                 }
             }
 
@@ -367,7 +439,6 @@ impl SqsService {
 
         // Move messages to DLQ
         for (dlq_arn, mut msg) in dlq_messages {
-            // Find queue by ARN
             if let Some(dlq) = state.queues.values_mut().find(|q| q.arn == dlq_arn) {
                 msg.receipt_handle = None;
                 msg.visible_at = None;
@@ -375,34 +446,7 @@ impl SqsService {
             }
         }
 
-        let messages: Vec<Value> = received
-            .iter()
-            .map(|m| {
-                let mut msg_json = json!({
-                    "MessageId": m.message_id,
-                    "ReceiptHandle": m.receipt_handle,
-                    "MD5OfBody": m.md5_of_body,
-                    "Body": m.body,
-                });
-                if !m.message_attributes.is_empty() {
-                    let attrs: serde_json::Map<String, Value> = m
-                        .message_attributes
-                        .iter()
-                        .map(|(k, v)| {
-                            let mut attr = json!({ "DataType": v.data_type });
-                            if let Some(ref sv) = v.string_value {
-                                attr["StringValue"] = json!(sv);
-                            }
-                            (k.clone(), attr)
-                        })
-                        .collect();
-                    msg_json["MessageAttributes"] = Value::Object(attrs);
-                }
-                msg_json
-            })
-            .collect();
-
-        Ok(json_response(json!({ "Messages": messages })))
+        Ok(received)
     }
 
     fn delete_message(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
@@ -539,6 +583,13 @@ impl SqsService {
         let mut successful = Vec::new();
         let mut failed: Vec<Value> = Vec::new();
 
+        let is_fifo = queue.is_fifo;
+        let content_based_dedup = queue
+            .attributes
+            .get("ContentBasedDeduplication")
+            .map(|v| v.as_str())
+            == Some("true");
+
         for entry in &entries {
             let id = match entry["Id"].as_str() {
                 Some(id) => id.to_string(),
@@ -557,6 +608,33 @@ impl SqsService {
                 }
             };
 
+            let message_group_id = entry["MessageGroupId"].as_str().map(|s| s.to_string());
+            let message_dedup_id = entry["MessageDeduplicationId"]
+                .as_str()
+                .map(|s| s.to_string());
+
+            // FIFO validations
+            if is_fifo {
+                if message_group_id.is_none() {
+                    failed.push(json!({
+                        "Id": id,
+                        "SenderFault": true,
+                        "Code": "MissingParameter",
+                        "Message": "The request must contain the parameter MessageGroupId.",
+                    }));
+                    continue;
+                }
+                if message_dedup_id.is_none() && !content_based_dedup {
+                    failed.push(json!({
+                        "Id": id,
+                        "SenderFault": true,
+                        "Code": "MissingParameter",
+                        "Message": "The request must contain the parameter MessageDeduplicationId.",
+                    }));
+                    continue;
+                }
+            }
+
             let delay: i64 = entry["DelaySeconds"].as_i64().unwrap_or(0);
             let visible_at = if delay > 0 {
                 Some(now + chrono::Duration::seconds(delay))
@@ -564,10 +642,6 @@ impl SqsService {
                 None
             };
 
-            let message_group_id = entry["MessageGroupId"].as_str().map(|s| s.to_string());
-            let message_dedup_id = entry["MessageDeduplicationId"]
-                .as_str()
-                .map(|s| s.to_string());
             let message_attributes = parse_message_attributes(entry);
 
             let msg = SqsMessage {
@@ -650,6 +724,37 @@ impl SqsService {
     }
 }
 
+fn format_receive_response(received: &[SqsMessage]) -> AwsResponse {
+    let messages: Vec<Value> = received
+        .iter()
+        .map(|m| {
+            let mut msg_json = json!({
+                "MessageId": m.message_id,
+                "ReceiptHandle": m.receipt_handle,
+                "MD5OfBody": m.md5_of_body,
+                "Body": m.body,
+            });
+            if !m.message_attributes.is_empty() {
+                let attrs: serde_json::Map<String, Value> = m
+                    .message_attributes
+                    .iter()
+                    .map(|(k, v)| {
+                        let mut attr = json!({ "DataType": v.data_type });
+                        if let Some(ref sv) = v.string_value {
+                            attr["StringValue"] = json!(sv);
+                        }
+                        (k.clone(), attr)
+                    })
+                    .collect();
+                msg_json["MessageAttributes"] = Value::Object(attrs);
+            }
+            msg_json
+        })
+        .collect();
+
+    json_response(json!({ "Messages": messages }))
+}
+
 fn parse_message_attributes(body: &Value) -> HashMap<String, MessageAttribute> {
     let mut result = HashMap::new();
     if let Some(attrs) = body["MessageAttributes"].as_object() {
@@ -684,15 +789,8 @@ fn queue_not_found() -> AwsServiceError {
     )
 }
 
-fn md5_hex(input: &str) -> String {
-    format!("{:032x}", fxhash(input))
-}
-
-pub fn fxhash(input: &str) -> u128 {
-    let mut hash: u128 = 0xcbf29ce484222325;
-    for byte in input.bytes() {
-        hash ^= byte as u128;
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    hash
+pub fn md5_hex(input: &str) -> String {
+    let mut hasher = Md5::new();
+    hasher.update(input.as_bytes());
+    format!("{:032x}", hasher.finalize())
 }

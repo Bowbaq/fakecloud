@@ -5,6 +5,7 @@ use aws_sdk_sqs::types::{
     SendMessageBatchRequestEntry,
 };
 use helpers::TestServer;
+use std::time::Duration;
 
 #[tokio::test]
 async fn sqs_create_list_delete_queue() {
@@ -408,4 +409,116 @@ async fn sqs_message_attributes() {
     let attr = msg_attrs.get("my-attr").unwrap();
     assert_eq!(attr.data_type(), "String");
     assert_eq!(attr.string_value().unwrap(), "test-value");
+}
+
+#[tokio::test]
+async fn sqs_fifo_queue_ordering() {
+    let server = TestServer::start().await;
+    let client = server.sqs_client().await;
+
+    let resp = client
+        .create_queue()
+        .queue_name("ordering.fifo")
+        .attributes(QueueAttributeName::FifoQueue, "true")
+        .attributes(QueueAttributeName::ContentBasedDeduplication, "true")
+        .send()
+        .await
+        .unwrap();
+    let queue_url = resp.queue_url().unwrap().to_string();
+
+    // Send messages with MessageGroupId
+    for i in 0..3 {
+        client
+            .send_message()
+            .queue_url(&queue_url)
+            .message_body(format!("fifo-msg-{i}"))
+            .message_group_id("group-1")
+            .send()
+            .await
+            .unwrap();
+    }
+
+    let recv = client
+        .receive_message()
+        .queue_url(&queue_url)
+        .max_number_of_messages(10)
+        .send()
+        .await
+        .unwrap();
+
+    let messages = recv.messages();
+    assert_eq!(messages.len(), 3);
+    assert_eq!(messages[0].body().unwrap(), "fifo-msg-0");
+    assert_eq!(messages[1].body().unwrap(), "fifo-msg-1");
+    assert_eq!(messages[2].body().unwrap(), "fifo-msg-2");
+}
+
+#[tokio::test]
+async fn sqs_fifo_queue_missing_group_id() {
+    let server = TestServer::start().await;
+    let client = server.sqs_client().await;
+
+    let resp = client
+        .create_queue()
+        .queue_name("no-group.fifo")
+        .attributes(QueueAttributeName::FifoQueue, "true")
+        .attributes(QueueAttributeName::ContentBasedDeduplication, "true")
+        .send()
+        .await
+        .unwrap();
+    let queue_url = resp.queue_url().unwrap().to_string();
+
+    // Send without MessageGroupId should fail
+    let result = client
+        .send_message()
+        .queue_url(&queue_url)
+        .message_body("should fail")
+        .send()
+        .await;
+
+    assert!(
+        result.is_err(),
+        "Expected error when missing MessageGroupId on FIFO queue"
+    );
+}
+
+#[tokio::test]
+async fn sqs_long_polling_wait_time_seconds() {
+    let server = TestServer::start().await;
+    let client = server.sqs_client().await;
+
+    let resp = client
+        .create_queue()
+        .queue_name("longpoll-queue")
+        .send()
+        .await
+        .unwrap();
+    let queue_url = resp.queue_url().unwrap().to_string();
+
+    // Spawn a task that sends a message after a short delay
+    let send_client = server.sqs_client().await;
+    let send_url = queue_url.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        send_client
+            .send_message()
+            .queue_url(&send_url)
+            .message_body("delayed hello")
+            .send()
+            .await
+            .unwrap();
+    });
+
+    // Use WaitTimeSeconds to long poll - should pick up the message
+    let recv = client
+        .receive_message()
+        .queue_url(&queue_url)
+        .wait_time_seconds(5)
+        .send()
+        .await
+        .unwrap();
+
+    let messages = recv.messages();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].body().unwrap(), "delayed hello");
 }
