@@ -3295,8 +3295,8 @@ impl IamService {
 
         let mut state = self.state.write();
 
-        // Validate URL: must start with https://
-        if !url.starts_with("https://") {
+        // Validate URL: must start with http:// or https://
+        if !url.starts_with("https://") && !url.starts_with("http://") {
             return Err(AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
                 "ValidationError",
@@ -3305,9 +3305,13 @@ impl IamService {
         }
 
         // Store URL without scheme for responses (AWS behavior)
-        let url_without_scheme = url.strip_prefix("https://").unwrap_or(&url).to_string();
+        let url_without_scheme = url
+            .strip_prefix("https://")
+            .or_else(|| url.strip_prefix("http://"))
+            .unwrap_or(&url)
+            .to_string();
 
-        // ARN uses URL host only (no path/query)
+        // ARN uses URL path without query string
         let url_for_arn = url_without_scheme
             .split('?')
             .next()
@@ -3678,7 +3682,7 @@ impl IamService {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
                 "NoSuchEntity",
-                format!("Server certificate {name} not found."),
+                format!("The Server Certificate with name {name} cannot be found."),
             )
         })?;
 
@@ -3734,7 +3738,7 @@ impl IamService {
             return Err(AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
                 "NoSuchEntity",
-                format!("Server certificate {name} not found."),
+                format!("The Server Certificate with name {name} cannot be found."),
             ));
         }
 
@@ -3850,6 +3854,14 @@ impl IamService {
         let user_name = required_param(&req.query_params, "UserName")?;
         let state = self.state.read();
 
+        if !state.users.contains_key(&user_name) {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::NOT_FOUND,
+                "NoSuchEntity",
+                format!("The user with name {user_name} cannot be found."),
+            ));
+        }
+
         let certs = state
             .signing_certificates
             .get(&user_name)
@@ -3895,6 +3907,15 @@ impl IamService {
         let status = required_param(&req.query_params, "Status")?;
 
         let mut state = self.state.write();
+
+        // Check user exists first
+        if !state.users.contains_key(&user_name) {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::NOT_FOUND,
+                "NoSuchEntity",
+                format!("The user with name {user_name} cannot be found."),
+            ));
+        }
 
         let certs = state
             .signing_certificates
