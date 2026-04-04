@@ -929,6 +929,8 @@ impl SqsService {
 }
 
 fn format_receive_response(received: &[SqsMessage]) -> AwsResponse {
+    let now_millis = Utc::now().timestamp_millis();
+
     let messages: Vec<Value> = received
         .iter()
         .map(|m| {
@@ -937,6 +939,11 @@ fn format_receive_response(received: &[SqsMessage]) -> AwsResponse {
                 "ReceiptHandle": m.receipt_handle,
                 "MD5OfBody": m.md5_of_body,
                 "Body": m.body,
+                "Attributes": {
+                    "ApproximateReceiveCount": m.receive_count.to_string(),
+                    "SentTimestamp": m.sent_timestamp.to_string(),
+                    "ApproximateFirstReceiveTimestamp": now_millis.to_string(),
+                },
             });
             if !m.message_attributes.is_empty() {
                 let attrs: serde_json::Map<String, Value> = m
