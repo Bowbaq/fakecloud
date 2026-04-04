@@ -34,6 +34,10 @@ struct Cli {
     #[arg(long, default_value = "123456789012", env = "FAKECLOUD_ACCOUNT_ID")]
     account_id: String,
 
+    /// Default ARN for GetCallerIdentity when no IAM user/role is matched
+    #[arg(long, env = "FAKECLOUD_DEFAULT_CALLER_ARN")]
+    default_caller_arn: Option<String>,
+
     /// Log level (trace, debug, info, warn, error)
     #[arg(long, default_value = "info", env = "FAKECLOUD_LOG")]
     log_level: String,
@@ -51,9 +55,9 @@ async fn main() {
         .init();
 
     // Shared state
-    let iam_state = Arc::new(parking_lot::RwLock::new(
-        fakecloud_iam::state::IamState::new(&cli.account_id),
-    ));
+    let mut iam_init = fakecloud_iam::state::IamState::new(&cli.account_id);
+    iam_init.default_caller_arn = cli.default_caller_arn;
+    let iam_state = Arc::new(parking_lot::RwLock::new(iam_init));
     let sqs_state = Arc::new(parking_lot::RwLock::new(
         fakecloud_sqs::state::SqsState::new(&cli.account_id, &cli.region, "http://localhost:4566"),
     ));
@@ -84,6 +88,15 @@ async fn main() {
             .with_sqs(sqs_delivery)
             .with_sns(sns_delivery),
     );
+
+    // Clone state for reset endpoint before moving into services
+    let reset_state = ResetState {
+        iam: iam_state.clone(),
+        sqs: sqs_state.clone(),
+        sns: sns_state.clone(),
+        eb: eb_state.clone(),
+        ssm: ssm_state.clone(),
+    };
 
     // Register services
     let mut registry = ServiceRegistry::new();
@@ -129,6 +142,20 @@ async fn main() {
                 }
             }),
         )
+        .route(
+            "/moto-api/reset",
+            axum::routing::post({
+                let s = reset_state.clone();
+                move || async move { s.reset() }
+            }),
+        )
+        .route(
+            "/_reset",
+            axum::routing::post({
+                let s = reset_state;
+                move || async move { s.reset() }
+            }),
+        )
         .fallback(dispatch::dispatch)
         .layer(Extension(Arc::new(registry)))
         .layer(Extension(Arc::new(config)))
@@ -141,6 +168,35 @@ async fn main() {
         .with_graceful_shutdown(shutdown_signal())
         .await
         .unwrap();
+}
+
+#[derive(Clone)]
+struct ResetState {
+    iam: fakecloud_iam::state::SharedIamState,
+    sqs: fakecloud_sqs::state::SharedSqsState,
+    sns: fakecloud_sns::state::SharedSnsState,
+    eb: fakecloud_eventbridge::state::SharedEventBridgeState,
+    ssm: fakecloud_ssm::state::SharedSsmState,
+}
+
+impl ResetState {
+    fn reset(&self) -> axum::Json<serde_json::Value> {
+        self.iam.write().reset();
+        self.sqs.write().queues.clear();
+        self.sqs.write().name_to_url.clear();
+        self.sns.write().topics.clear();
+        self.sns.write().subscriptions.clear();
+        self.sns.write().published.clear();
+        {
+            let mut eb = self.eb.write();
+            eb.rules.clear();
+            eb.events.clear();
+            eb.buses.retain(|name, _| name == "default");
+        }
+        self.ssm.write().parameters.clear();
+        tracing::info!("state reset via reset API");
+        axum::Json(serde_json::json!({"status": "ok"}))
+    }
 }
 
 async fn shutdown_signal() {

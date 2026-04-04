@@ -34,13 +34,15 @@ pub fn detect_service(
 
     // 2. Check for Query protocol (Action parameter in query string or form body)
     if let Some(action) = query_params.get("Action") {
-        // Service from SigV4 Authorization header
-        let service = extract_service_from_auth(headers)?;
-        return Some(DetectedRequest {
-            service,
-            action: action.clone(),
-            protocol: AwsProtocol::Query,
-        });
+        let service =
+            extract_service_from_auth(headers).or_else(|| infer_service_from_action(action));
+        if let Some(service) = service {
+            return Some(DetectedRequest {
+                service,
+                action: action.clone(),
+                protocol: AwsProtocol::Query,
+            });
+        }
     }
 
     // 3. Try form-encoded body
@@ -48,12 +50,15 @@ pub fn detect_service(
         let form_params = decode_form_urlencoded(body);
 
         if let Some(action) = form_params.get("Action") {
-            let service = extract_service_from_auth(headers)?;
-            return Some(DetectedRequest {
-                service,
-                action: action.clone(),
-                protocol: AwsProtocol::Query,
-            });
+            let service =
+                extract_service_from_auth(headers).or_else(|| infer_service_from_action(action));
+            if let Some(service) = service {
+                return Some(DetectedRequest {
+                    service,
+                    action: action.clone(),
+                    protocol: AwsProtocol::Query,
+                });
+            }
         }
     }
 
@@ -84,6 +89,27 @@ fn parse_amz_target(target: &str) -> Option<DetectedRequest> {
         action: action.to_string(),
         protocol: AwsProtocol::Json,
     })
+}
+
+/// Infer service from the action name when no SigV4 auth is present.
+/// Some AWS operations (e.g., AssumeRoleWithSAML, AssumeRoleWithWebIdentity)
+/// do not require authentication and won't have an Authorization header.
+fn infer_service_from_action(action: &str) -> Option<String> {
+    match action {
+        "AssumeRole"
+        | "AssumeRoleWithSAML"
+        | "AssumeRoleWithWebIdentity"
+        | "GetCallerIdentity"
+        | "GetSessionToken"
+        | "GetFederationToken"
+        | "GetAccessKeyInfo"
+        | "DecodeAuthorizationMessage" => Some("sts".to_string()),
+        "CreateUser" | "DeleteUser" | "GetUser" | "ListUsers" | "CreateRole" | "DeleteRole"
+        | "GetRole" | "ListRoles" | "CreatePolicy" | "DeletePolicy" | "GetPolicy"
+        | "ListPolicies" | "AttachRolePolicy" | "DetachRolePolicy" | "CreateAccessKey"
+        | "DeleteAccessKey" | "ListAccessKeys" | "ListRolePolicies" => Some("iam".to_string()),
+        _ => None,
+    }
 }
 
 /// Extract service name from the SigV4 Authorization header credential scope.

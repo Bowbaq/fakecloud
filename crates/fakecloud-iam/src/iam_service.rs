@@ -7,6 +7,23 @@ use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceErr
 use crate::state::{IamAccessKey, IamPolicy, IamRole, IamUser, SharedIamState};
 use crate::xml_responses;
 
+/// Get the AWS partition from a region string.
+fn partition_for_region(region: &str) -> &str {
+    if region.starts_with("cn-") {
+        "aws-cn"
+    } else if region.starts_with("us-iso-") {
+        "aws-iso"
+    } else if region.starts_with("us-isob-") {
+        "aws-iso-b"
+    } else if region.starts_with("us-isof-") {
+        "aws-iso-f"
+    } else if region.starts_with("eu-isoe-") {
+        "aws-iso-e"
+    } else {
+        "aws"
+    }
+}
+
 pub struct IamService {
     state: SharedIamState,
 }
@@ -77,7 +94,27 @@ impl AwsService for IamService {
     }
 }
 
+/// Extract the caller's access key from the request's Authorization header.
+fn extract_access_key(req: &AwsRequest) -> Option<String> {
+    let auth = req.headers.get("authorization")?.to_str().ok()?;
+    let info = fakecloud_aws::sigv4::parse_sigv4(auth)?;
+    Some(info.access_key)
+}
+
 impl IamService {
+    /// Determine the effective account ID for this request.
+    /// If the caller has assumed a role into a different account, use that account ID.
+    /// MUST be called before acquiring a write lock on self.state.
+    fn effective_account_id(&self, req: &AwsRequest) -> String {
+        if let Some(access_key) = extract_access_key(req) {
+            let state = self.state.read();
+            if let Some(identity) = state.credential_identities.get(&access_key) {
+                return identity.account_id.clone();
+            }
+        }
+        self.state.read().account_id.clone()
+    }
+
     fn create_user(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let user_name = required_param(&req.query_params, "UserName")?;
         let path = req
@@ -85,6 +122,9 @@ impl IamService {
             .get("Path")
             .cloned()
             .unwrap_or_else(|| "/".to_string());
+
+        let partition = partition_for_region(&req.region);
+        let effective_account = self.effective_account_id(req);
 
         let mut state = self.state.write();
 
@@ -95,12 +135,12 @@ impl IamService {
                 format!("User with name {user_name} already exists."),
             ));
         }
-
         let user = IamUser {
             user_id: format!("AIDA{}", generate_id()),
             arn: format!(
-                "arn:aws:iam::{}:user{}{}",
-                state.account_id,
+                "arn:{}:iam::{}:user{}{}",
+                partition,
+                effective_account,
                 if path == "/" { "/" } else { &path },
                 user_name
             ),
@@ -168,7 +208,7 @@ impl IamService {
         }
 
         let key = IamAccessKey {
-            access_key_id: format!("AKIA{}", generate_id()),
+            access_key_id: format!("FKIA{}", generate_id()),
             secret_access_key: format!("fake{}", generate_id()),
             user_name: user_name.clone(),
             status: "Active".to_string(),
@@ -239,10 +279,12 @@ impl IamService {
             ));
         }
 
+        let partition = partition_for_region(&req.region);
         let role = IamRole {
-            role_id: format!("AROA{}", generate_id()),
+            role_id: crate::xml_responses::generate_role_id(),
             arn: format!(
-                "arn:aws:iam::{}:role{}{}",
+                "arn:{}:iam::{}:role{}{}",
+                partition,
                 state.account_id,
                 if path == "/" { "/" } else { &path },
                 role_name
@@ -310,11 +352,12 @@ impl IamService {
 
         let mut state = self.state.write();
 
+        let partition = partition_for_region(&req.region);
         let policy = IamPolicy {
             policy_id: format!("ANPA{}", generate_id()),
             arn: format!(
-                "arn:aws:iam::{}:policy{}{}",
-                state.account_id, path, policy_name
+                "arn:{}:iam::{}:policy{}{}",
+                partition, state.account_id, path, policy_name
             ),
             policy_name,
             path,

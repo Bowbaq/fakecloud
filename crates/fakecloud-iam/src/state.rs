@@ -40,6 +40,14 @@ pub struct IamPolicy {
     pub created_at: DateTime<Utc>,
 }
 
+/// Identity associated with a set of credentials, for GetCallerIdentity resolution.
+#[derive(Debug, Clone)]
+pub struct CredentialIdentity {
+    pub arn: String,
+    pub user_id: String,
+    pub account_id: String,
+}
+
 pub struct IamState {
     pub account_id: String,
     pub users: HashMap<String, IamUser>,
@@ -47,6 +55,10 @@ pub struct IamState {
     pub roles: HashMap<String, IamRole>,
     pub policies: HashMap<String, IamPolicy>, // arn -> policy
     pub role_policies: HashMap<String, Vec<String>>, // role_name -> policy arns
+    /// Maps access key ID to the identity that should be returned by GetCallerIdentity.
+    pub credential_identities: HashMap<String, CredentialIdentity>,
+    /// Override ARN for GetCallerIdentity when no user/role matches.
+    pub default_caller_arn: Option<String>,
 }
 
 impl IamState {
@@ -58,7 +70,19 @@ impl IamState {
             roles: HashMap::new(),
             policies: HashMap::new(),
             role_policies: HashMap::new(),
+            credential_identities: HashMap::new(),
+            default_caller_arn: None,
         }
+    }
+
+    /// Reset all state, preserving account_id.
+    pub fn reset(&mut self) {
+        self.users.clear();
+        self.access_keys.clear();
+        self.roles.clear();
+        self.policies.clear();
+        self.role_policies.clear();
+        self.credential_identities.clear();
     }
 }
 

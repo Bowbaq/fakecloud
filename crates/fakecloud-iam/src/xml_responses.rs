@@ -479,10 +479,38 @@ pub fn get_caller_identity_response(
     )
 }
 
-pub fn assume_role_response(arn: &str, role_session_name: &str, request_id: &str) -> String {
-    let access_key_id = format!("ASIA{}", generate_id());
-    let secret_access_key = format!("fakecloud/{}", uuid::Uuid::new_v4());
-    let session_token = generate_session_token();
+/// Pre-generated STS credentials to be returned in XML responses.
+pub struct StsCredentials {
+    pub access_key_id: String,
+    pub secret_access_key: String,
+    pub session_token: String,
+}
+
+impl StsCredentials {
+    pub fn generate() -> Self {
+        Self {
+            access_key_id: generate_access_key_id(),
+            secret_access_key: generate_secret_access_key(),
+            session_token: generate_session_token(),
+        }
+    }
+}
+
+pub fn assume_role_response(
+    role_arn: &str,
+    role_session_name: &str,
+    role_id: &str,
+    account_id: &str,
+    partition: &str,
+    creds: &StsCredentials,
+    request_id: &str,
+) -> String {
+    // Extract role name from ARN
+    let role_name = role_arn.rsplit('/').next().unwrap_or("unknown");
+    let assumed_role_arn = format!(
+        "arn:{}:sts::{}:assumed-role/{}/{}",
+        partition, account_id, role_name, role_session_name
+    );
 
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -495,40 +523,249 @@ pub fn assume_role_response(arn: &str, role_session_name: &str, request_id: &str
       <Expiration>2099-12-31T23:59:59Z</Expiration>
     </Credentials>
     <AssumedRoleUser>
-      <AssumedRoleId>AROA3XFRBF23EXAMPLE:{session}</AssumedRoleId>
-      <Arn>{arn}</Arn>
+      <AssumedRoleId>{role_id}:{session}</AssumedRoleId>
+      <Arn>{assumed_role_arn}</Arn>
     </AssumedRoleUser>
   </AssumeRoleResult>
   <ResponseMetadata>
     <RequestId>{request_id}</RequestId>
   </ResponseMetadata>
 </AssumeRoleResponse>"#,
-        access_key_id = access_key_id,
-        secret_access_key = secret_access_key,
-        session_token = session_token,
-        arn = arn,
+        access_key_id = creds.access_key_id,
+        secret_access_key = creds.secret_access_key,
+        session_token = creds.session_token,
+        role_id = role_id,
+        assumed_role_arn = assumed_role_arn,
         session = role_session_name,
         request_id = request_id,
     )
 }
 
-fn generate_id() -> String {
-    uuid::Uuid::new_v4()
-        .to_string()
-        .replace('-', "")
-        .to_uppercase()[..16]
-        .to_string()
+pub fn assume_role_with_web_identity_response(
+    role_arn: &str,
+    role_session_name: &str,
+    account_id: &str,
+    partition: &str,
+    creds: &StsCredentials,
+    assumed_role_id: &str,
+    request_id: &str,
+) -> String {
+    let role_name = role_arn.rsplit('/').next().unwrap_or("unknown");
+    let assumed_role_arn = format!(
+        "arn:{}:sts::{}:assumed-role/{}/{}",
+        partition, account_id, role_name, role_session_name
+    );
+
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<AssumeRoleWithWebIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
+  <AssumeRoleWithWebIdentityResult>
+    <Credentials>
+      <AccessKeyId>{access_key_id}</AccessKeyId>
+      <SecretAccessKey>{secret_access_key}</SecretAccessKey>
+      <SessionToken>{session_token}</SessionToken>
+      <Expiration>2099-12-31T23:59:59Z</Expiration>
+    </Credentials>
+    <AssumedRoleUser>
+      <AssumedRoleId>{assumed_role_id}:{session}</AssumedRoleId>
+      <Arn>{assumed_role_arn}</Arn>
+    </AssumedRoleUser>
+  </AssumeRoleWithWebIdentityResult>
+  <ResponseMetadata>
+    <RequestId>{request_id}</RequestId>
+  </ResponseMetadata>
+</AssumeRoleWithWebIdentityResponse>"#,
+        access_key_id = creds.access_key_id,
+        secret_access_key = creds.secret_access_key,
+        session_token = creds.session_token,
+        assumed_role_id = assumed_role_id,
+        assumed_role_arn = assumed_role_arn,
+        session = role_session_name,
+        request_id = request_id,
+    )
 }
 
-fn generate_session_token() -> String {
+pub fn assume_role_with_saml_response(
+    role_arn: &str,
+    role_session_name: &str,
+    account_id: &str,
+    partition: &str,
+    creds: &StsCredentials,
+    assumed_role_id: &str,
+    request_id: &str,
+) -> String {
+    let role_name = role_arn.rsplit('/').next().unwrap_or("unknown");
+    let assumed_role_arn = format!(
+        "arn:{}:sts::{}:assumed-role/{}/{}",
+        partition, account_id, role_name, role_session_name
+    );
+
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<AssumeRoleWithSAMLResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
+  <AssumeRoleWithSAMLResult>
+    <Credentials>
+      <AccessKeyId>{access_key_id}</AccessKeyId>
+      <SecretAccessKey>{secret_access_key}</SecretAccessKey>
+      <SessionToken>{session_token}</SessionToken>
+      <Expiration>2099-12-31T23:59:59Z</Expiration>
+    </Credentials>
+    <AssumedRoleUser>
+      <AssumedRoleId>{assumed_role_id}:{session}</AssumedRoleId>
+      <Arn>{assumed_role_arn}</Arn>
+    </AssumedRoleUser>
+  </AssumeRoleWithSAMLResult>
+  <ResponseMetadata>
+    <RequestId>{request_id}</RequestId>
+  </ResponseMetadata>
+</AssumeRoleWithSAMLResponse>"#,
+        access_key_id = creds.access_key_id,
+        secret_access_key = creds.secret_access_key,
+        session_token = creds.session_token,
+        assumed_role_id = assumed_role_id,
+        assumed_role_arn = assumed_role_arn,
+        session = role_session_name,
+        request_id = request_id,
+    )
+}
+
+pub fn get_session_token_response(request_id: &str) -> String {
+    // AWS docs example credentials (deterministic for local testing)
+    let access_key_id = "FSIAIOSFODNN7EXAMPLE";
+    let secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYzEXAMPLEKEY";
+    let session_token = "AQoEXAMPLEH4aoAH0gNCAPyJxz4BlCFFxWNE1OPTgk5TthT+FvwqnKwRcOIfrRh3c/LTo6UDdyJwOOvEVPvLXCrrrUtdnniCEXAMPLE/IvU1dYUg2RVAJBanLiHb4IgRmpRV3zrkuWJOgQs8IZZaIv2BXIa2R4OlgkBN9bkUDNCJiBeb/AXlzBBko7b15fjrBs2+cTQtpZ3CYWFXG8C5zqx37wnOE49mRl/+OtkIKGO7fAE";
+
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<GetSessionTokenResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
+  <GetSessionTokenResult>
+    <Credentials>
+      <AccessKeyId>{access_key_id}</AccessKeyId>
+      <SecretAccessKey>{secret_access_key}</SecretAccessKey>
+      <SessionToken>{session_token}</SessionToken>
+      <Expiration>2099-12-31T23:59:59Z</Expiration>
+    </Credentials>
+  </GetSessionTokenResult>
+  <ResponseMetadata>
+    <RequestId>{request_id}</RequestId>
+  </ResponseMetadata>
+</GetSessionTokenResponse>"#,
+        access_key_id = access_key_id,
+        secret_access_key = secret_access_key,
+        session_token = session_token,
+        request_id = request_id,
+    )
+}
+
+pub fn get_federation_token_response(
+    name: &str,
+    account_id: &str,
+    partition: &str,
+    request_id: &str,
+) -> String {
+    // AWS docs example credentials (deterministic for local testing)
+    let access_key_id = "FSIAIOSFODNN7EXAMPLE";
+    let secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYzEXAMPLEKEY";
+    let session_token = "AQoDYXdzEPT//////////wEXAMPLEtc764bNrC9SAPBSM22wDOk4x4HIZ8j4FZTwdQWLWsKWHGBuFqwAeMicRXmxfpSPfIeoIYRqTflfKD8YUuwthAx7mSEI/qkPpKPi/kMcGdQrmGdeehM4IC1NtBmUpp2wUE8phUZampKsburEDy0KPkyQDYwT7WZ0wq5VSXDvp75YU9HFvlRd8Tx6q6fE8YQcHNVXAkiY9q6d+xo0rKwT38xVqr7ZD0u0iPPkUL64lIZbqBAz+scqKmlzm8FDrypNC9Yjc8fPOLn9FX9KSYvKTr4rvx3iSIlTJabIQwj2ICCR/oLxBA==";
+
+    let name = xml_escape(name);
+    let federated_user_arn = format!(
+        "arn:{}:sts::{}:federated-user/{}",
+        partition, account_id, name
+    );
+    let federated_user_id = format!("{}:{}", account_id, name);
+
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<GetFederationTokenResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
+  <GetFederationTokenResult>
+    <Credentials>
+      <AccessKeyId>{access_key_id}</AccessKeyId>
+      <SecretAccessKey>{secret_access_key}</SecretAccessKey>
+      <SessionToken>{session_token}</SessionToken>
+      <Expiration>2099-12-31T23:59:59Z</Expiration>
+    </Credentials>
+    <FederatedUser>
+      <FederatedUserId>{federated_user_id}</FederatedUserId>
+      <Arn>{federated_user_arn}</Arn>
+    </FederatedUser>
+  </GetFederationTokenResult>
+  <ResponseMetadata>
+    <RequestId>{request_id}</RequestId>
+  </ResponseMetadata>
+</GetFederationTokenResponse>"#,
+        access_key_id = access_key_id,
+        secret_access_key = secret_access_key,
+        session_token = session_token,
+        federated_user_arn = federated_user_arn,
+        federated_user_id = federated_user_id,
+        request_id = request_id,
+    )
+}
+
+pub fn get_access_key_info_response(account_id: &str, request_id: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<GetAccessKeyInfoResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
+  <GetAccessKeyInfoResult>
+    <Account>{account_id}</Account>
+  </GetAccessKeyInfoResult>
+  <ResponseMetadata>
+    <RequestId>{request_id}</RequestId>
+  </ResponseMetadata>
+</GetAccessKeyInfoResponse>"#,
+        account_id = account_id,
+        request_id = request_id,
+    )
+}
+
+/// Generate an FSIA-prefixed temporary access key ID (20 chars total).
+pub fn generate_access_key_id() -> String {
+    let id = generate_alphanum_id(16);
+    format!("FSIA{}", id)
+}
+
+/// Generate a 40-character secret access key.
+pub fn generate_secret_access_key() -> String {
+    generate_alphanum_id(40)
+}
+
+/// Generate an AROA-prefixed role ID (21 chars total).
+pub fn generate_role_id() -> String {
+    let id = generate_alphanum_id(17);
+    format!("AROA{}", id)
+}
+
+/// Generate a session token that is exactly 356 characters starting with "FQoGZXIvYXdzE".
+pub fn generate_session_token() -> String {
+    // AWS session tokens are typically 356 chars and start with "FQoGZXIvYXdzE"
+    let prefix = "FQoGZXIvYXdzE";
+    let remaining = 356 - prefix.len(); // 343 chars needed
+                                        // Generate enough random bytes: we need at least ceil(343*3/4) = 258 bytes
+                                        // 18 UUIDs * 16 bytes = 288 bytes -> base64 = 384 chars (plenty)
+    let mut raw = Vec::with_capacity(288);
+    for _ in 0..18 {
+        raw.extend_from_slice(uuid::Uuid::new_v4().as_bytes());
+    }
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&raw);
+    // Take exactly what we need from the encoded data
+    let suffix = &encoded[..remaining];
+    format!("{}{}", prefix, suffix)
+}
+
+/// Generate alphanumeric ID of given length.
+fn generate_alphanum_id(len: usize) -> String {
     let raw = format!(
-        "{}{}{}{}",
-        uuid::Uuid::new_v4(),
+        "{}{}{}",
         uuid::Uuid::new_v4(),
         uuid::Uuid::new_v4(),
         uuid::Uuid::new_v4(),
     );
-    base64::engine::general_purpose::STANDARD.encode(raw.as_bytes())
+    raw.replace('-', "")
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .take(len)
+        .collect()
 }
 
 fn xml_escape(s: &str) -> String {
