@@ -217,6 +217,116 @@ async fn sts_assume_role_unique_credentials() {
 }
 
 #[tokio::test]
+async fn sts_get_session_token() {
+    let server = TestServer::start().await;
+    let client = server.sts_client().await;
+
+    let resp = client.get_session_token().send().await.unwrap();
+    let creds = resp.credentials().unwrap();
+    assert!(creds.access_key_id().starts_with("ASIA"));
+    assert_eq!(creds.access_key_id().len(), 20);
+    assert_eq!(creds.secret_access_key().len(), 40);
+    assert_eq!(creds.session_token().len(), 356);
+    assert!(creds.session_token().starts_with("FQoGZXIvYXdzE"));
+}
+
+#[tokio::test]
+async fn sts_get_federation_token() {
+    let server = TestServer::start().await;
+    let client = server.sts_client().await;
+
+    let resp = client
+        .get_federation_token()
+        .name("Bob")
+        .send()
+        .await
+        .unwrap();
+    let creds = resp.credentials().unwrap();
+    assert!(creds.access_key_id().starts_with("ASIA"));
+    let fed_user = resp.federated_user().unwrap();
+    assert!(fed_user.arn().contains("federated-user/Bob"));
+    assert!(fed_user.federated_user_id().contains("Bob"));
+}
+
+#[tokio::test]
+async fn sts_get_access_key_info() {
+    let server = TestServer::start().await;
+    let client = server.sts_client().await;
+
+    let resp = client
+        .get_access_key_info()
+        .access_key_id("AKIAIOSFODNN7EXAMPLE")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.account().unwrap(), "000000000000");
+}
+
+#[tokio::test]
+async fn sts_assume_role_with_web_identity() {
+    let server = TestServer::start().await;
+    let client = server.sts_client().await;
+
+    let resp = client
+        .assume_role_with_web_identity()
+        .role_arn("arn:aws:iam::000000000000:role/test-role")
+        .role_session_name("test-session")
+        .web_identity_token("fake-token")
+        .send()
+        .await
+        .unwrap();
+    let creds = resp.credentials().unwrap();
+    assert!(creds.access_key_id().starts_with("ASIA"));
+    let user = resp.assumed_role_user().unwrap();
+    assert!(user.arn().contains("assumed-role/test-role/test-session"));
+}
+
+#[tokio::test]
+async fn sts_assume_role_returns_correct_arn() {
+    let server = TestServer::start().await;
+    let sts = server.sts_client().await;
+    let iam = server.iam_client().await;
+
+    // Create a role first
+    let trust_policy = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::000000000000:root"},"Action":"sts:AssumeRole"}]}"#;
+    let role = iam
+        .create_role()
+        .role_name("my-role")
+        .assume_role_policy_document(trust_policy)
+        .send()
+        .await
+        .unwrap();
+    let role_arn = role.role().unwrap().arn();
+    let role_id = role.role().unwrap().role_id();
+
+    // Assume the role
+    let resp = sts
+        .assume_role()
+        .role_arn(role_arn)
+        .role_session_name("my-session")
+        .send()
+        .await
+        .unwrap();
+    let assumed = resp.assumed_role_user().unwrap();
+    assert!(
+        assumed.arn().contains("assumed-role/my-role/my-session"),
+        "ARN should contain assumed-role: {}",
+        assumed.arn()
+    );
+    // AssumedRoleId should be roleId:sessionName
+    assert!(
+        assumed.assumed_role_id().starts_with(role_id),
+        "AssumedRoleId should start with role ID: {}",
+        assumed.assumed_role_id()
+    );
+    assert!(
+        assumed.assumed_role_id().ends_with(":my-session"),
+        "AssumedRoleId should end with session name: {}",
+        assumed.assumed_role_id()
+    );
+}
+
+#[tokio::test]
 async fn sts_get_caller_identity_cli() {
     let server = TestServer::start().await;
     let output = server.aws_cli(&["sts", "get-caller-identity"]).await;

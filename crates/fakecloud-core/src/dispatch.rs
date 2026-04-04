@@ -60,7 +60,7 @@ pub async fn dispatch(
         }
     };
 
-    // Extract region from auth header or use default
+    // Extract region from auth header, User-Agent (Moto TEST_SERVER_MODE), or use default
     let region = fakecloud_aws::sigv4::parse_sigv4(
         parts
             .headers
@@ -69,6 +69,7 @@ pub async fn dispatch(
             .unwrap_or(""),
     )
     .map(|info| info.region)
+    .or_else(|| extract_region_from_user_agent(&parts.headers))
     .unwrap_or_else(|| config.region.clone());
 
     // Build path segments
@@ -160,6 +161,19 @@ pub async fn dispatch(
 pub struct DispatchConfig {
     pub region: String,
     pub account_id: String,
+}
+
+/// Extract region from Moto's User-Agent header suffix `region/<region>`.
+fn extract_region_from_user_agent(headers: &http::HeaderMap) -> Option<String> {
+    let ua = headers.get("user-agent")?.to_str().ok()?;
+    for part in ua.split_whitespace() {
+        if let Some(region) = part.strip_prefix("region/") {
+            if !region.is_empty() {
+                return Some(region.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn build_error_response(

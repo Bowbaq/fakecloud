@@ -85,6 +85,12 @@ async fn main() {
             .with_sns(sns_delivery),
     );
 
+    // Clone state for reset endpoint before moving into services
+    let reset_iam = iam_state.clone();
+    let reset_sqs = sqs_state.clone();
+    let reset_sns = sns_state.clone();
+    let reset_ssm = ssm_state.clone();
+
     // Register services
     let mut registry = ServiceRegistry::new();
     registry.register(Arc::new(SqsService::new(sqs_state)));
@@ -126,6 +132,26 @@ async fn main() {
                         "version": env!("CARGO_PKG_VERSION"),
                         "services": services,
                     }))
+                }
+            }),
+        )
+        .route(
+            "/moto-api/reset",
+            axum::routing::post({
+                let iam = reset_iam;
+                let sqs = reset_sqs;
+                let sns = reset_sns;
+                let ssm = reset_ssm;
+                move || async move {
+                    iam.write().reset();
+                    sqs.write().queues.clear();
+                    sqs.write().name_to_url.clear();
+                    sns.write().topics.clear();
+                    sns.write().subscriptions.clear();
+                    sns.write().published.clear();
+                    ssm.write().parameters.clear();
+                    tracing::info!("state reset via /moto-api/reset");
+                    axum::Json(serde_json::json!({"status": "ok"}))
                 }
             }),
         )
