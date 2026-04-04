@@ -65,12 +65,282 @@ impl AwsService for SqsService {
     }
 }
 
+/// Parse the request body. SQS supports both JSON protocol (modern SDKs like aws-sdk-rust)
+/// and Query protocol (boto3, older SDKs). For Query protocol, params are in query_params.
 fn parse_body(req: &AwsRequest) -> Value {
-    serde_json::from_slice(&req.body).unwrap_or(Value::Object(Default::default()))
+    // Try JSON first
+    if let Ok(v) = serde_json::from_slice::<Value>(&req.body) {
+        if v.is_object() && !v.as_object().unwrap().is_empty() {
+            return v;
+        }
+    }
+    // Fall back to query params (Query protocol / form-encoded)
+    if !req.query_params.is_empty() {
+        let mut map = serde_json::Map::new();
+        for (k, v) in &req.query_params {
+            map.insert(k.clone(), Value::String(v.clone()));
+        }
+        // Handle nested Attribute.N.Name/Value patterns
+        let mut attrs = serde_json::Map::new();
+        for i in 1..=20 {
+            let name_key = format!("Attribute.{i}.Name");
+            let value_key = format!("Attribute.{i}.Value");
+            if let (Some(name), Some(value)) = (
+                req.query_params.get(&name_key),
+                req.query_params.get(&value_key),
+            ) {
+                attrs.insert(name.clone(), Value::String(value.clone()));
+            }
+        }
+        if !attrs.is_empty() {
+            map.insert("Attributes".to_string(), Value::Object(attrs));
+        }
+        return Value::Object(map);
+    }
+    Value::Object(Default::default())
 }
 
 fn json_response(body: Value) -> AwsResponse {
     AwsResponse::json(StatusCode::OK, serde_json::to_string(&body).unwrap())
+}
+
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+fn xml_wrap(action: &str, inner: &str, request_id: &str) -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+         <{action}Response xmlns=\"http://queue.amazonaws.com/doc/2012-11-05/\">\
+         <{action}Result>{inner}</{action}Result>\
+         <ResponseMetadata><RequestId>{request_id}</RequestId></ResponseMetadata>\
+         </{action}Response>"
+    )
+}
+
+fn xml_metadata_only(action: &str, request_id: &str) -> AwsResponse {
+    let xml = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+         <{action}Response xmlns=\"http://queue.amazonaws.com/doc/2012-11-05/\">\
+         <ResponseMetadata><RequestId>{request_id}</RequestId></ResponseMetadata>\
+         </{action}Response>"
+    );
+    AwsResponse::xml(StatusCode::OK, xml)
+}
+
+fn sqs_response(action: &str, body: Value, request_id: &str, is_query: bool) -> AwsResponse {
+    if !is_query {
+        return json_response(body);
+    }
+    match action {
+        "CreateQueue" => {
+            let url = body["QueueUrl"].as_str().unwrap_or("");
+            let inner = format!("<QueueUrl>{}</QueueUrl>", xml_escape(url));
+            AwsResponse::xml(StatusCode::OK, xml_wrap(action, &inner, request_id))
+        }
+        "GetQueueUrl" => {
+            let url = body["QueueUrl"].as_str().unwrap_or("");
+            let inner = format!("<QueueUrl>{}</QueueUrl>", xml_escape(url));
+            AwsResponse::xml(StatusCode::OK, xml_wrap(action, &inner, request_id))
+        }
+        "ListQueues" => {
+            let mut inner = String::new();
+            if let Some(urls) = body["QueueUrls"].as_array() {
+                for url in urls {
+                    if let Some(u) = url.as_str() {
+                        inner.push_str(&format!("<QueueUrl>{}</QueueUrl>", xml_escape(u)));
+                    }
+                }
+            }
+            AwsResponse::xml(StatusCode::OK, xml_wrap(action, &inner, request_id))
+        }
+        "SendMessage" => {
+            let msg_id = body["MessageId"].as_str().unwrap_or("");
+            let md5 = body["MD5OfMessageBody"].as_str().unwrap_or("");
+            let inner = format!(
+                "<MessageId>{}</MessageId><MD5OfMessageBody>{}</MD5OfMessageBody>",
+                xml_escape(msg_id),
+                xml_escape(md5)
+            );
+            AwsResponse::xml(StatusCode::OK, xml_wrap(action, &inner, request_id))
+        }
+        "ReceiveMessage" => {
+            let mut inner = String::new();
+            if let Some(messages) = body["Messages"].as_array() {
+                for msg in messages {
+                    inner.push_str("<Message>");
+                    if let Some(id) = msg["MessageId"].as_str() {
+                        inner.push_str(&format!("<MessageId>{}</MessageId>", xml_escape(id)));
+                    }
+                    if let Some(rh) = msg["ReceiptHandle"].as_str() {
+                        inner.push_str(&format!(
+                            "<ReceiptHandle>{}</ReceiptHandle>",
+                            xml_escape(rh)
+                        ));
+                    }
+                    if let Some(md5) = msg["MD5OfBody"].as_str() {
+                        inner.push_str(&format!("<MD5OfBody>{}</MD5OfBody>", xml_escape(md5)));
+                    }
+                    if let Some(body_str) = msg["Body"].as_str() {
+                        inner.push_str(&format!("<Body>{}</Body>", xml_escape(body_str)));
+                    }
+                    if let Some(attrs) = msg["Attributes"].as_object() {
+                        for (k, v) in attrs {
+                            if let Some(val) = v.as_str() {
+                                inner.push_str(&format!(
+                                    "<Attribute><Name>{}</Name><Value>{}</Value></Attribute>",
+                                    xml_escape(k),
+                                    xml_escape(val)
+                                ));
+                            }
+                        }
+                    }
+                    if let Some(msg_attrs) = msg["MessageAttributes"].as_object() {
+                        for (name, attr) in msg_attrs {
+                            inner.push_str("<MessageAttribute>");
+                            inner.push_str(&format!("<Name>{}</Name>", xml_escape(name)));
+                            inner.push_str("<Value>");
+                            if let Some(dt) = attr["DataType"].as_str() {
+                                inner.push_str(&format!("<DataType>{}</DataType>", xml_escape(dt)));
+                            }
+                            if let Some(sv) = attr["StringValue"].as_str() {
+                                inner.push_str(&format!(
+                                    "<StringValue>{}</StringValue>",
+                                    xml_escape(sv)
+                                ));
+                            }
+                            inner.push_str("</Value>");
+                            inner.push_str("</MessageAttribute>");
+                        }
+                    }
+                    inner.push_str("</Message>");
+                }
+            }
+            AwsResponse::xml(StatusCode::OK, xml_wrap(action, &inner, request_id))
+        }
+        "GetQueueAttributes" => {
+            let mut inner = String::new();
+            if let Some(attrs) = body["Attributes"].as_object() {
+                for (k, v) in attrs {
+                    let val = v.as_str().unwrap_or("");
+                    inner.push_str(&format!(
+                        "<Attribute><Name>{}</Name><Value>{}</Value></Attribute>",
+                        xml_escape(k),
+                        xml_escape(val)
+                    ));
+                }
+            }
+            AwsResponse::xml(StatusCode::OK, xml_wrap(action, &inner, request_id))
+        }
+        "SendMessageBatch" => {
+            let mut inner = String::new();
+            if let Some(successful) = body["Successful"].as_array() {
+                for entry in successful {
+                    inner.push_str("<SendMessageBatchResultEntry>");
+                    if let Some(id) = entry["Id"].as_str() {
+                        inner.push_str(&format!("<Id>{}</Id>", xml_escape(id)));
+                    }
+                    if let Some(msg_id) = entry["MessageId"].as_str() {
+                        inner.push_str(&format!("<MessageId>{}</MessageId>", xml_escape(msg_id)));
+                    }
+                    if let Some(md5) = entry["MD5OfMessageBody"].as_str() {
+                        inner.push_str(&format!(
+                            "<MD5OfMessageBody>{}</MD5OfMessageBody>",
+                            xml_escape(md5)
+                        ));
+                    }
+                    inner.push_str("</SendMessageBatchResultEntry>");
+                }
+            }
+            if let Some(failed) = body["Failed"].as_array() {
+                for entry in failed {
+                    inner.push_str("<BatchResultErrorEntry>");
+                    if let Some(id) = entry["Id"].as_str() {
+                        inner.push_str(&format!("<Id>{}</Id>", xml_escape(id)));
+                    }
+                    if let Some(code) = entry["Code"].as_str() {
+                        inner.push_str(&format!("<Code>{}</Code>", xml_escape(code)));
+                    }
+                    if let Some(msg) = entry["Message"].as_str() {
+                        inner.push_str(&format!("<Message>{}</Message>", xml_escape(msg)));
+                    }
+                    if let Some(sf) = entry["SenderFault"].as_bool() {
+                        inner.push_str(&format!("<SenderFault>{sf}</SenderFault>"));
+                    }
+                    inner.push_str("</BatchResultErrorEntry>");
+                }
+            }
+            AwsResponse::xml(StatusCode::OK, xml_wrap(action, &inner, request_id))
+        }
+        "DeleteMessageBatch" => {
+            let mut inner = String::new();
+            if let Some(successful) = body["Successful"].as_array() {
+                for entry in successful {
+                    inner.push_str("<DeleteMessageBatchResultEntry>");
+                    if let Some(id) = entry["Id"].as_str() {
+                        inner.push_str(&format!("<Id>{}</Id>", xml_escape(id)));
+                    }
+                    inner.push_str("</DeleteMessageBatchResultEntry>");
+                }
+            }
+            if let Some(failed) = body["Failed"].as_array() {
+                for entry in failed {
+                    inner.push_str("<BatchResultErrorEntry>");
+                    if let Some(id) = entry["Id"].as_str() {
+                        inner.push_str(&format!("<Id>{}</Id>", xml_escape(id)));
+                    }
+                    if let Some(code) = entry["Code"].as_str() {
+                        inner.push_str(&format!("<Code>{}</Code>", xml_escape(code)));
+                    }
+                    if let Some(msg) = entry["Message"].as_str() {
+                        inner.push_str(&format!("<Message>{}</Message>", xml_escape(msg)));
+                    }
+                    if let Some(sf) = entry["SenderFault"].as_bool() {
+                        inner.push_str(&format!("<SenderFault>{sf}</SenderFault>"));
+                    }
+                    inner.push_str("</BatchResultErrorEntry>");
+                }
+            }
+            AwsResponse::xml(StatusCode::OK, xml_wrap(action, &inner, request_id))
+        }
+        "ChangeMessageVisibilityBatch" => {
+            let mut inner = String::new();
+            if let Some(successful) = body["Successful"].as_array() {
+                for entry in successful {
+                    inner.push_str("<ChangeMessageVisibilityBatchResultEntry>");
+                    if let Some(id) = entry["Id"].as_str() {
+                        inner.push_str(&format!("<Id>{}</Id>", xml_escape(id)));
+                    }
+                    inner.push_str("</ChangeMessageVisibilityBatchResultEntry>");
+                }
+            }
+            if let Some(failed) = body["Failed"].as_array() {
+                for entry in failed {
+                    inner.push_str("<BatchResultErrorEntry>");
+                    if let Some(id) = entry["Id"].as_str() {
+                        inner.push_str(&format!("<Id>{}</Id>", xml_escape(id)));
+                    }
+                    if let Some(code) = entry["Code"].as_str() {
+                        inner.push_str(&format!("<Code>{}</Code>", xml_escape(code)));
+                    }
+                    if let Some(msg) = entry["Message"].as_str() {
+                        inner.push_str(&format!("<Message>{}</Message>", xml_escape(msg)));
+                    }
+                    if let Some(sf) = entry["SenderFault"].as_bool() {
+                        inner.push_str(&format!("<SenderFault>{sf}</SenderFault>"));
+                    }
+                    inner.push_str("</BatchResultErrorEntry>");
+                }
+            }
+            AwsResponse::xml(StatusCode::OK, xml_wrap(action, &inner, request_id))
+        }
+        // DeleteQueue, DeleteMessage, PurgeQueue, SetQueueAttributes, ChangeMessageVisibility
+        _ => xml_metadata_only(action, request_id),
+    }
 }
 
 impl SqsService {
@@ -84,7 +354,12 @@ impl SqsService {
         let mut state = self.state.write();
 
         if let Some(url) = state.name_to_url.get(&queue_name) {
-            return Ok(json_response(json!({ "QueueUrl": url })));
+            return Ok(sqs_response(
+                "CreateQueue",
+                json!({ "QueueUrl": url }),
+                &req.request_id,
+                req.is_query_protocol,
+            ));
         }
 
         let is_fifo = queue_name.ends_with(".fifo");
@@ -131,12 +406,18 @@ impl SqsService {
             is_fifo,
             dedup_cache: HashMap::new(),
             redrive_policy,
+            tags: HashMap::new(),
         };
 
         state.name_to_url.insert(queue_name, queue_url.clone());
         state.queues.insert(queue_url.clone(), queue);
 
-        Ok(json_response(json!({ "QueueUrl": queue_url })))
+        Ok(sqs_response(
+            "CreateQueue",
+            json!({ "QueueUrl": queue_url }),
+            &req.request_id,
+            req.is_query_protocol,
+        ))
     }
 
     fn delete_queue(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
@@ -153,7 +434,12 @@ impl SqsService {
             .ok_or_else(queue_not_found)?;
         state.name_to_url.remove(&queue.queue_name);
 
-        Ok(json_response(json!({})))
+        Ok(sqs_response(
+            "DeleteQueue",
+            json!({}),
+            &req.request_id,
+            req.is_query_protocol,
+        ))
     }
 
     fn list_queues(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
@@ -168,7 +454,12 @@ impl SqsService {
             .map(|q| q.queue_url.clone())
             .collect();
 
-        Ok(json_response(json!({ "QueueUrls": urls })))
+        Ok(sqs_response(
+            "ListQueues",
+            json!({ "QueueUrls": urls }),
+            &req.request_id,
+            req.is_query_protocol,
+        ))
     }
 
     fn get_queue_url(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
@@ -183,7 +474,12 @@ impl SqsService {
             .get(queue_name)
             .ok_or_else(queue_not_found)?;
 
-        Ok(json_response(json!({ "QueueUrl": url })))
+        Ok(sqs_response(
+            "GetQueueUrl",
+            json!({ "QueueUrl": url }),
+            &req.request_id,
+            req.is_query_protocol,
+        ))
     }
 
     fn get_queue_attributes(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
@@ -214,7 +510,12 @@ impl SqsService {
             }
         }
 
-        Ok(json_response(json!({ "Attributes": attrs })))
+        Ok(sqs_response(
+            "GetQueueAttributes",
+            json!({ "Attributes": attrs }),
+            &req.request_id,
+            req.is_query_protocol,
+        ))
     }
 
     fn send_message(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
@@ -270,10 +571,15 @@ impl SqsService {
                 queue.dedup_cache.retain(|_, expiry| *expiry > now);
                 if queue.dedup_cache.contains_key(dedup_id) {
                     let msg_id = uuid::Uuid::new_v4().to_string();
-                    return Ok(json_response(json!({
-                        "MessageId": msg_id,
-                        "MD5OfMessageBody": md5_hex(&message_body),
-                    })));
+                    return Ok(sqs_response(
+                        "SendMessage",
+                        json!({
+                            "MessageId": msg_id,
+                            "MD5OfMessageBody": md5_hex(&message_body),
+                        }),
+                        &req.request_id,
+                        req.is_query_protocol,
+                    ));
                 }
                 queue
                     .dedup_cache
@@ -337,7 +643,12 @@ impl SqsService {
         });
         queue.messages.push_back(msg);
 
-        Ok(json_response(resp))
+        Ok(sqs_response(
+            "SendMessage",
+            resp,
+            &req.request_id,
+            req.is_query_protocol,
+        ))
     }
 
     async fn receive_message(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
@@ -349,6 +660,8 @@ impl SqsService {
         let max_messages = body["MaxNumberOfMessages"].as_i64().unwrap_or(1).min(10) as usize;
         let visibility_timeout = body["VisibilityTimeout"].as_i64();
         let wait_time_seconds = body["WaitTimeSeconds"].as_i64().unwrap_or(0).clamp(0, 20) as u64;
+        let request_id = req.request_id.clone();
+        let is_query = req.is_query_protocol;
 
         let deadline = if wait_time_seconds > 0 {
             Some(tokio::time::Instant::now() + std::time::Duration::from_secs(wait_time_seconds))
@@ -360,12 +673,12 @@ impl SqsService {
             let result = self.try_receive_messages(&queue_url, max_messages, visibility_timeout)?;
 
             if !result.is_empty() || deadline.is_none() {
-                return Ok(format_receive_response(&result));
+                return Ok(format_receive_response(&result, &request_id, is_query));
             }
 
             let deadline = deadline.unwrap();
             if tokio::time::Instant::now() >= deadline {
-                return Ok(format_receive_response(&result));
+                return Ok(format_receive_response(&result, &request_id, is_query));
             }
 
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -567,7 +880,12 @@ impl SqsService {
             .inflight
             .retain(|m| m.receipt_handle.as_deref() != Some(receipt_handle));
 
-        Ok(json_response(json!({})))
+        Ok(sqs_response(
+            "DeleteMessage",
+            json!({}),
+            &req.request_id,
+            req.is_query_protocol,
+        ))
     }
 
     fn purge_queue(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
@@ -585,7 +903,12 @@ impl SqsService {
         queue.messages.clear();
         queue.inflight.clear();
 
-        Ok(json_response(json!({})))
+        Ok(sqs_response(
+            "PurgeQueue",
+            json!({}),
+            &req.request_id,
+            req.is_query_protocol,
+        ))
     }
 
     fn change_message_visibility(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
@@ -614,7 +937,12 @@ impl SqsService {
             }
         }
 
-        Ok(json_response(json!({})))
+        Ok(sqs_response(
+            "ChangeMessageVisibility",
+            json!({}),
+            &req.request_id,
+            req.is_query_protocol,
+        ))
     }
 
     fn change_message_visibility_batch(
@@ -692,10 +1020,15 @@ impl SqsService {
             }
         }
 
-        Ok(json_response(json!({
-            "Successful": successful,
-            "Failed": failed,
-        })))
+        Ok(sqs_response(
+            "ChangeMessageVisibilityBatch",
+            json!({
+                "Successful": successful,
+                "Failed": failed,
+            }),
+            &req.request_id,
+            req.is_query_protocol,
+        ))
     }
 
     fn set_queue_attributes(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
@@ -738,7 +1071,12 @@ impl SqsService {
             }
         }
 
-        Ok(json_response(json!({})))
+        Ok(sqs_response(
+            "SetQueueAttributes",
+            json!({}),
+            &req.request_id,
+            req.is_query_protocol,
+        ))
     }
 
     fn send_message_batch(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
@@ -870,10 +1208,15 @@ impl SqsService {
             queue.messages.push_back(msg);
         }
 
-        Ok(json_response(json!({
-            "Successful": successful,
-            "Failed": failed,
-        })))
+        Ok(sqs_response(
+            "SendMessageBatch",
+            json!({
+                "Successful": successful,
+                "Failed": failed,
+            }),
+            &req.request_id,
+            req.is_query_protocol,
+        ))
     }
 
     fn delete_message_batch(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
@@ -921,14 +1264,23 @@ impl SqsService {
             successful.push(json!({ "Id": id }));
         }
 
-        Ok(json_response(json!({
-            "Successful": successful,
-            "Failed": failed,
-        })))
+        Ok(sqs_response(
+            "DeleteMessageBatch",
+            json!({
+                "Successful": successful,
+                "Failed": failed,
+            }),
+            &req.request_id,
+            req.is_query_protocol,
+        ))
     }
 }
 
-fn format_receive_response(received: &[SqsMessage]) -> AwsResponse {
+fn format_receive_response(
+    received: &[SqsMessage],
+    request_id: &str,
+    is_query: bool,
+) -> AwsResponse {
     let now_millis = Utc::now().timestamp_millis();
 
     let messages: Vec<Value> = received
@@ -963,7 +1315,12 @@ fn format_receive_response(received: &[SqsMessage]) -> AwsResponse {
         })
         .collect();
 
-    json_response(json!({ "Messages": messages }))
+    sqs_response(
+        "ReceiveMessage",
+        json!({ "Messages": messages }),
+        request_id,
+        is_query,
+    )
 }
 
 fn parse_message_attributes(body: &Value) -> HashMap<String, MessageAttribute> {

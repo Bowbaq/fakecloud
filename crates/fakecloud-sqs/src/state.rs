@@ -49,7 +49,14 @@ pub struct SqsQueue {
     pub dedup_cache: HashMap<String, DateTime<Utc>>,
     /// DLQ redrive policy
     pub redrive_policy: Option<RedrivePolicy>,
+    /// Queue tags (key -> value)
+    pub tags: HashMap<String, String>,
 }
+
+// TODO: SQS needs ListQueueTags and TagQueue action handlers.
+// The dual-protocol SQS agent will add these to service.rs.
+// Tags are stored in SqsQueue::tags above and should be populated
+// from CreateQueue request params (Tag.N.Key / Tag.N.Value).
 
 pub struct SqsState {
     pub account_id: String,

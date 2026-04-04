@@ -3,7 +3,7 @@ use bytes::Bytes;
 use http::{HeaderMap, Method, StatusCode};
 use std::collections::HashMap;
 
-/// A parsed AWS request, protocol-independent.
+/// A parsed AWS request.
 #[derive(Debug)]
 pub struct AwsRequest {
     pub service: String,
@@ -16,6 +16,8 @@ pub struct AwsRequest {
     pub body: Bytes,
     pub path_segments: Vec<String>,
     pub method: Method,
+    /// Whether this request came via Query (form-encoded) or JSON protocol.
+    pub is_query_protocol: bool,
 }
 
 /// A response from a service handler.

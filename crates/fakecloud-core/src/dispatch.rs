@@ -113,6 +113,7 @@ pub async fn dispatch(
         body: body_bytes,
         path_segments,
         method: parts.method,
+        is_query_protocol: detected.protocol == AwsProtocol::Query,
     };
 
     tracing::info!(
