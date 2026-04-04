@@ -586,7 +586,10 @@ impl SnsService {
             format_attr("TopicArn", &sub.topic_arn),
             format_attr("Protocol", &sub.protocol),
             format_attr("Endpoint", &sub.endpoint),
+            format_attr("Owner", &state.account_id),
             format_attr("ConfirmationWasAuthenticated", "true"),
+            format_attr("PendingConfirmation", "false"),
+            format_attr("RawMessageDelivery", "false"),
         ];
         for (k, v) in &sub.attributes {
             entries.push(format_attr(k, v));
