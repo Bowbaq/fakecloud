@@ -451,7 +451,7 @@ fn validate_tags(tags: &[Tag], existing_count: usize) -> Result<(), AwsServiceEr
         return Err(AwsServiceError::aws_error(
             StatusCode::BAD_REQUEST,
             "InvalidInput",
-            "1 validation error detected: Value at 'tags' failed to satisfy constraint: Member must have length less than or equal to 50".to_string(),
+            "1 validation error detected: Value at 'tags' failed to satisfy constraint: Member must have length less than or equal to 50.".to_string(),
         ));
     }
 
@@ -474,7 +474,7 @@ fn validate_tags(tags: &[Tag], existing_count: usize) -> Result<(), AwsServiceEr
                 StatusCode::BAD_REQUEST,
                 "InvalidInput",
                 format!(
-                    "1 validation error detected: Value at 'tags.{}.member.key' failed to satisfy constraint: Member must have length less than or equal to 128",
+                    "1 validation error detected: Value at 'tags.{}.member.key' failed to satisfy constraint: Member must have length less than or equal to 128.",
                     seen_keys.len()
                 ),
             ));
@@ -486,7 +486,7 @@ fn validate_tags(tags: &[Tag], existing_count: usize) -> Result<(), AwsServiceEr
                 StatusCode::BAD_REQUEST,
                 "InvalidInput",
                 format!(
-                    "1 validation error detected: Value at 'tags.{}.member.value' failed to satisfy constraint: Member must have length less than or equal to 256",
+                    "1 validation error detected: Value at 'tags.{}.member.value' failed to satisfy constraint: Member must have length less than or equal to 256.",
                     seen_keys.len()
                 ),
             ));
@@ -628,7 +628,7 @@ impl IamService {
         let user_name = required_param(&req.query_params, "UserName")?;
         let mut state = self.state.write();
 
-        if state.users.remove(&user_name).is_none() {
+        if !state.users.contains_key(&user_name) {
             return Err(AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
                 "NoSuchEntity",
@@ -636,16 +636,67 @@ impl IamService {
             ));
         }
 
+        // Check for access keys
+        if state
+            .access_keys
+            .get(&user_name)
+            .map(|k| !k.is_empty())
+            .unwrap_or(false)
+        {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::CONFLICT,
+                "DeleteConflict",
+                "Cannot delete entity, must delete access keys first.".to_string(),
+            ));
+        }
+
+        // Check for group membership
+        let in_groups = state
+            .groups
+            .values()
+            .any(|g| g.members.contains(&user_name));
+        if in_groups {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::CONFLICT,
+                "DeleteConflict",
+                "Cannot delete entity, must remove user from group first.".to_string(),
+            ));
+        }
+
+        // Check for attached managed policies
+        if state
+            .user_policies
+            .get(&user_name)
+            .map(|p| !p.is_empty())
+            .unwrap_or(false)
+        {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::CONFLICT,
+                "DeleteConflict",
+                "Cannot delete entity, must detach all policies first.".to_string(),
+            ));
+        }
+
+        // Check for inline policies
+        if state
+            .user_inline_policies
+            .get(&user_name)
+            .map(|p| !p.is_empty())
+            .unwrap_or(false)
+        {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::CONFLICT,
+                "DeleteConflict",
+                "Cannot delete entity, must delete policies first.".to_string(),
+            ));
+        }
+
+        state.users.remove(&user_name);
         state.access_keys.remove(&user_name);
         state.user_policies.remove(&user_name);
         state.user_inline_policies.remove(&user_name);
         state.login_profiles.remove(&user_name);
         state.signing_certificates.remove(&user_name);
-
-        // Remove from groups
-        for group in state.groups.values_mut() {
-            group.members.retain(|m| m != &user_name);
-        }
 
         let xml = empty_response("DeleteUser", &req.request_id);
         Ok(AwsResponse::xml(StatusCode::OK, xml))
@@ -1566,9 +1617,10 @@ impl IamService {
             .iter()
             .map(|v| {
                 format!(
-                    "      <member>\n        <VersionId>{}</VersionId>\n        <IsDefaultVersion>{}</IsDefaultVersion>\n        <CreateDate>{}</CreateDate>\n      </member>",
+                    "      <member>\n        <VersionId>{}</VersionId>\n        <IsDefaultVersion>{}</IsDefaultVersion>\n        <Document>{}</Document>\n        <CreateDate>{}</CreateDate>\n      </member>",
                     v.version_id,
                     v.is_default,
+                    url_encode(&v.document),
                     v.created_at.format("%Y-%m-%dT%H:%M:%SZ")
                 )
             })
@@ -1715,13 +1767,24 @@ impl IamService {
             ));
         }
 
+        let attached = state
+            .role_policies
+            .get(&role_name)
+            .map(|arns| arns.contains(&policy_arn))
+            .unwrap_or(false);
+
+        if !attached {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::NOT_FOUND,
+                "NoSuchEntity",
+                format!("Policy {policy_arn} was not found."),
+            ));
+        }
+
         if let Some(arns) = state.role_policies.get_mut(&role_name) {
-            let before = arns.len();
             arns.retain(|a| a != &policy_arn);
-            if arns.len() < before {
-                if let Some(p) = state.policies.get_mut(&policy_arn) {
-                    p.attachment_count = p.attachment_count.saturating_sub(1);
-                }
+            if let Some(p) = state.policies.get_mut(&policy_arn) {
+                p.attachment_count = p.attachment_count.saturating_sub(1);
             }
         }
 
@@ -1952,13 +2015,24 @@ impl IamService {
             ));
         }
 
+        let attached = state
+            .user_policies
+            .get(&user_name)
+            .map(|arns| arns.contains(&policy_arn))
+            .unwrap_or(false);
+
+        if !attached {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::NOT_FOUND,
+                "NoSuchEntity",
+                format!("Policy {policy_arn} was not found."),
+            ));
+        }
+
         if let Some(arns) = state.user_policies.get_mut(&user_name) {
-            let before = arns.len();
             arns.retain(|a| a != &policy_arn);
-            if arns.len() < before {
-                if let Some(p) = state.policies.get_mut(&policy_arn) {
-                    p.attachment_count = p.attachment_count.saturating_sub(1);
-                }
+            if let Some(p) = state.policies.get_mut(&policy_arn) {
+                p.attachment_count = p.attachment_count.saturating_sub(1);
             }
         }
 
@@ -2634,6 +2708,14 @@ impl IamService {
                 format!("The group with name {group_name} cannot be found."),
             )
         })?;
+
+        if !group.attached_policies.contains(&policy_arn) {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::NOT_FOUND,
+                "NoSuchEntity",
+                format!("Policy {policy_arn} was not found."),
+            ));
+        }
 
         let before = group.attached_policies.len();
         group.attached_policies.retain(|a| a != &policy_arn);
