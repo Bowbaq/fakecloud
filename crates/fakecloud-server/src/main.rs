@@ -138,14 +138,20 @@ async fn main() {
                 }
             }),
         )
-        .route("/moto-api/reset", axum::routing::post({
-            let s = reset_state.clone();
-            move || async move { s.reset() }
-        }))
-        .route("/_reset", axum::routing::post({
-            let s = reset_state;
-            move || async move { s.reset() }
-        }))
+        .route(
+            "/moto-api/reset",
+            axum::routing::post({
+                let s = reset_state.clone();
+                move || async move { s.reset() }
+            }),
+        )
+        .route(
+            "/_reset",
+            axum::routing::post({
+                let s = reset_state;
+                move || async move { s.reset() }
+            }),
+        )
         .fallback(dispatch::dispatch)
         .layer(Extension(Arc::new(registry)))
         .layer(Extension(Arc::new(config)))
