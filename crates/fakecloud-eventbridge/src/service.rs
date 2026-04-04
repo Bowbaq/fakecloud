@@ -208,6 +208,7 @@ impl EventBridgeService {
             description,
             targets,
             tags: HashMap::new(),
+            last_fired: None,
         };
 
         state.rules.insert(name, rule);

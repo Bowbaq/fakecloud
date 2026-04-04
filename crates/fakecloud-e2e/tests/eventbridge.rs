@@ -1,6 +1,6 @@
 mod helpers;
 
-use aws_sdk_eventbridge::types::{PutEventsRequestEntry, Target};
+use aws_sdk_eventbridge::types::{PutEventsRequestEntry, RuleState, Target};
 use helpers::TestServer;
 
 #[tokio::test]
@@ -159,4 +159,67 @@ async fn eb_cli_put_events() {
     assert!(output.success(), "failed: {}", output.stderr_text());
     let json = output.stdout_json();
     assert_eq!(json["FailedEntryCount"], 0);
+}
+
+#[tokio::test]
+async fn eb_schedule_fires_to_sqs() {
+    let server = TestServer::start().await;
+    let eb = server.eventbridge_client().await;
+    let sqs = server.sqs_client().await;
+
+    // Create an SQS queue to receive scheduled events
+    let queue = sqs
+        .create_queue()
+        .queue_name("schedule-target")
+        .send()
+        .await
+        .unwrap();
+    let queue_url = queue.queue_url().unwrap();
+
+    // Create a rule with a 1-second rate schedule
+    eb.put_rule()
+        .name("fast-schedule")
+        .schedule_expression("rate(1 second)")
+        .state(RuleState::Enabled)
+        .send()
+        .await
+        .unwrap();
+
+    // Add the SQS queue as a target
+    eb.put_targets()
+        .rule("fast-schedule")
+        .targets(
+            Target::builder()
+                .id("sqs-target")
+                .arn("arn:aws:sqs:us-east-1:000000000000:schedule-target")
+                .build()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    // Wait for the scheduler to fire at least once
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+    // Receive messages from SQS
+    let resp = sqs
+        .receive_message()
+        .queue_url(queue_url)
+        .max_number_of_messages(10)
+        .send()
+        .await
+        .unwrap();
+
+    let messages = resp.messages();
+    assert!(
+        !messages.is_empty(),
+        "expected at least one scheduled event message in SQS"
+    );
+
+    // Verify the event content
+    let body = messages[0].body().unwrap();
+    let event: serde_json::Value = serde_json::from_str(body).unwrap();
+    assert_eq!(event["source"], "aws.events");
+    assert_eq!(event["detail-type"], "Scheduled Event");
 }

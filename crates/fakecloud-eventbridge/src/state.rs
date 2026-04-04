@@ -21,6 +21,7 @@ pub struct EventRule {
     pub description: Option<String>,
     pub targets: Vec<EventTarget>,
     pub tags: HashMap<String, String>,
+    pub last_fired: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone)]

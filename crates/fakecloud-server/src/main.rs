@@ -89,7 +89,14 @@ async fn main() {
     let mut registry = ServiceRegistry::new();
     registry.register(Arc::new(SqsService::new(sqs_state)));
     registry.register(Arc::new(SnsService::new(sns_state, delivery_for_sns)));
-    registry.register(Arc::new(EventBridgeService::new(eb_state, delivery_for_eb)));
+    registry.register(Arc::new(EventBridgeService::new(
+        eb_state.clone(),
+        delivery_for_eb.clone(),
+    )));
+
+    // Spawn the EventBridge scheduler as a background task
+    let scheduler = fakecloud_eventbridge::scheduler::Scheduler::new(eb_state, delivery_for_eb);
+    tokio::spawn(scheduler.run());
     registry.register(Arc::new(IamService::new(iam_state.clone())));
     registry.register(Arc::new(StsService::new(iam_state)));
     registry.register(Arc::new(SsmService::new(ssm_state)));
