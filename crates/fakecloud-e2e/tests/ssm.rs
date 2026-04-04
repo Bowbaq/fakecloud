@@ -1,6 +1,6 @@
 mod helpers;
 
-use aws_sdk_ssm::types::ParameterType;
+use aws_sdk_ssm::types::{ParameterType, Tag};
 use helpers::TestServer;
 
 #[tokio::test]
@@ -204,4 +204,79 @@ async fn ssm_cli_put_get() {
     assert!(output.success(), "get failed: {}", output.stderr_text());
     let json = output.stdout_json();
     assert_eq!(json["Parameter"]["Value"], "hello");
+}
+
+#[tokio::test]
+async fn ssm_add_list_remove_tags() {
+    let server = TestServer::start().await;
+    let client = server.ssm_client().await;
+
+    // Create a parameter first
+    client
+        .put_parameter()
+        .name("/tags/test-param")
+        .value("tagged-value")
+        .r#type(ParameterType::String)
+        .send()
+        .await
+        .unwrap();
+
+    // Add tags
+    client
+        .add_tags_to_resource()
+        .resource_type(aws_sdk_ssm::types::ResourceTypeForTagging::Parameter)
+        .resource_id("/tags/test-param")
+        .tags(
+            Tag::builder()
+                .key("Environment")
+                .value("Production")
+                .build()
+                .unwrap(),
+        )
+        .tags(Tag::builder().key("Team").value("Backend").build().unwrap())
+        .send()
+        .await
+        .unwrap();
+
+    // List tags
+    let resp = client
+        .list_tags_for_resource()
+        .resource_type(aws_sdk_ssm::types::ResourceTypeForTagging::Parameter)
+        .resource_id("/tags/test-param")
+        .send()
+        .await
+        .unwrap();
+    let tags = resp.tag_list();
+    assert_eq!(tags.len(), 2);
+
+    let env_tag = tags.iter().find(|t| t.key() == "Environment");
+    assert!(env_tag.is_some());
+    assert_eq!(env_tag.unwrap().value(), "Production");
+
+    let team_tag = tags.iter().find(|t| t.key() == "Team");
+    assert!(team_tag.is_some());
+    assert_eq!(team_tag.unwrap().value(), "Backend");
+
+    // Remove one tag
+    client
+        .remove_tags_from_resource()
+        .resource_type(aws_sdk_ssm::types::ResourceTypeForTagging::Parameter)
+        .resource_id("/tags/test-param")
+        .tag_keys("Team")
+        .send()
+        .await
+        .unwrap();
+
+    // Verify only one tag remains
+    let resp = client
+        .list_tags_for_resource()
+        .resource_type(aws_sdk_ssm::types::ResourceTypeForTagging::Parameter)
+        .resource_id("/tags/test-param")
+        .send()
+        .await
+        .unwrap();
+    let tags = resp.tag_list();
+    assert_eq!(tags.len(), 1);
+    assert_eq!(tags[0].key(), "Environment");
+    assert_eq!(tags[0].value(), "Production");
 }

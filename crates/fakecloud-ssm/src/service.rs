@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use chrono::Utc;
 use http::StatusCode;
@@ -33,6 +35,10 @@ impl AwsService for SsmService {
             "DeleteParameters" => self.delete_parameters(&req),
             "DescribeParameters" => self.describe_parameters(&req),
             "GetParameterHistory" => self.get_parameter_history(&req),
+            "AddTagsToResource" => self.add_tags_to_resource(&req),
+            "RemoveTagsFromResource" => self.remove_tags_from_resource(&req),
+            "ListTagsForResource" => self.list_tags_for_resource(&req),
+            "LabelParameterVersion" => self.label_parameter_version(&req),
             _ => Err(AwsServiceError::action_not_implemented("ssm", &req.action)),
         }
     }
@@ -47,6 +53,10 @@ impl AwsService for SsmService {
             "DeleteParameters",
             "DescribeParameters",
             "GetParameterHistory",
+            "AddTagsToResource",
+            "RemoveTagsFromResource",
+            "ListTagsForResource",
+            "LabelParameterVersion",
         ]
     }
 }
@@ -129,6 +139,8 @@ impl SsmService {
             arn,
             last_modified: now,
             history: Vec::new(),
+            labels: HashMap::new(),
+            tags: HashMap::new(),
         };
 
         state.parameters.insert(name, param);
@@ -181,6 +193,7 @@ impl SsmService {
         let body = parse_body(req);
         let path = body["Path"].as_str().ok_or_else(|| missing("Path"))?;
         let recursive = body["Recursive"].as_bool().unwrap_or(false);
+        let filters = body["ParameterFilters"].as_array().cloned();
 
         let state = self.state.read();
         let prefix = if path.ends_with('/') {
@@ -201,6 +214,7 @@ impl SsmService {
                     !k[prefix.len()..].contains('/')
                 }
             })
+            .filter(|(_, p)| apply_parameter_filters(p, filters.as_ref()))
             .map(|(_, p)| param_to_json(p, true))
             .collect();
 
@@ -244,14 +258,17 @@ impl SsmService {
     }
 
     fn describe_parameters(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = parse_body(req);
+        let filters = body["ParameterFilters"].as_array().cloned();
+
         let state = self.state.read();
         let parameters: Vec<Value> = state
             .parameters
             .values()
+            .filter(|p| apply_parameter_filters(p, filters.as_ref()))
             .map(|p| param_to_json(p, false))
             .collect();
 
-        let _ = req;
         Ok(json_resp(json!({ "Parameters": parameters })))
     }
 
@@ -269,27 +286,194 @@ impl SsmService {
             .history
             .iter()
             .map(|h| {
-                json!({
+                let mut entry = json!({
                     "Name": param.name,
                     "Value": h.value,
                     "Version": h.version,
                     "LastModifiedDate": h.last_modified.timestamp() as f64,
                     "Type": param.param_type,
-                })
+                });
+                if let Some(labels) = param.labels.get(&h.version) {
+                    entry["Labels"] = json!(labels);
+                }
+                entry
             })
             .collect();
 
         // Include current version
-        history.push(json!({
+        let mut current = json!({
             "Name": param.name,
             "Value": param.value,
             "Version": param.version,
             "LastModifiedDate": param.last_modified.timestamp() as f64,
             "Type": param.param_type,
-        }));
+        });
+        if let Some(labels) = param.labels.get(&param.version) {
+            current["Labels"] = json!(labels);
+        }
+        history.push(current);
 
         Ok(json_resp(json!({ "Parameters": history })))
     }
+    fn add_tags_to_resource(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = parse_body(req);
+        let resource_id = body["ResourceId"]
+            .as_str()
+            .ok_or_else(|| missing("ResourceId"))?;
+        let tags = body["Tags"].as_array().ok_or_else(|| missing("Tags"))?;
+
+        let mut state = self.state.write();
+        let param = state
+            .parameters
+            .get_mut(resource_id)
+            .ok_or_else(|| param_not_found(resource_id))?;
+
+        for tag in tags {
+            if let (Some(key), Some(val)) = (tag["Key"].as_str(), tag["Value"].as_str()) {
+                param.tags.insert(key.to_string(), val.to_string());
+            }
+        }
+
+        Ok(json_resp(json!({})))
+    }
+
+    fn remove_tags_from_resource(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = parse_body(req);
+        let resource_id = body["ResourceId"]
+            .as_str()
+            .ok_or_else(|| missing("ResourceId"))?;
+        let tag_keys = body["TagKeys"]
+            .as_array()
+            .ok_or_else(|| missing("TagKeys"))?;
+
+        let mut state = self.state.write();
+        let param = state
+            .parameters
+            .get_mut(resource_id)
+            .ok_or_else(|| param_not_found(resource_id))?;
+
+        for key in tag_keys {
+            if let Some(k) = key.as_str() {
+                param.tags.remove(k);
+            }
+        }
+
+        Ok(json_resp(json!({})))
+    }
+
+    fn list_tags_for_resource(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = parse_body(req);
+        let resource_id = body["ResourceId"]
+            .as_str()
+            .ok_or_else(|| missing("ResourceId"))?;
+
+        let state = self.state.read();
+        let param = state
+            .parameters
+            .get(resource_id)
+            .ok_or_else(|| param_not_found(resource_id))?;
+
+        let tags: Vec<Value> = param
+            .tags
+            .iter()
+            .map(|(k, v)| json!({"Key": k, "Value": v}))
+            .collect();
+
+        Ok(json_resp(json!({ "TagList": tags })))
+    }
+
+    fn label_parameter_version(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = parse_body(req);
+        let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
+        let labels = body["Labels"].as_array().ok_or_else(|| missing("Labels"))?;
+        let version = body["ParameterVersion"].as_i64();
+
+        let mut state = self.state.write();
+        let param = state
+            .parameters
+            .get_mut(name)
+            .ok_or_else(|| param_not_found(name))?;
+
+        let target_version = version.unwrap_or(param.version);
+
+        // Validate version exists
+        let version_exists = param.version == target_version
+            || param.history.iter().any(|h| h.version == target_version);
+        if !version_exists {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "ParameterVersionNotFound",
+                format!("Version {target_version} of parameter {name} not found."),
+            ));
+        }
+
+        let label_strings: Vec<String> = labels
+            .iter()
+            .filter_map(|l| l.as_str().map(|s| s.to_string()))
+            .collect();
+
+        // Remove these labels from any other version (labels are unique across versions)
+        for existing_labels in param.labels.values_mut() {
+            existing_labels.retain(|l| !label_strings.contains(l));
+        }
+        // Remove empty entries
+        param.labels.retain(|_, v| !v.is_empty());
+
+        // Add labels to target version
+        let entry = param.labels.entry(target_version).or_default();
+        for label in &label_strings {
+            if !entry.contains(label) {
+                entry.push(label.clone());
+            }
+        }
+
+        Ok(json_resp(json!({
+            "InvalidLabels": [],
+            "ParameterVersion": target_version,
+        })))
+    }
+}
+
+/// Apply ParameterFilters to a parameter. Returns true if the parameter passes all filters.
+fn apply_parameter_filters(param: &SsmParameter, filters: Option<&Vec<Value>>) -> bool {
+    let filters = match filters {
+        Some(f) => f,
+        None => return true,
+    };
+
+    for filter in filters {
+        let key = match filter["Key"].as_str() {
+            Some(k) => k,
+            None => continue,
+        };
+        let option = filter["Option"].as_str().unwrap_or("Equals");
+        let values: Vec<&str> = filter["Values"]
+            .as_array()
+            .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+
+        let matches = match key {
+            "Name" => match option {
+                "BeginsWith" => values.iter().any(|v| param.name.starts_with(v)),
+                "Contains" => values.iter().any(|v| param.name.contains(v)),
+                "Equals" => values.iter().any(|v| param.name == *v),
+                _ => true,
+            },
+            "Type" => values.iter().any(|v| param.param_type == *v),
+            "KeyId" => {
+                // KeyId filter is for SecureString parameters with specific KMS keys.
+                // In our emulator we don't track KMS keys, so only match if type is SecureString.
+                param.param_type == "SecureString"
+            }
+            _ => true,
+        };
+
+        if !matches {
+            return false;
+        }
+    }
+
+    true
 }
 
 fn missing(name: &str) -> AwsServiceError {

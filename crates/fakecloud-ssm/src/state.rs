@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -12,6 +12,8 @@ pub struct SsmParameter {
     pub arn: String,
     pub last_modified: DateTime<Utc>,
     pub history: Vec<SsmParameterVersion>,
+    pub tags: HashMap<String, String>,
+    pub labels: HashMap<i64, Vec<String>>, // version -> labels
 }
 
 #[derive(Debug, Clone)]
