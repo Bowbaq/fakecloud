@@ -854,6 +854,10 @@ impl IamService {
         }
 
         let partition = partition_for_region(&req.region);
+
+        // Note: AWS does not validate the assume role policy document format
+        // during CreateRole, only during UpdateAssumeRolePolicy.
+
         let role = IamRole {
             role_id: crate::xml_responses::generate_role_id(),
             arn: format!(
@@ -887,7 +891,7 @@ impl IamService {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
                 "NoSuchEntity",
-                format!("The role with name {role_name} cannot be found."),
+                format!("Role {role_name} not found"),
             )
         })?;
 
@@ -899,21 +903,47 @@ impl IamService {
         let role_name = required_param(&req.query_params, "RoleName")?;
         let mut state = self.state.write();
 
-        if state.roles.remove(&role_name).is_none() {
+        if !state.roles.contains_key(&role_name) {
             return Err(AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
                 "NoSuchEntity",
-                format!("The role with name {role_name} cannot be found."),
+                format!("Role {role_name} not found"),
             ));
         }
 
+        // Check if role is in any instance profiles
+        let in_profiles: Vec<String> = state
+            .instance_profiles
+            .values()
+            .filter(|ip| ip.roles.contains(&role_name))
+            .map(|ip| ip.instance_profile_name.clone())
+            .collect();
+
+        if !in_profiles.is_empty() {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::CONFLICT,
+                "DeleteConflict",
+                "Cannot delete entity, must remove roles from instance profile first.".to_string(),
+            ));
+        }
+
+        // Check if role has inline policies
+        if state
+            .role_inline_policies
+            .get(&role_name)
+            .map(|p| !p.is_empty())
+            .unwrap_or(false)
+        {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::CONFLICT,
+                "DeleteConflict",
+                "Cannot delete entity, must delete policies first.".to_string(),
+            ));
+        }
+
+        state.roles.remove(&role_name);
         state.role_policies.remove(&role_name);
         state.role_inline_policies.remove(&role_name);
-
-        // Remove from instance profiles
-        for ip in state.instance_profiles.values_mut() {
-            ip.roles.retain(|r| r != &role_name);
-        }
 
         let xml = empty_response("DeleteRole", &req.request_id);
         Ok(AwsResponse::xml(StatusCode::OK, xml))
@@ -938,7 +968,7 @@ impl IamService {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
                 "NoSuchEntity",
-                format!("The role with name {role_name} cannot be found."),
+                format!("Role {role_name} not found"),
             )
         })?;
 
@@ -965,7 +995,7 @@ impl IamService {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
                 "NoSuchEntity",
-                format!("The role with name {role_name} cannot be found."),
+                format!("Role {role_name} not found"),
             )
         })?;
 
@@ -983,13 +1013,23 @@ impl IamService {
     fn update_assume_role_policy(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let role_name = required_param(&req.query_params, "RoleName")?;
         let policy_document = required_param(&req.query_params, "PolicyDocument")?;
+
+        // Validate policy document is valid JSON
+        if serde_json::from_str::<serde_json::Value>(&policy_document).is_err() {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "MalformedPolicyDocument",
+                "This policy contains invalid Json".to_string(),
+            ));
+        }
+
         let mut state = self.state.write();
 
         let role = state.roles.get_mut(&role_name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
                 "NoSuchEntity",
-                format!("The role with name {role_name} cannot be found."),
+                format!("Role {role_name} not found"),
             )
         })?;
 
@@ -1008,7 +1048,7 @@ impl IamService {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
                 "NoSuchEntity",
-                format!("The role with name {role_name} cannot be found."),
+                format!("Role {role_name} not found"),
             )
         })?;
 
@@ -1033,7 +1073,7 @@ impl IamService {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
                 "NoSuchEntity",
-                format!("The role with name {role_name} cannot be found."),
+                format!("Role {role_name} not found"),
             )
         })?;
 
@@ -1051,7 +1091,7 @@ impl IamService {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
                 "NoSuchEntity",
-                format!("The role with name {role_name} cannot be found."),
+                format!("Role {role_name} not found"),
             )
         })?;
 
@@ -1525,7 +1565,7 @@ impl IamService {
             return Err(AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
                 "NoSuchEntity",
-                format!("The role with name {role_name} cannot be found."),
+                format!("Role {role_name} not found"),
             ));
         }
 
@@ -1552,7 +1592,7 @@ impl IamService {
             return Err(AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
                 "NoSuchEntity",
-                format!("The role with name {role_name} cannot be found."),
+                format!("Role {role_name} not found"),
             ));
         }
 
@@ -1581,7 +1621,7 @@ impl IamService {
             return Err(AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
                 "NoSuchEntity",
-                format!("The role with name {role_name} cannot be found."),
+                format!("Role {role_name} not found"),
             ));
         }
 
@@ -1637,7 +1677,7 @@ impl IamService {
             return Err(AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
                 "NoSuchEntity",
-                format!("The role with name {role_name} cannot be found."),
+                format!("Role {role_name} not found"),
             ));
         }
 
@@ -1660,7 +1700,7 @@ impl IamService {
             return Err(AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
                 "NoSuchEntity",
-                format!("The role with name {role_name} cannot be found."),
+                format!("Role {role_name} not found"),
             ));
         }
 
@@ -1706,7 +1746,7 @@ impl IamService {
             return Err(AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
                 "NoSuchEntity",
-                format!("The role with name {role_name} cannot be found."),
+                format!("Role {role_name} not found"),
             ));
         }
 
@@ -1726,7 +1766,7 @@ impl IamService {
             return Err(AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
                 "NoSuchEntity",
-                format!("The role with name {role_name} cannot be found."),
+                format!("Role {role_name} not found"),
             ));
         }
 
@@ -2578,7 +2618,7 @@ impl IamService {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
                 "NoSuchEntity",
-                format!("Instance Profile {name} cannot be found."),
+                format!("Instance Profile {name} not found"),
             )
         })?;
 
@@ -2590,13 +2630,23 @@ impl IamService {
         let name = required_param(&req.query_params, "InstanceProfileName")?;
         let mut state = self.state.write();
 
-        if state.instance_profiles.remove(&name).is_none() {
-            return Err(AwsServiceError::aws_error(
+        let ip = state.instance_profiles.get(&name).ok_or_else(|| {
+            AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
                 "NoSuchEntity",
-                format!("Instance Profile {name} cannot be found."),
+                format!("Instance Profile {name} not found"),
+            )
+        })?;
+
+        if !ip.roles.is_empty() {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::CONFLICT,
+                "DeleteConflict",
+                "Cannot delete entity, must remove roles from instance profile first.".to_string(),
             ));
         }
+
+        state.instance_profiles.remove(&name);
 
         let xml = empty_response("DeleteInstanceProfile", &req.request_id);
         Ok(AwsResponse::xml(StatusCode::OK, xml))
@@ -2654,7 +2704,7 @@ impl IamService {
             return Err(AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
                 "NoSuchEntity",
-                format!("The role with name {role_name} cannot be found."),
+                format!("Role {role_name} not found"),
             ));
         }
 
@@ -2665,7 +2715,7 @@ impl IamService {
                 AwsServiceError::aws_error(
                     StatusCode::NOT_FOUND,
                     "NoSuchEntity",
-                    format!("Instance Profile {profile_name} cannot be found."),
+                    format!("Instance Profile {profile_name} not found"),
                 )
             })?;
 
@@ -2699,7 +2749,7 @@ impl IamService {
                 AwsServiceError::aws_error(
                     StatusCode::NOT_FOUND,
                     "NoSuchEntity",
-                    format!("Instance Profile {profile_name} cannot be found."),
+                    format!("Instance Profile {profile_name} not found"),
                 )
             })?;
 
@@ -2720,7 +2770,7 @@ impl IamService {
             return Err(AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
                 "NoSuchEntity",
-                format!("The role with name {role_name} cannot be found."),
+                format!("Role {role_name} not found"),
             ));
         }
 
@@ -2763,7 +2813,7 @@ impl IamService {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
                 "NoSuchEntity",
-                format!("Instance Profile {name} cannot be found."),
+                format!("Instance Profile {name} not found"),
             )
         })?;
 
@@ -2788,7 +2838,7 @@ impl IamService {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
                 "NoSuchEntity",
-                format!("Instance Profile {name} cannot be found."),
+                format!("Instance Profile {name} not found"),
             )
         })?;
 
@@ -2806,7 +2856,7 @@ impl IamService {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
                 "NoSuchEntity",
-                format!("Instance Profile {name} cannot be found."),
+                format!("Instance Profile {name} not found"),
             )
         })?;
 
@@ -3243,11 +3293,23 @@ impl IamService {
 
         let mut state = self.state.write();
 
-        // Normalize URL for ARN: strip scheme
-        let url_for_arn = url
-            .strip_prefix("https://")
-            .or_else(|| url.strip_prefix("http://"))
-            .unwrap_or(&url);
+        // Validate URL: must start with https://
+        if !url.starts_with("https://") {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "ValidationError",
+                "Invalid Open ID Connect Provider URL".to_string(),
+            ));
+        }
+
+        // Store URL without scheme for responses (AWS behavior)
+        let url_without_scheme = url.strip_prefix("https://").unwrap_or(&url).to_string();
+
+        // ARN uses URL host only (no path/query)
+        let url_for_arn = url_without_scheme
+            .split('?')
+            .next()
+            .unwrap_or(&url_without_scheme);
         let arn = format!(
             "arn:aws:iam::{}:oidc-provider/{}",
             state.account_id, url_for_arn
@@ -3257,13 +3319,13 @@ impl IamService {
             return Err(AwsServiceError::aws_error(
                 StatusCode::CONFLICT,
                 "EntityAlreadyExists",
-                format!("Provider with url {url} already exists."),
+                "Unknown".to_string(),
             ));
         }
 
         let provider = OidcProvider {
             arn: arn.clone(),
-            url,
+            url: url_without_scheme,
             client_id_list: client_ids,
             thumbprint_list: thumbprints,
             created_at: Utc::now(),
@@ -3295,7 +3357,7 @@ impl IamService {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
                 "NoSuchEntity",
-                format!("OpenID Connect provider {arn} not found."),
+                format!("OpenIDConnect provider not found for arn {arn}"),
             )
         })?;
 
@@ -3350,7 +3412,7 @@ impl IamService {
             return Err(AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
                 "NoSuchEntity",
-                format!("OpenID Connect provider {arn} not found."),
+                format!("OpenIDConnect provider not found for arn {arn}"),
             ));
         }
 
@@ -3406,7 +3468,7 @@ impl IamService {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
                 "NoSuchEntity",
-                format!("OpenID Connect provider {arn} not found."),
+                format!("OpenIDConnect provider not found for arn {arn}"),
             )
         })?;
 
@@ -3426,7 +3488,7 @@ impl IamService {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
                 "NoSuchEntity",
-                format!("OpenID Connect provider {arn} not found."),
+                format!("OpenIDConnect provider not found for arn {arn}"),
             )
         })?;
 
@@ -3448,7 +3510,7 @@ impl IamService {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
                 "NoSuchEntity",
-                format!("OpenID Connect provider {arn} not found."),
+                format!("OpenIDConnect provider not found for arn {arn}"),
             )
         })?;
 
@@ -3467,7 +3529,7 @@ impl IamService {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
                 "NoSuchEntity",
-                format!("OpenID Connect provider {arn} not found."),
+                format!("OpenIDConnect provider not found for arn {arn}"),
             )
         })?;
 
@@ -3492,7 +3554,7 @@ impl IamService {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
                 "NoSuchEntity",
-                format!("OpenID Connect provider {arn} not found."),
+                format!("OpenIDConnect provider not found for arn {arn}"),
             )
         })?;
 
@@ -3510,7 +3572,7 @@ impl IamService {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
                 "NoSuchEntity",
-                format!("OpenID Connect provider {arn} not found."),
+                format!("OpenIDConnect provider not found for arn {arn}"),
             )
         })?;
 
@@ -3839,7 +3901,7 @@ impl IamService {
                 AwsServiceError::aws_error(
                     StatusCode::NOT_FOUND,
                     "NoSuchEntity",
-                    format!("The signing certificate with id {certificate_id} cannot be found."),
+                    format!("The Certificate with id {certificate_id} cannot be found."),
                 )
             })?;
 
@@ -3850,7 +3912,7 @@ impl IamService {
                 AwsServiceError::aws_error(
                     StatusCode::NOT_FOUND,
                     "NoSuchEntity",
-                    format!("The signing certificate with id {certificate_id} cannot be found."),
+                    format!("The Certificate with id {certificate_id} cannot be found."),
                 )
             })?;
 
@@ -3993,7 +4055,7 @@ impl IamService {
             return Err(AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
                 "NoSuchEntity",
-                format!("The role with name {role_name} cannot be found."),
+                format!("Role {role_name} not found"),
             ));
         }
 
@@ -4464,7 +4526,7 @@ impl IamService {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
                 "NoSuchEntity",
-                "The Password Policy with domain name IAM not found.".to_string(),
+                "The Password Policy with domain name IAM cannot be found.".to_string(),
             )
         })?;
 
@@ -4514,7 +4576,7 @@ impl IamService {
             return Err(AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
                 "NoSuchEntity",
-                "The account password policy cannot be found.".to_string(),
+                "The account policy with name PasswordPolicy cannot be found.".to_string(),
             ));
         }
 
