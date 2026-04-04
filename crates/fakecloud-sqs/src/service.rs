@@ -98,9 +98,55 @@ fn parse_body(req: &AwsRequest) -> Value {
         if !attrs.is_empty() {
             map.insert("Attributes".to_string(), Value::Object(attrs));
         }
+        // Handle batch entry patterns: *Entry.N.Field or *.N.Field
+        // e.g. SendMessageBatchRequestEntry.1.Id=foo&SendMessageBatchRequestEntry.1.MessageBody=bar
+        // Also: DeleteMessageBatchRequestEntry.1.Id=...&DeleteMessageBatchRequestEntry.1.ReceiptHandle=...
+        // Also: ChangeMessageVisibilityBatchRequestEntry.1.Id=...
+        let entries = parse_batch_entries(&req.query_params);
+        if !entries.is_empty() {
+            map.insert("Entries".to_string(), Value::Array(entries));
+        }
         return Value::Object(map);
     }
     Value::Object(Default::default())
+}
+
+/// Parse batch entry parameters like `SendMessageBatchRequestEntry.1.Id=foo`.
+/// Returns a Vec of JSON objects, one per entry index.
+fn parse_batch_entries(params: &HashMap<String, String>) -> Vec<Value> {
+    use std::collections::BTreeMap;
+
+    // Find all entry-like keys: anything matching *.N.Field pattern
+    let mut entries_map: BTreeMap<u32, serde_json::Map<String, Value>> = BTreeMap::new();
+
+    for (key, value) in params {
+        // Match patterns like "SomethingEntry.N.Field" or "Entries.member.N.Field"
+        let parts: Vec<&str> = key.split('.').collect();
+        if parts.len() >= 3 {
+            // Try to find the numeric index
+            for (i, part) in parts.iter().enumerate() {
+                if let Ok(idx) = part.parse::<u32>() {
+                    // Everything after the index is the field name
+                    let field = parts[i + 1..].join(".");
+                    if !field.is_empty() {
+                        entries_map
+                            .entry(idx)
+                            .or_default()
+                            .insert(field, Value::String(value.clone()));
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    entries_map.into_values().map(Value::Object).collect()
+}
+
+/// Extract an i64 from a Value that might be a number or a string (Query protocol sends strings).
+fn val_as_i64(v: &Value) -> Option<i64> {
+    v.as_i64()
+        .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
 }
 
 fn json_response(body: Value) -> AwsResponse {
@@ -607,8 +653,7 @@ impl SqsService {
             ));
         }
 
-        let delay: i64 = body["DelaySeconds"]
-            .as_i64()
+        let delay: i64 = val_as_i64(&body["DelaySeconds"])
             .or_else(|| {
                 queue
                     .attributes
@@ -660,9 +705,13 @@ impl SqsService {
             .as_str()
             .ok_or_else(|| missing_param("QueueUrl"))?
             .to_string();
-        let max_messages = body["MaxNumberOfMessages"].as_i64().unwrap_or(1).min(10) as usize;
-        let visibility_timeout = body["VisibilityTimeout"].as_i64();
-        let wait_time_seconds = body["WaitTimeSeconds"].as_i64().unwrap_or(0).clamp(0, 20) as u64;
+        let max_messages = val_as_i64(&body["MaxNumberOfMessages"])
+            .unwrap_or(1)
+            .min(10) as usize;
+        let visibility_timeout = val_as_i64(&body["VisibilityTimeout"]);
+        let wait_time_seconds = val_as_i64(&body["WaitTimeSeconds"])
+            .unwrap_or(0)
+            .clamp(0, 20) as u64;
         let request_id = req.request_id.clone();
         let is_query = req.is_query_protocol;
 
@@ -922,8 +971,7 @@ impl SqsService {
         let receipt_handle = body["ReceiptHandle"]
             .as_str()
             .ok_or_else(|| missing_param("ReceiptHandle"))?;
-        let visibility_timeout = body["VisibilityTimeout"]
-            .as_i64()
+        let visibility_timeout = val_as_i64(&body["VisibilityTimeout"])
             .ok_or_else(|| missing_param("VisibilityTimeout"))?;
 
         let mut state = self.state.write();
@@ -989,7 +1037,7 @@ impl SqsService {
                     continue;
                 }
             };
-            let visibility_timeout = match entry["VisibilityTimeout"].as_i64() {
+            let visibility_timeout = match val_as_i64(&entry["VisibilityTimeout"]) {
                 Some(vt) => vt,
                 None => {
                     failed.push(json!({
@@ -1179,7 +1227,9 @@ impl SqsService {
                 }
             }
 
-            let delay: i64 = entry["DelaySeconds"].as_i64().or(queue_delay).unwrap_or(0);
+            let delay: i64 = val_as_i64(&entry["DelaySeconds"])
+                .or(queue_delay)
+                .unwrap_or(0);
             let visible_at = if delay > 0 {
                 Some(now + chrono::Duration::seconds(delay))
             } else {
