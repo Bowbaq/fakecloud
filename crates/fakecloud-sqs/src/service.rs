@@ -504,9 +504,9 @@ impl SqsService {
             }
         }
 
-        // Override with provided attributes
+        // Override with provided attributes (trim keys to handle trailing whitespace)
         for (k, v) in new_attributes {
-            attributes.insert(k, v);
+            attributes.insert(k.trim().to_string(), v);
         }
 
         let redrive_policy = attributes.get("RedrivePolicy").and_then(|rp_str| {
@@ -521,6 +521,18 @@ impl SqsService {
                 max_receive_count,
             })
         });
+
+        // Normalize RedrivePolicy JSON (convert maxReceiveCount to integer)
+        if let Some(ref rp) = redrive_policy {
+            let normalized = json!({
+                "deadLetterTargetArn": rp.dead_letter_target_arn,
+                "maxReceiveCount": rp.max_receive_count,
+            });
+            attributes.insert(
+                "RedrivePolicy".to_string(),
+                serde_json::to_string(&normalized).unwrap(),
+            );
+        }
 
         // Parse tags
         let mut tags = HashMap::new();
@@ -1099,9 +1111,10 @@ impl SqsService {
         let mut dlq_messages = Vec::new();
 
         if is_fifo {
-            // FIFO: strict per-group ordering, deliver from one group only
-            let mut fifo_group: Option<String> = None;
+            // FIFO: per-group ordering, deliver one message per group, preserving order
             let mut remaining = VecDeque::new();
+            let mut delivered_groups: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
 
             while let Some(mut msg) = queue.messages.pop_front() {
                 if let Some(visible_at) = msg.visible_at {
@@ -1111,15 +1124,16 @@ impl SqsService {
                     }
                 }
 
-                if let Some(ref group) = msg.message_group_id {
-                    match fifo_group {
-                        None => fifo_group = Some(group.clone()),
-                        Some(ref chosen) if chosen != group => {
-                            remaining.push_back(msg);
-                            continue;
-                        }
-                        _ => {}
-                    }
+                // Check if this group already has an inflight message
+                let group = msg.message_group_id.as_deref().unwrap_or("").to_string();
+                let group_has_inflight = queue
+                    .inflight
+                    .iter()
+                    .any(|m| m.message_group_id.as_deref() == Some(&group));
+
+                if group_has_inflight || delivered_groups.contains(&group) {
+                    remaining.push_back(msg);
+                    continue;
                 }
 
                 if received.len() < max_messages {
@@ -1132,6 +1146,7 @@ impl SqsService {
                     }
                     msg.receipt_handle = Some(uuid::Uuid::new_v4().to_string());
                     msg.visible_at = Some(now + chrono::Duration::seconds(visibility_timeout));
+                    delivered_groups.insert(group);
                     received.push(msg);
                 } else {
                     remaining.push_back(msg);
@@ -1302,11 +1317,25 @@ impl SqsService {
 
         let now = Utc::now();
         let mut found = false;
+
+        // First check inflight messages
         for msg in &mut queue.inflight {
             if msg.receipt_handle.as_deref() == Some(receipt_handle) {
                 msg.visible_at = Some(now + chrono::Duration::seconds(visibility_timeout));
                 found = true;
                 break;
+            }
+        }
+
+        // Also check messages queue (message may have become visible again)
+        if !found {
+            for msg in &mut queue.messages {
+                if msg.receipt_handle.as_deref() == Some(receipt_handle) {
+                    // Move back to inflight with new visibility timeout
+                    msg.visible_at = Some(now + chrono::Duration::seconds(visibility_timeout));
+                    found = true;
+                    break;
+                }
             }
         }
 
@@ -1455,9 +1484,18 @@ impl SqsService {
                             .unwrap_or(0) as u32;
                         if !dead_letter_target_arn.is_empty() && max_receive_count > 0 {
                             queue.redrive_policy = Some(RedrivePolicy {
-                                dead_letter_target_arn,
+                                dead_letter_target_arn: dead_letter_target_arn.clone(),
                                 max_receive_count,
                             });
+                            // Normalize the stored JSON
+                            let normalized = json!({
+                                "deadLetterTargetArn": dead_letter_target_arn,
+                                "maxReceiveCount": max_receive_count,
+                            });
+                            queue.attributes.insert(
+                                "RedrivePolicy".to_string(),
+                                serde_json::to_string(&normalized).unwrap(),
+                            );
                         }
                     }
                 }
@@ -1563,6 +1601,19 @@ impl SqsService {
                     ),
                 }));
                 continue;
+            }
+
+            // Per-entry delay validation (max 900 seconds)
+            if let Some(d) = val_as_i64(&entry["DelaySeconds"]) {
+                if d > 900 {
+                    failed.push(json!({
+                        "Id": id,
+                        "SenderFault": true,
+                        "Code": "InvalidParameterValue",
+                        "Message": format!("Value {} for parameter DelaySeconds is invalid. Reason: Must be between 0 and 900, if provided.", d),
+                    }));
+                    continue;
+                }
             }
 
             let message_group_id = entry["MessageGroupId"].as_str().map(|s| s.to_string());
