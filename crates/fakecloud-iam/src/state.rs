@@ -47,6 +47,7 @@ pub struct IamPolicy {
     pub tags: Vec<Tag>,
     pub default_version_id: String,
     pub versions: Vec<PolicyVersion>,
+    pub next_version_num: u32,
     pub attachment_count: u32,
 }
 
@@ -152,7 +153,7 @@ pub struct AccountPasswordPolicy {
 impl Default for AccountPasswordPolicy {
     fn default() -> Self {
         Self {
-            minimum_password_length: 8,
+            minimum_password_length: 6,
             require_symbols: false,
             require_numbers: false,
             require_uppercase_characters: false,
@@ -214,6 +215,7 @@ pub struct IamState {
     pub credential_identities: HashMap<String, CredentialIdentity>,
     /// Override ARN for GetCallerIdentity when no user/role matches.
     pub default_caller_arn: Option<String>,
+    pub credential_report_generated: bool,
 }
 
 impl IamState {
@@ -241,6 +243,7 @@ impl IamState {
             service_linked_role_deletions: HashMap::new(),
             credential_identities: HashMap::new(),
             default_caller_arn: None,
+            credential_report_generated: false,
         }
     }
 

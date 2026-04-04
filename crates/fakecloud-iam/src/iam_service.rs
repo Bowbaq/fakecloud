@@ -492,7 +492,7 @@ impl IamService {
             return Err(AwsServiceError::aws_error(
                 StatusCode::CONFLICT,
                 "EntityAlreadyExists",
-                format!("User with name {user_name} already exists."),
+                format!("User {user_name} already exists"),
             ));
         }
         let user = IamUser {
@@ -1019,7 +1019,7 @@ impl IamService {
             return Err(AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
                 "MalformedPolicyDocument",
-                "This policy contains invalid Json".to_string(),
+                "Syntax errors in policy.".to_string(),
             ));
         }
 
@@ -1168,6 +1168,7 @@ impl IamService {
             tags,
             default_version_id: "v1".to_string(),
             versions: vec![version],
+            next_version_num: 2,
             attachment_count: 0,
         };
 
@@ -1345,7 +1346,8 @@ impl IamService {
             ));
         }
 
-        let next_version = policy.versions.len() as u32 + 1;
+        let next_version = policy.next_version_num;
+        policy.next_version_num += 1;
         let version_id = format!("v{next_version}");
 
         if set_as_default {
@@ -4530,6 +4532,24 @@ impl IamService {
             )
         })?;
 
+        let max_age_xml = if policy.max_password_age > 0 {
+            format!(
+                "\n      <MaxPasswordAge>{}</MaxPasswordAge>",
+                policy.max_password_age
+            )
+        } else {
+            String::new()
+        };
+
+        let reuse_prevention_xml = if policy.password_reuse_prevention > 0 {
+            format!(
+                "\n      <PasswordReusePrevention>{}</PasswordReusePrevention>",
+                policy.password_reuse_prevention
+            )
+        } else {
+            String::new()
+        };
+
         let xml = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <GetAccountPasswordPolicyResponse xmlns="https://iam.amazonaws.com/doc/2010-05-08/">
@@ -4540,9 +4560,7 @@ impl IamService {
       <RequireNumbers>{}</RequireNumbers>
       <RequireUppercaseCharacters>{}</RequireUppercaseCharacters>
       <RequireLowercaseCharacters>{}</RequireLowercaseCharacters>
-      <AllowUsersToChangePassword>{}</AllowUsersToChangePassword>
-      <MaxPasswordAge>{}</MaxPasswordAge>
-      <PasswordReusePrevention>{}</PasswordReusePrevention>
+      <AllowUsersToChangePassword>{}</AllowUsersToChangePassword>{max_age_xml}{reuse_prevention_xml}
       <HardExpiry>{}</HardExpiry>
       <ExpirePasswords>{}</ExpirePasswords>
     </PasswordPolicy>
@@ -4557,8 +4575,6 @@ impl IamService {
             policy.require_uppercase_characters,
             policy.require_lowercase_characters,
             policy.allow_users_to_change_password,
-            policy.max_password_age,
-            policy.password_reuse_prevention,
             policy.hard_expiry,
             policy.max_password_age > 0,
             req.request_id
@@ -4591,12 +4607,22 @@ impl IamService {
 
 impl IamService {
     fn generate_credential_report(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let mut state = self.state.write();
+        let (report_state, description) = if state.credential_report_generated {
+            ("COMPLETE", "Report generated")
+        } else {
+            state.credential_report_generated = true;
+            (
+                "STARTED",
+                "No report exists. Starting a new report generation.",
+            )
+        };
         let xml = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <GenerateCredentialReportResponse xmlns="https://iam.amazonaws.com/doc/2010-05-08/">
   <GenerateCredentialReportResult>
-    <State>STARTED</State>
-    <Description>No report exists. Starting a new report generation.</Description>
+    <State>{report_state}</State>
+    <Description>{description}</Description>
   </GenerateCredentialReportResult>
   <ResponseMetadata>
     <RequestId>{}</RequestId>
