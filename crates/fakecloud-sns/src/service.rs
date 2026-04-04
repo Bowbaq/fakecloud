@@ -4,19 +4,23 @@ use http::StatusCode;
 use serde_json::Value;
 use std::collections::HashMap;
 
+use fakecloud_core::delivery::DeliveryBus;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
 
 use crate::state::{PublishedMessage, SharedSnsState, SnsSubscription, SnsTopic};
 
 pub struct SnsService {
     state: SharedSnsState,
+    delivery: Arc<DeliveryBus>,
 }
 
 impl SnsService {
-    pub fn new(state: SharedSnsState) -> Self {
-        Self { state }
+    pub fn new(state: SharedSnsState, delivery: Arc<DeliveryBus>) -> Self {
+        Self { state, delivery }
     }
 }
+
+use std::sync::Arc;
 
 #[async_trait]
 impl AwsService for SnsService {
@@ -320,11 +324,37 @@ impl SnsService {
         let msg_id = uuid::Uuid::new_v4().to_string();
         state.published.push(PublishedMessage {
             message_id: msg_id.clone(),
-            topic_arn,
-            message,
-            subject,
+            topic_arn: topic_arn.clone(),
+            message: message.clone(),
+            subject: subject.clone(),
             timestamp: Utc::now(),
         });
+
+        // Fan out to SQS subscribers
+        let sqs_subscribers: Vec<String> = state
+            .subscriptions
+            .values()
+            .filter(|s| s.topic_arn == topic_arn && s.protocol == "sqs" && s.confirmed)
+            .map(|s| s.endpoint.clone())
+            .collect();
+        drop(state);
+
+        if !sqs_subscribers.is_empty() {
+            let sns_envelope = serde_json::json!({
+                "Type": "Notification",
+                "MessageId": msg_id,
+                "TopicArn": topic_arn,
+                "Subject": subject.as_deref().unwrap_or(""),
+                "Message": message,
+                "Timestamp": Utc::now().to_rfc3339(),
+            });
+            let envelope_str = sns_envelope.to_string();
+
+            for queue_arn in sqs_subscribers {
+                self.delivery
+                    .send_to_sqs(&queue_arn, &envelope_str, &HashMap::new());
+            }
+        }
 
         Ok(xml_resp(
             &format!(

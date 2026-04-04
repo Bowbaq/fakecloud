@@ -6,6 +6,7 @@ use clap::Parser;
 use tokio::net::TcpListener;
 use tower_http::trace::TraceLayer;
 
+use fakecloud_core::delivery::DeliveryBus;
 use fakecloud_core::dispatch::{self, DispatchConfig};
 use fakecloud_core::registry::ServiceRegistry;
 
@@ -59,19 +60,38 @@ async fn main() {
     let sns_state = Arc::new(parking_lot::RwLock::new(
         fakecloud_sns::state::SnsState::new(&cli.account_id, &cli.region),
     ));
-
-    let mut registry = ServiceRegistry::new();
-    registry.register(Arc::new(SqsService::new(sqs_state)));
-    registry.register(Arc::new(SnsService::new(sns_state)));
     let eb_state = Arc::new(parking_lot::RwLock::new(
         fakecloud_eventbridge::state::EventBridgeState::new(&cli.account_id, &cli.region),
     ));
-    registry.register(Arc::new(EventBridgeService::new(eb_state)));
-    registry.register(Arc::new(IamService::new(iam_state.clone())));
-    registry.register(Arc::new(StsService::new(iam_state)));
     let ssm_state = Arc::new(parking_lot::RwLock::new(
         fakecloud_ssm::state::SsmState::new(&cli.account_id, &cli.region),
     ));
+
+    // Cross-service delivery bus
+    // Step 1: SQS delivery (SNS and EventBridge can push messages into SQS queues)
+    let sqs_delivery = Arc::new(fakecloud_sqs::delivery::SqsDeliveryImpl::new(
+        sqs_state.clone(),
+    ));
+    let delivery_for_sns = Arc::new(DeliveryBus::new().with_sqs(sqs_delivery.clone()));
+
+    // Step 2: SNS delivery (EventBridge can publish to SNS topics, which then fan out to SQS)
+    let sns_delivery = Arc::new(fakecloud_sns::delivery::SnsDeliveryImpl::new(
+        sns_state.clone(),
+        delivery_for_sns.clone(),
+    ));
+    let delivery_for_eb = Arc::new(
+        DeliveryBus::new()
+            .with_sqs(sqs_delivery)
+            .with_sns(sns_delivery),
+    );
+
+    // Register services
+    let mut registry = ServiceRegistry::new();
+    registry.register(Arc::new(SqsService::new(sqs_state)));
+    registry.register(Arc::new(SnsService::new(sns_state, delivery_for_sns)));
+    registry.register(Arc::new(EventBridgeService::new(eb_state, delivery_for_eb)));
+    registry.register(Arc::new(IamService::new(iam_state.clone())));
+    registry.register(Arc::new(StsService::new(iam_state)));
     registry.register(Arc::new(SsmService::new(ssm_state)));
 
     let services: Vec<&str> = registry.service_names();

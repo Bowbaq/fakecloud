@@ -1,3 +1,4 @@
+pub mod delivery;
 pub mod dispatch;
 pub mod protocol;
 pub mod registry;

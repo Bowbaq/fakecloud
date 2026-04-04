@@ -3,17 +3,21 @@ use chrono::Utc;
 use http::StatusCode;
 use serde_json::{json, Value};
 
+use std::sync::Arc;
+
+use fakecloud_core::delivery::DeliveryBus;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
 
 use crate::state::{EventBus, EventRule, EventTarget, PutEvent, SharedEventBridgeState};
 
 pub struct EventBridgeService {
     state: SharedEventBridgeState,
+    delivery: Arc<DeliveryBus>,
 }
 
 impl EventBridgeService {
-    pub fn new(state: SharedEventBridgeState) -> Self {
-        Self { state }
+    pub fn new(state: SharedEventBridgeState, delivery: Arc<DeliveryBus>) -> Self {
+        Self { state, delivery }
     }
 }
 
@@ -341,6 +345,7 @@ impl EventBridgeService {
 
         let mut state = self.state.write();
         let mut result_entries = Vec::new();
+        let mut events_to_deliver = Vec::new();
 
         for entry in entries {
             let event_id = uuid::Uuid::new_v4().to_string();
@@ -352,16 +357,72 @@ impl EventBridgeService {
                 .unwrap_or("default")
                 .to_string();
 
-            state.events.push(PutEvent {
+            let event = PutEvent {
                 event_id: event_id.clone(),
-                source,
-                detail_type,
-                detail,
-                event_bus_name,
+                source: source.clone(),
+                detail_type: detail_type.clone(),
+                detail: detail.clone(),
+                event_bus_name: event_bus_name.clone(),
                 time: Utc::now(),
-            });
+            };
+            state.events.push(event);
+
+            // Find matching rules and their targets
+            let matching_targets: Vec<EventTarget> = state
+                .rules
+                .values()
+                .filter(|r| {
+                    r.event_bus_name == event_bus_name
+                        && r.state == "ENABLED"
+                        && matches_pattern(
+                            r.event_pattern.as_deref(),
+                            &source,
+                            &detail_type,
+                            &detail,
+                        )
+                })
+                .flat_map(|r| r.targets.clone())
+                .collect();
+
+            if !matching_targets.is_empty() {
+                events_to_deliver.push((
+                    event_id.clone(),
+                    source,
+                    detail_type,
+                    detail,
+                    matching_targets,
+                ));
+            }
 
             result_entries.push(json!({ "EventId": event_id }));
+        }
+
+        // Drop the lock before delivering
+        drop(state);
+
+        // Deliver to targets
+        for (event_id, source, detail_type, detail, targets) in events_to_deliver {
+            let event_json = json!({
+                "version": "0",
+                "id": event_id,
+                "source": source,
+                "detail-type": detail_type,
+                "detail": serde_json::from_str::<Value>(&detail).unwrap_or(json!({})),
+                "time": Utc::now().to_rfc3339(),
+                "region": "us-east-1",
+            });
+            let event_str = event_json.to_string();
+
+            for target in targets {
+                let arn = &target.arn;
+                if arn.contains(":sqs:") {
+                    self.delivery
+                        .send_to_sqs(arn, &event_str, &std::collections::HashMap::new());
+                } else if arn.contains(":sns:") {
+                    self.delivery
+                        .publish_to_sns(arn, &event_str, Some(&detail_type));
+                }
+            }
         }
 
         Ok(json_resp(json!({
@@ -371,10 +432,139 @@ impl EventBridgeService {
     }
 }
 
+/// Match an event against an EventBridge event pattern.
+/// Supports matching on source, detail-type, and detail fields.
+fn matches_pattern(
+    pattern_json: Option<&str>,
+    source: &str,
+    detail_type: &str,
+    detail: &str,
+) -> bool {
+    let pattern_json = match pattern_json {
+        Some(p) => p,
+        None => return true, // No pattern = match everything (schedule rules)
+    };
+
+    let pattern: Value = match serde_json::from_str(pattern_json) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+
+    // Check "source" field
+    if let Some(sources) = pattern.get("source").and_then(|v| v.as_array()) {
+        if !sources.iter().any(|s| s.as_str() == Some(source)) {
+            return false;
+        }
+    }
+
+    // Check "detail-type" field
+    if let Some(types) = pattern.get("detail-type").and_then(|v| v.as_array()) {
+        if !types.iter().any(|t| t.as_str() == Some(detail_type)) {
+            return false;
+        }
+    }
+
+    // Check "detail" fields (simple top-level matching)
+    if let Some(detail_pattern) = pattern.get("detail").and_then(|v| v.as_object()) {
+        let detail_value: Value = serde_json::from_str(detail).unwrap_or(json!({}));
+        for (key, expected_values) in detail_pattern {
+            if let Some(expected_arr) = expected_values.as_array() {
+                let actual = &detail_value[key];
+                if !expected_arr.iter().any(|e| e == actual) {
+                    return false;
+                }
+            }
+        }
+    }
+
+    true
+}
+
 fn missing(name: &str) -> AwsServiceError {
     AwsServiceError::aws_error(
         StatusCode::BAD_REQUEST,
         "ValidationException",
         format!("The request must contain the parameter {name}"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pattern_matches_source() {
+        assert!(matches_pattern(
+            Some(r#"{"source": ["my.app"]}"#),
+            "my.app",
+            "OrderPlaced",
+            "{}"
+        ));
+        assert!(!matches_pattern(
+            Some(r#"{"source": ["other.app"]}"#),
+            "my.app",
+            "OrderPlaced",
+            "{}"
+        ));
+    }
+
+    #[test]
+    fn pattern_matches_detail_type() {
+        assert!(matches_pattern(
+            Some(r#"{"detail-type": ["OrderPlaced"]}"#),
+            "my.app",
+            "OrderPlaced",
+            "{}"
+        ));
+        assert!(!matches_pattern(
+            Some(r#"{"detail-type": ["OrderShipped"]}"#),
+            "my.app",
+            "OrderPlaced",
+            "{}"
+        ));
+    }
+
+    #[test]
+    fn pattern_matches_detail_field() {
+        assert!(matches_pattern(
+            Some(r#"{"detail": {"status": ["ACTIVE"]}}"#),
+            "my.app",
+            "StatusChange",
+            r#"{"status": "ACTIVE"}"#
+        ));
+        assert!(!matches_pattern(
+            Some(r#"{"detail": {"status": ["ACTIVE"]}}"#),
+            "my.app",
+            "StatusChange",
+            r#"{"status": "INACTIVE"}"#
+        ));
+    }
+
+    #[test]
+    fn no_pattern_matches_everything() {
+        assert!(matches_pattern(None, "any", "any", "{}"));
+    }
+
+    #[test]
+    fn combined_pattern() {
+        let pattern = r#"{"source": ["orders"], "detail-type": ["OrderPlaced"]}"#;
+        assert!(matches_pattern(
+            Some(pattern),
+            "orders",
+            "OrderPlaced",
+            "{}"
+        ));
+        assert!(!matches_pattern(
+            Some(pattern),
+            "orders",
+            "OrderShipped",
+            "{}"
+        ));
+        assert!(!matches_pattern(
+            Some(pattern),
+            "other",
+            "OrderPlaced",
+            "{}"
+        ));
+    }
 }

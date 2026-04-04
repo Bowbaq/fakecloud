@@ -435,7 +435,7 @@ fn md5_hex(input: &str) -> String {
     format!("{:032x}", fxhash(input))
 }
 
-fn fxhash(input: &str) -> u128 {
+pub fn fxhash(input: &str) -> u128 {
     let mut hash: u128 = 0xcbf29ce484222325;
     for byte in input.bytes() {
         hash ^= byte as u128;
