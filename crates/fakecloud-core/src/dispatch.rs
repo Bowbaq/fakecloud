@@ -79,6 +79,20 @@ pub async fn dispatch(
         .map(|s| s.to_string())
         .collect();
 
+    // For JSON protocol, validate that non-empty bodies are valid JSON
+    if detected.protocol == AwsProtocol::Json
+        && !body_bytes.is_empty()
+        && serde_json::from_slice::<serde_json::Value>(&body_bytes).is_err()
+    {
+        return build_error_response(
+            StatusCode::BAD_REQUEST,
+            "SerializationException",
+            "Start of structure or map found where not expected",
+            &request_id,
+            AwsProtocol::Json,
+        );
+    }
+
     // Merge query params with form body params for Query protocol
     let mut all_params = query_params;
     if detected.protocol == AwsProtocol::Query {
