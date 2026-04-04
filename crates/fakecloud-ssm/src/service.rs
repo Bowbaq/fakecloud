@@ -106,6 +106,15 @@ impl SsmService {
 
         if let Some(existing) = state.parameters.get_mut(&name) {
             if !overwrite {
+                // Terraform compat: if the value and type are identical, treat as
+                // idempotent and return success instead of erroring. Terraform
+                // re-calls PutParameter on re-apply without setting Overwrite.
+                if existing.value == value && existing.param_type == param_type {
+                    return Ok(json_resp(json!({
+                        "Version": existing.version,
+                        "Tier": "Standard",
+                    })));
+                }
                 return Err(AwsServiceError::aws_error(
                     StatusCode::BAD_REQUEST,
                     "ParameterAlreadyExists",
