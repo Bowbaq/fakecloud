@@ -631,7 +631,7 @@ pub fn assume_role_with_saml_response(
 
 pub fn get_session_token_response(request_id: &str) -> String {
     // AWS docs example credentials (deterministic for local testing)
-    let access_key_id = "AKIAIOSFODNN7EXAMPLE";
+    let access_key_id = "FSIAIOSFODNN7EXAMPLE";
     let secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYzEXAMPLEKEY";
     let session_token = "AQoEXAMPLEH4aoAH0gNCAPyJxz4BlCFFxWNE1OPTgk5TthT+FvwqnKwRcOIfrRh3c/LTo6UDdyJwOOvEVPvLXCrrrUtdnniCEXAMPLE/IvU1dYUg2RVAJBanLiHb4IgRmpRV3zrkuWJOgQs8IZZaIv2BXIa2R4OlgkBN9bkUDNCJiBeb/AXlzBBko7b15fjrBs2+cTQtpZ3CYWFXG8C5zqx37wnOE49mRl/+OtkIKGO7fAE";
 
@@ -664,7 +664,7 @@ pub fn get_federation_token_response(
     request_id: &str,
 ) -> String {
     // AWS docs example credentials (deterministic for local testing)
-    let access_key_id = "AKIAIOSFODNN7EXAMPLE";
+    let access_key_id = "FSIAIOSFODNN7EXAMPLE";
     let secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYzEXAMPLEKEY";
     let session_token = "AQoDYXdzEPT//////////wEXAMPLEtc764bNrC9SAPBSM22wDOk4x4HIZ8j4FZTwdQWLWsKWHGBuFqwAeMicRXmxfpSPfIeoIYRqTflfKD8YUuwthAx7mSEI/qkPpKPi/kMcGdQrmGdeehM4IC1NtBmUpp2wUE8phUZampKsburEDy0KPkyQDYwT7WZ0wq5VSXDvp75YU9HFvlRd8Tx6q6fE8YQcHNVXAkiY9q6d+xo0rKwT38xVqr7ZD0u0iPPkUL64lIZbqBAz+scqKmlzm8FDrypNC9Yjc8fPOLn9FX9KSYvKTr4rvx3iSIlTJabIQwj2ICCR/oLxBA==";
 
@@ -719,10 +719,10 @@ pub fn get_access_key_info_response(account_id: &str, request_id: &str) -> Strin
     )
 }
 
-/// Generate an ASIA-prefixed access key ID (20 chars total).
+/// Generate an FSIA-prefixed temporary access key ID (20 chars total).
 pub fn generate_access_key_id() -> String {
     let id = generate_alphanum_id(16);
-    format!("ASIA{}", id)
+    format!("FSIA{}", id)
 }
 
 /// Generate a 40-character secret access key.

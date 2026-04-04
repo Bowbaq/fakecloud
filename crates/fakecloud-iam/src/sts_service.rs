@@ -130,7 +130,7 @@ impl StsService {
             }
             None => format!("arn:{}:iam::{}:root", partition, state.account_id),
         };
-        let user_id = "AKIAIOSFODNN7EXAMPLE";
+        let user_id = "FKIAIOSFODNN7EXAMPLE";
         let xml = xml_responses::get_caller_identity_response(
             &state.account_id,
             &arn,

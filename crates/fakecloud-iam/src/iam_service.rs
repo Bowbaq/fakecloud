@@ -208,7 +208,7 @@ impl IamService {
         }
 
         let key = IamAccessKey {
-            access_key_id: format!("AKIA{}", generate_id()),
+            access_key_id: format!("FKIA{}", generate_id()),
             secret_access_key: format!("fake{}", generate_id()),
             user_name: user_name.clone(),
             status: "Active".to_string(),
