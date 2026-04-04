@@ -6,7 +6,7 @@ use std::collections::{HashMap, VecDeque};
 
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
 
-use crate::state::{SharedSqsState, SqsMessage, SqsQueue};
+use crate::state::{MessageAttribute, RedrivePolicy, SharedSqsState, SqsMessage, SqsQueue};
 
 pub struct SqsService {
     state: SharedSqsState,
@@ -31,9 +31,12 @@ impl AwsService for SqsService {
             "ListQueues" => self.list_queues(&req),
             "GetQueueUrl" => self.get_queue_url(&req),
             "GetQueueAttributes" => self.get_queue_attributes(&req),
+            "SetQueueAttributes" => self.set_queue_attributes(&req),
             "SendMessage" => self.send_message(&req),
+            "SendMessageBatch" => self.send_message_batch(&req),
             "ReceiveMessage" => self.receive_message(&req),
             "DeleteMessage" => self.delete_message(&req),
+            "DeleteMessageBatch" => self.delete_message_batch(&req),
             "PurgeQueue" => self.purge_queue(&req),
             "ChangeMessageVisibility" => self.change_message_visibility(&req),
             _ => Err(AwsServiceError::action_not_implemented("sqs", &req.action)),
@@ -47,9 +50,12 @@ impl AwsService for SqsService {
             "ListQueues",
             "GetQueueUrl",
             "GetQueueAttributes",
+            "SetQueueAttributes",
             "SendMessage",
+            "SendMessageBatch",
             "ReceiveMessage",
             "DeleteMessage",
+            "DeleteMessageBatch",
             "PurgeQueue",
             "ChangeMessageVisibility",
         ]
@@ -79,7 +85,7 @@ impl SqsService {
         }
 
         let is_fifo = queue_name.ends_with(".fifo");
-        let queue_url = format!("http://localhost:4566/{}/{}", state.account_id, queue_name);
+        let queue_url = format!("{}/{}/{}", state.endpoint, state.account_id, queue_name);
 
         let mut attributes = HashMap::new();
         attributes.insert("VisibilityTimeout".to_string(), "30".to_string());
@@ -95,6 +101,19 @@ impl SqsService {
             }
         }
 
+        let redrive_policy = attributes.get("RedrivePolicy").and_then(|rp_str| {
+            let rp: Value = serde_json::from_str(rp_str).ok()?;
+            let dead_letter_target_arn = rp["deadLetterTargetArn"].as_str()?.to_string();
+            let max_receive_count = rp["maxReceiveCount"]
+                .as_u64()
+                .or_else(|| rp["maxReceiveCount"].as_str()?.parse().ok())?
+                as u32;
+            Some(RedrivePolicy {
+                dead_letter_target_arn,
+                max_receive_count,
+            })
+        });
+
         let queue = SqsQueue {
             arn: format!(
                 "arn:aws:sqs:{}:{}:{}",
@@ -108,6 +127,7 @@ impl SqsService {
             attributes,
             is_fifo,
             dedup_cache: HashMap::new(),
+            redrive_policy,
         };
 
         state.name_to_url.insert(queue_name, queue_url.clone());
@@ -234,6 +254,8 @@ impl SqsService {
             None
         };
 
+        let message_attributes = parse_message_attributes(&body);
+
         let msg = SqsMessage {
             message_id: uuid::Uuid::new_v4().to_string(),
             receipt_handle: None,
@@ -241,6 +263,7 @@ impl SqsService {
             body: message_body,
             sent_timestamp: now.timestamp_millis(),
             attributes: HashMap::new(),
+            message_attributes,
             visible_at,
             receive_count: 0,
             message_group_id,
@@ -299,8 +322,11 @@ impl SqsService {
             queue.messages.push_back(m);
         }
 
+        let redrive_policy = queue.redrive_policy.clone();
+
         let mut received = Vec::new();
         let mut remaining = VecDeque::new();
+        let mut dlq_messages = Vec::new();
 
         while let Some(mut msg) = queue.messages.pop_front() {
             if let Some(visible_at) = msg.visible_at {
@@ -311,9 +337,18 @@ impl SqsService {
             }
 
             if received.len() < max_messages {
+                msg.receive_count += 1;
+
+                // Check DLQ redrive
+                if let Some(ref rp) = redrive_policy {
+                    if msg.receive_count >= rp.max_receive_count {
+                        dlq_messages.push((rp.dead_letter_target_arn.clone(), msg));
+                        continue;
+                    }
+                }
+
                 msg.receipt_handle = Some(uuid::Uuid::new_v4().to_string());
                 msg.visible_at = Some(now + chrono::Duration::seconds(visibility_timeout));
-                msg.receive_count += 1;
                 received.push(msg);
             } else {
                 remaining.push_back(msg);
@@ -330,15 +365,40 @@ impl SqsService {
             queue.inflight.push(msg.clone());
         }
 
+        // Move messages to DLQ
+        for (dlq_arn, mut msg) in dlq_messages {
+            // Find queue by ARN
+            if let Some(dlq) = state.queues.values_mut().find(|q| q.arn == dlq_arn) {
+                msg.receipt_handle = None;
+                msg.visible_at = None;
+                dlq.messages.push_back(msg);
+            }
+        }
+
         let messages: Vec<Value> = received
             .iter()
             .map(|m| {
-                json!({
+                let mut msg_json = json!({
                     "MessageId": m.message_id,
                     "ReceiptHandle": m.receipt_handle,
                     "MD5OfBody": m.md5_of_body,
                     "Body": m.body,
-                })
+                });
+                if !m.message_attributes.is_empty() {
+                    let attrs: serde_json::Map<String, Value> = m
+                        .message_attributes
+                        .iter()
+                        .map(|(k, v)| {
+                            let mut attr = json!({ "DataType": v.data_type });
+                            if let Some(ref sv) = v.string_value {
+                                attr["StringValue"] = json!(sv);
+                            }
+                            (k.clone(), attr)
+                        })
+                        .collect();
+                    msg_json["MessageAttributes"] = Value::Object(attrs);
+                }
+                msg_json
             })
             .collect();
 
@@ -413,6 +473,199 @@ impl SqsService {
 
         Ok(json_response(json!({})))
     }
+
+    fn set_queue_attributes(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = parse_body(req);
+        let queue_url = body["QueueUrl"]
+            .as_str()
+            .ok_or_else(|| missing_param("QueueUrl"))?;
+
+        let mut state = self.state.write();
+        let queue = state
+            .queues
+            .get_mut(queue_url)
+            .ok_or_else(queue_not_found)?;
+
+        if let Some(attrs) = body["Attributes"].as_object() {
+            for (k, v) in attrs {
+                if let Some(s) = v.as_str() {
+                    queue.attributes.insert(k.clone(), s.to_string());
+                }
+            }
+
+            // Update redrive_policy if set
+            if let Some(rp_str) = attrs.get("RedrivePolicy").and_then(|v| v.as_str()) {
+                if let Ok(rp) = serde_json::from_str::<Value>(rp_str) {
+                    let dead_letter_target_arn = rp["deadLetterTargetArn"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string();
+                    let max_receive_count = rp["maxReceiveCount"]
+                        .as_u64()
+                        .or_else(|| rp["maxReceiveCount"].as_str()?.parse().ok())
+                        .unwrap_or(0) as u32;
+                    if !dead_letter_target_arn.is_empty() && max_receive_count > 0 {
+                        queue.redrive_policy = Some(RedrivePolicy {
+                            dead_letter_target_arn,
+                            max_receive_count,
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok(json_response(json!({})))
+    }
+
+    fn send_message_batch(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = parse_body(req);
+        let queue_url = body["QueueUrl"]
+            .as_str()
+            .ok_or_else(|| missing_param("QueueUrl"))?
+            .to_string();
+
+        let entries = body["Entries"]
+            .as_array()
+            .ok_or_else(|| missing_param("Entries"))?
+            .clone();
+
+        let mut state = self.state.write();
+        let queue = state
+            .queues
+            .get_mut(&queue_url)
+            .ok_or_else(queue_not_found)?;
+
+        let now = Utc::now();
+        let mut successful = Vec::new();
+        let mut failed: Vec<Value> = Vec::new();
+
+        for entry in &entries {
+            let id = match entry["Id"].as_str() {
+                Some(id) => id.to_string(),
+                None => continue,
+            };
+            let message_body = match entry["MessageBody"].as_str() {
+                Some(b) => b.to_string(),
+                None => {
+                    failed.push(json!({
+                        "Id": id,
+                        "SenderFault": true,
+                        "Code": "MissingParameter",
+                        "Message": "MessageBody is required",
+                    }));
+                    continue;
+                }
+            };
+
+            let delay: i64 = entry["DelaySeconds"].as_i64().unwrap_or(0);
+            let visible_at = if delay > 0 {
+                Some(now + chrono::Duration::seconds(delay))
+            } else {
+                None
+            };
+
+            let message_group_id = entry["MessageGroupId"].as_str().map(|s| s.to_string());
+            let message_dedup_id = entry["MessageDeduplicationId"]
+                .as_str()
+                .map(|s| s.to_string());
+            let message_attributes = parse_message_attributes(entry);
+
+            let msg = SqsMessage {
+                message_id: uuid::Uuid::new_v4().to_string(),
+                receipt_handle: None,
+                md5_of_body: md5_hex(&message_body),
+                body: message_body,
+                sent_timestamp: now.timestamp_millis(),
+                attributes: HashMap::new(),
+                message_attributes,
+                visible_at,
+                receive_count: 0,
+                message_group_id,
+                message_dedup_id,
+            };
+
+            successful.push(json!({
+                "Id": id,
+                "MessageId": msg.message_id,
+                "MD5OfMessageBody": msg.md5_of_body,
+            }));
+            queue.messages.push_back(msg);
+        }
+
+        Ok(json_response(json!({
+            "Successful": successful,
+            "Failed": failed,
+        })))
+    }
+
+    fn delete_message_batch(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = parse_body(req);
+        let queue_url = body["QueueUrl"]
+            .as_str()
+            .ok_or_else(|| missing_param("QueueUrl"))?;
+
+        let entries = body["Entries"]
+            .as_array()
+            .ok_or_else(|| missing_param("Entries"))?
+            .clone();
+
+        let mut state = self.state.write();
+        let queue = state
+            .queues
+            .get_mut(queue_url)
+            .ok_or_else(queue_not_found)?;
+
+        let mut successful = Vec::new();
+        let mut failed: Vec<Value> = Vec::new();
+
+        for entry in &entries {
+            let id = match entry["Id"].as_str() {
+                Some(id) => id.to_string(),
+                None => continue,
+            };
+            let receipt_handle = match entry["ReceiptHandle"].as_str() {
+                Some(rh) => rh,
+                None => {
+                    failed.push(json!({
+                        "Id": id,
+                        "SenderFault": true,
+                        "Code": "MissingParameter",
+                        "Message": "ReceiptHandle is required",
+                    }));
+                    continue;
+                }
+            };
+
+            queue
+                .inflight
+                .retain(|m| m.receipt_handle.as_deref() != Some(receipt_handle));
+
+            successful.push(json!({ "Id": id }));
+        }
+
+        Ok(json_response(json!({
+            "Successful": successful,
+            "Failed": failed,
+        })))
+    }
+}
+
+fn parse_message_attributes(body: &Value) -> HashMap<String, MessageAttribute> {
+    let mut result = HashMap::new();
+    if let Some(attrs) = body["MessageAttributes"].as_object() {
+        for (name, val) in attrs {
+            let data_type = val["DataType"].as_str().unwrap_or("String").to_string();
+            let string_value = val["StringValue"].as_str().map(|s| s.to_string());
+            result.insert(
+                name.clone(),
+                MessageAttribute {
+                    data_type,
+                    string_value,
+                },
+            );
+        }
+    }
+    result
 }
 
 fn missing_param(name: &str) -> AwsServiceError {

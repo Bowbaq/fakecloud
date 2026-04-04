@@ -4,6 +4,12 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
+pub struct MessageAttribute {
+    pub data_type: String,
+    pub string_value: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct SqsMessage {
     pub message_id: String,
     pub receipt_handle: Option<String>,
@@ -11,6 +17,7 @@ pub struct SqsMessage {
     pub md5_of_body: String,
     pub sent_timestamp: i64,
     pub attributes: HashMap<String, String>,
+    pub message_attributes: HashMap<String, MessageAttribute>,
     /// When this message becomes visible again (after ReceiveMessage)
     pub visible_at: Option<DateTime<Utc>>,
     pub receive_count: u32,
@@ -18,6 +25,12 @@ pub struct SqsMessage {
     pub message_group_id: Option<String>,
     /// For FIFO: dedup ID
     pub message_dedup_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RedrivePolicy {
+    pub dead_letter_target_arn: String,
+    pub max_receive_count: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -32,20 +45,24 @@ pub struct SqsQueue {
     pub is_fifo: bool,
     /// For FIFO dedup: dedup_id -> expiry
     pub dedup_cache: HashMap<String, DateTime<Utc>>,
+    /// DLQ redrive policy
+    pub redrive_policy: Option<RedrivePolicy>,
 }
 
 pub struct SqsState {
     pub account_id: String,
     pub region: String,
+    pub endpoint: String,
     pub queues: HashMap<String, SqsQueue>, // queue_url -> queue
     pub name_to_url: HashMap<String, String>, // queue_name -> queue_url
 }
 
 impl SqsState {
-    pub fn new(account_id: &str, region: &str) -> Self {
+    pub fn new(account_id: &str, region: &str, endpoint: &str) -> Self {
         Self {
             account_id: account_id.to_string(),
             region: region.to_string(),
+            endpoint: endpoint.to_string(),
             queues: HashMap::new(),
             name_to_url: HashMap::new(),
         }

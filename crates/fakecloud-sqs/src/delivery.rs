@@ -38,6 +38,7 @@ impl SqsDelivery for SqsDeliveryImpl {
                 body: message_body.to_string(),
                 sent_timestamp: now.timestamp_millis(),
                 attributes: HashMap::new(),
+                message_attributes: HashMap::new(),
                 visible_at: None,
                 receive_count: 0,
                 message_group_id: None,

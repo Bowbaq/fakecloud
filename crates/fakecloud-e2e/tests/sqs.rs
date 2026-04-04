@@ -1,5 +1,9 @@
 mod helpers;
 
+use aws_sdk_sqs::types::{
+    DeleteMessageBatchRequestEntry, MessageAttributeValue, QueueAttributeName,
+    SendMessageBatchRequestEntry,
+};
 use helpers::TestServer;
 
 #[tokio::test]
@@ -211,4 +215,197 @@ async fn sqs_cli_create_and_list() {
     let urls = json["QueueUrls"].as_array().unwrap();
     assert_eq!(urls.len(), 1);
     assert!(urls[0].as_str().unwrap().contains("cli-queue"));
+}
+
+#[tokio::test]
+async fn sqs_send_message_batch() {
+    let server = TestServer::start().await;
+    let client = server.sqs_client().await;
+
+    let resp = client
+        .create_queue()
+        .queue_name("batch-send-queue")
+        .send()
+        .await
+        .unwrap();
+    let queue_url = resp.queue_url().unwrap().to_string();
+
+    let entries: Vec<SendMessageBatchRequestEntry> = (0..3)
+        .map(|i| {
+            SendMessageBatchRequestEntry::builder()
+                .id(format!("msg-{i}"))
+                .message_body(format!("batch message {i}"))
+                .build()
+                .unwrap()
+        })
+        .collect();
+
+    let batch_resp = client
+        .send_message_batch()
+        .queue_url(&queue_url)
+        .set_entries(Some(entries))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(batch_resp.successful().len(), 3);
+    assert!(batch_resp.failed().is_empty());
+
+    // Verify all messages are receivable
+    let recv_resp = client
+        .receive_message()
+        .queue_url(&queue_url)
+        .max_number_of_messages(10)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(recv_resp.messages().len(), 3);
+}
+
+#[tokio::test]
+async fn sqs_delete_message_batch() {
+    let server = TestServer::start().await;
+    let client = server.sqs_client().await;
+
+    let resp = client
+        .create_queue()
+        .queue_name("batch-delete-queue")
+        .send()
+        .await
+        .unwrap();
+    let queue_url = resp.queue_url().unwrap().to_string();
+
+    // Send 3 messages
+    for i in 0..3 {
+        client
+            .send_message()
+            .queue_url(&queue_url)
+            .message_body(format!("delete me {i}"))
+            .send()
+            .await
+            .unwrap();
+    }
+
+    // Receive all messages
+    let recv_resp = client
+        .receive_message()
+        .queue_url(&queue_url)
+        .max_number_of_messages(10)
+        .send()
+        .await
+        .unwrap();
+    let messages = recv_resp.messages();
+    assert_eq!(messages.len(), 3);
+
+    // Delete them in a batch
+    let entries: Vec<DeleteMessageBatchRequestEntry> = messages
+        .iter()
+        .enumerate()
+        .map(|(i, m)| {
+            DeleteMessageBatchRequestEntry::builder()
+                .id(format!("del-{i}"))
+                .receipt_handle(m.receipt_handle().unwrap())
+                .build()
+                .unwrap()
+        })
+        .collect();
+
+    let del_resp = client
+        .delete_message_batch()
+        .queue_url(&queue_url)
+        .set_entries(Some(entries))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(del_resp.successful().len(), 3);
+    assert!(del_resp.failed().is_empty());
+}
+
+#[tokio::test]
+async fn sqs_set_queue_attributes() {
+    let server = TestServer::start().await;
+    let client = server.sqs_client().await;
+
+    let resp = client
+        .create_queue()
+        .queue_name("attrs-queue")
+        .send()
+        .await
+        .unwrap();
+    let queue_url = resp.queue_url().unwrap().to_string();
+
+    // Set attributes
+    client
+        .set_queue_attributes()
+        .queue_url(&queue_url)
+        .attributes(QueueAttributeName::VisibilityTimeout, "60")
+        .attributes(QueueAttributeName::DelaySeconds, "5")
+        .send()
+        .await
+        .unwrap();
+
+    // Get and verify
+    let attrs_resp = client
+        .get_queue_attributes()
+        .queue_url(&queue_url)
+        .attribute_names(QueueAttributeName::All)
+        .send()
+        .await
+        .unwrap();
+
+    let attrs = attrs_resp.attributes().unwrap();
+    assert_eq!(
+        attrs.get(&QueueAttributeName::VisibilityTimeout).unwrap(),
+        "60"
+    );
+    assert_eq!(attrs.get(&QueueAttributeName::DelaySeconds).unwrap(), "5");
+}
+
+#[tokio::test]
+async fn sqs_message_attributes() {
+    let server = TestServer::start().await;
+    let client = server.sqs_client().await;
+
+    let resp = client
+        .create_queue()
+        .queue_name("msg-attrs-queue")
+        .send()
+        .await
+        .unwrap();
+    let queue_url = resp.queue_url().unwrap().to_string();
+
+    // Send message with attributes
+    let attr_value = MessageAttributeValue::builder()
+        .data_type("String")
+        .string_value("test-value")
+        .build()
+        .unwrap();
+
+    client
+        .send_message()
+        .queue_url(&queue_url)
+        .message_body("hello with attrs")
+        .message_attributes("my-attr", attr_value)
+        .send()
+        .await
+        .unwrap();
+
+    // Receive and verify attributes
+    let recv_resp = client
+        .receive_message()
+        .queue_url(&queue_url)
+        .message_attribute_names("All")
+        .send()
+        .await
+        .unwrap();
+
+    let messages = recv_resp.messages();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].body().unwrap(), "hello with attrs");
+
+    let msg_attrs = messages[0].message_attributes().unwrap();
+    let attr = msg_attrs.get("my-attr").unwrap();
+    assert_eq!(attr.data_type(), "String");
+    assert_eq!(attr.string_value().unwrap(), "test-value");
 }
