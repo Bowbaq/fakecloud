@@ -368,7 +368,7 @@ async fn ssm_secure_string_with_decryption() {
         .await
         .unwrap();
 
-    // Get WITHOUT WithDecryption (default) - should be masked
+    // Get WITHOUT WithDecryption (default) - returns kms-prefixed "encrypted" form
     let resp = client
         .get_parameter()
         .name("/secret/password")
@@ -376,7 +376,10 @@ async fn ssm_secure_string_with_decryption() {
         .await
         .unwrap();
     let param = resp.parameter().unwrap();
-    assert_eq!(param.value().unwrap(), "****");
+    assert_eq!(
+        param.value().unwrap(),
+        "kms:alias/aws/ssm:super-secret-123"
+    );
 
     // Get WITH WithDecryption=true - should return actual value
     let resp = client
@@ -387,8 +390,5 @@ async fn ssm_secure_string_with_decryption() {
         .await
         .unwrap();
     let param = resp.parameter().unwrap();
-    assert_eq!(
-        param.value().unwrap(),
-        "kms:alias/aws/ssm:super-secret-123"
-    );
+    assert_eq!(param.value().unwrap(), "super-secret-123");
 }

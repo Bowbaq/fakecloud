@@ -170,12 +170,15 @@ fn param_to_json(p: &SsmParameter, with_value: bool, with_decryption: bool) -> V
         "DataType": p.data_type,
     });
     if with_value {
-        if p.param_type == "SecureString" && !with_decryption {
-            v["Value"] = json!("****");
-        } else if p.param_type == "SecureString" && with_decryption {
-            // Moto returns kms:KEY_ID:VALUE for decrypted secure strings
+        if p.param_type == "SecureString" {
             let key_id = p.key_id.as_deref().unwrap_or("alias/aws/ssm");
-            v["Value"] = json!(format!("kms:{}:{}", key_id, p.value));
+            if with_decryption {
+                // Decrypted: return plain value
+                v["Value"] = json!(p.value);
+            } else {
+                // Not decrypted: return kms:KEY_ID:VALUE (Moto format)
+                v["Value"] = json!(format!("kms:{}:{}", key_id, p.value));
+            }
         } else {
             v["Value"] = json!(p.value);
         }
@@ -915,15 +918,9 @@ impl SsmService {
             .history
             .iter()
             .map(|h| {
-                let value = if h.param_type == "SecureString" {
-                    let kid = h.key_id.as_deref().unwrap_or("alias/aws/ssm");
-                    format!("kms:{}:{}", kid, h.value)
-                } else {
-                    h.value.clone()
-                };
                 let mut entry = json!({
                     "Name": param.name,
-                    "Value": value,
+                    "Value": h.value,
                     "Version": h.version,
                     "LastModifiedDate": h.last_modified.timestamp_millis() as f64 / 1000.0,
                     "Type": h.param_type,
@@ -941,15 +938,9 @@ impl SsmService {
             .collect();
 
         // Include current version
-        let current_value = if param.param_type == "SecureString" {
-            let kid = param.key_id.as_deref().unwrap_or("alias/aws/ssm");
-            format!("kms:{}:{}", kid, param.value)
-        } else {
-            param.value.clone()
-        };
         let mut current = json!({
             "Name": param.name,
-            "Value": current_value,
+            "Value": param.value,
             "Version": param.version,
             "LastModifiedDate": param.last_modified.timestamp_millis() as f64 / 1000.0,
             "Type": param.param_type,
@@ -1944,25 +1935,46 @@ fn apply_parameter_filters(param: &SsmParameter, filters: Option<&Vec<Value>>) -
                 "Equals" => values.iter().any(|v| param.name == *v),
                 _ => true,
             },
-            "Path" => match option {
-                "Recursive" => values.iter().any(|v| {
-                    let prefix = if v.ends_with('/') {
-                        v.to_string()
-                    } else {
-                        format!("{v}/")
-                    };
-                    param.name.starts_with(&prefix)
-                }),
-                "OneLevel" => values.iter().any(|v| {
-                    let prefix = if v.ends_with('/') {
-                        v.to_string()
-                    } else {
-                        format!("{v}/")
-                    };
-                    param.name.starts_with(&prefix) && !param.name[prefix.len()..].contains('/')
-                }),
-                _ => true,
-            },
+            "Path" => {
+                // Default option for Path is OneLevel
+                let path_option = if option == "Equals" {
+                    "OneLevel"
+                } else {
+                    option
+                };
+                match path_option {
+                    "Recursive" => values.iter().any(|v| {
+                        if *v == "/" {
+                            true // All params are under root
+                        } else {
+                            let prefix = if v.ends_with('/') {
+                                v.to_string()
+                            } else {
+                                format!("{v}/")
+                            };
+                            param.name.starts_with(&prefix)
+                        }
+                    }),
+                    _ => values.iter().any(|v| {
+                        if *v == "/" {
+                            // Root level: no-slash params or single-level /params
+                            if param.name.starts_with('/') {
+                                !param.name[1..].contains('/')
+                            } else {
+                                !param.name.contains('/')
+                            }
+                        } else {
+                            let prefix = if v.ends_with('/') {
+                                v.to_string()
+                            } else {
+                                format!("{v}/")
+                            };
+                            param.name.starts_with(&prefix)
+                                && !param.name[prefix.len()..].contains('/')
+                        }
+                    }),
+                }
+            }
             "Type" => {
                 if values.is_empty() {
                     true
@@ -1990,7 +2002,11 @@ fn apply_parameter_filters(param: &SsmParameter, filters: Option<&Vec<Value>>) -
                     if values.is_empty() {
                         true
                     } else {
-                        values.contains(&tag_val.as_str())
+                        match option {
+                            "BeginsWith" => values.iter().any(|v| tag_val.starts_with(v)),
+                            "Contains" => values.iter().any(|v| tag_val.contains(v)),
+                            _ => values.contains(&tag_val.as_str()),
+                        }
                     }
                 } else {
                     false
