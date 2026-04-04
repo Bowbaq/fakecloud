@@ -63,7 +63,10 @@ async fn main() {
     let mut registry = ServiceRegistry::new();
     registry.register(Arc::new(SqsService::new(sqs_state)));
     registry.register(Arc::new(SnsService::new(sns_state)));
-    registry.register(Arc::new(EventBridgeService::new()));
+    let eb_state = Arc::new(parking_lot::RwLock::new(
+        fakecloud_eventbridge::state::EventBridgeState::new(&cli.account_id, &cli.region),
+    ));
+    registry.register(Arc::new(EventBridgeService::new(eb_state)));
     registry.register(Arc::new(IamService::new(iam_state.clone())));
     registry.register(Arc::new(StsService::new(iam_state)));
     let ssm_state = Arc::new(parking_lot::RwLock::new(
