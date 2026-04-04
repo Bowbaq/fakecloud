@@ -594,3 +594,65 @@ async fn sqs_change_message_visibility_batch() {
         .unwrap();
     assert_eq!(recv_resp2.messages().len(), 3);
 }
+
+/// Fair Queues: when multiple message groups exist on a standard queue,
+/// messages from groups with fewer in-flight messages are prioritized.
+#[tokio::test]
+async fn sqs_fair_queues_prioritize_quiet_groups() {
+    let server = TestServer::start().await;
+    let client = server.sqs_client().await;
+
+    let resp = client
+        .create_queue()
+        .queue_name("fair-queue")
+        .send()
+        .await
+        .unwrap();
+    let queue_url = resp.queue_url().unwrap().to_string();
+
+    // Send 5 messages from "noisy-tenant" and 1 from "quiet-tenant"
+    for i in 0..5 {
+        client
+            .send_message()
+            .queue_url(&queue_url)
+            .message_body(format!("noisy-{i}"))
+            .message_group_id("noisy-tenant")
+            .send()
+            .await
+            .unwrap();
+    }
+    client
+        .send_message()
+        .queue_url(&queue_url)
+        .message_body("quiet-0")
+        .message_group_id("quiet-tenant")
+        .send()
+        .await
+        .unwrap();
+
+    // Receive 3 messages (simulating first consumer batch) — puts them in-flight
+    let batch1 = client
+        .receive_message()
+        .queue_url(&queue_url)
+        .max_number_of_messages(3)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(batch1.messages().len(), 3);
+
+    // Now noisy-tenant has 3 in-flight, quiet-tenant has 0.
+    // Next receive should prioritize quiet-tenant's message.
+    let batch2 = client
+        .receive_message()
+        .queue_url(&queue_url)
+        .max_number_of_messages(1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(batch2.messages().len(), 1);
+    assert_eq!(
+        batch2.messages()[0].body().unwrap(),
+        "quiet-0",
+        "fair queues should prioritize the quiet tenant's message"
+    );
+}

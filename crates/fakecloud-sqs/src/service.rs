@@ -429,22 +429,21 @@ impl SqsService {
         let redrive_policy = queue.redrive_policy.clone();
 
         let mut received = Vec::new();
-        let mut remaining = VecDeque::new();
         let mut dlq_messages = Vec::new();
 
-        // For FIFO queues, track the chosen message group
-        let mut fifo_group: Option<String> = None;
+        if is_fifo {
+            // FIFO: strict per-group ordering, deliver from one group only
+            let mut fifo_group: Option<String> = None;
+            let mut remaining = VecDeque::new();
 
-        while let Some(mut msg) = queue.messages.pop_front() {
-            if let Some(visible_at) = msg.visible_at {
-                if visible_at > now {
-                    remaining.push_back(msg);
-                    continue;
+            while let Some(mut msg) = queue.messages.pop_front() {
+                if let Some(visible_at) = msg.visible_at {
+                    if visible_at > now {
+                        remaining.push_back(msg);
+                        continue;
+                    }
                 }
-            }
 
-            // FIFO: only deliver from one message group per request
-            if is_fifo {
                 if let Some(ref group) = msg.message_group_id {
                     match fifo_group {
                         None => fifo_group = Some(group.clone()),
@@ -455,32 +454,83 @@ impl SqsService {
                         _ => {}
                     }
                 }
+
+                if received.len() < max_messages {
+                    msg.receive_count += 1;
+                    if let Some(ref rp) = redrive_policy {
+                        if msg.receive_count >= rp.max_receive_count {
+                            dlq_messages.push((rp.dead_letter_target_arn.clone(), msg));
+                            continue;
+                        }
+                    }
+                    msg.receipt_handle = Some(uuid::Uuid::new_v4().to_string());
+                    msg.visible_at = Some(now + chrono::Duration::seconds(visibility_timeout));
+                    received.push(msg);
+                } else {
+                    remaining.push_back(msg);
+                    break;
+                }
             }
 
-            if received.len() < max_messages {
-                msg.receive_count += 1;
+            while let Some(m) = queue.messages.pop_front() {
+                remaining.push_back(m);
+            }
+            queue.messages = remaining;
+        } else {
+            // Standard queue with Fair Queues support:
+            // When messages have MessageGroupId, prioritize groups with fewer
+            // in-flight messages to prevent noisy neighbor starvation.
 
-                // Check DLQ redrive
-                if let Some(ref rp) = redrive_policy {
-                    if msg.receive_count >= rp.max_receive_count {
-                        dlq_messages.push((rp.dead_letter_target_arn.clone(), msg));
+            // Count in-flight messages per group
+            let mut inflight_per_group: HashMap<String, usize> = HashMap::new();
+            for m in &queue.inflight {
+                if let Some(ref group) = m.message_group_id {
+                    *inflight_per_group.entry(group.clone()).or_default() += 1;
+                }
+            }
+
+            // Collect all visible messages
+            let mut visible: Vec<SqsMessage> = Vec::new();
+            let mut remaining = VecDeque::new();
+            while let Some(msg) = queue.messages.pop_front() {
+                if let Some(visible_at) = msg.visible_at {
+                    if visible_at > now {
+                        remaining.push_back(msg);
                         continue;
                     }
                 }
-
-                msg.receipt_handle = Some(uuid::Uuid::new_v4().to_string());
-                msg.visible_at = Some(now + chrono::Duration::seconds(visibility_timeout));
-                received.push(msg);
-            } else {
-                remaining.push_back(msg);
-                break;
+                visible.push(msg);
             }
-        }
 
-        while let Some(m) = queue.messages.pop_front() {
-            remaining.push_back(m);
+            // Sort by fairness: messages from groups with fewer in-flight messages come first.
+            // Messages without a group ID are treated as having 0 in-flight (highest priority).
+            visible.sort_by_key(|m| {
+                m.message_group_id
+                    .as_ref()
+                    .and_then(|g| inflight_per_group.get(g).copied())
+                    .unwrap_or(0)
+            });
+
+            // Pick up to max_messages from the sorted list
+            for mut msg in visible {
+                if received.len() < max_messages {
+                    msg.receive_count += 1;
+                    if let Some(ref rp) = redrive_policy {
+                        if msg.receive_count >= rp.max_receive_count {
+                            dlq_messages.push((rp.dead_letter_target_arn.clone(), msg));
+                            continue;
+                        }
+                    }
+                    msg.receipt_handle = Some(uuid::Uuid::new_v4().to_string());
+                    msg.visible_at = Some(now + chrono::Duration::seconds(visibility_timeout));
+                    received.push(msg);
+                } else {
+                    remaining.push_back(msg);
+                }
+            }
+
+            queue.messages = remaining;
         }
-        queue.messages = remaining;
 
         for msg in &received {
             queue.inflight.push(msg.clone());
