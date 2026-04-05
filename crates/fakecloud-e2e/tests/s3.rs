@@ -665,3 +665,229 @@ async fn s3_cors_preflight_and_response_headers() {
         .unwrap();
     assert_eq!(resp.status(), 403);
 }
+// ---- S3 Object Lock Tests ----
+
+#[tokio::test]
+async fn s3_object_lock_prevents_delete() {
+    let server = TestServer::start().await;
+    let s3 = server.s3_client().await;
+
+    // Create bucket with object lock enabled
+    let output = server
+        .aws_cli(&[
+            "s3api",
+            "create-bucket",
+            "--bucket",
+            "lock-bucket",
+            "--object-lock-enabled-for-bucket",
+        ])
+        .await;
+    assert!(
+        output.success(),
+        "Failed to create lock bucket: {}",
+        output.stderr_text()
+    );
+
+    // Put object and capture version ID
+    let put_resp = s3
+        .put_object()
+        .bucket("lock-bucket")
+        .key("locked.txt")
+        .body(ByteStream::from_static(b"precious data"))
+        .send()
+        .await
+        .unwrap();
+    let version_id = put_resp.version_id().unwrap().to_string();
+
+    // Set retention on the object (GOVERNANCE mode, 1 day in the future)
+    let retain_until = chrono::Utc::now() + chrono::Duration::days(1);
+    let output = server
+        .aws_cli(&[
+            "s3api",
+            "put-object-retention",
+            "--bucket",
+            "lock-bucket",
+            "--key",
+            "locked.txt",
+            "--retention",
+            &format!(
+                r#"{{"Mode":"GOVERNANCE","RetainUntilDate":"{}"}}"#,
+                retain_until.format("%Y-%m-%dT%H:%M:%SZ")
+            ),
+        ])
+        .await;
+    assert!(
+        output.success(),
+        "Failed to set retention: {}",
+        output.stderr_text()
+    );
+
+    // Try to delete specific version - should fail with 403
+    let result = s3
+        .delete_object()
+        .bucket("lock-bucket")
+        .key("locked.txt")
+        .version_id(&version_id)
+        .send()
+        .await;
+    assert!(result.is_err(), "Delete of locked object should fail");
+
+    // Delete with governance bypass should succeed
+    let output = server
+        .aws_cli(&[
+            "s3api",
+            "delete-object",
+            "--bucket",
+            "lock-bucket",
+            "--key",
+            "locked.txt",
+            "--version-id",
+            &version_id,
+            "--bypass-governance-retention",
+        ])
+        .await;
+    assert!(
+        output.success(),
+        "Governance bypass delete should succeed: {}",
+        output.stderr_text()
+    );
+}
+
+#[tokio::test]
+async fn s3_object_lock_legal_hold_prevents_delete() {
+    let server = TestServer::start().await;
+    let s3 = server.s3_client().await;
+
+    // Create bucket with object lock
+    let output = server
+        .aws_cli(&[
+            "s3api",
+            "create-bucket",
+            "--bucket",
+            "hold-bucket",
+            "--object-lock-enabled-for-bucket",
+        ])
+        .await;
+    assert!(output.success());
+
+    // Put object and capture version ID
+    let put_resp = s3
+        .put_object()
+        .bucket("hold-bucket")
+        .key("held.txt")
+        .body(ByteStream::from_static(b"held data"))
+        .send()
+        .await
+        .unwrap();
+    let version_id = put_resp.version_id().unwrap().to_string();
+
+    // Set legal hold ON
+    let output = server
+        .aws_cli(&[
+            "s3api",
+            "put-object-legal-hold",
+            "--bucket",
+            "hold-bucket",
+            "--key",
+            "held.txt",
+            "--legal-hold",
+            r#"{"Status":"ON"}"#,
+        ])
+        .await;
+    assert!(
+        output.success(),
+        "Failed to set legal hold: {}",
+        output.stderr_text()
+    );
+
+    // Try to delete specific version - should fail
+    let result = s3
+        .delete_object()
+        .bucket("hold-bucket")
+        .key("held.txt")
+        .version_id(&version_id)
+        .send()
+        .await;
+    assert!(result.is_err(), "Delete of legally held object should fail");
+
+    // Remove legal hold
+    let output = server
+        .aws_cli(&[
+            "s3api",
+            "put-object-legal-hold",
+            "--bucket",
+            "hold-bucket",
+            "--key",
+            "held.txt",
+            "--legal-hold",
+            r#"{"Status":"OFF"}"#,
+        ])
+        .await;
+    assert!(output.success());
+
+    // Now delete should succeed
+    let result = s3
+        .delete_object()
+        .bucket("hold-bucket")
+        .key("held.txt")
+        .version_id(&version_id)
+        .send()
+        .await;
+    assert!(
+        result.is_ok(),
+        "Delete after removing legal hold should succeed"
+    );
+}
+
+#[tokio::test]
+async fn s3_object_lock_prevents_overwrite() {
+    let server = TestServer::start().await;
+    let s3 = server.s3_client().await;
+
+    // Create bucket with object lock
+    let output = server
+        .aws_cli(&[
+            "s3api",
+            "create-bucket",
+            "--bucket",
+            "overwrite-lock-bucket",
+            "--object-lock-enabled-for-bucket",
+        ])
+        .await;
+    assert!(output.success());
+
+    // Put object with retention
+    let retain_until = chrono::Utc::now() + chrono::Duration::days(1);
+    s3.put_object()
+        .bucket("overwrite-lock-bucket")
+        .key("locked.txt")
+        .body(ByteStream::from_static(b"original"))
+        .object_lock_mode(aws_sdk_s3::types::ObjectLockMode::Governance)
+        .object_lock_retain_until_date(aws_sdk_s3::primitives::DateTime::from_millis(
+            retain_until.timestamp_millis(),
+        ))
+        .send()
+        .await
+        .unwrap();
+
+    // Try to overwrite - should fail with 403
+    let result = s3
+        .put_object()
+        .bucket("overwrite-lock-bucket")
+        .key("locked.txt")
+        .body(ByteStream::from_static(b"overwritten"))
+        .send()
+        .await;
+    assert!(result.is_err(), "Overwrite of locked object should fail");
+
+    // Verify original data is still there
+    let resp = s3
+        .get_object()
+        .bucket("overwrite-lock-bucket")
+        .key("locked.txt")
+        .send()
+        .await
+        .unwrap();
+    let body = resp.body.collect().await.unwrap().into_bytes();
+    assert_eq!(body.as_ref(), b"original");
+}
