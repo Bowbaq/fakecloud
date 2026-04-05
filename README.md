@@ -22,27 +22,30 @@ Part of the [faisca project family](https://github.com/faiscadev).
 ## Why FakeCloud?
 
 In March 2026, LocalStack replaced its open-source Community Edition with a
-proprietary single image that requires an account and auth token to run. A free
-"Hobby" tier exists but is restricted to non-commercial use. FakeCloud is a fully
-open-source alternative -- no account, no auth, no restrictions.
+proprietary image that requires an account and auth token. Several open-source
+alternatives have emerged since then. Here's how they compare:
 
 ### Comparison
 
-| Feature | FakeCloud | LocalStack |
-|---|---|---|
-| License | AGPL-3.0 | Proprietary |
-| Auth required | No | Yes (account + token) |
-| Free tier | Fully open source | Non-commercial only |
-| Commercial use | Free | Paid plans only |
-| Single port | Yes (4566) | Yes (4566) |
-| S3 | 16 actions | All plans |
-| SQS | 20 actions | All plans |
-| SNS | 16 actions | All plans |
-| EventBridge | 15 actions | All plans |
-| IAM / STS | 100+ actions | All plans |
-| SSM Parameter Store | 28 actions | All plans |
-| Cross-service delivery | Yes | Yes |
-| Scheduled rules fire | Yes | Yes |
+| Feature | FakeCloud | LocalStack | [Floci](https://github.com/hectorvent/floci) | [MiniStack](https://github.com/Nahuel990/ministack) |
+|---|---|---|---|---|
+| License | AGPL-3.0 | Proprietary | Apache-2.0 | MIT |
+| Language | Rust | Python | Java (Quarkus Native) | Python |
+| Auth required | No | Yes (account + token) | No | No |
+| Commercial use | Free | Paid plans only | Free | Free |
+| AWS services | 6 | 80+ | 22+ | 38 |
+| S3 | Yes (16 actions) | Yes | Yes | Yes |
+| SQS | Yes (20 actions) | Yes | Yes | Yes |
+| SNS | Yes (16 actions) | Yes | Yes | Yes |
+| EventBridge | Yes (15 actions) | Yes | Yes | Yes |
+| IAM / STS | Yes (100+ actions) | Yes | Yes | Yes |
+| SSM | Yes (28 actions) | Yes | Yes | Yes |
+| DynamoDB | -- | Yes | Yes | Yes |
+| Lambda | -- | Yes | Yes (real containers) | Yes (real execution) |
+| Secrets Manager | -- | Yes | Yes | Yes |
+| Step Functions | -- | Yes | Yes | Yes |
+| CloudFormation | -- | Yes | Yes | -- |
+| RDS | -- | Yes | Yes (real containers) | Yes (real containers) |
 
 ## Quick Start
 
