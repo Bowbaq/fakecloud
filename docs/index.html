@@ -328,7 +328,7 @@
 <section id="compare">
   <div class="container">
     <h2 class="section-title">How it compares</h2>
-    <p class="section-sub">FakeCloud is not trying to emulate all of AWS. It does less, better, for free.</p>
+    <p class="section-sub">Open-source AWS emulators that emerged after LocalStack went proprietary.</p>
     <div class="table-wrap">
       <table>
         <thead>
@@ -336,48 +336,59 @@
             <th></th>
             <th>FakeCloud</th>
             <th>LocalStack</th>
+            <th><a href="https://github.com/hectorvent/floci">Floci</a></th>
+            <th><a href="https://github.com/Nahuel990/ministack">MiniStack</a></th>
           </tr>
         </thead>
         <tbody>
           <tr>
-            <td>Free tier</td>
-            <td class="check">Yes, fully open source</td>
-            <td class="cross">Removed (was Community Ed.)</td>
+            <td>License</td>
+            <td class="check">AGPL-3.0</td>
+            <td class="cross">Proprietary</td>
+            <td class="check">MIT</td>
+            <td class="check">MIT</td>
           </tr>
           <tr>
-            <td>SQS</td>
-            <td class="check">Yes</td>
-            <td class="check">Paid</td>
-          </tr>
-          <tr>
-            <td>SNS</td>
-            <td class="check">Yes</td>
-            <td class="check">Paid</td>
-          </tr>
-          <tr>
-            <td>EventBridge</td>
-            <td class="check">Yes, with scheduling</td>
-            <td class="check">Paid</td>
-          </tr>
-          <tr>
-            <td>SSM Parameters</td>
-            <td class="check">Yes</td>
-            <td class="check">Paid</td>
-          </tr>
-          <tr>
-            <td>Cross-service delivery</td>
-            <td class="check">SNS&#8594;SQS, EB&#8594;SQS</td>
-            <td class="check">Yes</td>
+            <td>Language</td>
+            <td>Rust</td>
+            <td>Python</td>
+            <td>Java (Quarkus)</td>
+            <td>Python</td>
           </tr>
           <tr>
             <td>Auth required</td>
             <td class="check">No</td>
-            <td class="partial">Optional</td>
+            <td class="cross">Yes (account + token)</td>
+            <td class="check">No</td>
+            <td class="check">No</td>
           </tr>
           <tr>
-            <td>Service count</td>
-            <td>5 (focused)</td>
-            <td>80+ (paid)</td>
+            <td>Commercial use</td>
+            <td class="check">Free</td>
+            <td class="cross">Paid plans only</td>
+            <td class="check">Free</td>
+            <td class="check">Free</td>
+          </tr>
+          <tr>
+            <td>AWS services</td>
+            <td>6</td>
+            <td>80+</td>
+            <td>25</td>
+            <td>38</td>
+          </tr>
+          <tr>
+            <td>Cross-service delivery</td>
+            <td class="check">Yes</td>
+            <td class="check">Yes</td>
+            <td class="check">Yes</td>
+            <td class="check">Yes</td>
+          </tr>
+          <tr>
+            <td>Scheduled rules fire</td>
+            <td class="check">Yes</td>
+            <td class="check">Yes</td>
+            <td class="cross">No</td>
+            <td class="cross">No</td>
           </tr>
         </tbody>
       </table>

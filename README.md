@@ -34,18 +34,8 @@ alternatives have emerged since then. Here's how they compare:
 | Auth required | No | Yes (account + token) | No | No |
 | Commercial use | Free | Paid plans only | Free | Free |
 | AWS services | 6 | 80+ | 25 | 38 |
-| S3 | Yes | Yes | Yes | Yes |
-| SQS | Yes | Yes | Yes | Yes |
-| SNS | Yes | Yes | Yes | Yes |
-| EventBridge | Yes | Yes | Yes | Yes |
-| IAM / STS | Yes | Yes | Yes | Yes |
-| SSM | Yes | Yes | Yes | Yes |
-| DynamoDB | -- | Yes | Yes | Yes |
-| Lambda | -- | Yes | Yes | Yes |
-| Secrets Manager | -- | Yes | Yes | Yes |
-| Step Functions | -- | Yes | Yes | Yes |
-| CloudFormation | -- | Yes | Yes | Yes |
-| RDS | -- | Yes | Yes | Yes |
+| Cross-service delivery | Yes | Yes | Yes | Yes |
+| Scheduled rules fire | Yes | Yes | -- | -- |
 
 ## Quick Start
 
