@@ -17,7 +17,7 @@ edition = "2021"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/faiscadev/fakecloud"
 homepage = "https://fakecloud.dev"
-rust-version = "1.85"
+rust-version = "1.94"
 version = "0.1.0"
 
 [workspace.dependencies]
