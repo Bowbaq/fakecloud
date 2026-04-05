@@ -10,6 +10,7 @@ members = [
     "crates/fakecloud-ssm",
     "crates/fakecloud-s3",
     "crates/fakecloud-logs",
+    "crates/fakecloud-kms",
     "crates/fakecloud-e2e",
 ]
 resolver = "2"
@@ -61,3 +62,4 @@ fakecloud-iam = { path = "crates/fakecloud-iam", version = "0.1.1" }
 fakecloud-ssm = { path = "crates/fakecloud-ssm", version = "0.1.1" }
 fakecloud-s3 = { path = "crates/fakecloud-s3", version = "0.1.1" }
 fakecloud-logs = { path = "crates/fakecloud-logs", version = "0.1.1" }
+fakecloud-kms = { path = "crates/fakecloud-kms", version = "0.1.1" }
