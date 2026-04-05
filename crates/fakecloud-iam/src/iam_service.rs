@@ -4,6 +4,7 @@ use http::StatusCode;
 
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
 
+use crate::policy_validation::validate_policy_document;
 use crate::state::{
     AccountPasswordPolicy, IamAccessKey, IamGroup, IamInstanceProfile, IamPolicy, IamRole, IamUser,
     LoginProfile, OidcProvider, PolicyVersion, SamlProvider, ServerCertificate,
@@ -1495,6 +1496,15 @@ impl IamService {
         let tags = parse_tags(&req.query_params);
         validate_tags(&tags, 0)?;
 
+        // Validate policy document
+        if let Err(msg) = validate_policy_document(&policy_document) {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "MalformedPolicyDocument",
+                msg,
+            ));
+        }
+
         let partition = partition_for_region(&req.region);
         let effective_account = self.effective_account_id(req);
 
@@ -1679,6 +1689,15 @@ impl IamService {
             .get("SetAsDefault")
             .map(|v| v == "true")
             .unwrap_or(false);
+
+        // Validate policy document
+        if let Err(msg) = validate_policy_document(&policy_document) {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "MalformedPolicyDocument",
+                msg,
+            ));
+        }
 
         let mut state = self.state.write();
 
@@ -2074,6 +2093,15 @@ impl IamService {
         let policy_name = required_param(&req.query_params, "PolicyName")?;
         let policy_document = required_param(&req.query_params, "PolicyDocument")?;
 
+        // Validate policy document
+        if let Err(msg) = validate_policy_document(&policy_document) {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "MalformedPolicyDocument",
+                msg,
+            ));
+        }
+
         let mut state = self.state.write();
 
         if !state.roles.contains_key(&role_name) {
@@ -2330,6 +2358,15 @@ impl IamService {
         let user_name = required_param(&req.query_params, "UserName")?;
         let policy_name = required_param(&req.query_params, "PolicyName")?;
         let policy_document = required_param(&req.query_params, "PolicyDocument")?;
+
+        // Validate policy document
+        if let Err(msg) = validate_policy_document(&policy_document) {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "MalformedPolicyDocument",
+                msg,
+            ));
+        }
 
         let mut state = self.state.write();
 
@@ -2789,6 +2826,15 @@ impl IamService {
         let group_name = required_param(&req.query_params, "GroupName")?;
         let policy_name = required_param(&req.query_params, "PolicyName")?;
         let policy_document = required_param(&req.query_params, "PolicyDocument")?;
+
+        // Validate policy document
+        if let Err(msg) = validate_policy_document(&policy_document) {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "MalformedPolicyDocument",
+                msg,
+            ));
+        }
 
         let mut state = self.state.write();
 
