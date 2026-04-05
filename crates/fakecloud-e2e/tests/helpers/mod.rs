@@ -105,6 +105,11 @@ impl TestServer {
         aws_sdk_lambda::Client::new(&self.aws_config().await)
     }
 
+    /// Create a Secrets Manager client.
+    pub async fn secretsmanager_client(&self) -> aws_sdk_secretsmanager::Client {
+        aws_sdk_secretsmanager::Client::new(&self.aws_config().await)
+    }
+
     /// Create a CloudWatch Logs client.
     pub async fn logs_client(&self) -> aws_sdk_cloudwatchlogs::Client {
         aws_sdk_cloudwatchlogs::Client::new(&self.aws_config().await)
