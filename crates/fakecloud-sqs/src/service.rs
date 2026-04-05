@@ -108,6 +108,17 @@ fn parse_body(req: &AwsRequest) -> Value {
         if !attrs.is_empty() {
             map.insert("Attributes".to_string(), Value::Object(attrs));
         }
+        // Handle AttributeName.N patterns (used by GetQueueAttributes in query protocol)
+        let mut attr_names = Vec::new();
+        for i in 1..=20 {
+            let key = format!("AttributeName.{i}");
+            if let Some(val) = req.query_params.get(&key) {
+                attr_names.push(Value::String(val.clone()));
+            }
+        }
+        if !attr_names.is_empty() {
+            map.insert("AttributeNames".to_string(), Value::Array(attr_names));
+        }
         // Handle batch entry patterns: *Entry.N.Field or *.N.Field
         // e.g. SendMessageBatchRequestEntry.1.Id=foo&SendMessageBatchRequestEntry.1.MessageBody=bar
         // Also: DeleteMessageBatchRequestEntry.1.Id=...&DeleteMessageBatchRequestEntry.1.ReceiptHandle=...
@@ -397,6 +408,17 @@ fn sqs_response(action: &str, body: Value, request_id: &str, is_query: bool) -> 
             }
             AwsResponse::xml(StatusCode::OK, xml_wrap(action, &inner, request_id))
         }
+        "ListDeadLetterSourceQueues" => {
+            let mut inner = String::new();
+            if let Some(urls) = body["queueUrls"].as_array() {
+                for url in urls {
+                    if let Some(u) = url.as_str() {
+                        inner.push_str(&format!("<QueueUrl>{}</QueueUrl>", xml_escape(u)));
+                    }
+                }
+            }
+            AwsResponse::xml(StatusCode::OK, xml_wrap(action, &inner, request_id))
+        }
         // DeleteQueue, DeleteMessage, PurgeQueue, SetQueueAttributes, ChangeMessageVisibility
         _ => xml_metadata_only(action, request_id),
     }
@@ -503,8 +525,9 @@ impl SqsService {
 
         // Validate DelaySeconds (0–900 inclusive)
         if let Some(ds) = new_attributes.get("DelaySeconds") {
-            if let Ok(d) = ds.parse::<i64>() {
-                if !(0..=900).contains(&d) {
+            match ds.parse::<i64>() {
+                Ok(d) if (0..=900).contains(&d) => {}
+                _ => {
                     return Err(AwsServiceError::aws_error(
                         StatusCode::BAD_REQUEST,
                         "InvalidAttributeValue",

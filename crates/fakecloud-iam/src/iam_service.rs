@@ -4462,7 +4462,9 @@ impl IamService {
         let certificate_body = required_param(&req.query_params, "CertificateBody")?;
 
         // Validate certificate body looks like a PEM certificate
-        if !certificate_body.contains("-----BEGIN CERTIFICATE-----") {
+        if !certificate_body.contains("-----BEGIN CERTIFICATE-----")
+            || !certificate_body.contains("-----END CERTIFICATE-----")
+        {
             return Err(AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
                 "MalformedCertificate",
@@ -5771,7 +5773,10 @@ impl IamService {
             return Err(AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
                 "ValidationError",
-                "1 validation error detected: Value \"{}\" at \"path\" failed to satisfy constraint: Member must have length less than or equal to 512",
+                format!(
+                    "1 validation error detected: Value \"{}\" at \"path\" failed to satisfy constraint: Member must have length less than or equal to 512",
+                    path
+                ),
             ));
         }
 
@@ -5879,6 +5884,9 @@ impl IamService {
         let mut devices: Vec<&VirtualMfaDevice> = state
             .virtual_mfa_devices
             .values()
+            // Exclude hardware MFA placeholders (created by EnableMFADevice with
+            // non-virtual serial numbers); they have empty base32_string_seed
+            .filter(|d| !d.base32_string_seed.is_empty())
             .filter(|d| match assignment_status.as_deref() {
                 Some("Assigned") => d.user.is_some(),
                 Some("Unassigned") => d.user.is_none(),

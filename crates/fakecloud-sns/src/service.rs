@@ -3258,6 +3258,20 @@ fn validate_numeric_filter(arr: &[Value]) -> Result<(), AwsServiceError> {
         ));
     }
 
+    // Numeric operand must be smaller than 1E9
+    if let Some(f) = arr[1].as_f64() {
+        if f.abs() >= 1_000_000_000.0 {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidParameter",
+                format!(
+                    "Invalid parameter: FilterPolicy: Numeric match value must be smaller than 1E9, got {}",
+                    arr[1]
+                ),
+            ));
+        }
+    }
+
     // Single comparison (2 elements): valid
     if arr.len() == 2 {
         return Ok(());
@@ -3313,6 +3327,20 @@ fn validate_numeric_filter(arr: &[Value]) -> Result<(), AwsServiceError> {
                 "Invalid parameter: Attributes Reason: FilterPolicy: Value of {second_op} must be numeric\n at ..."
             ),
         ));
+    }
+
+    // Numeric operand must be smaller than 1E9
+    if let Some(f) = arr[3].as_f64() {
+        if f.abs() >= 1_000_000_000.0 {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidParameter",
+                format!(
+                    "Invalid parameter: FilterPolicy: Numeric match value must be smaller than 1E9, got {}",
+                    arr[3]
+                ),
+            ));
+        }
     }
 
     // For a range, first op must be lower bound (> or >=) and second op must be upper bound (< or <=)
