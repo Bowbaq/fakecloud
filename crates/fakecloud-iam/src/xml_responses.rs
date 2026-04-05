@@ -94,13 +94,9 @@ fn role_xml(role: &IamRole) -> String {
         })
         .unwrap_or_default();
 
-    let description_section = if role.description.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "\n      <Description>{}</Description>",
-            xml_escape(&role.description)
-        )
+    let description_section = match &role.description {
+        Some(desc) => format!("\n      <Description>{}</Description>", xml_escape(desc)),
+        None => String::new(),
     };
 
     format!(
@@ -304,13 +300,9 @@ pub fn list_roles_response(roles: &[IamRole], request_id: &str) -> String {
                 let tags_members = tags_xml(&r.tags);
                 format!("\n        <Tags>\n{tags_members}\n        </Tags>")
             };
-            let description_section = if r.description.is_empty() {
-                String::new()
-            } else {
-                format!(
-                    "\n        <Description>{}</Description>",
-                    xml_escape(&r.description)
-                )
+            let description_section = match &r.description {
+                Some(desc) => format!("\n        <Description>{}</Description>", xml_escape(desc)),
+                None => String::new(),
             };
             format!(
                 r#"      <member>
@@ -339,6 +331,69 @@ pub fn list_roles_response(roles: &[IamRole], request_id: &str) -> String {
 <ListRolesResponse xmlns="https://iam.amazonaws.com/doc/2010-05-08/">
   <ListRolesResult>
     <IsTruncated>false</IsTruncated>
+    <Roles>
+{members}
+    </Roles>
+  </ListRolesResult>
+  <ResponseMetadata>
+    <RequestId>{request_id}</RequestId>
+  </ResponseMetadata>
+</ListRolesResponse>"#,
+    )
+}
+
+pub fn list_roles_response_paginated(
+    roles: &[IamRole],
+    is_truncated: bool,
+    marker: Option<&str>,
+    request_id: &str,
+) -> String {
+    let members: String = roles
+        .iter()
+        .map(|r| {
+            let tags_section = if r.tags.is_empty() {
+                String::new()
+            } else {
+                let tags_members = tags_xml(&r.tags);
+                format!("\n        <Tags>\n{tags_members}\n        </Tags>")
+            };
+            let description_section = match &r.description {
+                Some(desc) => format!("\n        <Description>{}</Description>", xml_escape(desc)),
+                None => String::new(),
+            };
+            format!(
+                r#"      <member>
+        <Path>{path}</Path>
+        <RoleName>{name}</RoleName>
+        <RoleId>{id}</RoleId>
+        <Arn>{arn}</Arn>
+        <CreateDate>{date}</CreateDate>
+        <AssumeRolePolicyDocument>{policy}</AssumeRolePolicyDocument>{description_section}
+        <MaxSessionDuration>{max_session}</MaxSessionDuration>{tags_section}
+      </member>"#,
+                path = r.path,
+                name = r.role_name,
+                id = r.role_id,
+                arn = r.arn,
+                date = r.created_at.format("%Y-%m-%dT%H:%M:%SZ"),
+                policy = url_encode_policy(&r.assume_role_policy_document),
+                max_session = r.max_session_duration,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let marker_section = if let Some(m) = marker {
+        format!("\n    <Marker>{}</Marker>", xml_escape(m))
+    } else {
+        String::new()
+    };
+
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<ListRolesResponse xmlns="https://iam.amazonaws.com/doc/2010-05-08/">
+  <ListRolesResult>
+    <IsTruncated>{is_truncated}</IsTruncated>{marker_section}
     <Roles>
 {members}
     </Roles>

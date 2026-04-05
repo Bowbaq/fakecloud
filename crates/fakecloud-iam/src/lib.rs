@@ -1,4 +1,5 @@
 pub mod iam_service;
+pub mod policy_validation;
 pub mod state;
 pub mod sts_service;
 pub mod xml_responses;

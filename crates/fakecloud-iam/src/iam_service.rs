@@ -4,10 +4,12 @@ use http::StatusCode;
 
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
 
+use crate::policy_validation::validate_policy_document;
 use crate::state::{
     AccountPasswordPolicy, IamAccessKey, IamGroup, IamInstanceProfile, IamPolicy, IamRole, IamUser,
     LoginProfile, OidcProvider, PolicyVersion, SamlProvider, ServerCertificate,
-    ServiceLinkedRoleDeletion, SharedIamState, SigningCertificate, Tag, VirtualMfaDevice,
+    ServiceLinkedRoleDeletion, SharedIamState, SigningCertificate, SshPublicKey, Tag,
+    VirtualMfaDevice,
 };
 use crate::xml_responses;
 
@@ -61,6 +63,7 @@ impl AwsService for IamService {
             "DeleteAccessKey" => self.delete_access_key(&req),
             "ListAccessKeys" => self.list_access_keys(&req),
             "UpdateAccessKey" => self.update_access_key(&req),
+            "GetAccessKeyLastUsed" => self.get_access_key_last_used(&req),
 
             // Roles
             "CreateRole" => self.create_role(&req),
@@ -182,6 +185,13 @@ impl AwsService for IamService {
             "UpdateSigningCertificate" => self.update_signing_certificate(&req),
             "DeleteSigningCertificate" => self.delete_signing_certificate(&req),
 
+            // SSH Public Keys
+            "UploadSSHPublicKey" => self.upload_ssh_public_key(&req),
+            "GetSSHPublicKey" => self.get_ssh_public_key(&req),
+            "ListSSHPublicKeys" => self.list_ssh_public_keys(&req),
+            "UpdateSSHPublicKey" => self.update_ssh_public_key(&req),
+            "DeleteSSHPublicKey" => self.delete_ssh_public_key(&req),
+
             // Service Linked Roles
             "CreateServiceLinkedRole" => self.create_service_linked_role(&req),
             "DeleteServiceLinkedRole" => self.delete_service_linked_role(&req),
@@ -232,6 +242,7 @@ impl AwsService for IamService {
             "DeleteAccessKey",
             "ListAccessKeys",
             "UpdateAccessKey",
+            "GetAccessKeyLastUsed",
             "CreateRole",
             "GetRole",
             "DeleteRole",
@@ -342,6 +353,11 @@ impl AwsService for IamService {
             "DeactivateMFADevice",
             "ListMFADevices",
             "ListEntitiesForPolicy",
+            "UploadSSHPublicKey",
+            "GetSSHPublicKey",
+            "ListSSHPublicKeys",
+            "UpdateSSHPublicKey",
+            "DeleteSSHPublicKey",
         ]
     }
 }
@@ -354,6 +370,28 @@ fn extract_access_key(req: &AwsRequest) -> Option<String> {
 }
 
 // ========= Helper functions =========
+
+/// Convert a hyphenated service name to title case, handling known abbreviations.
+fn title_case_service(s: &str) -> String {
+    s.split('-')
+        .map(|w| {
+            // Known abbreviation mappings
+            match w {
+                "autoscaling" => "AutoScaling".to_string(),
+                "loadbalancing" => "LoadBalancing".to_string(),
+                "mapreduce" => "MapReduce".to_string(),
+                "beanstalk" => "Beanstalk".to_string(),
+                _ => {
+                    let mut c = w.chars();
+                    match c.next() {
+                        None => String::new(),
+                        Some(ch) => ch.to_uppercase().to_string() + c.as_str(),
+                    }
+                }
+            }
+        })
+        .collect::<String>()
+}
 
 fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;")
@@ -974,6 +1012,20 @@ impl IamService {
             ));
         }
 
+        // Check access key limit (max 2 per user)
+        let existing_count = state
+            .access_keys
+            .get(&user_name)
+            .map(|keys| keys.len())
+            .unwrap_or(0);
+        if existing_count >= 2 {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::CONFLICT,
+                "LimitExceeded",
+                "Cannot exceed quota for AccessKeysPerUser: 2".to_string(),
+            ));
+        }
+
         let key = IamAccessKey {
             access_key_id: format!("FKIA{}", generate_id()),
             secret_access_key: format!("fake{}{}fake", generate_id(), generate_id()),
@@ -1079,11 +1131,7 @@ impl IamService {
             .get("Path")
             .cloned()
             .unwrap_or_else(|| "/".to_string());
-        let description = req
-            .query_params
-            .get("Description")
-            .cloned()
-            .unwrap_or_default();
+        let description = req.query_params.get("Description").cloned();
         let max_session_duration = req
             .query_params
             .get("MaxSessionDuration")
@@ -1227,11 +1275,49 @@ impl IamService {
     fn list_roles(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let state = self.state.read();
         let path_prefix = req.query_params.get("PathPrefix").cloned();
+        let max_items: usize = req
+            .query_params
+            .get("MaxItems")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(100);
+        let marker = req.query_params.get("Marker").cloned();
+
         let mut roles: Vec<IamRole> = state.roles.values().cloned().collect();
         if let Some(prefix) = path_prefix {
             roles.retain(|r| r.path.starts_with(&prefix));
         }
-        let xml = xml_responses::list_roles_response(&roles, &req.request_id);
+        roles.sort_by(|a, b| a.role_name.cmp(&b.role_name));
+
+        // Apply marker-based pagination (start after the marker item)
+        let start_idx = if let Some(ref m) = marker {
+            roles
+                .iter()
+                .position(|r| r.role_name == *m)
+                .map(|pos| pos + 1)
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
+        let page = &roles[start_idx..];
+        let is_truncated = page.len() > max_items;
+        let page = if is_truncated {
+            &page[..max_items]
+        } else {
+            page
+        };
+        let next_marker = if is_truncated {
+            Some(page.last().map(|r| r.role_name.clone()).unwrap_or_default())
+        } else {
+            None
+        };
+
+        let xml = xml_responses::list_roles_response_paginated(
+            page,
+            is_truncated,
+            next_marker.as_deref(),
+            &req.request_id,
+        );
         Ok(AwsResponse::xml(StatusCode::OK, xml))
     }
 
@@ -1247,12 +1333,10 @@ impl IamService {
             )
         })?;
 
-        // UpdateRole clears description if not provided
-        role.description = req
-            .query_params
-            .get("Description")
-            .cloned()
-            .unwrap_or_default();
+        // UpdateRole updates description if provided
+        if let Some(desc) = req.query_params.get("Description") {
+            role.description = Some(desc.clone());
+        }
         if let Some(dur) = req
             .query_params
             .get("MaxSessionDuration")
@@ -1278,7 +1362,7 @@ impl IamService {
         })?;
 
         if let Some(desc) = req.query_params.get("Description") {
-            role.description = desc.clone();
+            role.description = Some(desc.clone());
         }
 
         let role_clone = role.clone();
@@ -1495,6 +1579,15 @@ impl IamService {
         let tags = parse_tags(&req.query_params);
         validate_tags(&tags, 0)?;
 
+        // Validate policy document
+        if let Err(msg) = validate_policy_document(&policy_document) {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "MalformedPolicyDocument",
+                msg,
+            ));
+        }
+
         let partition = partition_for_region(&req.region);
         let effective_account = self.effective_account_id(req);
 
@@ -1679,6 +1772,15 @@ impl IamService {
             .get("SetAsDefault")
             .map(|v| v == "true")
             .unwrap_or(false);
+
+        // Validate policy document
+        if let Err(msg) = validate_policy_document(&policy_document) {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "MalformedPolicyDocument",
+                msg,
+            ));
+        }
 
         let mut state = self.state.write();
 
@@ -2074,6 +2176,15 @@ impl IamService {
         let policy_name = required_param(&req.query_params, "PolicyName")?;
         let policy_document = required_param(&req.query_params, "PolicyDocument")?;
 
+        // Validate policy document
+        if let Err(msg) = validate_policy_document(&policy_document) {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "MalformedPolicyDocument",
+                msg,
+            ));
+        }
+
         let mut state = self.state.write();
 
         if !state.roles.contains_key(&role_name) {
@@ -2330,6 +2441,15 @@ impl IamService {
         let user_name = required_param(&req.query_params, "UserName")?;
         let policy_name = required_param(&req.query_params, "PolicyName")?;
         let policy_document = required_param(&req.query_params, "PolicyDocument")?;
+
+        // Validate policy document
+        if let Err(msg) = validate_policy_document(&policy_document) {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "MalformedPolicyDocument",
+                msg,
+            ));
+        }
 
         let mut state = self.state.write();
 
@@ -2789,6 +2909,15 @@ impl IamService {
         let group_name = required_param(&req.query_params, "GroupName")?;
         let policy_name = required_param(&req.query_params, "PolicyName")?;
         let policy_document = required_param(&req.query_params, "PolicyDocument")?;
+
+        // Validate policy document
+        if let Err(msg) = validate_policy_document(&policy_document) {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "MalformedPolicyDocument",
+                msg,
+            ));
+        }
 
         let mut state = self.state.write();
 
@@ -4402,16 +4531,274 @@ impl IamService {
     }
 }
 
+// ========= SSH Public Key operations =========
+
+impl IamService {
+    fn upload_ssh_public_key(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let user_name = required_param(&req.query_params, "UserName")?;
+        let ssh_public_key_body = required_param(&req.query_params, "SSHPublicKeyBody")?;
+
+        let mut state = self.state.write();
+
+        if !state.users.contains_key(&user_name) {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::NOT_FOUND,
+                "NoSuchEntity",
+                format!("The user with name {user_name} cannot be found."),
+            ));
+        }
+
+        let key_id = format!("APKA{}", generate_id());
+        // Generate a simple fingerprint from the body
+        let fingerprint = format!(
+            "{}:{}:{}:{}:{}",
+            &generate_id()[..2],
+            &generate_id()[..2],
+            &generate_id()[..2],
+            &generate_id()[..2],
+            &generate_id()[..2]
+        );
+
+        let key = SshPublicKey {
+            ssh_public_key_id: key_id.clone(),
+            user_name: user_name.clone(),
+            ssh_public_key_body: ssh_public_key_body.clone(),
+            status: "Active".to_string(),
+            upload_date: Utc::now(),
+            fingerprint: fingerprint.clone(),
+        };
+
+        let upload_date = key.upload_date.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        state
+            .ssh_public_keys
+            .entry(user_name.clone())
+            .or_default()
+            .push(key);
+
+        let xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<UploadSSHPublicKeyResponse xmlns="https://iam.amazonaws.com/doc/2010-05-08/">
+  <UploadSSHPublicKeyResult>
+    <SSHPublicKey>
+      <UserName>{user_name}</UserName>
+      <SSHPublicKeyId>{key_id}</SSHPublicKeyId>
+      <Fingerprint>{fingerprint}</Fingerprint>
+      <SSHPublicKeyBody>{}</SSHPublicKeyBody>
+      <Status>Active</Status>
+      <UploadDate>{upload_date}</UploadDate>
+    </SSHPublicKey>
+  </UploadSSHPublicKeyResult>
+  <ResponseMetadata>
+    <RequestId>{}</RequestId>
+  </ResponseMetadata>
+</UploadSSHPublicKeyResponse>"#,
+            xml_escape(&ssh_public_key_body),
+            req.request_id,
+        );
+        Ok(AwsResponse::xml(StatusCode::OK, xml))
+    }
+
+    fn get_ssh_public_key(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let user_name = required_param(&req.query_params, "UserName")?;
+        let ssh_public_key_id = required_param(&req.query_params, "SSHPublicKeyId")?;
+
+        let state = self.state.read();
+
+        let key = state
+            .ssh_public_keys
+            .get(&user_name)
+            .and_then(|keys| {
+                keys.iter()
+                    .find(|k| k.ssh_public_key_id == ssh_public_key_id)
+            })
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::NOT_FOUND,
+                    "NoSuchEntity",
+                    format!("The SSH public key with id {ssh_public_key_id} cannot be found."),
+                )
+            })?;
+
+        let xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<GetSSHPublicKeyResponse xmlns="https://iam.amazonaws.com/doc/2010-05-08/">
+  <GetSSHPublicKeyResult>
+    <SSHPublicKey>
+      <UserName>{}</UserName>
+      <SSHPublicKeyId>{}</SSHPublicKeyId>
+      <Fingerprint>{}</Fingerprint>
+      <SSHPublicKeyBody>{}</SSHPublicKeyBody>
+      <Status>{}</Status>
+      <UploadDate>{}</UploadDate>
+    </SSHPublicKey>
+  </GetSSHPublicKeyResult>
+  <ResponseMetadata>
+    <RequestId>{}</RequestId>
+  </ResponseMetadata>
+</GetSSHPublicKeyResponse>"#,
+            key.user_name,
+            key.ssh_public_key_id,
+            key.fingerprint,
+            xml_escape(&key.ssh_public_key_body),
+            key.status,
+            key.upload_date.format("%Y-%m-%dT%H:%M:%SZ"),
+            req.request_id,
+        );
+        Ok(AwsResponse::xml(StatusCode::OK, xml))
+    }
+
+    fn list_ssh_public_keys(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let user_name = required_param(&req.query_params, "UserName")?;
+        let state = self.state.read();
+
+        let keys = state.ssh_public_keys.get(&user_name);
+        let members: String = keys
+            .map(|ks| {
+                ks.iter()
+                    .map(|k| {
+                        format!(
+                            r#"      <member>
+        <UserName>{}</UserName>
+        <SSHPublicKeyId>{}</SSHPublicKeyId>
+        <Status>{}</Status>
+        <UploadDate>{}</UploadDate>
+      </member>"#,
+                            k.user_name,
+                            k.ssh_public_key_id,
+                            k.status,
+                            k.upload_date.format("%Y-%m-%dT%H:%M:%SZ"),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default();
+
+        let xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<ListSSHPublicKeysResponse xmlns="https://iam.amazonaws.com/doc/2010-05-08/">
+  <ListSSHPublicKeysResult>
+    <SSHPublicKeys>
+{members}
+    </SSHPublicKeys>
+    <IsTruncated>false</IsTruncated>
+  </ListSSHPublicKeysResult>
+  <ResponseMetadata>
+    <RequestId>{}</RequestId>
+  </ResponseMetadata>
+</ListSSHPublicKeysResponse>"#,
+            req.request_id,
+        );
+        Ok(AwsResponse::xml(StatusCode::OK, xml))
+    }
+
+    fn update_ssh_public_key(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let user_name = required_param(&req.query_params, "UserName")?;
+        let ssh_public_key_id = required_param(&req.query_params, "SSHPublicKeyId")?;
+        let status = required_param(&req.query_params, "Status")?;
+
+        let mut state = self.state.write();
+
+        let key = state
+            .ssh_public_keys
+            .get_mut(&user_name)
+            .and_then(|keys| {
+                keys.iter_mut()
+                    .find(|k| k.ssh_public_key_id == ssh_public_key_id)
+            })
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::NOT_FOUND,
+                    "NoSuchEntity",
+                    format!("The SSH public key with id {ssh_public_key_id} cannot be found."),
+                )
+            })?;
+
+        key.status = status;
+
+        let xml = empty_response("UpdateSSHPublicKey", &req.request_id);
+        Ok(AwsResponse::xml(StatusCode::OK, xml))
+    }
+
+    fn delete_ssh_public_key(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let user_name = required_param(&req.query_params, "UserName")?;
+        let ssh_public_key_id = required_param(&req.query_params, "SSHPublicKeyId")?;
+
+        let mut state = self.state.write();
+
+        if let Some(keys) = state.ssh_public_keys.get_mut(&user_name) {
+            let len_before = keys.len();
+            keys.retain(|k| k.ssh_public_key_id != ssh_public_key_id);
+            if keys.len() == len_before {
+                return Err(AwsServiceError::aws_error(
+                    StatusCode::NOT_FOUND,
+                    "NoSuchEntity",
+                    format!("The SSH Public Key with id {ssh_public_key_id} cannot be found."),
+                ));
+            }
+        } else {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::NOT_FOUND,
+                "NoSuchEntity",
+                format!("The user with name {user_name} cannot be found."),
+            ));
+        }
+
+        let xml = empty_response("DeleteSSHPublicKey", &req.request_id);
+        Ok(AwsResponse::xml(StatusCode::OK, xml))
+    }
+}
+
+// ========= GetAccessKeyLastUsed =========
+
+impl IamService {
+    fn get_access_key_last_used(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let access_key_id = required_param(&req.query_params, "AccessKeyId")?;
+        let state = self.state.read();
+
+        // Find the user that owns this access key
+        let mut user_name = String::new();
+        for (uname, keys) in &state.access_keys {
+            if keys.iter().any(|k| k.access_key_id == access_key_id) {
+                user_name = uname.clone();
+                break;
+            }
+        }
+
+        if user_name.is_empty() {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::NOT_FOUND,
+                "NoSuchEntity",
+                format!("The Access Key with id {access_key_id} cannot be found."),
+            ));
+        }
+
+        let xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<GetAccessKeyLastUsedResponse xmlns="https://iam.amazonaws.com/doc/2010-05-08/">
+  <GetAccessKeyLastUsedResult>
+    <UserName>{user_name}</UserName>
+    <AccessKeyLastUsed>
+      <Region>N/A</Region>
+      <ServiceName>N/A</ServiceName>
+    </AccessKeyLastUsed>
+  </GetAccessKeyLastUsedResult>
+  <ResponseMetadata>
+    <RequestId>{}</RequestId>
+  </ResponseMetadata>
+</GetAccessKeyLastUsedResponse>"#,
+            req.request_id,
+        );
+        Ok(AwsResponse::xml(StatusCode::OK, xml))
+    }
+}
+
 // ========= Service Linked Role operations =========
 
 impl IamService {
     fn create_service_linked_role(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let aws_service_name = required_param(&req.query_params, "AWSServiceName")?;
-        let description = req
-            .query_params
-            .get("Description")
-            .cloned()
-            .unwrap_or_default();
+        let description = req.query_params.get("Description").cloned();
         let custom_suffix = req.query_params.get("CustomSuffix").cloned();
 
         let mut state = self.state.write();
@@ -4436,27 +4823,8 @@ impl IamService {
                 let prefix = parts[0]; // "custom-resource"
                 let service = parts[1]; // "application-autoscaling"
 
-                let service_cased = service
-                    .split('-')
-                    .map(|w| {
-                        let mut c = w.chars();
-                        match c.next() {
-                            None => String::new(),
-                            Some(ch) => ch.to_uppercase().to_string() + c.as_str(),
-                        }
-                    })
-                    .collect::<String>();
-
-                let prefix_cased = prefix
-                    .split('-')
-                    .map(|w| {
-                        let mut c = w.chars();
-                        match c.next() {
-                            None => String::new(),
-                            Some(ch) => ch.to_uppercase().to_string() + c.as_str(),
-                        }
-                    })
-                    .collect::<String>();
+                let service_cased = title_case_service(service);
+                let prefix_cased = title_case_service(prefix);
 
                 format!("{}_{}", service_cased, prefix_cased)
             }
@@ -4632,6 +5000,7 @@ impl IamService {
       <entry><key>AttachedPoliciesPerRoleQuota</key><value>10</value></entry>
       <entry><key>AttachedPoliciesPerUserQuota</key><value>10</value></entry>
       <entry><key>GlobalEndpointTokenVersion</key><value>1</value></entry>
+      <entry><key>AssumeRolePolicySizeQuota</key><value>2048</value></entry>
     </SummaryMap>
   </GetAccountSummaryResult>
   <ResponseMetadata>

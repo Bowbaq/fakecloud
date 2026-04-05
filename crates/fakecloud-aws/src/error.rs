@@ -29,9 +29,15 @@ pub fn xml_error_response(
         message: &'a str,
     }
 
+    let error_type = if status.is_server_error() {
+        "Receiver"
+    } else {
+        "Sender"
+    };
+
     let resp = ErrorResponse {
         error: ErrorBody {
-            error_type: "Sender",
+            error_type,
             code,
             message,
         },
