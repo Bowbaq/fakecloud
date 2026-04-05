@@ -6,7 +6,7 @@
 <p align="center">
   <a href="https://github.com/faiscadev/fakecloud/actions"><img src="https://img.shields.io/github/actions/workflow/status/faiscadev/fakecloud/ci.yml?branch=main&label=CI" alt="CI"></a>
   <a href="https://github.com/faiscadev/fakecloud/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="License"></a>
-  <a href="https://hub.docker.com/r/faiscadev/fakecloud"><img src="https://img.shields.io/docker/pulls/faiscadev/fakecloud" alt="Docker Pulls"></a>
+  <a href="https://github.com/faiscadev/fakecloud/pkgs/container/fakecloud"><img src="https://img.shields.io/badge/ghcr.io-fakecloud-blue?logo=docker" alt="GHCR"></a>
   <a href="https://crates.io/crates/fakecloud-server"><img src="https://img.shields.io/crates/v/fakecloud-server" alt="crates.io"></a>
   <a href="https://fakecloud.dev"><img src="https://img.shields.io/badge/docs-fakecloud.dev-green" alt="Docs"></a>
 </p>
@@ -55,7 +55,7 @@ cargo run --release --bin fakecloud-server
 ### Docker
 
 ```sh
-docker run --rm -p 4566:4566 faiscadev/fakecloud
+docker run --rm -p 4566:4566 ghcr.io/faiscadev/fakecloud
 ```
 
 ### Docker Compose
@@ -64,7 +64,7 @@ docker run --rm -p 4566:4566 faiscadev/fakecloud
 # docker-compose.yml
 services:
   fakecloud:
-    image: faiscadev/fakecloud
+    image: ghcr.io/faiscadev/fakecloud
     ports:
       - "4566:4566"
     environment:
