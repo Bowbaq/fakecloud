@@ -198,6 +198,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-cloudwatchlogs"
+version = "1.125.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c199e081d1da738083d275340cb0af4613cd21e25a67d519f538d15d6ed11cd"
+dependencies = [
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-eventstream",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 0.2.12",
+ "http 1.4.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-dynamodb"
 version = "1.110.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -271,6 +296,55 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-kms"
+version = "1.104.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c41ae6a33da941457e89075ef8ca5b4870c8009fe4dceeba82fce2f30f313ac6"
+dependencies = [
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 0.2.12",
+ "http 1.4.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
+name = "aws-sdk-lambda"
+version = "1.119.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9bcacc7c2d94698c49fb73086d16ccdff68442ed21a70fbaa924c46158e37a93"
+dependencies = [
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-eventstream",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 0.2.12",
+ "http 1.4.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-s3"
 version = "1.128.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -303,6 +377,30 @@ dependencies = [
  "sha2",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "aws-sdk-secretsmanager"
+version = "1.103.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae64963d3d16d8070aaa2fb79c11cd3b13f44d2f13bba3fe8f49dcd2c42f2987"
+dependencies = [
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 0.2.12",
+ "http 1.4.0",
+ "regex-lite",
+ "tracing",
 ]
 
 [[package]]
@@ -1127,7 +1225,11 @@ dependencies = [
  "fakecloud-dynamodb",
  "fakecloud-eventbridge",
  "fakecloud-iam",
+ "fakecloud-kms",
+ "fakecloud-lambda",
+ "fakecloud-logs",
  "fakecloud-s3",
+ "fakecloud-secretsmanager",
  "fakecloud-sns",
  "fakecloud-sqs",
  "fakecloud-ssm",
@@ -1196,10 +1298,14 @@ version = "0.1.1"
 dependencies = [
  "aws-config",
  "aws-credential-types",
+ "aws-sdk-cloudwatchlogs",
  "aws-sdk-dynamodb",
  "aws-sdk-eventbridge",
  "aws-sdk-iam",
+ "aws-sdk-kms",
+ "aws-sdk-lambda",
  "aws-sdk-s3",
+ "aws-sdk-secretsmanager",
  "aws-sdk-sns",
  "aws-sdk-sqs",
  "aws-sdk-ssm",
@@ -1248,6 +1354,57 @@ dependencies = [
 ]
 
 [[package]]
+name = "fakecloud-kms"
+version = "0.1.1"
+dependencies = [
+ "async-trait",
+ "base64",
+ "chrono",
+ "fakecloud-core",
+ "http 1.4.0",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
+name = "fakecloud-lambda"
+version = "0.1.1"
+dependencies = [
+ "async-trait",
+ "base64",
+ "bytes",
+ "chrono",
+ "fakecloud-aws",
+ "fakecloud-core",
+ "http 1.4.0",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "fakecloud-logs"
+version = "0.1.1"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "fakecloud-core",
+ "http 1.4.0",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
 name = "fakecloud-s3"
 version = "0.1.1"
 dependencies = [
@@ -1268,6 +1425,24 @@ dependencies = [
  "sha2",
  "tokio",
  "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "fakecloud-secretsmanager"
+version = "0.1.1"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "chrono",
+ "fakecloud-aws",
+ "fakecloud-core",
+ "http 1.4.0",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
  "uuid",
 ]
 

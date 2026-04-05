@@ -1,5 +1,6 @@
 """
 FakeCloud demo: S3 + SQS + SNS + SSM + DynamoDB using boto3.
+FakeCloud demo: S3 + SQS + SNS + SSM + Lambda + Secrets Manager using boto3.
 
 Prerequisites:
     pip install boto3
@@ -33,6 +34,12 @@ dynamodb = session.client("dynamodb", endpoint_url=ENDPOINT)
 
 def main():
     print("=== FakeCloud Demo: S3 + SQS + SNS + SSM + DynamoDB ===\n")
+lam = session.client("lambda", endpoint_url=ENDPOINT)
+sm = session.client("secretsmanager", endpoint_url=ENDPOINT)
+
+
+def main():
+    print("=== FakeCloud Demo: S3 + SQS + SNS + SSM + Lambda + Secrets Manager ===\n")
 
     # --- S3 ---
     print("[S3] Creating bucket and uploading objects...")
@@ -206,6 +213,36 @@ def main():
 
     dynamodb.delete_table(TableName="demo-orders")
     print("  table cleaned up")
+    # --- Lambda ---
+    print("\n[Lambda] Creating and invoking a function...")
+    lam.create_function(
+        FunctionName="hello-world",
+        Runtime="python3.12",
+        Role=f"arn:aws:iam::{ACCOUNT_ID}:role/lambda-role",
+        Handler="index.handler",
+        Code={"ZipFile": b"fake-code"},
+    )
+    resp = lam.invoke(FunctionName="hello-world", Payload=b'{"key": "value"}')
+    print(f"  invoke status: {resp['StatusCode']}")
+    funcs = lam.list_functions()
+    print(f"  functions: {[f['FunctionName'] for f in funcs['Functions']]}")
+    lam.delete_function(FunctionName="hello-world")
+    print("  function cleaned up")
+
+    # --- Secrets Manager ---
+    print("\n[Secrets Manager] Storing and retrieving secrets...")
+    sm.create_secret(Name="app/api-key", SecretString="sk-abc123")
+    resp = sm.get_secret_value(SecretId="app/api-key")
+    print(f"  secret value: {resp['SecretString']}")
+
+    sm.put_secret_value(SecretId="app/api-key", SecretString="sk-xyz789")
+    resp = sm.get_secret_value(SecretId="app/api-key")
+    print(f"  updated value: {resp['SecretString']}")
+
+    secrets = sm.list_secrets()
+    print(f"  secrets: {[s['Name'] for s in secrets['SecretList']]}")
+    sm.delete_secret(SecretId="app/api-key", ForceDeleteWithoutRecovery=True)
+    print("  secret cleaned up")
 
     # --- Cleanup ---
     print("\n[Cleanup] Deleting resources...")

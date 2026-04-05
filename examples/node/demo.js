@@ -3,6 +3,10 @@
  *
  * Prerequisites:
  *   npm install @aws-sdk/client-s3 @aws-sdk/client-sqs @aws-sdk/client-sns @aws-sdk/client-ssm @aws-sdk/client-dynamodb
+ * FakeCloud demo: S3 + SQS + SNS + SSM + Lambda + Secrets Manager using AWS SDK v3.
+ *
+ * Prerequisites:
+ *   npm install @aws-sdk/client-s3 @aws-sdk/client-sqs @aws-sdk/client-sns @aws-sdk/client-ssm @aws-sdk/client-lambda @aws-sdk/client-secrets-manager
  *
  * Usage:
  *   1. Start FakeCloud: cargo run --bin fakecloud
@@ -50,6 +54,21 @@ import {
   QueryCommand as DDBQueryCommand,
   DeleteTableCommand as DDBDeleteTableCommand,
 } from "@aws-sdk/client-dynamodb";
+  LambdaClient,
+  CreateFunctionCommand,
+  InvokeCommand,
+  ListFunctionsCommand,
+  DeleteFunctionCommand,
+} from "@aws-sdk/client-lambda";
+
+import {
+  SecretsManagerClient,
+  CreateSecretCommand,
+  GetSecretValueCommand,
+  PutSecretValueCommand,
+  ListSecretsCommand,
+  DeleteSecretCommand,
+} from "@aws-sdk/client-secrets-manager";
 
 const ENDPOINT = "http://localhost:4566";
 const REGION = "us-east-1";
@@ -64,6 +83,11 @@ const dynamodb = new DynamoDBClient({ endpoint: ENDPOINT, region: REGION, creden
 
 async function main() {
   console.log("=== FakeCloud Demo: S3 + SQS + SNS + SSM + DynamoDB ===\n");
+const lambda = new LambdaClient({ endpoint: ENDPOINT, region: REGION, credentials });
+const sm = new SecretsManagerClient({ endpoint: ENDPOINT, region: REGION, credentials });
+
+async function main() {
+  console.log("=== FakeCloud Demo: S3 + SQS + SNS + SSM + Lambda + Secrets Manager ===\n");
 
   // --- S3 ---
   console.log("[S3] Creating bucket and uploading objects...");
@@ -224,6 +248,39 @@ async function main() {
 
   await dynamodb.send(new DDBDeleteTableCommand({ TableName: "demo-orders" }));
   console.log("  table cleaned up");
+  // --- Lambda ---
+  console.log("\n[Lambda] Creating and invoking a function...");
+  await lambda.send(new CreateFunctionCommand({
+    FunctionName: "hello-world",
+    Runtime: "python3.12",
+    Role: `arn:aws:iam::${ACCOUNT_ID}:role/lambda-role`,
+    Handler: "index.handler",
+    Code: { ZipFile: Buffer.from("fake-code") },
+  }));
+  const invokeResp = await lambda.send(new InvokeCommand({
+    FunctionName: "hello-world",
+    Payload: Buffer.from(JSON.stringify({ key: "value" })),
+  }));
+  console.log(`  invoke status: ${invokeResp.StatusCode}`);
+  const funcsResp = await lambda.send(new ListFunctionsCommand({}));
+  console.log(`  functions: ${JSON.stringify(funcsResp.Functions.map((f) => f.FunctionName))}`);
+  await lambda.send(new DeleteFunctionCommand({ FunctionName: "hello-world" }));
+  console.log("  function cleaned up");
+
+  // --- Secrets Manager ---
+  console.log("\n[Secrets Manager] Storing and retrieving secrets...");
+  await sm.send(new CreateSecretCommand({ Name: "app/api-key", SecretString: "sk-abc123" }));
+  const secretResp = await sm.send(new GetSecretValueCommand({ SecretId: "app/api-key" }));
+  console.log(`  secret value: ${secretResp.SecretString}`);
+
+  await sm.send(new PutSecretValueCommand({ SecretId: "app/api-key", SecretString: "sk-xyz789" }));
+  const updatedResp = await sm.send(new GetSecretValueCommand({ SecretId: "app/api-key" }));
+  console.log(`  updated value: ${updatedResp.SecretString}`);
+
+  const secretsResp = await sm.send(new ListSecretsCommand({}));
+  console.log(`  secrets: ${JSON.stringify(secretsResp.SecretList.map((s) => s.Name))}`);
+  await sm.send(new DeleteSecretCommand({ SecretId: "app/api-key", ForceDeleteWithoutRecovery: true }));
+  console.log("  secret cleaned up");
 
   // --- Cleanup ---
   console.log("\n[Cleanup] Deleting resources...");
