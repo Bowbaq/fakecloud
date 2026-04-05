@@ -12,7 +12,7 @@ async fn get_lambda_invocations(endpoint: &str) -> serde_json::Value {
         .send()
         .await
         .unwrap();
-    resp.json().await.unwrap()
+    resp.json::<serde_json::Value>().await.unwrap()
 }
 
 async fn get_queue_arn(sqs: &aws_sdk_sqs::Client, queue_url: &str) -> String {
@@ -752,16 +752,9 @@ async fn s3_kms_encryption() {
         get.ssekms_key_id().unwrap().contains(&key_id) || get.ssekms_key_id().unwrap() == key_arn
     );
 
-    // Set bucket default encryption to KMS
-    let encryption_config = format!(
-        r#"<ServerSideEncryptionConfiguration>
-            <Rule>
-                <ApplyServerSideEncryptionByDefault>
-                    <SSEAlgorithm>aws:kms</SSEAlgorithm>
-                    <KMSMasterKeyID>{key_id}</KMSMasterKeyID>
-                </ApplyServerSideEncryptionByDefault>
-            </Rule>
-        </ServerSideEncryptionConfiguration>"#
+    // Set bucket default encryption to KMS via CLI (JSON format)
+    let encryption_json = format!(
+        r#"{{"Rules":[{{"ApplyServerSideEncryptionByDefault":{{"SSEAlgorithm":"aws:kms","KMSMasterKeyID":"{key_id}"}}}}]}}"#
     );
     let output = server
         .aws_cli(&[
@@ -770,7 +763,7 @@ async fn s3_kms_encryption() {
             "--bucket",
             "kms-test-bucket",
             "--server-side-encryption-configuration",
-            &encryption_config,
+            &encryption_json,
         ])
         .await;
     assert!(
