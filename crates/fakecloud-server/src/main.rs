@@ -13,6 +13,7 @@ use fakecloud_core::registry::ServiceRegistry;
 use fakecloud_eventbridge::service::EventBridgeService;
 use fakecloud_iam::iam_service::IamService;
 use fakecloud_iam::sts_service::StsService;
+use fakecloud_s3::service::S3Service;
 use fakecloud_sns::service::SnsService;
 use fakecloud_sqs::service::SqsService;
 use fakecloud_ssm::service::SsmService;
@@ -72,6 +73,10 @@ async fn main() {
     let ssm_state = Arc::new(parking_lot::RwLock::new(
         fakecloud_ssm::state::SsmState::new(&cli.account_id, &cli.region),
     ));
+    let s3_state = Arc::new(parking_lot::RwLock::new(fakecloud_s3::state::S3State::new(
+        &cli.account_id,
+        &cli.region,
+    )));
 
     // Cross-service delivery bus
     // Step 1: SQS delivery (SNS and EventBridge can push messages into SQS queues)
@@ -98,6 +103,7 @@ async fn main() {
         sns: sns_state.clone(),
         eb: eb_state.clone(),
         ssm: ssm_state.clone(),
+        s3: s3_state.clone(),
     };
 
     // Register services
@@ -115,6 +121,7 @@ async fn main() {
     registry.register(Arc::new(IamService::new(iam_state.clone())));
     registry.register(Arc::new(StsService::new(iam_state)));
     registry.register(Arc::new(SsmService::new(ssm_state)));
+    registry.register(Arc::new(S3Service::new(s3_state)));
 
     let services: Vec<&str> = registry.service_names();
     tracing::info!(services = ?services, "registered services");
@@ -179,6 +186,7 @@ struct ResetState {
     sns: fakecloud_sns::state::SharedSnsState,
     eb: fakecloud_eventbridge::state::SharedEventBridgeState,
     ssm: fakecloud_ssm::state::SharedSsmState,
+    s3: fakecloud_s3::state::SharedS3State,
 }
 
 impl ResetState {
@@ -202,6 +210,7 @@ impl ResetState {
             eb.buses.retain(|name, _| name == "default");
         }
         self.ssm.write().reset();
+        self.s3.write().reset();
         tracing::info!("state reset via reset API");
         axum::Json(serde_json::json!({"status": "ok"}))
     }
