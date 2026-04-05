@@ -519,7 +519,10 @@ async fn iam_policy_lifecycle() {
 
     // List policies
     let list = client.list_policies().send().await.unwrap();
-    assert!(list.policies().iter().any(|p| p.policy_name().unwrap() == "s3-read"));
+    assert!(list
+        .policies()
+        .iter()
+        .any(|p| p.policy_name().unwrap() == "s3-read"));
 
     // Create a policy version
     let new_doc = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetObject","s3:PutObject"],"Resource":"*"}]}"#;
