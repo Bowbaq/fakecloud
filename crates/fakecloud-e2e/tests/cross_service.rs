@@ -552,3 +552,153 @@ async fn sqs_lambda_event_source_mapping() {
         "message should have been consumed by Lambda poller"
     );
 }
+
+/// EventBridge -> Lambda: put_events with a Lambda target records invocation.
+#[tokio::test]
+async fn eventbridge_lambda_delivery() {
+    let server = TestServer::start().await;
+    let eb = server.eventbridge_client().await;
+    let lambda = server.lambda_client().await;
+
+    // Create Lambda function
+    lambda
+        .create_function()
+        .function_name("eb-handler")
+        .runtime(aws_sdk_lambda::types::Runtime::Nodejs18x)
+        .role("arn:aws:iam::123456789012:role/lambda-role")
+        .handler("index.handler")
+        .code(
+            aws_sdk_lambda::types::FunctionCode::builder()
+                .zip_file(aws_sdk_lambda::primitives::Blob::new(b"fake-code"))
+                .build(),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    // Create EventBridge rule with Lambda target
+    eb.put_rule()
+        .name("lambda-rule")
+        .event_pattern(r#"{"source": ["myapp"]}"#)
+        .send()
+        .await
+        .unwrap();
+
+    let lambda_arn = "arn:aws:lambda:us-east-1:123456789012:function:eb-handler";
+    eb.put_targets()
+        .rule("lambda-rule")
+        .targets(
+            Target::builder()
+                .id("lambda-1")
+                .arn(lambda_arn)
+                .build()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    // Send event
+    eb.put_events()
+        .entries(
+            PutEventsRequestEntry::builder()
+                .source("myapp")
+                .detail_type("OrderCreated")
+                .detail(r#"{"order_id": "99"}"#)
+                .build(),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    // Check invocations via internal API
+    let invocations = get_lambda_invocations(server.endpoint()).await;
+    let inv_list = invocations["invocations"].as_array().unwrap();
+    let eb_invocations: Vec<_> = inv_list
+        .iter()
+        .filter(|i| i["source"] == "aws:events")
+        .collect();
+    assert!(
+        !eb_invocations.is_empty(),
+        "expected EventBridge->Lambda invocation"
+    );
+    assert!(eb_invocations[0]["functionArn"]
+        .as_str()
+        .unwrap()
+        .contains("eb-handler"));
+}
+
+/// EventBridge -> CloudWatch Logs: put_events with a Logs target writes to log group.
+#[tokio::test]
+async fn eventbridge_logs_delivery() {
+    let server = TestServer::start().await;
+    let eb = server.eventbridge_client().await;
+    let logs = server.logs_client().await;
+
+    // Create a log group (EventBridge will auto-create if needed, but let's be explicit)
+    logs.create_log_group()
+        .log_group_name("/aws/events/my-rule")
+        .send()
+        .await
+        .unwrap();
+
+    let log_group_arn = "arn:aws:logs:us-east-1:123456789012:log-group:/aws/events/my-rule";
+
+    // Create rule targeting CloudWatch Logs
+    eb.put_rule()
+        .name("logs-rule")
+        .event_pattern(r#"{"source": ["audit"]}"#)
+        .send()
+        .await
+        .unwrap();
+
+    eb.put_targets()
+        .rule("logs-rule")
+        .targets(
+            Target::builder()
+                .id("logs-1")
+                .arn(log_group_arn)
+                .build()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    // Send event
+    eb.put_events()
+        .entries(
+            PutEventsRequestEntry::builder()
+                .source("audit")
+                .detail_type("UserLogin")
+                .detail(r#"{"user": "alice"}"#)
+                .build(),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    // Check CloudWatch Logs for the event
+    let streams = logs
+        .describe_log_streams()
+        .log_group_name("/aws/events/my-rule")
+        .send()
+        .await
+        .unwrap();
+    assert!(!streams.log_streams().is_empty(), "expected log stream");
+
+    let events = logs
+        .get_log_events()
+        .log_group_name("/aws/events/my-rule")
+        .log_stream_name("events")
+        .send()
+        .await
+        .unwrap();
+    let log_events = events.events();
+    assert!(!log_events.is_empty(), "expected log events");
+
+    let msg = log_events[0].message().unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(msg).unwrap();
+    assert_eq!(parsed["source"], "audit");
+    assert_eq!(parsed["detail-type"], "UserLogin");
+}
