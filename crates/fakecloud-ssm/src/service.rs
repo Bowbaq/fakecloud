@@ -1750,6 +1750,16 @@ impl SsmService {
                     ));
                 }
                 doc.versions.retain(|v| v.document_version != ver);
+                // Update latest_version if we deleted the latest
+                if doc.latest_version == ver {
+                    doc.latest_version = doc
+                        .versions
+                        .iter()
+                        .filter_map(|v| v.document_version.parse::<u64>().ok())
+                        .max()
+                        .map(|n| n.to_string())
+                        .unwrap_or_else(|| "1".to_string());
+                }
             } else {
                 return Err(doc_not_found(name));
             }
