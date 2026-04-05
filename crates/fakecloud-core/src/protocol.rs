@@ -96,9 +96,13 @@ pub fn detect_service(
         }
     }
 
-    // 6. Check for SigV2-style presigned URL (AWSAccessKeyId + Signature)
-    if query_params.contains_key("AWSAccessKeyId") && query_params.contains_key("Signature") {
-        // SigV2 presigned URLs are typically for S3
+    // 6. Check for SigV2-style presigned URL (AWSAccessKeyId + Signature + Expires)
+    //    Only match when all three SigV2 presigned-URL parameters are present so
+    //    we don't accidentally claim non-S3 requests.
+    if query_params.contains_key("AWSAccessKeyId")
+        && query_params.contains_key("Signature")
+        && query_params.contains_key("Expires")
+    {
         return Some(DetectedRequest {
             service: "s3".to_string(),
             action: String::new(),

@@ -1683,3 +1683,373 @@ async fn s3_delete_specific_version_preserves_current_object() {
         "Current object was corrupted by deleting a non-existent version"
     );
 }
+
+// ---------------------------------------------------------------------------
+// P2 Cubic regression tests
+// ---------------------------------------------------------------------------
+
+/// Bug 1: CreateMultipartUpload ignores x-amz-grant-* headers.
+#[tokio::test]
+async fn s3_multipart_upload_grant_headers() {
+    let server = TestServer::start().await;
+
+    // Create bucket via CLI
+    let output = server
+        .aws_cli(&["s3api", "create-bucket", "--bucket", "mp-grant-bucket"])
+        .await;
+    assert!(output.success(), "create-bucket failed");
+
+    // Create multipart upload with grant-read header via CLI
+    let output = server
+        .aws_cli(&[
+            "s3api",
+            "create-multipart-upload",
+            "--bucket",
+            "mp-grant-bucket",
+            "--key",
+            "granted.txt",
+            "--grant-read",
+            "id=someuser123",
+        ])
+        .await;
+    assert!(
+        output.success(),
+        "create-multipart-upload with grant-read failed: {}",
+        output.stderr_text()
+    );
+    let json: serde_json::Value = serde_json::from_str(&output.stdout_text()).unwrap();
+    let upload_id = json["UploadId"].as_str().unwrap();
+
+    // Upload a part via CLI using a temp file
+    let tmp = std::env::temp_dir().join("mp-grant-part.bin");
+    std::fs::write(&tmp, b"part1data").unwrap();
+    let output = server
+        .aws_cli(&[
+            "s3api",
+            "upload-part",
+            "--bucket",
+            "mp-grant-bucket",
+            "--key",
+            "granted.txt",
+            "--upload-id",
+            upload_id,
+            "--part-number",
+            "1",
+            "--body",
+            tmp.to_str().unwrap(),
+        ])
+        .await;
+    assert!(
+        output.success(),
+        "upload-part failed: {}",
+        output.stderr_text()
+    );
+    let part_json: serde_json::Value = serde_json::from_str(&output.stdout_text()).unwrap();
+    let etag = part_json["ETag"].as_str().unwrap();
+
+    // Complete multipart upload via CLI
+    let mp_struct = format!(
+        r#"{{"Parts": [{{"PartNumber": 1, "ETag": {}}}]}}"#,
+        serde_json::Value::String(etag.to_string())
+    );
+    let output = server
+        .aws_cli(&[
+            "s3api",
+            "complete-multipart-upload",
+            "--bucket",
+            "mp-grant-bucket",
+            "--key",
+            "granted.txt",
+            "--upload-id",
+            upload_id,
+            "--multipart-upload",
+            &mp_struct,
+        ])
+        .await;
+    assert!(
+        output.success(),
+        "complete-multipart-upload failed: {}",
+        output.stderr_text()
+    );
+
+    // Verify the ACL has the grant
+    let acl_output = server
+        .aws_cli(&[
+            "s3api",
+            "get-object-acl",
+            "--bucket",
+            "mp-grant-bucket",
+            "--key",
+            "granted.txt",
+        ])
+        .await;
+    assert!(
+        acl_output.success(),
+        "get-object-acl failed: {}",
+        acl_output.stderr_text()
+    );
+    let acl: serde_json::Value = serde_json::from_str(&acl_output.stdout_text()).unwrap();
+    let grants = acl["Grants"].as_array().unwrap();
+    let has_read_grant = grants.iter().any(|g| {
+        g["Permission"].as_str() == Some("READ")
+            && g["Grantee"]["ID"].as_str() == Some("someuser123")
+    });
+    assert!(
+        has_read_grant,
+        "Expected READ grant for someuser123 in ACL, got: {acl}"
+    );
+}
+
+/// Bug 2: Multi-value If-Match / If-None-Match headers (comma-separated) never match.
+#[tokio::test]
+async fn s3_conditional_etag_comma_separated() {
+    let server = TestServer::start().await;
+    let client = server.s3_client().await;
+
+    client
+        .create_bucket()
+        .bucket("etag-csv-bucket")
+        .send()
+        .await
+        .unwrap();
+
+    let put = client
+        .put_object()
+        .bucket("etag-csv-bucket")
+        .key("obj.txt")
+        .body(ByteStream::from_static(b"hello"))
+        .send()
+        .await
+        .unwrap();
+    let real_etag = put.e_tag().unwrap().to_string();
+
+    // GET with If-Match containing the correct etag among several, comma-separated
+    let http = reqwest::Client::new();
+    let resp = http
+        .get(format!("{}/etag-csv-bucket/obj.txt", server.endpoint()))
+        .header(
+            "Authorization",
+            "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20240101/us-east-1/s3/aws4_request, SignedHeaders=host, Signature=fake",
+        )
+        .header("If-Match", format!("\"bogus\", {real_etag}, \"other\""))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "If-Match with comma-separated list containing correct etag should succeed"
+    );
+
+    // GET with If-None-Match containing the correct etag among several
+    let resp = http
+        .get(format!("{}/etag-csv-bucket/obj.txt", server.endpoint()))
+        .header(
+            "Authorization",
+            "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20240101/us-east-1/s3/aws4_request, SignedHeaders=host, Signature=fake",
+        )
+        .header("If-None-Match", format!("\"bogus\", {real_etag}, \"other\""))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        304,
+        "If-None-Match with comma-separated list containing correct etag should return 304"
+    );
+}
+
+/// Bug 3: ChecksumAlgorithm value not XML-escaped in ListObjectsV2.
+#[tokio::test]
+async fn s3_checksum_algorithm_xml_escape_in_list() {
+    let server = TestServer::start().await;
+    let client = server.s3_client().await;
+
+    client
+        .create_bucket()
+        .bucket("cksum-esc-bucket")
+        .send()
+        .await
+        .unwrap();
+
+    // Put an object with a checksum algorithm
+    client
+        .put_object()
+        .bucket("cksum-esc-bucket")
+        .key("cksum.txt")
+        .body(ByteStream::from_static(b"data"))
+        .checksum_algorithm(aws_sdk_s3::types::ChecksumAlgorithm::Sha256)
+        .send()
+        .await
+        .unwrap();
+
+    // List objects and verify the checksum algorithm appears in the response
+    let list = client
+        .list_objects_v2()
+        .bucket("cksum-esc-bucket")
+        .send()
+        .await
+        .unwrap();
+    let contents = list.contents();
+    assert_eq!(contents.len(), 1);
+    let algo = contents[0].checksum_algorithm();
+    assert!(
+        !algo.is_empty(),
+        "ChecksumAlgorithm should be present in list response"
+    );
+}
+
+/// Bug 4: CopyObject response should return x-amz-server-side-encryption header.
+#[tokio::test]
+async fn s3_copy_object_returns_sse_header() {
+    let server = TestServer::start().await;
+    let client = server.s3_client().await;
+
+    client
+        .create_bucket()
+        .bucket("copy-sse-bucket")
+        .send()
+        .await
+        .unwrap();
+
+    client
+        .put_object()
+        .bucket("copy-sse-bucket")
+        .key("src.txt")
+        .body(ByteStream::from_static(b"source"))
+        .send()
+        .await
+        .unwrap();
+
+    let copy = client
+        .copy_object()
+        .bucket("copy-sse-bucket")
+        .key("dst.txt")
+        .copy_source("copy-sse-bucket/src.txt")
+        .send()
+        .await
+        .unwrap();
+
+    // The SDK exposes server_side_encryption on the response
+    assert!(
+        copy.server_side_encryption().is_some(),
+        "CopyObject should return x-amz-server-side-encryption header"
+    );
+}
+
+/// Bug 5: SigV2 detection requires Expires param (not just AWSAccessKeyId + Signature).
+#[tokio::test]
+async fn s3_sigv2_requires_expires_param() {
+    let server = TestServer::start().await;
+
+    let http = reqwest::Client::new();
+
+    // Request with AWSAccessKeyId + Signature but NO Expires should not be routed to S3
+    let resp = http
+        .get(format!(
+            "{}/?AWSAccessKeyId=AKID&Signature=sig",
+            server.endpoint()
+        ))
+        .send()
+        .await
+        .unwrap();
+    // Without Expires, the server should not identify this as a valid S3 SigV2 request.
+    // It may return 403/400/404 depending on fallback, but NOT a successful S3 response.
+    assert_ne!(
+        resp.status(),
+        200,
+        "Request with only AWSAccessKeyId+Signature (no Expires) should not be treated as S3 presigned"
+    );
+
+    // Request with all three SigV2 params should be routed to S3
+    let resp = http
+        .get(format!(
+            "{}/test-bucket/key?AWSAccessKeyId=AKID&Signature=sig&Expires=9999999999",
+            server.endpoint()
+        ))
+        .send()
+        .await
+        .unwrap();
+    // This will get a 404 (NoSuchBucket) which confirms it was routed to S3
+    assert_eq!(
+        resp.status(),
+        404,
+        "Request with AWSAccessKeyId+Signature+Expires should route to S3"
+    );
+}
+
+/// Bug 6: list_parts should return InvalidArgument for non-numeric max-parts / part-number-marker.
+#[tokio::test]
+async fn s3_list_parts_invalid_argument() {
+    let server = TestServer::start().await;
+    let client = server.s3_client().await;
+
+    client
+        .create_bucket()
+        .bucket("lp-invalid-bucket")
+        .send()
+        .await
+        .unwrap();
+
+    // Create a multipart upload
+    let create = client
+        .create_multipart_upload()
+        .bucket("lp-invalid-bucket")
+        .key("parts.txt")
+        .send()
+        .await
+        .unwrap();
+    let upload_id = create.upload_id().unwrap();
+
+    let http = reqwest::Client::new();
+
+    // Non-numeric max-parts should get InvalidArgument error
+    let resp = http
+        .get(format!(
+            "{}/lp-invalid-bucket/parts.txt?uploadId={}&max-parts=abc",
+            server.endpoint(),
+            upload_id
+        ))
+        .header(
+            "Authorization",
+            "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20240101/us-east-1/s3/aws4_request, SignedHeaders=host, Signature=fake",
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        400,
+        "Non-numeric max-parts should return 400"
+    );
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("InvalidArgument"),
+        "Expected InvalidArgument error for non-numeric max-parts, got: {body}"
+    );
+
+    // Non-numeric part-number-marker should get InvalidArgument error
+    let resp = http
+        .get(format!(
+            "{}/lp-invalid-bucket/parts.txt?uploadId={}&part-number-marker=xyz",
+            server.endpoint(),
+            upload_id
+        ))
+        .header(
+            "Authorization",
+            "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20240101/us-east-1/s3/aws4_request, SignedHeaders=host, Signature=fake",
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        400,
+        "Non-numeric part-number-marker should return 400"
+    );
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("InvalidArgument"),
+        "Expected InvalidArgument error for non-numeric part-number-marker, got: {body}"
+    );
+}
