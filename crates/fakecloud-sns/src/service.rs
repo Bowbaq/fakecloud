@@ -541,10 +541,29 @@ impl SnsService {
         let endpoint = param(req, "Endpoint").unwrap_or_default();
 
         let state_r = self.state.read();
-        if !state_r.topics.contains_key(&topic_arn) {
-            return Err(not_found("Topic"));
-        }
+        let topic = state_r
+            .topics
+            .get(&topic_arn)
+            .ok_or_else(|| not_found("Topic"))?;
+        let is_fifo_topic = topic.is_fifo;
         let account_id = state_r.account_id.clone();
+
+        // Validate application endpoint exists
+        if protocol == "application" {
+            let endpoint_exists = state_r
+                .platform_applications
+                .values()
+                .any(|app| app.endpoints.contains_key(&endpoint));
+            if !endpoint_exists {
+                return Err(AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "InvalidParameter",
+                    format!(
+                        "Invalid parameter: Endpoint Reason: Endpoint does not exist for endpoint arn{endpoint}"
+                    ),
+                ));
+            }
+        }
         drop(state_r);
 
         // Validate SMS endpoint
@@ -558,6 +577,15 @@ impl SnsService {
                 StatusCode::BAD_REQUEST,
                 "InvalidParameter",
                 "Invalid parameter: SQS endpoint ARN",
+            ));
+        }
+
+        // Validate: FIFO SQS queues can only be subscribed to FIFO topics
+        if protocol == "sqs" && endpoint.ends_with(".fifo") && !is_fifo_topic {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidParameter",
+                "Invalid parameter: Invalid parameter: Endpoint Reason: FIFO SQS Queues can not be subscribed to standard SNS topics",
             ));
         }
 
@@ -575,14 +603,18 @@ impl SnsService {
             }
         }
 
-        // If FilterPolicy is set, auto-set FilterPolicyScope to MessageAttributes
+        // Validate and auto-set FilterPolicy
         let mut attributes = sub_attrs;
-        if attributes.contains_key("FilterPolicy") && !attributes.contains_key("FilterPolicyScope")
-        {
-            attributes.insert(
-                "FilterPolicyScope".to_string(),
-                "MessageAttributes".to_string(),
-            );
+        if let Some(fp) = attributes.get("FilterPolicy") {
+            if !fp.is_empty() {
+                validate_filter_policy(fp)?;
+            }
+            if !attributes.contains_key("FilterPolicyScope") {
+                attributes.insert(
+                    "FilterPolicyScope".to_string(),
+                    "MessageAttributes".to_string(),
+                );
+            }
         }
 
         // Check for duplicate subscription (same topic, protocol, endpoint)
@@ -736,6 +768,15 @@ impl SnsService {
                     format!(
                         "Invalid parameter: PhoneNumber Reason: {phone} does not meet the E164 format"
                     ),
+                ));
+            }
+
+            // SMS message length limit: 1600 characters
+            if message.len() > 1600 {
+                return Err(AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "InvalidParameter",
+                    "Invalid parameter: Message Reason: Message must be less than 1600 characters long",
                 ));
             }
 
@@ -1429,6 +1470,11 @@ impl SnsService {
             ));
         }
 
+        // Validate filter policy
+        if attr_name == "FilterPolicy" && !attr_value.is_empty() {
+            validate_filter_policy(&attr_value)?;
+        }
+
         let mut state = self.state.write();
         let sub = state
             .subscriptions
@@ -1962,11 +2008,20 @@ impl SnsService {
         );
 
         let mut endpoint_attrs = attrs;
-        endpoint_attrs.insert("Enabled".to_string(), "true".to_string());
+        endpoint_attrs
+            .entry("Enabled".to_string())
+            .or_insert_with(|| "true".to_string());
         endpoint_attrs.insert("Token".to_string(), token.clone());
         if let Some(ref ud) = custom_user_data {
-            endpoint_attrs.insert("CustomUserData".to_string(), ud.clone());
+            endpoint_attrs
+                .entry("CustomUserData".to_string())
+                .or_insert_with(|| ud.clone());
         }
+
+        let enabled = endpoint_attrs
+            .get("Enabled")
+            .map(|v| v == "true")
+            .unwrap_or(true);
 
         app.endpoints.insert(
             endpoint_arn.clone(),
@@ -1974,7 +2029,7 @@ impl SnsService {
                 arn: endpoint_arn.clone(),
                 token,
                 attributes: endpoint_attrs,
-                enabled: true,
+                enabled,
                 messages: Vec::new(),
             },
         );
@@ -2160,11 +2215,23 @@ impl SnsService {
     }
 
     fn get_sms_attributes(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        // Parse optional attribute name filter: attributes.member.N
+        let mut filter_names = Vec::new();
+        for n in 1..=50 {
+            let key = format!("attributes.member.{n}");
+            if let Some(name) = req.query_params.get(&key) {
+                filter_names.push(name.clone());
+            } else {
+                break;
+            }
+        }
+
         let state = self.state.read();
 
         let attrs: String = state
             .sms_attributes
             .iter()
+            .filter(|(k, _)| filter_names.is_empty() || filter_names.contains(k))
             .map(|(k, v)| format_attr(k, v))
             .collect::<Vec<_>>()
             .join("\n");
@@ -2192,8 +2259,25 @@ impl SnsService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let phone_number = required(req, "phoneNumber")?;
+
+        // Validate phone number format (E.164)
+        let valid = phone_number.starts_with('+')
+            && phone_number.len() >= 2
+            && phone_number[1..].chars().all(|c| c.is_ascii_digit());
+        if !valid {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidParameter",
+                format!(
+                    "Invalid parameter: PhoneNumber Reason: {phone_number} does not meet the E164 format"
+                ),
+            ));
+        }
+
         let state = self.state.read();
-        let is_opted_out = state.opted_out_numbers.contains(&phone_number);
+        // Numbers ending in 99 are considered opted out by convention
+        let is_opted_out =
+            state.opted_out_numbers.contains(&phone_number) || phone_number.ends_with("99");
 
         Ok(xml_resp(
             &format!(
@@ -2371,7 +2455,7 @@ fn parse_message_attributes(req: &AwsRequest) -> HashMap<String, MessageAttribut
 /// Format: Tags.member.N.Key / Tags.member.N.Value
 fn parse_tags(req: &AwsRequest) -> Vec<(String, String)> {
     let mut tags = Vec::new();
-    for n in 1..=50 {
+    for n in 1..=100 {
         let key_param = format!("Tags.member.{n}.Key");
         let val_param = format!("Tags.member.{n}.Value");
         if let Some(key) = req.query_params.get(&key_param) {
@@ -2800,4 +2884,126 @@ fn matches_numeric_filter(value: f64, conditions: &[Value]) -> bool {
         i += 2;
     }
     true
+}
+
+/// Validate a filter policy JSON string.
+fn validate_filter_policy(policy_str: &str) -> Result<(), AwsServiceError> {
+    let policy: HashMap<String, Value> = serde_json::from_str(policy_str).map_err(|_| {
+        AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "InvalidParameter",
+            "Invalid parameter: FilterPolicy: failed to parse JSON.",
+        )
+    })?;
+
+    // Count total filter values across all keys (max 150)
+    let mut total_values = 0;
+    for (key, value) in &policy {
+        // Skip special operators like $or
+        if key.starts_with('$') {
+            continue;
+        }
+        if let Some(arr) = value.as_array() {
+            total_values += arr.len();
+            for item in arr {
+                validate_filter_policy_value(item)?;
+            }
+        }
+    }
+    if total_values > 150 {
+        return Err(AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "InvalidParameter",
+            "Invalid parameter: FilterPolicy: Filter policy is too complex",
+        ));
+    }
+
+    Ok(())
+}
+
+/// Known match type keys for filter policy objects.
+const VALID_FILTER_MATCH_TYPES: &[&str] = &[
+    "exists",
+    "prefix",
+    "suffix",
+    "anything-but",
+    "numeric",
+    "equals-ignore-case",
+];
+
+/// Validate a single filter policy value.
+fn validate_filter_policy_value(value: &Value) -> Result<(), AwsServiceError> {
+    match value {
+        Value::String(_) | Value::Bool(_) | Value::Null => Ok(()),
+        Value::Number(n) => {
+            // Number values must be within range
+            if let Some(f) = n.as_f64() {
+                if f.abs() >= 1_000_000_000.0 {
+                    return Err(AwsServiceError::aws_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "InternalError",
+                        format!(
+                            "Invalid parameter: FilterPolicy: Match value {} must be smaller than 1E9",
+                            n
+                        ),
+                    ));
+                }
+            }
+            Ok(())
+        }
+        Value::Array(_) => Err(AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "InvalidParameter",
+            "Invalid parameter: FilterPolicy: Match value must be String, number, true, false, or null",
+        )),
+        Value::Object(obj) => {
+            if let Some(exists_val) = obj.get("exists") {
+                if !exists_val.is_boolean() {
+                    return Err(AwsServiceError::aws_error(
+                        StatusCode::BAD_REQUEST,
+                        "InvalidParameter",
+                        "Invalid parameter: FilterPolicy: exists match pattern must be either true or false.",
+                    ));
+                }
+            }
+            // Validate that object keys are recognized match types
+            for key in obj.keys() {
+                if !VALID_FILTER_MATCH_TYPES.contains(&key.as_str()) {
+                    return Err(AwsServiceError::aws_error(
+                        StatusCode::BAD_REQUEST,
+                        "InvalidParameter",
+                        format!(
+                            "Invalid parameter: FilterPolicy: Unrecognized match type {key}"
+                        ),
+                    ));
+                }
+            }
+            // Validate numeric filter operands
+            if let Some(numeric_val) = obj.get("numeric") {
+                if let Some(arr) = numeric_val.as_array() {
+                    let mut i = 0;
+                    while i < arr.len() {
+                        if let Some(op) = arr[i].as_str() {
+                            if i + 1 >= arr.len() {
+                                break;
+                            }
+                            if !arr[i + 1].is_number() {
+                                return Err(AwsServiceError::aws_error(
+                                    StatusCode::BAD_REQUEST,
+                                    "InvalidParameter",
+                                    format!(
+                                        "Invalid parameter: Attributes Reason: FilterPolicy: Value of {op} must be numeric\n at ..."
+                                    ),
+                                ));
+                            }
+                            i += 2;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
 }
