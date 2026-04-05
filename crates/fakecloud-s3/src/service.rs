@@ -3,6 +3,7 @@ use bytes::Bytes;
 use chrono::{DateTime, Timelike, Utc};
 use http::{HeaderMap, Method, StatusCode};
 use md5::{Digest, Md5};
+use uuid::Uuid;
 
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
 
@@ -27,13 +28,27 @@ impl AwsService for S3Service {
     async fn handle(&self, req: AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         // S3 REST routing: method + path segments + query params
         let bucket = req.path_segments.first().map(|s| s.as_str());
-        let key = if req.path_segments.len() > 1 {
-            let raw_key = req.path_segments[1..].join("/");
-            Some(
-                percent_encoding::percent_decode_str(&raw_key)
-                    .decode_utf8_lossy()
-                    .to_string(),
-            )
+        // Extract key from the raw path to preserve leading slashes and empty segments.
+        // The raw path is like "/bucket/key/parts" — we strip the bucket prefix.
+        let key = if let Some(b) = bucket {
+            let prefix = format!("/{b}/");
+            if req.raw_path.starts_with(&prefix) && req.raw_path.len() > prefix.len() {
+                let raw_key = &req.raw_path[prefix.len()..];
+                Some(
+                    percent_encoding::percent_decode_str(raw_key)
+                        .decode_utf8_lossy()
+                        .into_owned(),
+                )
+            } else if req.path_segments.len() > 1 {
+                let raw = req.path_segments[1..].join("/");
+                Some(
+                    percent_encoding::percent_decode_str(&raw)
+                        .decode_utf8_lossy()
+                        .into_owned(),
+                )
+            } else {
+                None
+            }
         } else {
             None
         };
@@ -279,6 +294,10 @@ impl S3Service {
             }
         }
 
+        // Determine the requested region from the body's LocationConstraint
+        let requested_region =
+            extract_xml_value(body_str, "LocationConstraint").unwrap_or_else(|| req.region.clone());
+
         // Parse ACL from header
         let acl = req
             .headers
@@ -287,14 +306,26 @@ impl S3Service {
             .unwrap_or("private");
 
         let mut state = self.state.write();
-        if state.buckets.contains_key(bucket) {
-            return Err(AwsServiceError::aws_error(
+        if let Some(existing) = state.buckets.get(bucket) {
+            // In us-east-1, re-creating same bucket in same region is idempotent (returns 200)
+            if existing.region == requested_region && requested_region == "us-east-1" {
+                let mut headers = HeaderMap::new();
+                headers.insert("location", format!("/{bucket}").parse().unwrap());
+                return Ok(AwsResponse {
+                    status: StatusCode::OK,
+                    content_type: "application/xml".to_string(),
+                    body: Bytes::new(),
+                    headers,
+                });
+            }
+            return Err(AwsServiceError::aws_error_with_fields(
                 StatusCode::CONFLICT,
                 "BucketAlreadyOwnedByYou",
                 "Your previous request to create the named bucket succeeded and you already own it.",
+                vec![("BucketName".to_string(), bucket.to_string())],
             ));
         }
-        let mut b = S3Bucket::new(bucket, &req.region, &req.account_id);
+        let mut b = S3Bucket::new(bucket, &requested_region, &req.account_id);
         b.acl_grants = canned_acl_grants(acl, &req.account_id);
         state.buckets.insert(bucket.to_string(), b);
 
@@ -319,10 +350,11 @@ impl S3Service {
             .get(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
         if !b.objects.is_empty() {
-            return Err(AwsServiceError::aws_error(
+            return Err(AwsServiceError::aws_error_with_fields(
                 StatusCode::CONFLICT,
                 "BucketNotEmpty",
                 "The bucket you tried to delete is not empty",
+                vec![("BucketName".to_string(), bucket.to_string())],
             ));
         }
         state.buckets.remove(bucket);
@@ -365,6 +397,602 @@ impl S3Service {
         let body = format!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
              <LocationConstraint xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">{loc}</LocationConstraint>"
+        );
+        Ok(AwsResponse::xml(StatusCode::OK, body))
+    }
+
+    // ---- Encryption ----
+
+    #[allow(dead_code)]
+    fn put_bucket_encryption(
+        &self,
+        req: &AwsRequest,
+        bucket: &str,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let body_str = std::str::from_utf8(&req.body).unwrap_or("").to_string();
+        let mut state = self.state.write();
+        let b = state
+            .buckets
+            .get_mut(bucket)
+            .ok_or_else(|| no_such_bucket(bucket))?;
+        b.encryption_config = Some(body_str);
+        Ok(empty_response(StatusCode::OK))
+    }
+
+    #[allow(dead_code)]
+    fn get_bucket_encryption(&self, bucket: &str) -> Result<AwsResponse, AwsServiceError> {
+        let state = self.state.read();
+        let b = state
+            .buckets
+            .get(bucket)
+            .ok_or_else(|| no_such_bucket(bucket))?;
+        match &b.encryption_config {
+            Some(config) => Ok(AwsResponse::xml(StatusCode::OK, config.clone())),
+            None => Err(AwsServiceError::aws_error(
+                StatusCode::NOT_FOUND,
+                "ServerSideEncryptionConfigurationNotFoundError",
+                "The server side encryption configuration was not found",
+            )),
+        }
+    }
+
+    #[allow(dead_code)]
+    fn delete_bucket_encryption(&self, bucket: &str) -> Result<AwsResponse, AwsServiceError> {
+        let mut state = self.state.write();
+        let b = state
+            .buckets
+            .get_mut(bucket)
+            .ok_or_else(|| no_such_bucket(bucket))?;
+        b.encryption_config = None;
+        Ok(empty_response(StatusCode::NO_CONTENT))
+    }
+
+    // ---- Lifecycle ----
+
+    #[allow(dead_code)]
+    fn put_bucket_lifecycle(
+        &self,
+        req: &AwsRequest,
+        bucket: &str,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let body_str = std::str::from_utf8(&req.body).unwrap_or("").to_string();
+        let mut state = self.state.write();
+        let b = state
+            .buckets
+            .get_mut(bucket)
+            .ok_or_else(|| no_such_bucket(bucket))?;
+        b.lifecycle_config = Some(body_str);
+        Ok(empty_response(StatusCode::OK))
+    }
+
+    #[allow(dead_code)]
+    fn get_bucket_lifecycle(&self, bucket: &str) -> Result<AwsResponse, AwsServiceError> {
+        let state = self.state.read();
+        let b = state
+            .buckets
+            .get(bucket)
+            .ok_or_else(|| no_such_bucket(bucket))?;
+        match &b.lifecycle_config {
+            Some(config) => Ok(AwsResponse::xml(StatusCode::OK, config.clone())),
+            None => Err(AwsServiceError::aws_error(
+                StatusCode::NOT_FOUND,
+                "NoSuchLifecycleConfiguration",
+                "The lifecycle configuration does not exist",
+            )),
+        }
+    }
+
+    #[allow(dead_code)]
+    fn delete_bucket_lifecycle(&self, bucket: &str) -> Result<AwsResponse, AwsServiceError> {
+        let mut state = self.state.write();
+        let b = state
+            .buckets
+            .get_mut(bucket)
+            .ok_or_else(|| no_such_bucket(bucket))?;
+        b.lifecycle_config = None;
+        Ok(empty_response(StatusCode::NO_CONTENT))
+    }
+
+    // ---- Policy ----
+
+    #[allow(dead_code)]
+    fn put_bucket_policy(
+        &self,
+        req: &AwsRequest,
+        bucket: &str,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let body_str = std::str::from_utf8(&req.body).unwrap_or("").to_string();
+        let mut state = self.state.write();
+        let b = state
+            .buckets
+            .get_mut(bucket)
+            .ok_or_else(|| no_such_bucket(bucket))?;
+        b.policy = Some(body_str);
+        Ok(empty_response(StatusCode::NO_CONTENT))
+    }
+
+    #[allow(dead_code)]
+    fn get_bucket_policy(&self, bucket: &str) -> Result<AwsResponse, AwsServiceError> {
+        let state = self.state.read();
+        let b = state
+            .buckets
+            .get(bucket)
+            .ok_or_else(|| no_such_bucket(bucket))?;
+        match &b.policy {
+            Some(policy) => Ok(AwsResponse {
+                status: StatusCode::OK,
+                content_type: "application/json".to_string(),
+                body: Bytes::from(policy.clone()),
+                headers: HeaderMap::new(),
+            }),
+            None => Err(AwsServiceError::aws_error_with_fields(
+                StatusCode::NOT_FOUND,
+                "NoSuchBucketPolicy",
+                "The bucket policy does not exist",
+                vec![("BucketName".to_string(), bucket.to_string())],
+            )),
+        }
+    }
+
+    #[allow(dead_code)]
+    fn delete_bucket_policy(&self, bucket: &str) -> Result<AwsResponse, AwsServiceError> {
+        let mut state = self.state.write();
+        let b = state
+            .buckets
+            .get_mut(bucket)
+            .ok_or_else(|| no_such_bucket(bucket))?;
+        b.policy = None;
+        Ok(empty_response(StatusCode::NO_CONTENT))
+    }
+
+    // ---- CORS ----
+
+    #[allow(dead_code)]
+    fn put_bucket_cors(
+        &self,
+        req: &AwsRequest,
+        bucket: &str,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let body_str = std::str::from_utf8(&req.body).unwrap_or("").to_string();
+        let mut state = self.state.write();
+        let b = state
+            .buckets
+            .get_mut(bucket)
+            .ok_or_else(|| no_such_bucket(bucket))?;
+        b.cors_config = Some(body_str);
+        Ok(empty_response(StatusCode::OK))
+    }
+
+    #[allow(dead_code)]
+    fn get_bucket_cors(&self, bucket: &str) -> Result<AwsResponse, AwsServiceError> {
+        let state = self.state.read();
+        let b = state
+            .buckets
+            .get(bucket)
+            .ok_or_else(|| no_such_bucket(bucket))?;
+        match &b.cors_config {
+            Some(config) => Ok(AwsResponse::xml(StatusCode::OK, config.clone())),
+            None => Err(AwsServiceError::aws_error_with_fields(
+                StatusCode::NOT_FOUND,
+                "NoSuchCORSConfiguration",
+                "The CORS configuration does not exist",
+                vec![("BucketName".to_string(), bucket.to_string())],
+            )),
+        }
+    }
+
+    #[allow(dead_code)]
+    fn delete_bucket_cors(&self, bucket: &str) -> Result<AwsResponse, AwsServiceError> {
+        let mut state = self.state.write();
+        let b = state
+            .buckets
+            .get_mut(bucket)
+            .ok_or_else(|| no_such_bucket(bucket))?;
+        b.cors_config = None;
+        Ok(empty_response(StatusCode::NO_CONTENT))
+    }
+
+    // ---- Notification ----
+
+    #[allow(dead_code)]
+    fn put_bucket_notification(
+        &self,
+        req: &AwsRequest,
+        bucket: &str,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let body_str = std::str::from_utf8(&req.body).unwrap_or("").to_string();
+        let mut state = self.state.write();
+        let b = state
+            .buckets
+            .get_mut(bucket)
+            .ok_or_else(|| no_such_bucket(bucket))?;
+        b.notification_config = Some(body_str);
+        Ok(empty_response(StatusCode::OK))
+    }
+
+    #[allow(dead_code)]
+    fn get_bucket_notification(&self, bucket: &str) -> Result<AwsResponse, AwsServiceError> {
+        let state = self.state.read();
+        let b = state
+            .buckets
+            .get(bucket)
+            .ok_or_else(|| no_such_bucket(bucket))?;
+        let body = match &b.notification_config {
+            Some(config) => config.clone(),
+            None => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+                     <NotificationConfiguration xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">\
+                     </NotificationConfiguration>"
+                .to_string(),
+        };
+        Ok(AwsResponse::xml(StatusCode::OK, body))
+    }
+
+    // ---- Logging ----
+
+    #[allow(dead_code)]
+    fn put_bucket_logging(
+        &self,
+        req: &AwsRequest,
+        bucket: &str,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let body_str = std::str::from_utf8(&req.body).unwrap_or("").to_string();
+        let mut state = self.state.write();
+        let b = state
+            .buckets
+            .get_mut(bucket)
+            .ok_or_else(|| no_such_bucket(bucket))?;
+        b.logging_config = Some(body_str);
+        Ok(empty_response(StatusCode::OK))
+    }
+
+    #[allow(dead_code)]
+    fn get_bucket_logging(&self, bucket: &str) -> Result<AwsResponse, AwsServiceError> {
+        let state = self.state.read();
+        let b = state
+            .buckets
+            .get(bucket)
+            .ok_or_else(|| no_such_bucket(bucket))?;
+        let body = match &b.logging_config {
+            Some(config) => config.clone(),
+            None => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+                     <BucketLoggingStatus xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">\
+                     </BucketLoggingStatus>"
+                .to_string(),
+        };
+        Ok(AwsResponse::xml(StatusCode::OK, body))
+    }
+
+    // ---- Website ----
+
+    #[allow(dead_code)]
+    fn put_bucket_website(
+        &self,
+        req: &AwsRequest,
+        bucket: &str,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let body_str = std::str::from_utf8(&req.body).unwrap_or("").to_string();
+        let mut state = self.state.write();
+        let b = state
+            .buckets
+            .get_mut(bucket)
+            .ok_or_else(|| no_such_bucket(bucket))?;
+        b.website_config = Some(body_str);
+        Ok(empty_response(StatusCode::OK))
+    }
+
+    #[allow(dead_code)]
+    fn get_bucket_website(&self, bucket: &str) -> Result<AwsResponse, AwsServiceError> {
+        let state = self.state.read();
+        let b = state
+            .buckets
+            .get(bucket)
+            .ok_or_else(|| no_such_bucket(bucket))?;
+        match &b.website_config {
+            Some(config) => Ok(AwsResponse::xml(StatusCode::OK, config.clone())),
+            None => Err(AwsServiceError::aws_error_with_fields(
+                StatusCode::NOT_FOUND,
+                "NoSuchWebsiteConfiguration",
+                "The specified bucket does not have a website configuration",
+                vec![("BucketName".to_string(), bucket.to_string())],
+            )),
+        }
+    }
+
+    #[allow(dead_code)]
+    fn delete_bucket_website(&self, bucket: &str) -> Result<AwsResponse, AwsServiceError> {
+        let mut state = self.state.write();
+        let b = state
+            .buckets
+            .get_mut(bucket)
+            .ok_or_else(|| no_such_bucket(bucket))?;
+        b.website_config = None;
+        Ok(empty_response(StatusCode::NO_CONTENT))
+    }
+
+    // ---- Accelerate ----
+
+    #[allow(dead_code)]
+    fn put_bucket_accelerate(
+        &self,
+        req: &AwsRequest,
+        bucket: &str,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let body_str = std::str::from_utf8(&req.body).unwrap_or("");
+        let status = extract_xml_value(body_str, "Status");
+        let mut state = self.state.write();
+        let b = state
+            .buckets
+            .get_mut(bucket)
+            .ok_or_else(|| no_such_bucket(bucket))?;
+        // Validate status
+        if let Some(ref s) = status {
+            if s != "Enabled" && s != "Suspended" {
+                return Err(AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "MalformedXML",
+                    "The XML you provided was not well-formed or did not validate against our published schema",
+                ));
+            }
+        }
+        // Suspending a never-configured bucket is a no-op
+        if status.as_deref() == Some("Suspended") && b.accelerate_status.is_none() {
+            return Ok(empty_response(StatusCode::OK));
+        }
+        b.accelerate_status = status;
+        Ok(empty_response(StatusCode::OK))
+    }
+
+    #[allow(dead_code)]
+    fn get_bucket_accelerate(&self, bucket: &str) -> Result<AwsResponse, AwsServiceError> {
+        let state = self.state.read();
+        let b = state
+            .buckets
+            .get(bucket)
+            .ok_or_else(|| no_such_bucket(bucket))?;
+        let status_xml = match &b.accelerate_status {
+            Some(s) => format!("<Status>{s}</Status>"),
+            None => String::new(),
+        };
+        let body = format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+             <AccelerateConfiguration xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">\
+             {status_xml}\
+             </AccelerateConfiguration>"
+        );
+        Ok(AwsResponse::xml(StatusCode::OK, body))
+    }
+
+    // ---- PublicAccessBlock ----
+
+    #[allow(dead_code)]
+    fn put_public_access_block(
+        &self,
+        req: &AwsRequest,
+        bucket: &str,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let body_str = std::str::from_utf8(&req.body).unwrap_or("").to_string();
+        let mut state = self.state.write();
+        let b = state
+            .buckets
+            .get_mut(bucket)
+            .ok_or_else(|| no_such_bucket(bucket))?;
+        b.public_access_block = Some(body_str);
+        Ok(empty_response(StatusCode::OK))
+    }
+
+    #[allow(dead_code)]
+    fn get_public_access_block(&self, bucket: &str) -> Result<AwsResponse, AwsServiceError> {
+        let state = self.state.read();
+        let b = state
+            .buckets
+            .get(bucket)
+            .ok_or_else(|| no_such_bucket(bucket))?;
+        match &b.public_access_block {
+            Some(config) => Ok(AwsResponse::xml(StatusCode::OK, config.clone())),
+            None => Err(AwsServiceError::aws_error(
+                StatusCode::NOT_FOUND,
+                "NoSuchPublicAccessBlockConfiguration",
+                "The public access block configuration was not found",
+            )),
+        }
+    }
+
+    #[allow(dead_code)]
+    fn delete_public_access_block(&self, bucket: &str) -> Result<AwsResponse, AwsServiceError> {
+        let mut state = self.state.write();
+        let b = state
+            .buckets
+            .get_mut(bucket)
+            .ok_or_else(|| no_such_bucket(bucket))?;
+        b.public_access_block = None;
+        Ok(empty_response(StatusCode::NO_CONTENT))
+    }
+
+    // ---- ObjectLockConfiguration ----
+
+    #[allow(dead_code)]
+    fn put_object_lock_config(
+        &self,
+        req: &AwsRequest,
+        bucket: &str,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let body_str = std::str::from_utf8(&req.body).unwrap_or("").to_string();
+        let mut state = self.state.write();
+        let b = state
+            .buckets
+            .get_mut(bucket)
+            .ok_or_else(|| no_such_bucket(bucket))?;
+        b.object_lock_config = Some(body_str);
+        Ok(empty_response(StatusCode::OK))
+    }
+
+    #[allow(dead_code)]
+    fn get_object_lock_config(&self, bucket: &str) -> Result<AwsResponse, AwsServiceError> {
+        let state = self.state.read();
+        let b = state
+            .buckets
+            .get(bucket)
+            .ok_or_else(|| no_such_bucket(bucket))?;
+        match &b.object_lock_config {
+            Some(config) => Ok(AwsResponse::xml(StatusCode::OK, config.clone())),
+            None => Err(AwsServiceError::aws_error(
+                StatusCode::NOT_FOUND,
+                "ObjectLockConfigurationNotFoundError",
+                "Object Lock configuration does not exist for this bucket",
+            )),
+        }
+    }
+
+    // ---- List operations ----
+
+    #[allow(dead_code)]
+    fn list_objects_v1(
+        &self,
+        req: &AwsRequest,
+        bucket: &str,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let state = self.state.read();
+        let b = state
+            .buckets
+            .get(bucket)
+            .ok_or_else(|| no_such_bucket(bucket))?;
+
+        let prefix = req.query_params.get("prefix").cloned().unwrap_or_default();
+        let delimiter = req.query_params.get("delimiter").cloned();
+        let max_keys: usize = req
+            .query_params
+            .get("max-keys")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1000);
+        let marker = req.query_params.get("marker").cloned().unwrap_or_default();
+        let encoding_type = req.query_params.get("encoding-type").cloned();
+
+        let mut contents = String::new();
+        let mut common_prefixes: Vec<String> = Vec::new();
+        let mut count = 0;
+        let mut is_truncated = false;
+        let mut last_key = String::new();
+
+        for (key, obj) in &b.objects {
+            if obj.is_delete_marker {
+                continue;
+            }
+            if !key.starts_with(&prefix) {
+                continue;
+            }
+            if !marker.is_empty() && key.as_str() <= marker.as_str() {
+                continue;
+            }
+
+            // Handle delimiter-based grouping
+            if let Some(ref delim) = delimiter {
+                if !delim.is_empty() {
+                    let suffix = &key[prefix.len()..];
+                    if let Some(pos) = suffix.find(delim.as_str()) {
+                        let cp = format!("{}{}", prefix, &suffix[..pos + delim.len()]);
+                        if !common_prefixes.contains(&cp) {
+                            if count >= max_keys {
+                                is_truncated = true;
+                                break;
+                            }
+                            common_prefixes.push(cp);
+                            last_key = key.clone();
+                            count += 1;
+                        }
+                        continue;
+                    }
+                }
+            }
+
+            if count >= max_keys {
+                is_truncated = true;
+                break;
+            }
+
+            let display_key = if encoding_type.as_deref() == Some("url") {
+                url_encode_key(key)
+            } else {
+                xml_escape(key)
+            };
+
+            contents.push_str(&format!(
+                "<Contents>\
+                 <Key>{}</Key>\
+                 <LastModified>{}</LastModified>\
+                 <ETag>&quot;{}&quot;</ETag>\
+                 <Size>{}</Size>\
+                 <StorageClass>{}</StorageClass>\
+                 </Contents>",
+                display_key,
+                obj.last_modified.format("%Y-%m-%dT%H:%M:%S%.3fZ"),
+                obj.etag,
+                obj.size,
+                obj.storage_class,
+            ));
+            last_key = key.clone();
+            count += 1;
+        }
+
+        let mut common_prefixes_xml = String::new();
+        for cp in &common_prefixes {
+            let display_cp = if encoding_type.as_deref() == Some("url") {
+                url_encode_key(cp)
+            } else {
+                xml_escape(cp)
+            };
+            common_prefixes_xml.push_str(&format!(
+                "<CommonPrefixes><Prefix>{display_cp}</Prefix></CommonPrefixes>",
+            ));
+        }
+
+        let next_marker = if is_truncated {
+            format!("<NextMarker>{}</NextMarker>", xml_escape(&last_key))
+        } else {
+            String::new()
+        };
+
+        let delimiter_xml = match &delimiter {
+            Some(d) if !d.is_empty() => format!("<Delimiter>{}</Delimiter>", xml_escape(d)),
+            _ => String::new(),
+        };
+
+        let prefix_xml = if prefix.is_empty() {
+            String::new()
+        } else {
+            let display_prefix = if encoding_type.as_deref() == Some("url") {
+                url_encode_key(&prefix)
+            } else {
+                xml_escape(&prefix)
+            };
+            format!("<Prefix>{display_prefix}</Prefix>")
+        };
+
+        let marker_xml = if marker.is_empty() {
+            String::new()
+        } else {
+            format!("<Marker>{}</Marker>", xml_escape(&marker))
+        };
+
+        let encoding_xml = if encoding_type.as_deref() == Some("url") {
+            "<EncodingType>url</EncodingType>".to_string()
+        } else {
+            String::new()
+        };
+
+        let body = format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+             <ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">\
+             <Name>{bucket}</Name>\
+             {prefix_xml}\
+             {marker_xml}\
+             <MaxKeys>{max_keys}</MaxKeys>\
+             {delimiter_xml}\
+             {encoding_xml}\
+             <IsTruncated>{is_truncated}</IsTruncated>\
+             {contents}\
+             {common_prefixes_xml}\
+             {next_marker}\
+             </ListBucketResult>",
         );
         Ok(AwsResponse::xml(StatusCode::OK, body))
     }
@@ -478,19 +1106,31 @@ impl S3Service {
             String::new()
         };
 
+        let encoding_type = req.query_params.get("encoding-type").cloned();
+        let encoding_xml = if encoding_type.as_deref() == Some("url") {
+            "<EncodingType>url</EncodingType>".to_string()
+        } else {
+            String::new()
+        };
+        let delimiter_xml = if delimiter.is_empty() {
+            String::new()
+        } else {
+            format!("<Delimiter>{}</Delimiter>", xml_escape(&delimiter))
+        };
+        // StartAfter is only included when no ContinuationToken is present
+        let start_after_xml = if start_after.is_empty() || continuation.is_some() {
+            String::new()
+        } else {
+            format!("<StartAfter>{}</StartAfter>", xml_escape(&start_after))
+        };
+
         let body = format!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
              <ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">\
-             <Name>{bucket}</Name>\
-             <Prefix>{prefix}</Prefix>\
+             <Name>{bucket}</Name><Prefix>{prefix}</Prefix>{delimiter_xml}{encoding_xml}\
              <KeyCount>{count}</KeyCount>\
-             <MaxKeys>{max_keys}</MaxKeys>\
-             <IsTruncated>{is_truncated}</IsTruncated>\
-             {cont_token}\
-             {next_token}\
-             {contents}\
-             {common_prefixes_xml}\
-             </ListBucketResult>",
+             <MaxKeys>{max_keys}</MaxKeys>{start_after_xml}<IsTruncated>{is_truncated}</IsTruncated>\
+             {cont_token}{next_token}{contents}{common_prefixes_xml}</ListBucketResult>",
             prefix = xml_escape(&prefix),
         );
         Ok(AwsResponse::xml(StatusCode::OK, body))
@@ -507,11 +1147,11 @@ impl S3Service {
             .get(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
         if b.tags.is_empty() {
-            return Err(AwsServiceError::aws_error_with_extra(
+            return Err(AwsServiceError::aws_error_with_fields(
                 StatusCode::NOT_FOUND,
                 "NoSuchTagSet",
                 "The TagSet does not exist",
-                &[("BucketName", &b.name)],
+                vec![("BucketName".to_string(), b.name.clone())],
             ));
         }
         let mut tags_xml = String::new();
@@ -838,8 +1478,29 @@ impl S3Service {
             .headers
             .get("content-type")
             .and_then(|v| v.to_str().ok())
-            .unwrap_or("application/octet-stream")
+            .unwrap_or("binary/octet-stream")
             .to_string();
+        let version_id = if b.versioning.as_deref() == Some("Enabled") {
+            Some(uuid::Uuid::new_v4().to_string())
+        } else {
+            None
+        };
+        let content_encoding = req
+            .headers
+            .get("content-encoding")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        let storage_class = req
+            .headers
+            .get("x-amz-storage-class")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("STANDARD")
+            .to_string();
+        let website_redirect_location = req
+            .headers
+            .get("x-amz-website-redirect-location")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
 
         let metadata = extract_user_metadata(&req.headers);
 
@@ -867,7 +1528,7 @@ impl S3Service {
             etag: etag.clone(),
             last_modified: Utc::now(),
             metadata,
-            storage_class: "STANDARD".to_string(),
+            storage_class,
             tags,
             acl_grants,
             acl_owner_id: Some(b.acl_owner_id.clone()),
@@ -876,12 +1537,20 @@ impl S3Service {
             sse_algorithm: None,
             sse_kms_key_id: None,
             bucket_key_enabled: None,
-            website_redirect_location: None,
+            version_id: version_id.clone(),
+            is_delete_marker: false,
+            content_encoding,
+            website_redirect_location,
         };
         b.objects.insert(key.to_string(), obj);
 
         let mut headers = HeaderMap::new();
         headers.insert("etag", format!("\"{etag}\"").parse().unwrap());
+        if let Some(vid) = &version_id {
+            headers.insert("x-amz-version-id", vid.parse().unwrap());
+        }
+        // Return ServerSideEncryption header (AWS always returns this for successful PutObject)
+        headers.insert("x-amz-server-side-encryption", "AES256".parse().unwrap());
         Ok(AwsResponse {
             status: StatusCode::OK,
             content_type: "application/xml".to_string(),
@@ -917,6 +1586,16 @@ impl S3Service {
                 .unwrap(),
         );
         headers.insert("content-length", obj.size.to_string().parse().unwrap());
+        headers.insert("accept-ranges", "bytes".parse().unwrap());
+        headers.insert("x-amz-server-side-encryption", "AES256".parse().unwrap());
+        // Always include storage class
+        headers.insert("x-amz-storage-class", obj.storage_class.parse().unwrap());
+        if let Some(vid) = &obj.version_id {
+            headers.insert("x-amz-version-id", vid.parse().unwrap());
+        }
+        if let Some(ref enc) = obj.content_encoding {
+            headers.insert("content-encoding", enc.parse().unwrap());
+        }
         for (k, v) in &obj.metadata {
             if let (Ok(name), Ok(val)) = (
                 format!("x-amz-meta-{k}").parse::<http::header::HeaderName>(),
@@ -924,6 +1603,9 @@ impl S3Service {
             ) {
                 headers.insert(name, val);
             }
+        }
+        if let Some(ref redirect) = obj.website_redirect_location {
+            headers.insert("x-amz-website-redirect-location", redirect.parse().unwrap());
         }
 
         // Add tag count if object has tags
@@ -1024,6 +1706,38 @@ impl S3Service {
         // Conditional checks for HEAD
         check_head_conditionals(req, obj)?;
 
+        let obj = resolve_object(b, key, req.query_params.get("versionId"))?;
+
+        if obj.is_delete_marker {
+            // HEAD on a delete marker with versionId returns 405
+            if req.query_params.contains_key("versionId") {
+                let mut headers = HeaderMap::new();
+                headers.insert("x-amz-delete-marker", "true".parse().unwrap());
+                headers.insert("allow", "DELETE".parse().unwrap());
+                if let Some(vid) = &obj.version_id {
+                    headers.insert("x-amz-version-id", vid.parse().unwrap());
+                }
+                return Ok(AwsResponse {
+                    status: StatusCode::METHOD_NOT_ALLOWED,
+                    content_type: "application/xml".to_string(),
+                    body: Bytes::new(),
+                    headers,
+                });
+            }
+            // HEAD on current object that is a delete marker returns 404
+            let mut headers = HeaderMap::new();
+            headers.insert("x-amz-delete-marker", "true".parse().unwrap());
+            if let Some(vid) = &obj.version_id {
+                headers.insert("x-amz-version-id", vid.parse().unwrap());
+            }
+            return Ok(AwsResponse {
+                status: StatusCode::NOT_FOUND,
+                content_type: "application/xml".to_string(),
+                body: Bytes::new(),
+                headers,
+            });
+        }
+
         let mut headers = HeaderMap::new();
         headers.insert("etag", format!("\"{}\"", obj.etag).parse().unwrap());
         headers.insert(
@@ -1034,6 +1748,12 @@ impl S3Service {
                 .parse()
                 .unwrap(),
         );
+        headers.insert("accept-ranges", "bytes".parse().unwrap());
+        headers.insert("x-amz-server-side-encryption", "AES256".parse().unwrap());
+        headers.insert("x-amz-storage-class", obj.storage_class.parse().unwrap());
+        if let Some(ref enc) = obj.content_encoding {
+            headers.insert("content-encoding", enc.parse().unwrap());
+        }
 
         // Handle PartNumber query param for multipart objects
         if let Some(part_num_str) = req.query_params.get("partNumber") {
@@ -1056,6 +1776,17 @@ impl S3Service {
         } else {
             headers.insert("content-length", obj.size.to_string().parse().unwrap());
         }
+        for (k, v) in &obj.metadata {
+            if let (Ok(name), Ok(val)) = (
+                format!("x-amz-meta-{k}").parse::<http::header::HeaderName>(),
+                v.parse::<http::header::HeaderValue>(),
+            ) {
+                headers.insert(name, val);
+            }
+        }
+        if let Some(ref redirect) = obj.website_redirect_location {
+            headers.insert("x-amz-website-redirect-location", redirect.parse().unwrap());
+        }
 
         for (k, v) in &obj.metadata {
             if let (Ok(name), Ok(val)) = (
@@ -1066,8 +1797,8 @@ impl S3Service {
             }
         }
 
-        if obj.storage_class != "STANDARD" {
-            headers.insert("x-amz-storage-class", obj.storage_class.parse().unwrap());
+        if let Some(vid) = &obj.version_id {
+            headers.insert("x-amz-version-id", vid.parse().unwrap());
         }
 
         Ok(AwsResponse {
@@ -1168,11 +1899,11 @@ impl S3Service {
             sb.objects
                 .get(src_key)
                 .ok_or_else(|| {
-                    AwsServiceError::aws_error_with_extra(
+                    AwsServiceError::aws_error_with_fields(
                         StatusCode::NOT_FOUND,
                         "NoSuchKey",
                         "The specified key does not exist.",
-                        &[("Key", src_key)],
+                        vec![("Key".to_string(), src_key.to_string())],
                     )
                 })?
                 .clone()
@@ -1286,6 +2017,9 @@ impl S3Service {
                 sse_algorithm: new_sse,
                 sse_kms_key_id: new_kms,
                 bucket_key_enabled: new_bke,
+                version_id: version_id.clone(),
+                is_delete_marker: false,
+                content_encoding: src_obj.content_encoding,
                 website_redirect_location: new_redirect,
             },
         );
@@ -1317,7 +2051,7 @@ impl S3Service {
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
         let body_str = std::str::from_utf8(&req.body).unwrap_or("");
-        let keys = parse_delete_objects_xml(body_str);
+        let entries = parse_delete_objects_xml(body_str);
 
         let mut state = self.state.write();
         let b = state
@@ -1325,13 +2059,51 @@ impl S3Service {
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
 
+        let versioning_enabled = b.versioning.as_deref() == Some("Enabled");
         let mut deleted_xml = String::new();
-        for key in &keys {
-            b.objects.remove(key);
-            deleted_xml.push_str(&format!(
-                "<Deleted><Key>{}</Key></Deleted>",
-                xml_escape(key),
-            ));
+        for entry in &entries {
+            let key = &entry.key;
+            if let Some(ref vid) = entry.version_id {
+                // Delete specific version
+                if let Some(versions) = b.object_versions.get_mut(key) {
+                    versions.retain(|o| o.version_id.as_deref() != Some(vid));
+                    if let Some(latest) = versions.last() {
+                        if latest.is_delete_marker {
+                            b.objects.remove(key);
+                        } else {
+                            b.objects.insert(key.to_string(), latest.clone());
+                        }
+                    } else {
+                        b.objects.remove(key);
+                    }
+                    if versions.is_empty() {
+                        b.object_versions.remove(key);
+                    }
+                }
+                deleted_xml.push_str(&format!(
+                    "<Deleted><Key>{}</Key><VersionId>{}</VersionId></Deleted>",
+                    xml_escape(key),
+                    xml_escape(vid),
+                ));
+            } else if versioning_enabled {
+                let dm_id = Uuid::new_v4().to_string();
+                let marker = make_delete_marker(key, &dm_id);
+                b.object_versions
+                    .entry(key.to_string())
+                    .or_default()
+                    .push(marker.clone());
+                b.objects.insert(key.to_string(), marker);
+                deleted_xml.push_str(&format!(
+                    "<Deleted><Key>{}</Key><DeleteMarker>true</DeleteMarker><DeleteMarkerVersionId>{}</DeleteMarkerVersionId></Deleted>",
+                    xml_escape(key), dm_id,
+                ));
+            } else {
+                b.objects.remove(key);
+                deleted_xml.push_str(&format!(
+                    "<Deleted><Key>{}</Key></Deleted>",
+                    xml_escape(key)
+                ));
+            }
         }
 
         let body = format!(
@@ -1599,13 +2371,13 @@ impl S3Service {
             return Err(no_such_upload(upload_id));
         }
         if part_number > 10000 {
-            return Err(AwsServiceError::aws_error_with_extra(
+            return Err(AwsServiceError::aws_error_with_fields(
                 StatusCode::BAD_REQUEST,
                 "InvalidArgument",
                 "Part number must be an integer between 1 and 10000, inclusive",
-                &[
-                    ("ArgumentName", "partNumber"),
-                    ("ArgumentValue", &part_number.to_string()),
+                vec![
+                    ("ArgumentName".to_string(), "partNumber".to_string()),
+                    ("ArgumentValue".to_string(), part_number.to_string()),
                 ],
             ));
         }
@@ -1879,6 +2651,9 @@ impl S3Service {
             sse_algorithm: upload.sse_algorithm.clone(),
             sse_kms_key_id: upload.sse_kms_key_id.clone(),
             bucket_key_enabled: None,
+            version_id: version_id.clone(),
+            is_delete_marker: false,
+            content_encoding: None,
             website_redirect_location: None,
         };
         b.objects.insert(key.to_string(), obj);
@@ -2216,11 +2991,11 @@ fn not_modified_with_etag(etag: &str) -> AwsServiceError {
 }
 
 fn precondition_failed(condition: &str) -> AwsServiceError {
-    AwsServiceError::aws_error_with_extra(
+    AwsServiceError::aws_error_with_fields(
         StatusCode::PRECONDITION_FAILED,
         "PreconditionFailed",
         "At least one of the pre-conditions you specified did not hold",
-        &[("Condition", condition)],
+        vec![("Condition".to_string(), condition.to_string())],
     )
 }
 
@@ -2431,38 +3206,50 @@ fn parse_acl_xml(xml: &str) -> Result<Vec<AclGrant>, AwsServiceError> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn no_such_bucket(_bucket: &str) -> AwsServiceError {
-    AwsServiceError::aws_error(
+#[allow(dead_code)]
+fn empty_response(status: StatusCode) -> AwsResponse {
+    AwsResponse {
+        status,
+        content_type: "application/xml".to_string(),
+        body: Bytes::new(),
+        headers: HeaderMap::new(),
+    }
+}
+
+fn no_such_bucket(bucket: &str) -> AwsServiceError {
+    AwsServiceError::aws_error_with_fields(
         StatusCode::NOT_FOUND,
         "NoSuchBucket",
         "The specified bucket does not exist",
+        vec![("BucketName".to_string(), bucket.to_string())],
     )
 }
 
 fn no_such_key(key: &str) -> AwsServiceError {
-    AwsServiceError::aws_error(
+    AwsServiceError::aws_error_with_fields(
         StatusCode::NOT_FOUND,
         "NoSuchKey",
-        format!("The specified key does not exist: {key}"),
+        "The specified key does not exist.",
+        vec![("Key".to_string(), key.to_string())],
     )
 }
 
 fn no_such_upload(upload_id: &str) -> AwsServiceError {
-    AwsServiceError::aws_error_with_extra(
+    AwsServiceError::aws_error_with_fields(
         StatusCode::NOT_FOUND,
         "NoSuchUpload",
         "The specified upload does not exist. The upload ID may be invalid, \
          or the upload may have been aborted or completed.",
-        &[("UploadId", upload_id)],
+        vec![("UploadId".to_string(), upload_id.to_string())],
     )
 }
 
 fn no_such_key_with_detail(key: &str) -> AwsServiceError {
-    AwsServiceError::aws_error_with_extra(
+    AwsServiceError::aws_error_with_fields(
         StatusCode::NOT_FOUND,
         "NoSuchKey",
         "The specified key does not exist.",
-        &[("Key", key)],
+        vec![("Key".to_string(), key.to_string())],
     )
 }
 
@@ -2471,12 +3258,29 @@ fn compute_md5(data: &[u8]) -> String {
     format!("{:x}", digest)
 }
 
+#[allow(dead_code)]
+fn url_encode_key(s: &str) -> String {
+    percent_encoding::utf8_percent_encode(s, percent_encoding::NON_ALPHANUMERIC).to_string()
+}
+
 fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            // XML 1.0 allows \t, \n, \r as valid characters; all other control chars
+            // need to be encoded as numeric character references.
+            c if (c as u32) < 0x20 && c != '\t' && c != '\n' && c != '\r' => {
+                out.push_str(&format!("&#x{:X};", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 fn extract_user_metadata(headers: &HeaderMap) -> std::collections::HashMap<String, String> {
@@ -2541,20 +3345,113 @@ fn is_valid_region(region: &str) -> bool {
     valid_regions.contains(&region)
 }
 
-/// Minimal XML parser for `<Delete><Object><Key>...</Key></Object>...</Delete>`.
-fn parse_delete_objects_xml(xml: &str) -> Vec<String> {
-    let mut keys = Vec::new();
+fn resolve_object<'a>(
+    b: &'a S3Bucket,
+    key: &str,
+    version_id: Option<&String>,
+) -> Result<&'a S3Object, AwsServiceError> {
+    if let Some(vid) = version_id {
+        // When a specific versionId is requested, check versions first
+        if let Some(versions) = b.object_versions.get(key) {
+            if let Some(obj) = versions
+                .iter()
+                .find(|o| o.version_id.as_deref() == Some(vid))
+            {
+                return Ok(obj);
+            }
+        }
+        // Also check current object
+        if let Some(obj) = b.objects.get(key) {
+            if obj.version_id.as_deref() == Some(vid) {
+                return Ok(obj);
+            }
+        }
+        // For versioned buckets, return NoSuchVersion; for non-versioned, return 400
+        if b.versioning.is_some() {
+            Err(AwsServiceError::aws_error_with_fields(
+                StatusCode::NOT_FOUND,
+                "NoSuchVersion",
+                "The specified version does not exist.",
+                vec![
+                    ("Key".to_string(), key.to_string()),
+                    ("VersionId".to_string(), vid.to_string()),
+                ],
+            ))
+        } else {
+            Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidArgument",
+                "Invalid version id specified",
+            ))
+        }
+    } else {
+        b.objects.get(key).ok_or_else(|| no_such_key(key))
+    }
+}
+
+fn make_delete_marker(key: &str, dm_id: &str) -> S3Object {
+    S3Object {
+        key: key.to_string(),
+        data: Bytes::new(),
+        content_type: String::new(),
+        etag: String::new(),
+        size: 0,
+        last_modified: Utc::now(),
+        metadata: std::collections::HashMap::new(),
+        storage_class: "STANDARD".to_string(),
+        tags: std::collections::HashMap::new(),
+        acl_grants: vec![],
+        acl_owner_id: None,
+        parts_count: None,
+        part_sizes: None,
+        sse_algorithm: None,
+        sse_kms_key_id: None,
+        bucket_key_enabled: None,
+        version_id: Some(dm_id.to_string()),
+        is_delete_marker: true,
+        content_encoding: None,
+        website_redirect_location: None,
+    }
+}
+
+#[allow(dead_code)]
+fn acl_xml(owner_id: &str) -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+         <AccessControlPolicy xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">\
+         <Owner><ID>{owner_id}</ID><DisplayName>{owner_id}</DisplayName></Owner>\
+         <AccessControlList><Grant>\
+         <Grantee xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:type=\"CanonicalUser\">\
+         <ID>{owner_id}</ID><DisplayName>{owner_id}</DisplayName></Grantee>\
+         <Permission>FULL_CONTROL</Permission></Grant></AccessControlList>\
+         </AccessControlPolicy>"
+    )
+}
+
+/// Represents an object to delete in a batch delete request.
+struct DeleteObjectEntry {
+    key: String,
+    version_id: Option<String>,
+}
+
+fn parse_delete_objects_xml(xml: &str) -> Vec<DeleteObjectEntry> {
+    let mut entries = Vec::new();
     let mut remaining = xml;
-    while let Some(start) = remaining.find("<Key>") {
-        let after = &remaining[start + 5..];
-        if let Some(end) = after.find("</Key>") {
-            keys.push(after[..end].to_string());
-            remaining = &after[end + 6..];
+    while let Some(obj_start) = remaining.find("<Object>") {
+        let after = &remaining[obj_start + 8..];
+        if let Some(obj_end) = after.find("</Object>") {
+            let obj_body = &after[..obj_end];
+            let key = extract_xml_value(obj_body, "Key");
+            let version_id = extract_xml_value(obj_body, "VersionId");
+            if let Some(k) = key {
+                entries.push(DeleteObjectEntry { key: k, version_id });
+            }
+            remaining = &after[obj_end + 9..];
         } else {
             break;
         }
     }
-    keys
+    entries
 }
 
 /// Minimal XML parser for `<Tagging><TagSet><Tag><Key>k</Key><Value>v</Value></Tag>...`.
@@ -2689,8 +3586,20 @@ mod tests {
     #[test]
     fn parse_delete_xml() {
         let xml = r#"<Delete><Object><Key>a.txt</Key></Object><Object><Key>b/c.txt</Key></Object></Delete>"#;
-        let keys = parse_delete_objects_xml(xml);
-        assert_eq!(keys, vec!["a.txt", "b/c.txt"]);
+        let entries = parse_delete_objects_xml(xml);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].key, "a.txt");
+        assert!(entries[0].version_id.is_none());
+        assert_eq!(entries[1].key, "b/c.txt");
+    }
+
+    #[test]
+    fn parse_delete_xml_with_version() {
+        let xml = r#"<Delete><Object><Key>a.txt</Key><VersionId>v1</VersionId></Object></Delete>"#;
+        let entries = parse_delete_objects_xml(xml);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].key, "a.txt");
+        assert_eq!(entries[0].version_id.as_deref(), Some("v1"));
     }
 
     #[test]

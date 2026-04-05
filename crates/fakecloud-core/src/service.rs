@@ -15,6 +15,8 @@ pub struct AwsRequest {
     pub query_params: HashMap<String, String>,
     pub body: Bytes,
     pub path_segments: Vec<String>,
+    /// The raw URI path, before splitting into segments.
+    pub raw_path: String,
     pub method: Method,
     /// Whether this request came via Query (form-encoded) or JSON protocol.
     pub is_query_protocol: bool,
@@ -63,7 +65,7 @@ pub enum AwsServiceError {
         code: String,
         message: String,
         /// Additional key-value pairs to include in the error XML (e.g., BucketName, Key, Condition).
-        extra: Vec<(String, String)>,
+        extra_fields: Vec<(String, String)>,
         /// Additional HTTP headers to include in the error response.
         headers: Vec<(String, String)>,
     },
@@ -86,25 +88,22 @@ impl AwsServiceError {
             status,
             code: code.into(),
             message: message.into(),
-            extra: Vec::new(),
+            extra_fields: Vec::new(),
             headers: Vec::new(),
         }
     }
 
-    pub fn aws_error_with_extra(
+    pub fn aws_error_with_fields(
         status: StatusCode,
         code: impl Into<String>,
         message: impl Into<String>,
-        extra: &[(&str, &str)],
+        extra_fields: Vec<(String, String)>,
     ) -> Self {
         Self::AwsError {
             status,
             code: code.into(),
             message: message.into(),
-            extra: extra
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect(),
+            extra_fields,
             headers: Vec::new(),
         }
     }
@@ -119,8 +118,15 @@ impl AwsServiceError {
             status,
             code: code.into(),
             message: message.into(),
-            extra: Vec::new(),
+            extra_fields: Vec::new(),
             headers,
+        }
+    }
+
+    pub fn extra_fields(&self) -> &[(String, String)] {
+        match self {
+            Self::AwsError { extra_fields, .. } => extra_fields,
+            _ => &[],
         }
     }
 
@@ -147,13 +153,6 @@ impl AwsServiceError {
                 format!("action {action} not implemented for service {service}")
             }
             Self::AwsError { message, .. } => message.clone(),
-        }
-    }
-
-    pub fn extra(&self) -> &[(String, String)] {
-        match self {
-            Self::AwsError { extra, .. } => extra,
-            _ => &[],
         }
     }
 
