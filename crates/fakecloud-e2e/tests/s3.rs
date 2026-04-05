@@ -562,3 +562,106 @@ async fn s3_notification_delivery_to_sqs() {
     assert_eq!(event["Records"][0]["s3"]["bucket"]["name"], "notif-bucket");
     assert_eq!(event["Records"][0]["s3"]["object"]["key"], "test.txt");
 }
+// ---- S3 CORS Tests ----
+
+#[tokio::test]
+async fn s3_cors_preflight_and_response_headers() {
+    let server = TestServer::start().await;
+    let s3 = server.s3_client().await;
+
+    // Create bucket
+    s3.create_bucket()
+        .bucket("cors-bucket")
+        .send()
+        .await
+        .unwrap();
+
+    // Set CORS config via CLI
+    let cors_config = r#"{
+        "CORSRules": [{
+            "AllowedOrigins": ["https://example.com"],
+            "AllowedMethods": ["GET", "PUT"],
+            "AllowedHeaders": ["*"],
+            "ExposeHeaders": ["x-amz-request-id"],
+            "MaxAgeSeconds": 3600
+        }]
+    }"#;
+    let output = server
+        .aws_cli(&[
+            "s3api",
+            "put-bucket-cors",
+            "--bucket",
+            "cors-bucket",
+            "--cors-configuration",
+            cors_config,
+        ])
+        .await;
+    assert!(
+        output.success(),
+        "Failed to set CORS: {}",
+        output.stderr_text()
+    );
+
+    // Put an object for GET test
+    s3.put_object()
+        .bucket("cors-bucket")
+        .key("file.txt")
+        .body(ByteStream::from_static(b"cors test"))
+        .send()
+        .await
+        .unwrap();
+
+    let http = reqwest::Client::new();
+
+    // OPTIONS preflight
+    let resp = http
+        .request(
+            reqwest::Method::OPTIONS,
+            format!("{}/cors-bucket/file.txt", server.endpoint()),
+        )
+        .header("Origin", "https://example.com")
+        .header("Access-Control-Request-Method", "GET")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        resp.headers().get("access-control-allow-origin").unwrap(),
+        "https://example.com"
+    );
+    assert!(resp.headers().get("access-control-allow-methods").is_some());
+    assert_eq!(
+        resp.headers().get("access-control-max-age").unwrap(),
+        "3600"
+    );
+
+    // Regular GET with Origin should include CORS headers
+    let resp = http
+        .get(format!("{}/cors-bucket/file.txt", server.endpoint()))
+        .header("Origin", "https://example.com")
+        .header("Authorization", "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20240101/us-east-1/s3/aws4_request, SignedHeaders=host, Signature=fake")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.headers().get("access-control-allow-origin").unwrap(),
+        "https://example.com"
+    );
+    assert_eq!(
+        resp.headers().get("access-control-expose-headers").unwrap(),
+        "x-amz-request-id"
+    );
+
+    // OPTIONS from non-matching origin should fail
+    let resp = http
+        .request(
+            reqwest::Method::OPTIONS,
+            format!("{}/cors-bucket/file.txt", server.endpoint()),
+        )
+        .header("Origin", "https://evil.com")
+        .header("Access-Control-Request-Method", "GET")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
+}
