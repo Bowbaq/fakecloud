@@ -30,7 +30,7 @@ pub struct IamRole {
     pub path: String,
     pub assume_role_policy_document: String,
     pub created_at: DateTime<Utc>,
-    pub description: String,
+    pub description: Option<String>,
     pub max_session_duration: i32,
     pub tags: Vec<Tag>,
     pub permissions_boundary: Option<String>,
@@ -190,6 +190,16 @@ pub struct CredentialIdentity {
     pub account_id: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct SshPublicKey {
+    pub ssh_public_key_id: String,
+    pub user_name: String,
+    pub ssh_public_key_body: String,
+    pub status: String,
+    pub upload_date: DateTime<Utc>,
+    pub fingerprint: String,
+}
+
 pub struct IamState {
     pub account_id: String,
     pub users: HashMap<String, IamUser>,
@@ -214,6 +224,7 @@ pub struct IamState {
     /// Maps access key ID to the identity that should be returned by GetCallerIdentity.
     pub credential_identities: HashMap<String, CredentialIdentity>,
     pub credential_report_generated: bool,
+    pub ssh_public_keys: HashMap<String, Vec<SshPublicKey>>, // user_name -> keys
 }
 
 impl IamState {
@@ -241,6 +252,7 @@ impl IamState {
             service_linked_role_deletions: HashMap::new(),
             credential_identities: HashMap::new(),
             credential_report_generated: false,
+            ssh_public_keys: HashMap::new(),
         }
     }
 

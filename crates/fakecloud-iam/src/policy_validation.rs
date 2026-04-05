@@ -484,14 +484,16 @@ fn validate_arn(resource: &str) -> Result<(), String> {
     let parts: Vec<&str> = resource.splitn(6, ':').collect();
 
     if parts.len() < 6 {
-        if parts.len() <= 3 {
+        if parts.len() <= 2 {
             return Err(
                 "Resource vendor must be fully qualified and cannot contain regexes.".to_string(),
             );
         }
-        if parts.len() == 5 {
-            return Err("The policy failed legacy parsing".to_string());
+        // 3 or 4 parts: valid (e.g., "arn:aws:fdsasf" or "arn:aws:s3:fdsasf")
+        if parts.len() >= 3 && parts.len() <= 4 {
+            return Ok(());
         }
+        // 5 parts: legacy parsing error (e.g., "arn:aws:s3::example_bucket")
         return Err("The policy failed legacy parsing".to_string());
     }
 
