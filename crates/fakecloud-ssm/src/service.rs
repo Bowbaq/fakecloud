@@ -761,6 +761,11 @@ impl SsmService {
             ));
         }
 
+        // Validate path
+        if !is_valid_param_path(path) {
+            return Err(invalid_path_error(path));
+        }
+
         // Validate ParameterFilters for by-path (only Type, KeyId, Label, tag:* allowed)
         if let Some(ref f) = filters {
             validate_parameter_filters_by_path(f)?;
@@ -919,6 +924,7 @@ impl SsmService {
     fn get_parameter_history(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
+        let with_decryption = body["WithDecryption"].as_bool().unwrap_or(false);
         let max_results = body["MaxResults"].as_i64();
         let next_token_offset: usize = body["NextToken"]
             .as_str()
@@ -951,9 +957,15 @@ impl SsmService {
             .history
             .iter()
             .map(|h| {
+                let value = if h.param_type == "SecureString" && !with_decryption {
+                    let kid = h.key_id.as_deref().unwrap_or("alias/aws/ssm");
+                    format!("kms:{}:{}", kid, h.value)
+                } else {
+                    h.value.clone()
+                };
                 let mut entry = json!({
                     "Name": param.name,
-                    "Value": h.value,
+                    "Value": value,
                     "Version": h.version,
                     "LastModifiedDate": h.last_modified.timestamp_millis() as f64 / 1000.0,
                     "Type": h.param_type,
@@ -971,9 +983,15 @@ impl SsmService {
             .collect();
 
         // Include current version
+        let current_value = if param.param_type == "SecureString" && !with_decryption {
+            let kid = param.key_id.as_deref().unwrap_or("alias/aws/ssm");
+            format!("kms:{}:{}", kid, param.value)
+        } else {
+            param.value.clone()
+        };
         let mut current = json!({
             "Name": param.name,
-            "Value": param.value,
+            "Value": current_value,
             "Version": param.version,
             "LastModifiedDate": param.last_modified.timestamp_millis() as f64 / 1000.0,
             "Type": param.param_type,
@@ -1174,14 +1192,34 @@ impl SsmService {
             .filter_map(|l| l.as_str().map(|s| s.to_string()))
             .collect();
 
-        // Validate invalid labels (aws/ssm prefix, starts with digit, contains /)
+        // Validate label length (max 100)
+        for label in &label_strings {
+            if label.len() > 100 {
+                let labels_display: Vec<&str> = label_strings.iter().map(|s| s.as_str()).collect();
+                return Err(AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "ValidationException",
+                    format!(
+                        "1 validation error detected: \
+                         Value '[{}]' at 'labels' failed to satisfy constraint: \
+                         Member must satisfy constraint: \
+                         [Member must have length less than or equal to 100, Member must \
+                         have length greater than or equal to 1]",
+                        labels_display.join(", ")
+                    ),
+                ));
+            }
+        }
+
+        // Validate invalid labels (aws/ssm prefix, starts with digit, contains / or :)
         let mut invalid_labels = Vec::new();
         for label in &label_strings {
             let lower = label.to_lowercase();
             let is_invalid = lower.starts_with("aws")
                 || lower.starts_with("ssm")
                 || label.starts_with(|c: char| c.is_ascii_digit())
-                || label.contains('/');
+                || label.contains('/')
+                || label.contains(':');
             if is_invalid {
                 invalid_labels.push(label.clone());
             }
@@ -1213,16 +1251,8 @@ impl SsmService {
             return Err(AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
                 "ParameterVersionLabelLimitExceeded",
-                format!(
-                    "A parameter version can have a maximum of 10 labels. \
-                     Attempting to add {} labels to version {} of parameter {} \
-                     would result in {} labels. Move one or more labels to \
-                     a different version and try again.",
-                    label_strings.len(),
-                    target_version,
-                    name,
-                    current_count + new_unique.len()
-                ),
+                "A parameter version can have maximum 10 labels.\
+                 Move one or more labels to another version and try again.",
             ));
         }
 
