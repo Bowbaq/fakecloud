@@ -161,7 +161,8 @@ fn generate_sequence_token() -> String {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    format!("{:056}", nanos % 10u128.pow(56))
+    // u128 max is ~3.4e38, so we limit to 38 digits to avoid overflow
+    format!("{:038}", nanos % 10u128.pow(38))
 }
 
 fn validation_error(field: &str, value: &str, constraint: &str) -> AwsServiceError {
