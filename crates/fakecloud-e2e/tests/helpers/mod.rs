@@ -161,10 +161,7 @@ fn find_available_port() -> u16 {
 }
 
 fn find_binary() -> String {
-    let debug_path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../target/debug/fakecloud"
-    );
+    let debug_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/debug/fakecloud");
     let release_path = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../target/release/fakecloud"
