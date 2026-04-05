@@ -33,7 +33,7 @@ alternatives have emerged since then. Here's how they compare:
 | Language | Rust | Python | Java (Quarkus Native) | Python |
 | Auth required | No | Yes (account + token) | No | No |
 | Commercial use | Free | Paid plans only | Free | Free |
-| AWS services | 7 | 80+ | 25 | 38 |
+| AWS services | 8 | 80+ | 25 | 38 |
 | Cross-service delivery | Yes | Yes | Yes | Yes |
 | Scheduled rules fire | Yes | Yes | -- | -- |
 
@@ -282,6 +282,21 @@ lifecycle rules with background expiration and storage class transitions, object
 lock (retention and legal hold), encryption, replication, and website
 configuration.
 
+### CloudWatch Logs (14 actions)
+
+**Log Groups:** CreateLogGroup, DeleteLogGroup, DescribeLogGroups
+
+**Log Streams:** CreateLogStream, DeleteLogStream, DescribeLogStreams
+
+**Log Events:** PutLogEvents, GetLogEvents, FilterLogEvents
+
+**Tags:** TagLogGroup, UntagLogGroup, ListTagsLogGroup
+
+**Retention:** PutRetentionPolicy, DeleteRetentionPolicy
+
+Key features: log groups with log streams, event storage and retrieval,
+simple substring filter pattern matching, retention policies, tagging.
+
 ### Cross-Service Integration
 
 FakeCloud implements real cross-service message delivery and background
@@ -325,7 +340,7 @@ curl http://localhost:4566/_fakecloud/health
 {
   "status": "ok",
   "version": "0.1.0",
-  "services": ["sqs", "sns", "events", "iam", "sts", "ssm", "s3"]
+  "services": ["sqs", "sns", "events", "iam", "sts", "ssm", "logs", "s3"]
 }
 ```
 
@@ -344,11 +359,12 @@ FakeCloud is organized as a Cargo workspace:
 | `fakecloud-iam` | IAM and STS implementation |
 | `fakecloud-ssm` | SSM Parameter Store implementation |
 | `fakecloud-s3` | S3 implementation |
+| `fakecloud-logs` | CloudWatch Logs implementation |
 | `fakecloud-e2e` | End-to-end tests using aws-sdk-rust |
 
 Protocol handling:
 - **Query protocol** (SQS, SNS, IAM, STS): form-encoded body, `Action` parameter, XML responses
-- **JSON protocol** (SSM, EventBridge): JSON body, `X-Amz-Target` header, JSON responses
+- **JSON protocol** (SSM, EventBridge, CloudWatch Logs): JSON body, `X-Amz-Target` header, JSON responses
 - **REST protocol** (S3): HTTP method + path-based routing, XML responses
 - SigV4 signatures are parsed for service routing but never validated
 
@@ -356,7 +372,7 @@ Protocol handling:
 
 ```sh
 cargo test --workspace              # unit tests
-cargo build && cargo test -p fakecloud-e2e  # E2E tests (79 tests)
+cargo build && cargo test -p fakecloud-e2e  # E2E tests (145 tests)
 cargo clippy --workspace -- -D warnings     # lint
 cargo fmt --check                           # format check
 ```
@@ -379,7 +395,7 @@ Contributions are welcome. FakeCloud is still in early development (Phase 1).
 
 ### Planned services (Phase 2)
 
-DynamoDB, Lambda, CloudWatch Logs, Secrets Manager.
+DynamoDB, Lambda, KMS, Secrets Manager.
 
 ## License
 
