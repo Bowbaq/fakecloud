@@ -660,19 +660,26 @@ impl SsmService {
         }
 
         // Get the current version's secret string
-        let version = secret
-            .versions
-            .get(&secret.current_version_id)
-            .ok_or_else(|| {
-                AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "ParameterNotFound",
-                    format!(
-                        "An error occurred (ParameterNotFound) when referencing \
+        let current_vid = secret.current_version_id.as_ref().ok_or_else(|| {
+            AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "ParameterNotFound",
+                format!(
+                    "An error occurred (ParameterNotFound) when referencing \
                      Secrets Manager: Secret {raw_name} not found.",
-                    ),
-                )
-            })?;
+                ),
+            )
+        })?;
+        let version = secret.versions.get(current_vid).ok_or_else(|| {
+            AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "ParameterNotFound",
+                format!(
+                    "An error occurred (ParameterNotFound) when referencing \
+                     Secrets Manager: Secret {raw_name} not found.",
+                ),
+            )
+        })?;
 
         let value = version.secret_string.as_deref().unwrap_or("").to_string();
 
