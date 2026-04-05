@@ -66,6 +66,14 @@ impl AwsService for S3Service {
                 return self.create_multipart_upload(&req, b, key.as_deref().unwrap());
             }
 
+            // POST /{bucket}/{key}?restore
+            if req.method == Method::POST
+                && key.is_some()
+                && req.query_params.contains_key("restore")
+            {
+                return self.restore_object(&req, b, key.as_deref().unwrap());
+            }
+
             // POST /{bucket}/{key}?uploadId=X — CompleteMultipartUpload
             if req.method == Method::POST && key.is_some() {
                 if let Some(upload_id) = req.query_params.get("uploadId").cloned() {
@@ -206,13 +214,9 @@ impl AwsService for S3Service {
                 } else if req.query_params.contains_key("versioning") {
                     self.get_bucket_versioning(b)
                 } else if req.query_params.contains_key("versions") {
-                    self.list_object_versions(b)
+                    self.list_object_versions(&req, b)
                 } else if req.query_params.contains_key("object-lock") {
                     self.get_object_lock_configuration(b)
-                } else if req.query_params.contains_key("encryption") {
-                    self.get_bucket_encryption(b)
-                } else if req.query_params.contains_key("lifecycle") {
-                    self.get_bucket_lifecycle(b)
                 } else if req.query_params.contains_key("cors") {
                     self.get_bucket_cors(b)
                 } else if req.query_params.contains_key("notification") {
@@ -223,6 +227,10 @@ impl AwsService for S3Service {
                     self.get_bucket_accelerate(b)
                 } else if req.query_params.contains_key("publicAccessBlock") {
                     self.get_public_access_block(b)
+                } else if req.query_params.contains_key("encryption") {
+                    self.get_bucket_encryption(b)
+                } else if req.query_params.contains_key("lifecycle") {
+                    self.get_bucket_lifecycle(b)
                 } else if req.query_params.contains_key("logging") {
                     self.get_bucket_logging(b)
                 } else if req.query_params.contains_key("policy") {
@@ -579,7 +587,6 @@ impl S3Service {
 
     // ---- Lifecycle ----
 
-    #[allow(dead_code)]
     fn put_bucket_lifecycle(
         &self,
         req: &AwsRequest,
@@ -595,7 +602,6 @@ impl S3Service {
         Ok(empty_response(StatusCode::OK))
     }
 
-    #[allow(dead_code)]
     fn get_bucket_lifecycle(&self, bucket: &str) -> Result<AwsResponse, AwsServiceError> {
         let state = self.state.read();
         let b = state
@@ -612,7 +618,6 @@ impl S3Service {
         }
     }
 
-    #[allow(dead_code)]
     fn delete_bucket_lifecycle(&self, bucket: &str) -> Result<AwsResponse, AwsServiceError> {
         let mut state = self.state.write();
         let b = state
@@ -625,7 +630,6 @@ impl S3Service {
 
     // ---- Policy ----
 
-    #[allow(dead_code)]
     fn put_bucket_policy(
         &self,
         req: &AwsRequest,
@@ -648,7 +652,6 @@ impl S3Service {
         Ok(empty_response(StatusCode::NO_CONTENT))
     }
 
-    #[allow(dead_code)]
     fn get_bucket_policy(&self, bucket: &str) -> Result<AwsResponse, AwsServiceError> {
         let state = self.state.read();
         let b = state
@@ -671,7 +674,6 @@ impl S3Service {
         }
     }
 
-    #[allow(dead_code)]
     fn delete_bucket_policy(&self, bucket: &str) -> Result<AwsResponse, AwsServiceError> {
         let mut state = self.state.write();
         let b = state
@@ -684,7 +686,6 @@ impl S3Service {
 
     // ---- CORS ----
 
-    #[allow(dead_code)]
     fn put_bucket_cors(
         &self,
         req: &AwsRequest,
@@ -700,7 +701,6 @@ impl S3Service {
         Ok(empty_response(StatusCode::OK))
     }
 
-    #[allow(dead_code)]
     fn get_bucket_cors(&self, bucket: &str) -> Result<AwsResponse, AwsServiceError> {
         let state = self.state.read();
         let b = state
@@ -718,7 +718,6 @@ impl S3Service {
         }
     }
 
-    #[allow(dead_code)]
     fn delete_bucket_cors(&self, bucket: &str) -> Result<AwsResponse, AwsServiceError> {
         let mut state = self.state.write();
         let b = state
@@ -731,7 +730,6 @@ impl S3Service {
 
     // ---- Notification ----
 
-    #[allow(dead_code)]
     fn put_bucket_notification(
         &self,
         req: &AwsRequest,
@@ -747,7 +745,6 @@ impl S3Service {
         Ok(empty_response(StatusCode::OK))
     }
 
-    #[allow(dead_code)]
     fn get_bucket_notification(&self, bucket: &str) -> Result<AwsResponse, AwsServiceError> {
         let state = self.state.read();
         let b = state
@@ -766,7 +763,6 @@ impl S3Service {
 
     // ---- Logging ----
 
-    #[allow(dead_code)]
     fn put_bucket_logging(
         &self,
         req: &AwsRequest,
@@ -782,7 +778,6 @@ impl S3Service {
         Ok(empty_response(StatusCode::OK))
     }
 
-    #[allow(dead_code)]
     fn get_bucket_logging(&self, bucket: &str) -> Result<AwsResponse, AwsServiceError> {
         let state = self.state.read();
         let b = state
@@ -801,7 +796,6 @@ impl S3Service {
 
     // ---- Website ----
 
-    #[allow(dead_code)]
     fn put_bucket_website(
         &self,
         req: &AwsRequest,
@@ -817,7 +811,6 @@ impl S3Service {
         Ok(empty_response(StatusCode::OK))
     }
 
-    #[allow(dead_code)]
     fn get_bucket_website(&self, bucket: &str) -> Result<AwsResponse, AwsServiceError> {
         let state = self.state.read();
         let b = state
@@ -835,7 +828,6 @@ impl S3Service {
         }
     }
 
-    #[allow(dead_code)]
     fn delete_bucket_website(&self, bucket: &str) -> Result<AwsResponse, AwsServiceError> {
         let mut state = self.state.write();
         let b = state
@@ -848,7 +840,6 @@ impl S3Service {
 
     // ---- Accelerate ----
 
-    #[allow(dead_code)]
     fn put_bucket_accelerate(
         &self,
         req: &AwsRequest,
@@ -886,7 +877,6 @@ impl S3Service {
         Ok(empty_response(StatusCode::OK))
     }
 
-    #[allow(dead_code)]
     fn get_bucket_accelerate(&self, bucket: &str) -> Result<AwsResponse, AwsServiceError> {
         let state = self.state.read();
         let b = state
@@ -908,7 +898,6 @@ impl S3Service {
 
     // ---- PublicAccessBlock ----
 
-    #[allow(dead_code)]
     fn put_public_access_block(
         &self,
         req: &AwsRequest,
@@ -924,7 +913,6 @@ impl S3Service {
         Ok(empty_response(StatusCode::OK))
     }
 
-    #[allow(dead_code)]
     fn get_public_access_block(&self, bucket: &str) -> Result<AwsResponse, AwsServiceError> {
         let state = self.state.read();
         let b = state
@@ -941,7 +929,6 @@ impl S3Service {
         }
     }
 
-    #[allow(dead_code)]
     fn delete_public_access_block(&self, bucket: &str) -> Result<AwsResponse, AwsServiceError> {
         let mut state = self.state.write();
         let b = state
@@ -1177,6 +1164,11 @@ impl S3Service {
                 ));
             }
         }
+        let fetch_owner = req
+            .query_params
+            .get("fetch-owner")
+            .map(|v| v == "true")
+            .unwrap_or(false);
 
         let effective_start = continuation.as_deref().unwrap_or(&start_after);
 
@@ -1217,6 +1209,23 @@ impl S3Service {
                 break;
             }
 
+            let owner_xml = if fetch_owner {
+                let oid = obj.acl_owner_id.as_deref().unwrap_or(&b.acl_owner_id);
+                format!(
+                    "<Owner><ID>{}</ID><DisplayName>{}</DisplayName></Owner>",
+                    xml_escape(oid),
+                    xml_escape(oid),
+                )
+            } else {
+                String::new()
+            };
+
+            let checksum_xml = if let Some(ref algo) = obj.checksum_algorithm {
+                format!("<ChecksumAlgorithm>{algo}</ChecksumAlgorithm>")
+            } else {
+                String::new()
+            };
+
             contents.push_str(&format!(
                 "<Contents>\
                  <Key>{}</Key>\
@@ -1224,6 +1233,7 @@ impl S3Service {
                  <ETag>&quot;{}&quot;</ETag>\
                  <Size>{}</Size>\
                  <StorageClass>{}</StorageClass>\
+                 {owner_xml}{checksum_xml}\
                  </Contents>",
                 xml_escape(key),
                 obj.last_modified.format("%Y-%m-%dT%H:%M:%S%.3fZ"),
@@ -1463,7 +1473,11 @@ impl S3Service {
         Ok(AwsResponse::xml(StatusCode::OK, body))
     }
 
-    fn list_object_versions(&self, bucket: &str) -> Result<AwsResponse, AwsServiceError> {
+    fn list_object_versions(
+        &self,
+        _req: &AwsRequest,
+        bucket: &str,
+    ) -> Result<AwsResponse, AwsServiceError> {
         let state = self.state.read();
         let b = state
             .buckets
@@ -1877,6 +1891,21 @@ impl S3Service {
 
         let metadata = extract_user_metadata(&req.headers);
 
+        // Extract checksum algorithm and value
+        let checksum_algorithm = req
+            .headers
+            .get("x-amz-sdk-checksum-algorithm")
+            .or_else(|| req.headers.get("x-amz-checksum-algorithm"))
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        let _checksum_from_header = checksum_algorithm.as_deref().and_then(|algo| {
+            let header_name = format!("x-amz-checksum-{}", algo.to_lowercase());
+            req.headers
+                .get(header_name.as_str())
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string())
+        });
+
         // Build ACL grants for object
         let acl_grants = if has_grant_headers {
             parse_grant_headers(&req.headers)
@@ -2027,7 +2056,9 @@ impl S3Service {
         if let (Some(algo), Some(val)) = (&checksum_algorithm, &checksum_value) {
             let header_name = format!("x-amz-checksum-{}", algo.to_lowercase());
             if let Ok(name) = header_name.parse::<http::header::HeaderName>() {
-                headers.insert(name, val.parse().unwrap());
+                if let Ok(hval) = val.parse() {
+                    headers.insert(name, hval);
+                }
             }
         }
         Ok(AwsResponse {
@@ -2049,11 +2080,17 @@ impl S3Service {
             .buckets
             .get(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
-        let obj = b.objects.get(key).ok_or_else(|| no_such_key(key))?;
-
-        // Conditional checks
+        let obj = resolve_object(b, key, req.query_params.get("versionId"))?;
+        if obj.is_delete_marker {
+            return Err(AwsServiceError::aws_error_with_fields(
+                StatusCode::NOT_FOUND,
+                "NoSuchKey",
+                "The specified key does not exist.",
+                vec![("Key".to_string(), key.to_string())],
+            ));
+        }
         check_get_conditionals(req, obj)?;
-
+        let total_size = obj.size as usize;
         let mut headers = HeaderMap::new();
         headers.insert("etag", format!("\"{}\"", obj.etag).parse().unwrap());
         headers.insert(
@@ -2064,8 +2101,8 @@ impl S3Service {
                 .parse()
                 .unwrap(),
         );
-        headers.insert("content-length", obj.size.to_string().parse().unwrap());
         headers.insert("accept-ranges", "bytes".parse().unwrap());
+        headers.insert("x-amz-server-side-encryption", "AES256".parse().unwrap());
         // Always include storage class
         headers.insert("x-amz-storage-class", obj.storage_class.parse().unwrap());
         if let Some(vid) = &obj.version_id {
@@ -2085,8 +2122,6 @@ impl S3Service {
         if let Some(ref redirect) = obj.website_redirect_location {
             headers.insert("x-amz-website-redirect-location", redirect.parse().unwrap());
         }
-
-        // Add tag count if object has tags
         if !obj.tags.is_empty() {
             headers.insert(
                 "x-amz-tagging-count",
@@ -2124,11 +2159,67 @@ impl S3Service {
         if let Some(ref hold) = obj.lock_legal_hold {
             headers.insert("x-amz-object-lock-legal-hold", hold.parse().unwrap());
         }
-
+        if let Some(ongoing) = obj.restore_ongoing {
+            let rv = if ongoing {
+                "ongoing-request=\"true\"".to_string()
+            } else if let Some(ref exp) = obj.restore_expiry {
+                format!("ongoing-request=\"false\", expiry-date=\"{exp}\"")
+            } else {
+                "ongoing-request=\"false\"".to_string()
+            };
+            headers.insert("x-amz-restore", rv.parse().unwrap());
+        }
+        if let Some(algo) = &obj.checksum_algorithm {
+            if let Some(val) = &obj.checksum_value {
+                let hn = format!("x-amz-checksum-{}", algo.to_lowercase());
+                if let Ok(name) = hn.parse::<http::header::HeaderName>() {
+                    if let Ok(hv) = val.parse() {
+                        headers.insert(name, hv);
+                    }
+                }
+            }
+        }
+        let mut response_status = StatusCode::OK;
+        let response_body;
+        if let Some(range_str) = req.headers.get("range").and_then(|v| v.to_str().ok()) {
+            if let Some(rr) = parse_range_header(range_str, total_size) {
+                match rr {
+                    RangeResult::Satisfiable { start, end } => {
+                        headers.insert(
+                            "content-range",
+                            format!("bytes {start}-{end}/{total_size}").parse().unwrap(),
+                        );
+                        headers.insert(
+                            "content-length",
+                            (end - start + 1).to_string().parse().unwrap(),
+                        );
+                        response_body = obj.data.slice(start..=end);
+                        response_status = StatusCode::PARTIAL_CONTENT;
+                    }
+                    RangeResult::NotSatisfiable => {
+                        return Err(AwsServiceError::aws_error(
+                            StatusCode::RANGE_NOT_SATISFIABLE,
+                            "InvalidRange",
+                            "The requested range is not satisfiable",
+                        ));
+                    }
+                    RangeResult::Ignored => {
+                        headers.insert("content-length", total_size.to_string().parse().unwrap());
+                        response_body = obj.data.clone();
+                    }
+                }
+            } else {
+                headers.insert("content-length", total_size.to_string().parse().unwrap());
+                response_body = obj.data.clone();
+            }
+        } else {
+            headers.insert("content-length", total_size.to_string().parse().unwrap());
+            response_body = obj.data.clone();
+        }
         Ok(AwsResponse {
-            status: StatusCode::OK,
+            status: response_status,
             content_type: obj.content_type.clone(),
-            body: obj.data.clone(),
+            body: response_body,
             headers,
         })
     }
@@ -2168,7 +2259,7 @@ impl S3Service {
             }
         }
 
-        let mut headers = HeaderMap::new();
+        let mut resp_headers = HeaderMap::new();
 
         if let Some(ref vid) = version_id {
             // Delete specific version
@@ -2197,7 +2288,7 @@ impl S3Service {
                     }
                 }
             }
-            headers.insert("x-amz-version-id", vid.parse().unwrap());
+            resp_headers.insert("x-amz-version-id", vid.parse().unwrap());
         } else if b.versioning.as_deref() == Some("Enabled") {
             // Create a delete marker
             let dm_id = Uuid::new_v4().to_string();
@@ -2207,8 +2298,8 @@ impl S3Service {
                 .or_default()
                 .push(marker.clone());
             b.objects.insert(key.to_string(), marker);
-            headers.insert("x-amz-delete-marker", "true".parse().unwrap());
-            headers.insert("x-amz-version-id", dm_id.parse().unwrap());
+            resp_headers.insert("x-amz-delete-marker", "true".parse().unwrap());
+            resp_headers.insert("x-amz-version-id", dm_id.parse().unwrap());
         } else {
             // S3 returns 204 even if the key doesn't exist
             b.objects.remove(key);
@@ -2218,7 +2309,7 @@ impl S3Service {
             status: StatusCode::NO_CONTENT,
             content_type: "application/xml".to_string(),
             body: Bytes::new(),
-            headers,
+            headers: resp_headers,
         })
     }
 
@@ -2233,15 +2324,8 @@ impl S3Service {
             .buckets
             .get(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
-        let obj = b.objects.get(key).ok_or_else(|| no_such_key(key))?;
-
-        // Conditional checks for HEAD
-        check_head_conditionals(req, obj)?;
-
         let obj = resolve_object(b, key, req.query_params.get("versionId"))?;
-
         if obj.is_delete_marker {
-            // HEAD on a delete marker with versionId returns 405
             if req.query_params.contains_key("versionId") {
                 let mut headers = HeaderMap::new();
                 headers.insert("x-amz-delete-marker", "true".parse().unwrap());
@@ -2256,7 +2340,6 @@ impl S3Service {
                     headers,
                 });
             }
-            // HEAD on current object that is a delete marker returns 404
             let mut headers = HeaderMap::new();
             headers.insert("x-amz-delete-marker", "true".parse().unwrap());
             if let Some(vid) = &obj.version_id {
@@ -2269,7 +2352,9 @@ impl S3Service {
                 headers,
             });
         }
-
+        check_head_conditionals(req, obj)?;
+        let total_size = obj.size;
+        let mut response_status = StatusCode::OK;
         let mut headers = HeaderMap::new();
         headers.insert("etag", format!("\"{}\"", obj.etag).parse().unwrap());
         headers.insert(
@@ -2285,14 +2370,41 @@ impl S3Service {
         if let Some(ref enc) = obj.content_encoding {
             headers.insert("content-encoding", enc.parse().unwrap());
         }
-
-        // Handle PartNumber query param for multipart objects
-        if let Some(part_num_str) = req.query_params.get("partNumber") {
+        if let Some(range_str) = req.headers.get("range").and_then(|v| v.to_str().ok()) {
+            if let Some(range_result) = parse_range_header(range_str, total_size as usize) {
+                match range_result {
+                    RangeResult::Satisfiable { start, end } => {
+                        headers.insert(
+                            "content-range",
+                            format!("bytes {start}-{end}/{total_size}").parse().unwrap(),
+                        );
+                        headers.insert(
+                            "content-length",
+                            (end - start + 1).to_string().parse().unwrap(),
+                        );
+                        response_status = StatusCode::PARTIAL_CONTENT;
+                    }
+                    RangeResult::NotSatisfiable => {
+                        return Err(AwsServiceError::aws_error(
+                            StatusCode::RANGE_NOT_SATISFIABLE,
+                            "InvalidRange",
+                            "The requested range is not satisfiable",
+                        ));
+                    }
+                    RangeResult::Ignored => {
+                        headers.insert("content-length", total_size.to_string().parse().unwrap());
+                    }
+                }
+            } else {
+                headers.insert("content-length", total_size.to_string().parse().unwrap());
+            }
+        } else if let Some(part_num_str) = req.query_params.get("partNumber") {
             if let Ok(part_num) = part_num_str.parse::<u32>() {
+                let mut part_size = total_size;
                 if let Some(ref part_sizes) = obj.part_sizes {
                     for &(pn, sz) in part_sizes {
                         if pn == part_num {
-                            headers.insert("content-length", sz.to_string().parse().unwrap());
+                            part_size = sz;
                             break;
                         }
                     }
@@ -2300,12 +2412,12 @@ impl S3Service {
                 if let Some(pc) = obj.parts_count {
                     headers.insert("x-amz-mp-parts-count", pc.to_string().parse().unwrap());
                 }
-            }
-            if !headers.contains_key("content-length") {
-                headers.insert("content-length", obj.size.to_string().parse().unwrap());
+                headers.insert("content-length", part_size.to_string().parse().unwrap());
+            } else {
+                headers.insert("content-length", total_size.to_string().parse().unwrap());
             }
         } else {
-            headers.insert("content-length", obj.size.to_string().parse().unwrap());
+            headers.insert("content-length", total_size.to_string().parse().unwrap());
         }
         for (k, v) in &obj.metadata {
             if let (Ok(name), Ok(val)) = (
@@ -2353,9 +2465,19 @@ impl S3Service {
         if let Some(ref hold) = obj.lock_legal_hold {
             headers.insert("x-amz-object-lock-legal-hold", hold.parse().unwrap());
         }
+        if let Some(ongoing) = obj.restore_ongoing {
+            let restore_val = if ongoing {
+                "ongoing-request=\"true\"".to_string()
+            } else if let Some(ref expiry) = obj.restore_expiry {
+                format!("ongoing-request=\"false\", expiry-date=\"{expiry}\"")
+            } else {
+                "ongoing-request=\"false\"".to_string()
+            };
+            headers.insert("x-amz-restore", restore_val.parse().unwrap());
+        }
 
         Ok(AwsResponse {
-            status: StatusCode::OK,
+            status: response_status,
             content_type: obj.content_type.clone(),
             body: Bytes::new(),
             headers,
@@ -2769,6 +2891,14 @@ impl S3Service {
     ) -> Result<AwsResponse, AwsServiceError> {
         let body_str = std::str::from_utf8(&req.body).unwrap_or("");
         let entries = parse_delete_objects_xml(body_str);
+
+        if entries.is_empty() {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "MalformedXML",
+                "The XML you provided was not well-formed or did not validate against our published schema",
+            ));
+        }
 
         let mut state = self.state.write();
         let b = state
@@ -3713,6 +3843,50 @@ impl S3Service {
             headers,
         })
     }
+
+    fn restore_object(
+        &self,
+        _req: &AwsRequest,
+        bucket: &str,
+        key: &str,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let mut state = self.state.write();
+        let b = state
+            .buckets
+            .get_mut(bucket)
+            .ok_or_else(|| no_such_bucket(bucket))?;
+        let obj = b.objects.get_mut(key).ok_or_else(|| no_such_key(key))?;
+        let glacier_classes = [
+            "GLACIER",
+            "DEEP_ARCHIVE",
+            "GLACIER_IR",
+            "INTELLIGENT_TIERING",
+        ];
+        if !glacier_classes.contains(&obj.storage_class.as_str()) {
+            return Err(AwsServiceError::aws_error_with_fields(
+                StatusCode::FORBIDDEN,
+                "InvalidObjectState",
+                "The operation is not valid for the object's storage class",
+                vec![("StorageClass".to_string(), obj.storage_class.clone())],
+            ));
+        }
+        let status = if obj.restore_ongoing.is_some() {
+            StatusCode::OK
+        } else {
+            StatusCode::ACCEPTED
+        };
+        let expiry = (Utc::now() + chrono::Duration::days(30))
+            .format("%a, %d %b %Y %H:%M:%S GMT")
+            .to_string();
+        obj.restore_ongoing = Some(false);
+        obj.restore_expiry = Some(expiry);
+        Ok(AwsResponse {
+            status,
+            content_type: "application/xml".to_string(),
+            body: Bytes::new(),
+            headers: HeaderMap::new(),
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -4090,6 +4264,47 @@ fn parse_acl_xml(xml: &str) -> Result<Vec<AclGrant>, AwsServiceError> {
         }
     }
     Ok(grants)
+}
+
+// ---------------------------------------------------------------------------
+// Range helpers
+// ---------------------------------------------------------------------------
+
+enum RangeResult {
+    Satisfiable { start: usize, end: usize },
+    NotSatisfiable,
+    Ignored,
+}
+
+fn parse_range_header(range_str: &str, total_size: usize) -> Option<RangeResult> {
+    let range_str = range_str.strip_prefix("bytes=")?;
+    let (start_str, end_str) = range_str.split_once('-')?;
+    if start_str.is_empty() {
+        let suffix_len: usize = end_str.parse().ok()?;
+        if suffix_len == 0 || total_size == 0 {
+            return Some(RangeResult::NotSatisfiable);
+        }
+        let start = total_size.saturating_sub(suffix_len);
+        Some(RangeResult::Satisfiable {
+            start,
+            end: total_size - 1,
+        })
+    } else {
+        let start: usize = start_str.parse().ok()?;
+        if start >= total_size {
+            return Some(RangeResult::NotSatisfiable);
+        }
+        let end = if end_str.is_empty() {
+            total_size - 1
+        } else {
+            let e: usize = end_str.parse().ok()?;
+            if e < start {
+                return Some(RangeResult::Ignored);
+            }
+            std::cmp::min(e, total_size - 1)
+        };
+        Some(RangeResult::Satisfiable { start, end })
+    }
 }
 
 // ---------------------------------------------------------------------------
