@@ -375,7 +375,17 @@ impl S3Service {
 
         if let Some(ref constraint) = explicit_constraint {
             if !constraint.is_empty() {
-                if constraint == "us-east-1" {
+                if constraint == "us-east-1" && req.region != "us-east-1" {
+                    return Err(AwsServiceError::aws_error(
+                        StatusCode::BAD_REQUEST,
+                        "IllegalLocationConstraintException",
+                        format!(
+                            "The {} location constraint is incompatible for the region specific endpoint this request was sent to.",
+                            constraint
+                        ),
+                    ));
+                }
+                if constraint == "us-east-1" && req.region == "us-east-1" {
                     return Err(AwsServiceError::aws_error(
                         StatusCode::BAD_REQUEST,
                         "InvalidLocationConstraint",
@@ -469,6 +479,10 @@ impl S3Service {
 
         let mut headers = HeaderMap::new();
         headers.insert("location", format!("/{bucket}").parse().unwrap());
+        headers.insert(
+            "x-amz-bucket-arn",
+            format!("arn:aws:s3:::{bucket}").parse().unwrap(),
+        );
         Ok(AwsResponse {
             status: StatusCode::OK,
             content_type: "application/xml".to_string(),
@@ -920,7 +934,25 @@ impl S3Service {
             .get(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
         match &b.public_access_block {
-            Some(config) => Ok(AwsResponse::xml(StatusCode::OK, config.clone())),
+            Some(config) => {
+                // Ensure all four fields are present with defaults of false
+                let fields = [
+                    "BlockPublicAcls",
+                    "IgnorePublicAcls",
+                    "BlockPublicPolicy",
+                    "RestrictPublicBuckets",
+                ];
+                let mut result = config.clone();
+                for field in fields {
+                    if !result.contains(field) {
+                        let closing = "</PublicAccessBlockConfiguration>";
+                        if let Some(pos) = result.find(closing) {
+                            result.insert_str(pos, &format!("<{field}>false</{field}>"));
+                        }
+                    }
+                }
+                Ok(AwsResponse::xml(StatusCode::OK, result))
+            }
             None => Err(AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
                 "NoSuchPublicAccessBlockConfiguration",
@@ -2105,7 +2137,6 @@ impl S3Service {
                 .unwrap(),
         );
         headers.insert("accept-ranges", "bytes".parse().unwrap());
-        headers.insert("x-amz-server-side-encryption", "AES256".parse().unwrap());
         // Always include storage class
         headers.insert("x-amz-storage-class", obj.storage_class.parse().unwrap());
         if let Some(vid) = &obj.version_id {
@@ -2215,6 +2246,38 @@ impl S3Service {
                 headers.insert("content-length", total_size.to_string().parse().unwrap());
                 response_body = obj.data.clone();
             }
+        } else if let Some(part_num_str) = req.query_params.get("partNumber") {
+            if let Ok(part_num) = part_num_str.parse::<u32>() {
+                let mut part_start: usize = 0;
+                let mut part_size = total_size;
+                if let Some(ref part_sizes) = obj.part_sizes {
+                    let mut offset: usize = 0;
+                    for &(pn, sz) in part_sizes {
+                        if pn == part_num {
+                            part_start = offset;
+                            part_size = sz as usize;
+                            break;
+                        }
+                        offset += sz as usize;
+                    }
+                }
+                if let Some(pc) = obj.parts_count {
+                    headers.insert("x-amz-mp-parts-count", pc.to_string().parse().unwrap());
+                }
+                let part_end = part_start + part_size - 1;
+                headers.insert(
+                    "content-range",
+                    format!("bytes {part_start}-{part_end}/{total_size}")
+                        .parse()
+                        .unwrap(),
+                );
+                headers.insert("content-length", part_size.to_string().parse().unwrap());
+                response_body = obj.data.slice(part_start..part_start + part_size);
+                response_status = StatusCode::PARTIAL_CONTENT;
+            } else {
+                headers.insert("content-length", total_size.to_string().parse().unwrap());
+                response_body = obj.data.clone();
+            }
         } else {
             headers.insert("content-length", total_size.to_string().parse().unwrap());
             response_body = obj.data.clone();
@@ -2284,7 +2347,10 @@ impl S3Service {
                     b.object_versions.remove(key);
                 }
             } else if let Some(obj) = b.objects.get(key) {
-                if obj.version_id.as_deref() == Some(vid.as_str()) {
+                // Match explicit version id, or treat "null" as matching objects with no version
+                let matches = obj.version_id.as_deref() == Some(vid.as_str())
+                    || (vid == "null" && obj.version_id.is_none());
+                if matches {
                     is_dm = obj.is_delete_marker;
                     b.objects.remove(key);
                 }
@@ -2431,19 +2497,31 @@ impl S3Service {
             }
         } else if let Some(part_num_str) = req.query_params.get("partNumber") {
             if let Ok(part_num) = part_num_str.parse::<u32>() {
+                let mut part_start: u64 = 0;
                 let mut part_size = total_size;
                 if let Some(ref part_sizes) = obj.part_sizes {
+                    let mut offset: u64 = 0;
                     for &(pn, sz) in part_sizes {
                         if pn == part_num {
+                            part_start = offset;
                             part_size = sz;
                             break;
                         }
+                        offset += sz;
                     }
                 }
                 if let Some(pc) = obj.parts_count {
                     headers.insert("x-amz-mp-parts-count", pc.to_string().parse().unwrap());
                 }
+                let part_end = part_start + part_size - 1;
+                headers.insert(
+                    "content-range",
+                    format!("bytes {part_start}-{part_end}/{total_size}")
+                        .parse()
+                        .unwrap(),
+                );
                 headers.insert("content-length", part_size.to_string().parse().unwrap());
+                response_status = StatusCode::PARTIAL_CONTENT;
             } else {
                 headers.insert("content-length", total_size.to_string().parse().unwrap());
             }
@@ -2872,7 +2950,7 @@ impl S3Service {
         );
         Ok(AwsResponse {
             status: StatusCode::OK,
-            content_type: "text/xml".to_string(),
+            content_type: "application/xml".to_string(),
             body: body.into(),
             headers: response_headers,
         })
@@ -3193,7 +3271,7 @@ impl S3Service {
         );
         Ok(AwsResponse {
             status: StatusCode::OK,
-            content_type: "text/xml".to_string(),
+            content_type: "application/xml".to_string(),
             body: body.into(),
             headers,
         })
@@ -3421,7 +3499,7 @@ impl S3Service {
                     );
                     return Ok(AwsResponse {
                         status: StatusCode::OK,
-                        content_type: "text/xml".to_string(),
+                        content_type: "application/xml".to_string(),
                         body: body.into(),
                         headers: HeaderMap::new(),
                     });
@@ -3553,7 +3631,7 @@ impl S3Service {
         );
         Ok(AwsResponse {
             status: StatusCode::OK,
-            content_type: "text/xml".to_string(),
+            content_type: "application/xml".to_string(),
             body: body.into(),
             headers,
         })
@@ -3832,7 +3910,7 @@ impl S3Service {
         );
         Ok(AwsResponse {
             status: StatusCode::OK,
-            content_type: "text/xml".to_string(),
+            content_type: "application/xml".to_string(),
             body: body.into(),
             headers,
         })
