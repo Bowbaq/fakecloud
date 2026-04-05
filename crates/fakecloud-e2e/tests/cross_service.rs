@@ -702,3 +702,104 @@ async fn eventbridge_logs_delivery() {
     assert_eq!(parsed["source"], "audit");
     assert_eq!(parsed["detail-type"], "UserLogin");
 }
+
+/// S3 -> KMS: PutObject with aws:kms encryption stores KMS key ID,
+/// bucket default encryption applies KMS to all objects.
+#[tokio::test]
+async fn s3_kms_encryption() {
+    let server = TestServer::start().await;
+    let s3 = server.s3_client().await;
+    let kms = server.kms_client().await;
+
+    // Create a KMS key
+    let key_resp = kms
+        .create_key()
+        .description("S3 encryption key")
+        .send()
+        .await
+        .unwrap();
+    let key_id = key_resp.key_metadata().unwrap().key_id().to_string();
+    let key_arn = key_resp.key_metadata().unwrap().arn().unwrap().to_string();
+
+    // Create S3 bucket
+    s3.create_bucket()
+        .bucket("kms-test-bucket")
+        .send()
+        .await
+        .unwrap();
+
+    // Put object with explicit KMS encryption
+    s3.put_object()
+        .bucket("kms-test-bucket")
+        .key("encrypted.txt")
+        .body(ByteStream::from_static(b"secret data"))
+        .server_side_encryption(aws_sdk_s3::types::ServerSideEncryption::AwsKms)
+        .ssekms_key_id(&key_id)
+        .send()
+        .await
+        .unwrap();
+
+    // Get the object and verify SSE headers
+    let get = s3
+        .get_object()
+        .bucket("kms-test-bucket")
+        .key("encrypted.txt")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(get.server_side_encryption().unwrap().as_str(), "aws:kms");
+    assert!(
+        get.ssekms_key_id().unwrap().contains(&key_id) || get.ssekms_key_id().unwrap() == key_arn
+    );
+
+    // Set bucket default encryption to KMS
+    let encryption_config = format!(
+        r#"<ServerSideEncryptionConfiguration>
+            <Rule>
+                <ApplyServerSideEncryptionByDefault>
+                    <SSEAlgorithm>aws:kms</SSEAlgorithm>
+                    <KMSMasterKeyID>{key_id}</KMSMasterKeyID>
+                </ApplyServerSideEncryptionByDefault>
+            </Rule>
+        </ServerSideEncryptionConfiguration>"#
+    );
+    let output = server
+        .aws_cli(&[
+            "s3api",
+            "put-bucket-encryption",
+            "--bucket",
+            "kms-test-bucket",
+            "--server-side-encryption-configuration",
+            &encryption_config,
+        ])
+        .await;
+    assert!(
+        output.success(),
+        "put-bucket-encryption failed: {}",
+        output.stderr_text()
+    );
+
+    // Put object without explicit SSE - should inherit bucket default KMS
+    s3.put_object()
+        .bucket("kms-test-bucket")
+        .key("auto-encrypted.txt")
+        .body(ByteStream::from_static(b"auto encrypted data"))
+        .send()
+        .await
+        .unwrap();
+
+    // Get the auto-encrypted object
+    let get2 = s3
+        .get_object()
+        .bucket("kms-test-bucket")
+        .key("auto-encrypted.txt")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(get2.server_side_encryption().unwrap().as_str(), "aws:kms");
+    // Key should be resolved to the full ARN
+    assert!(
+        get2.ssekms_key_id().is_some(),
+        "expected KMS key ID on auto-encrypted object"
+    );
+}
