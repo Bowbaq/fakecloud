@@ -113,6 +113,7 @@ pub async fn dispatch(
         query_params: all_params,
         body: body_bytes,
         path_segments,
+        raw_path: path,
         method: parts.method,
         is_query_protocol: detected.protocol == AwsProtocol::Query,
     };
@@ -146,13 +147,13 @@ pub async fn dispatch(
                 "request failed"
             );
             let error_headers = err.response_headers().to_vec();
-            let mut resp = build_error_response_with_extra(
+            let mut resp = build_error_response_with_fields(
                 err.status(),
                 err.code(),
                 &err.message(),
                 &request_id,
                 detected.protocol,
-                err.extra(),
+                err.extra_fields(),
             );
             for (k, v) in &error_headers {
                 if let (Ok(name), Ok(val)) = (
@@ -194,23 +195,27 @@ fn build_error_response(
     request_id: &str,
     protocol: AwsProtocol,
 ) -> Response<Body> {
-    build_error_response_with_extra(status, code, message, request_id, protocol, &[])
+    build_error_response_with_fields(status, code, message, request_id, protocol, &[])
 }
 
-fn build_error_response_with_extra(
+fn build_error_response_with_fields(
     status: StatusCode,
     code: &str,
     message: &str,
     request_id: &str,
     protocol: AwsProtocol,
-    extra: &[(String, String)],
+    extra_fields: &[(String, String)],
 ) -> Response<Body> {
     let (status, content_type, body) = match protocol {
         AwsProtocol::Query => {
             fakecloud_aws::error::xml_error_response(status, code, message, request_id)
         }
-        AwsProtocol::Rest => fakecloud_aws::error::s3_xml_error_response_with_extra(
-            status, code, message, request_id, extra,
+        AwsProtocol::Rest => fakecloud_aws::error::s3_xml_error_response_with_fields(
+            status,
+            code,
+            message,
+            request_id,
+            extra_fields,
         ),
         AwsProtocol::Json => fakecloud_aws::error::json_error_response(status, code, message),
     };

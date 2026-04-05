@@ -79,21 +79,21 @@ pub fn s3_xml_error_response(
     message: &str,
     request_id: &str,
 ) -> (StatusCode, String, Bytes) {
-    s3_xml_error_response_with_extra(status, code, message, request_id, &[])
+    s3_xml_error_response_with_fields(status, code, message, request_id, &[])
 }
 
-/// Build an S3-style XML error response with additional fields.
-pub fn s3_xml_error_response_with_extra(
+/// Build an S3-style XML error response with additional fields (e.g., BucketName, Key).
+pub fn s3_xml_error_response_with_fields(
     status: StatusCode,
     code: &str,
     message: &str,
     request_id: &str,
-    extra: &[(String, String)],
+    extra_fields: &[(String, String)],
 ) -> (StatusCode, String, Bytes) {
     let mut buffer = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Error>\n");
     buffer.push_str(&format!("  <Code>{}</Code>\n", xml_escape(code)));
     buffer.push_str(&format!("  <Message>{}</Message>\n", xml_escape(message)));
-    for (key, value) in extra {
+    for (key, value) in extra_fields {
         buffer.push_str(&format!("  <{}>{}</{}>\n", key, xml_escape(value), key));
     }
     buffer.push_str(&format!(

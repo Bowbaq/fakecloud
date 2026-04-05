@@ -37,7 +37,9 @@ pub struct S3Object {
     pub sse_kms_key_id: Option<String>,
     /// Whether bucket key is enabled.
     pub bucket_key_enabled: Option<bool>,
-    /// Website redirect location.
+    pub version_id: Option<String>,
+    pub is_delete_marker: bool,
+    pub content_encoding: Option<String>,
     pub website_redirect_location: Option<String>,
 }
 
@@ -83,6 +85,20 @@ pub struct S3Bucket {
     pub multipart_uploads: HashMap<String, MultipartUpload>,
     /// Versioning status: None = never enabled, Some("Enabled"), Some("Suspended").
     pub versioning: Option<String>,
+    /// Object versions keyed by key, each value is a list of versions.
+    pub object_versions: HashMap<String, Vec<S3Object>>,
+    /// Bucket ACL (canned or XML).
+    pub acl: Option<String>,
+    pub encryption_config: Option<String>,
+    pub lifecycle_config: Option<String>,
+    pub policy: Option<String>,
+    pub cors_config: Option<String>,
+    pub notification_config: Option<String>,
+    pub logging_config: Option<String>,
+    pub website_config: Option<String>,
+    pub accelerate_status: Option<String>,
+    pub public_access_block: Option<String>,
+    pub object_lock_config: Option<String>,
 }
 
 impl S3Bucket {
@@ -103,6 +119,18 @@ impl S3Bucket {
             acl_owner_id: owner_id.to_string(),
             multipart_uploads: HashMap::new(),
             versioning: None,
+            object_versions: HashMap::new(),
+            acl: None,
+            encryption_config: None,
+            lifecycle_config: None,
+            policy: None,
+            cors_config: None,
+            notification_config: None,
+            logging_config: None,
+            website_config: None,
+            accelerate_status: None,
+            public_access_block: None,
+            object_lock_config: None,
         }
     }
 }
