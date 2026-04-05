@@ -7,16 +7,27 @@ use std::sync::Arc;
 pub struct Secret {
     pub name: String,
     pub arn: String,
-    pub description: String,
+    pub description: Option<String>,
     pub kms_key_id: Option<String>,
     pub versions: HashMap<String, SecretVersion>,
-    pub current_version_id: String,
-    pub tags: HashMap<String, String>,
+    pub current_version_id: Option<String>,
+    pub tags: Vec<(String, String)>,
+    pub tags_ever_set: bool,
     pub deleted: bool,
     pub deletion_date: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub last_changed_at: DateTime<Utc>,
     pub last_accessed_at: Option<DateTime<Utc>>,
+    pub rotation_enabled: Option<bool>,
+    pub rotation_lambda_arn: Option<String>,
+    pub rotation_rules: Option<RotationRules>,
+    pub last_rotated_at: Option<DateTime<Utc>>,
+    pub resource_policy: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RotationRules {
+    pub automatically_after_days: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
