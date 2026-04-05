@@ -28,7 +28,12 @@ impl AwsService for S3Service {
         // S3 REST routing: method + path segments + query params
         let bucket = req.path_segments.first().map(|s| s.as_str());
         let key = if req.path_segments.len() > 1 {
-            Some(req.path_segments[1..].join("/"))
+            let raw_key = req.path_segments[1..].join("/");
+            Some(
+                percent_encoding::percent_decode_str(&raw_key)
+                    .decode_utf8_lossy()
+                    .to_string(),
+            )
         } else {
             None
         };
@@ -1492,12 +1497,6 @@ impl S3Service {
         bucket: &str,
         key: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let mut state = self.state.write();
-        let b = state
-            .buckets
-            .get_mut(bucket)
-            .ok_or_else(|| no_such_bucket(bucket))?;
-
         let upload_id = uuid::Uuid::new_v4().to_string();
         let content_type = req
             .headers
@@ -1506,11 +1505,41 @@ impl S3Service {
             .unwrap_or("application/octet-stream")
             .to_string();
         let metadata = extract_user_metadata(&req.headers);
+        let storage_class = req
+            .headers
+            .get("x-amz-storage-class")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("STANDARD")
+            .to_string();
+        let sse_algorithm = req
+            .headers
+            .get("x-amz-server-side-encryption")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        let sse_kms_key_id = req
+            .headers
+            .get("x-amz-server-side-encryption-aws-kms-key-id")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
         let tagging = req
             .headers
             .get("x-amz-tagging")
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
+        let acl_header = req
+            .headers
+            .get("x-amz-acl")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("private")
+            .to_string();
+
+        let mut state = self.state.write();
+        let b = state
+            .buckets
+            .get_mut(bucket)
+            .ok_or_else(|| no_such_bucket(bucket))?;
+
+        let acl_grants = canned_acl_grants(&acl_header, &b.acl_owner_id);
 
         let upload = MultipartUpload {
             upload_id: upload_id.clone(),
@@ -1519,13 +1548,24 @@ impl S3Service {
             parts: std::collections::BTreeMap::new(),
             metadata,
             content_type,
-            storage_class: "STANDARD".to_string(),
-            sse_algorithm: None,
-            sse_kms_key_id: None,
+            storage_class,
+            sse_algorithm: sse_algorithm.clone(),
+            sse_kms_key_id: sse_kms_key_id.clone(),
             tagging,
-            acl_grants: Vec::new(),
+            acl_grants,
         };
         b.multipart_uploads.insert(upload_id.clone(), upload);
+
+        let mut headers = HeaderMap::new();
+        if let Some(algo) = &sse_algorithm {
+            headers.insert("x-amz-server-side-encryption", algo.parse().unwrap());
+        }
+        if let Some(kid) = &sse_kms_key_id {
+            headers.insert(
+                "x-amz-server-side-encryption-aws-kms-key-id",
+                kid.parse().unwrap(),
+            );
+        }
 
         let body = format!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
@@ -1538,7 +1578,12 @@ impl S3Service {
             xml_escape(key),
             xml_escape(&upload_id),
         );
-        Ok(AwsResponse::xml(StatusCode::OK, body))
+        Ok(AwsResponse {
+            status: StatusCode::OK,
+            content_type: "text/xml".to_string(),
+            body: body.into(),
+            headers,
+        })
     }
 
     fn upload_part(
