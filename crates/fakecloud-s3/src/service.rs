@@ -2408,10 +2408,10 @@ fn parse_range(range_str: &str, total: u64) -> Option<ParsedRange> {
     if range_str.is_empty() {
         return None;
     }
+    let spec = range_str.strip_prefix("bytes=")?;
     if total == 0 {
         return Some(ParsedRange::NotSatisfiable);
     }
-    let spec = range_str.strip_prefix("bytes=")?;
 
     if let Some(suffix) = spec.strip_prefix('-') {
         // Suffix range: bytes=-N (last N bytes)
@@ -2541,6 +2541,6 @@ mod tests {
             Some(ParsedRange::NotSatisfiable)
         ));
         // Empty
-        assert!(parse_range("", 100).is_none();
+        assert!(parse_range("", 100).is_none());
     }
 }
