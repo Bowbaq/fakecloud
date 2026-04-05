@@ -918,6 +918,18 @@ impl S3Service {
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
         let body_str = std::str::from_utf8(&req.body).unwrap_or("").to_string();
+        // Validate that at least one field is specified
+        let has_field = body_str.contains("BlockPublicAcls")
+            || body_str.contains("IgnorePublicAcls")
+            || body_str.contains("BlockPublicPolicy")
+            || body_str.contains("RestrictPublicBuckets");
+        if !has_field {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidRequest",
+                "Must specify at least one configuration.",
+            ));
+        }
         let mut state = self.state.write();
         let b = state
             .buckets
@@ -2248,6 +2260,15 @@ impl S3Service {
             }
         } else if let Some(part_num_str) = req.query_params.get("partNumber") {
             if let Ok(part_num) = part_num_str.parse::<u32>() {
+                // Validate part number
+                let max_parts = obj.parts_count.unwrap_or(1) as usize;
+                if part_num < 1 || part_num as usize > max_parts {
+                    return Err(AwsServiceError::aws_error(
+                        StatusCode::RANGE_NOT_SATISFIABLE,
+                        "InvalidRange",
+                        "The requested range is not satisfiable",
+                    ));
+                }
                 let mut part_start: usize = 0;
                 let mut part_size = total_size;
                 if let Some(ref part_sizes) = obj.part_sizes {
@@ -2497,6 +2518,15 @@ impl S3Service {
             }
         } else if let Some(part_num_str) = req.query_params.get("partNumber") {
             if let Ok(part_num) = part_num_str.parse::<u32>() {
+                // Validate part number
+                let max_parts = obj.parts_count.unwrap_or(1);
+                if part_num < 1 || part_num > max_parts {
+                    return Err(AwsServiceError::aws_error(
+                        StatusCode::RANGE_NOT_SATISFIABLE,
+                        "InvalidRange",
+                        "The requested range is not satisfiable",
+                    ));
+                }
                 let mut part_start: u64 = 0;
                 let mut part_size = total_size;
                 if let Some(ref part_sizes) = obj.part_sizes {
@@ -2583,6 +2613,17 @@ impl S3Service {
                 "ongoing-request=\"false\"".to_string()
             };
             headers.insert("x-amz-restore", restore_val.parse().unwrap());
+        }
+        // Checksum headers (returned when ChecksumMode=ENABLED or always if set)
+        if let Some(algo) = &obj.checksum_algorithm {
+            if let Some(val) = &obj.checksum_value {
+                let hn = format!("x-amz-checksum-{}", algo.to_lowercase());
+                if let Ok(name) = hn.parse::<http::header::HeaderName>() {
+                    if let Ok(hv) = val.parse() {
+                        headers.insert(name, hv);
+                    }
+                }
+            }
         }
 
         Ok(AwsResponse {
