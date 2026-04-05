@@ -1569,7 +1569,10 @@ impl S3Service {
             };
 
             let checksum_xml = if let Some(ref algo) = obj.checksum_algorithm {
-                format!("<ChecksumAlgorithm>{algo}</ChecksumAlgorithm>")
+                format!(
+                    "<ChecksumAlgorithm>{}</ChecksumAlgorithm>",
+                    xml_escape(algo)
+                )
             } else {
                 String::new()
             };
@@ -3696,6 +3699,8 @@ impl S3Service {
         // SSE headers in copy response
         if let Some(ref algo) = new_sse {
             response_headers.insert("x-amz-server-side-encryption", algo.parse().unwrap());
+        } else {
+            response_headers.insert("x-amz-server-side-encryption", "AES256".parse().unwrap());
         }
         if let Some(ref kid) = new_kms {
             response_headers.insert(
@@ -4161,8 +4166,20 @@ impl S3Service {
             .headers
             .get("x-amz-acl")
             .and_then(|v| v.to_str().ok())
-            .unwrap_or("private")
-            .to_string();
+            .map(|s| s.to_string());
+        let has_grant_headers = req
+            .headers
+            .keys()
+            .any(|k| k.as_str().starts_with("x-amz-grant-"));
+
+        if acl_header.is_some() && has_grant_headers {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidRequest",
+                "Specifying both Canned ACLs and Header Grants is not allowed",
+            ));
+        }
+
         let checksum_algorithm = req
             .headers
             .get("x-amz-checksum-algorithm")
@@ -4176,7 +4193,12 @@ impl S3Service {
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
 
-        let acl_grants = canned_acl_grants(&acl_header, &b.acl_owner_id);
+        let acl_grants = if has_grant_headers {
+            parse_grant_headers(&req.headers)
+        } else {
+            let acl = acl_header.as_deref().unwrap_or("private");
+            canned_acl_grants(acl, &b.acl_owner_id)
+        };
 
         let upload = MultipartUpload {
             upload_id: upload_id.clone(),
@@ -4688,16 +4710,26 @@ impl S3Service {
         key: &str,
         upload_id: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let max_parts: i64 = req
-            .query_params
-            .get("max-parts")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(1000);
-        let part_number_marker: i64 = req
-            .query_params
-            .get("part-number-marker")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0);
+        let max_parts: i64 = match req.query_params.get("max-parts") {
+            Some(v) => v.parse().map_err(|_| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "InvalidArgument",
+                    "Provided max-parts not an integer or within integer range",
+                )
+            })?,
+            None => 1000,
+        };
+        let part_number_marker: i64 = match req.query_params.get("part-number-marker") {
+            Some(v) => v.parse().map_err(|_| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "InvalidArgument",
+                    "Provided part-number-marker not an integer or within integer range",
+                )
+            })?,
+            None => 0,
+        };
 
         // Validate max-parts and part-number-marker
         if max_parts < 0 {
@@ -5252,10 +5284,15 @@ fn etag_matches(condition: &str, obj_etag: &str) -> bool {
     if condition == "*" {
         return true;
     }
-    // Strip quotes from both for comparison
-    let clean_condition = condition.replace('"', "");
     let clean_etag = obj_etag.replace('"', "");
-    clean_condition == clean_etag
+    // Split on comma to handle multi-value If-Match / If-None-Match
+    for part in condition.split(',') {
+        let part = part.trim().replace('"', "");
+        if part == clean_etag {
+            return true;
+        }
+    }
+    false
 }
 
 fn parse_http_date(s: &str) -> Option<DateTime<Utc>> {
