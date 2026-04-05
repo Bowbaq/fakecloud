@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SERVER_BIN="$REPO_ROOT/target/release/fakecloud-server"
+SERVER_BIN="$REPO_ROOT/target/release/fakecloud"
 MOTO_DIR="${MOTO_DIR:-$HOME/.cache/fakecloud/moto}"
 VENV_DIR="$MOTO_DIR/.venv"
 RESULTS_DIR="$SCRIPT_DIR/results"

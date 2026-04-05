@@ -5,7 +5,7 @@
  *   npm install @aws-sdk/client-s3 @aws-sdk/client-sqs @aws-sdk/client-sns @aws-sdk/client-ssm
  *
  * Usage:
- *   1. Start FakeCloud: cargo run --bin fakecloud-server
+ *   1. Start FakeCloud: cargo run --bin fakecloud
  *   2. Run this script: node examples/node/demo.js
  */
 

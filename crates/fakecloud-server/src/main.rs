@@ -19,7 +19,7 @@ use fakecloud_sqs::service::SqsService;
 use fakecloud_ssm::service::SsmService;
 
 #[derive(Parser)]
-#[command(name = "fakecloud-server")]
+#[command(name = "fakecloud")]
 #[command(about = "FakeCloud — local AWS cloud emulator")]
 #[command(version)]
 struct Cli {

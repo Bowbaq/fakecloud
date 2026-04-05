@@ -56,7 +56,7 @@ jobs:
 
       - name: Start FakeCloud
         run: |
-          ./target/release/fakecloud-server --log-level warn > /tmp/fakecloud.log 2>&1 &
+          ./target/release/fakecloud --log-level warn > /tmp/fakecloud.log 2>&1 &
           echo "FAKECLOUD_PID=$!" >> "$GITHUB_ENV"
 
       - name: Wait for FakeCloud health check

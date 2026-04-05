@@ -1093,6 +1093,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "fakecloud"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "clap",
+ "fakecloud-aws",
+ "fakecloud-core",
+ "fakecloud-eventbridge",
+ "fakecloud-iam",
+ "fakecloud-s3",
+ "fakecloud-sns",
+ "fakecloud-sqs",
+ "fakecloud-ssm",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "fakecloud-aws"
 version = "0.1.0"
 dependencies = [
@@ -1199,30 +1223,6 @@ dependencies = [
  "sha2",
  "tracing",
  "uuid",
-]
-
-[[package]]
-name = "fakecloud-server"
-version = "0.1.0"
-dependencies = [
- "axum",
- "clap",
- "fakecloud-aws",
- "fakecloud-core",
- "fakecloud-eventbridge",
- "fakecloud-iam",
- "fakecloud-s3",
- "fakecloud-sns",
- "fakecloud-sqs",
- "fakecloud-ssm",
- "parking_lot",
- "serde",
- "serde_json",
- "tokio",
- "toml",
- "tower-http",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

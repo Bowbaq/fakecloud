@@ -1,12 +1,14 @@
 [package]
-name = "fakecloud-server"
+name = "fakecloud"
+description = "Local AWS cloud emulator"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 version.workspace = true
+homepage.workspace = true
 
 [[bin]]
-name = "fakecloud-server"
+name = "fakecloud"
 path = "src/main.rs"
 
 [dependencies]

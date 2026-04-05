@@ -7,7 +7,7 @@
   <a href="https://github.com/faiscadev/fakecloud/actions"><img src="https://img.shields.io/github/actions/workflow/status/faiscadev/fakecloud/ci.yml?branch=main&label=CI" alt="CI"></a>
   <a href="https://github.com/faiscadev/fakecloud/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="License"></a>
   <a href="https://github.com/faiscadev/fakecloud/pkgs/container/fakecloud"><img src="https://img.shields.io/badge/ghcr.io-fakecloud-blue?logo=docker" alt="GHCR"></a>
-  <a href="https://crates.io/crates/fakecloud-server"><img src="https://img.shields.io/crates/v/fakecloud-server" alt="crates.io"></a>
+  <a href="https://crates.io/crates/fakecloud"><img src="https://img.shields.io/crates/v/fakecloud" alt="crates.io"></a>
   <a href="https://fakecloud.dev"><img src="https://img.shields.io/badge/docs-fakecloud.dev-green" alt="Docs"></a>
 </p>
 
@@ -45,7 +45,7 @@ alternatives have emerged since then. Here's how they compare:
 # Requires Rust 1.85+
 git clone https://github.com/faiscadev/fakecloud.git
 cd fakecloud
-cargo run --release --bin fakecloud-server
+cargo run --release --bin fakecloud
 ```
 
 ### Docker
@@ -276,8 +276,8 @@ FakeCloud is configured via CLI flags or environment variables.
 
 ```sh
 # Examples
-fakecloud-server --addr 127.0.0.1:5000 --log-level debug
-FAKECLOUD_LOG=trace cargo run --bin fakecloud-server
+fakecloud --addr 127.0.0.1:5000 --log-level debug
+FAKECLOUD_LOG=trace cargo run --bin fakecloud
 ```
 
 ## Health Check
@@ -300,7 +300,7 @@ FakeCloud is organized as a Cargo workspace:
 
 | Crate | Purpose |
 |---|---|
-| `fakecloud-server` | Binary entry point (clap CLI, Axum HTTP server) |
+| `fakecloud` | Binary entry point (clap CLI, Axum HTTP server) |
 | `fakecloud-core` | `AwsService` trait, service registry, request dispatch, protocol parsing |
 | `fakecloud-aws` | Shared AWS types (ARNs, error builders, SigV4 parser) |
 | `fakecloud-sqs` | SQS implementation |

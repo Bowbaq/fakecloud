@@ -6,7 +6,7 @@ use aws_config::BehaviorVersion;
 use aws_credential_types::Credentials;
 use aws_types::region::Region;
 
-/// A test server that spawns fakecloud-server on a random port.
+/// A test server that spawns fakecloud on a random port.
 #[allow(dead_code)]
 pub struct TestServer {
     child: Option<Child>,
@@ -31,7 +31,7 @@ impl TestServer {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .expect("failed to start fakecloud-server");
+            .expect("failed to start fakecloud");
 
         // Wait for server to be ready
         wait_for_port(port).await;
@@ -163,11 +163,11 @@ fn find_available_port() -> u16 {
 fn find_binary() -> String {
     let debug_path = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../target/debug/fakecloud-server"
+        "/../../target/debug/fakecloud"
     );
     let release_path = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../target/release/fakecloud-server"
+        "/../../target/release/fakecloud"
     );
 
     if std::path::Path::new(debug_path).exists() {
@@ -178,7 +178,7 @@ fn find_binary() -> String {
     }
 
     panic!(
-        "fakecloud-server binary not found. Run `cargo build` first.\n\
+        "fakecloud binary not found. Run `cargo build` first.\n\
          Looked in:\n  {debug_path}\n  {release_path}"
     );
 }
@@ -191,5 +191,5 @@ async fn wait_for_port(port: u16) {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    panic!("fakecloud-server did not start within 5 seconds on port {port}");
+    panic!("fakecloud did not start within 5 seconds on port {port}");
 }

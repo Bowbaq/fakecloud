@@ -5,7 +5,7 @@ Prerequisites:
     pip install boto3
 
 Usage:
-    1. Start FakeCloud: cargo run --bin fakecloud-server
+    1. Start FakeCloud: cargo run --bin fakecloud
     2. Run this script: python examples/python/demo.py
 """
 

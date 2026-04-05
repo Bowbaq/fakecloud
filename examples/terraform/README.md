@@ -6,7 +6,7 @@ official `hashicorp/aws` Terraform provider.
 ## Prerequisites
 
 - [Terraform](https://developer.hashicorp.com/terraform/install) >= 1.0
-- FakeCloud server built and available (`cargo build --bin fakecloud-server`)
+- FakeCloud server built and available (`cargo build --bin fakecloud`)
 
 ## Usage
 
@@ -14,7 +14,7 @@ official `hashicorp/aws` Terraform provider.
 
    ```sh
    cd <fakecloud-repo-root>
-   cargo run --bin fakecloud-server   # listens on 0.0.0.0:4566 by default
+   cargo run --bin fakecloud   # listens on 0.0.0.0:4566 by default
    ```
 
 2. In another terminal, run Terraform:
