@@ -4,10 +4,12 @@ use async_trait::async_trait;
 use chrono::Utc;
 use http::StatusCode;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
 
 use crate::state::{
+    MaintenanceWindow, MaintenanceWindowTarget, MaintenanceWindowTask, PatchBaseline, PatchGroup,
     SharedSsmState, SsmCommand, SsmDocument, SsmDocumentVersion, SsmParameter, SsmParameterVersion,
 };
 
@@ -58,6 +60,35 @@ impl AwsService for SsmService {
             "GetCommandInvocation" => self.get_command_invocation(&req),
             "ListCommandInvocations" => self.list_command_invocations(&req),
             "CancelCommand" => self.cancel_command(&req),
+            "CreateMaintenanceWindow" => self.create_maintenance_window(&req),
+            "DescribeMaintenanceWindows" => self.describe_maintenance_windows(&req),
+            "GetMaintenanceWindow" => self.get_maintenance_window(&req),
+            "DeleteMaintenanceWindow" => self.delete_maintenance_window(&req),
+            "UpdateMaintenanceWindow" => self.update_maintenance_window(&req),
+            "RegisterTargetWithMaintenanceWindow" => {
+                self.register_target_with_maintenance_window(&req)
+            }
+            "DeregisterTargetFromMaintenanceWindow" => {
+                self.deregister_target_from_maintenance_window(&req)
+            }
+            "DescribeMaintenanceWindowTargets" => self.describe_maintenance_window_targets(&req),
+            "RegisterTaskWithMaintenanceWindow" => self.register_task_with_maintenance_window(&req),
+            "DeregisterTaskFromMaintenanceWindow" => {
+                self.deregister_task_from_maintenance_window(&req)
+            }
+            "DescribeMaintenanceWindowTasks" => self.describe_maintenance_window_tasks(&req),
+            "CreatePatchBaseline" => self.create_patch_baseline(&req),
+            "DeletePatchBaseline" => self.delete_patch_baseline(&req),
+            "DescribePatchBaselines" => self.describe_patch_baselines(&req),
+            "GetPatchBaseline" => self.get_patch_baseline(&req),
+            "RegisterPatchBaselineForPatchGroup" => {
+                self.register_patch_baseline_for_patch_group(&req)
+            }
+            "DeregisterPatchBaselineForPatchGroup" => {
+                self.deregister_patch_baseline_for_patch_group(&req)
+            }
+            "GetPatchBaselineForPatchGroup" => self.get_patch_baseline_for_patch_group(&req),
+            "DescribePatchGroups" => self.describe_patch_groups(&req),
             _ => Err(AwsServiceError::action_not_implemented("ssm", &req.action)),
         }
     }
@@ -91,6 +122,25 @@ impl AwsService for SsmService {
             "GetCommandInvocation",
             "ListCommandInvocations",
             "CancelCommand",
+            "CreateMaintenanceWindow",
+            "DescribeMaintenanceWindows",
+            "GetMaintenanceWindow",
+            "DeleteMaintenanceWindow",
+            "UpdateMaintenanceWindow",
+            "RegisterTargetWithMaintenanceWindow",
+            "DeregisterTargetFromMaintenanceWindow",
+            "DescribeMaintenanceWindowTargets",
+            "RegisterTaskWithMaintenanceWindow",
+            "DeregisterTaskFromMaintenanceWindow",
+            "DescribeMaintenanceWindowTasks",
+            "CreatePatchBaseline",
+            "DeletePatchBaseline",
+            "DescribePatchBaselines",
+            "GetPatchBaseline",
+            "RegisterPatchBaselineForPatchGroup",
+            "DeregisterPatchBaselineForPatchGroup",
+            "GetPatchBaselineForPatchGroup",
+            "DescribePatchGroups",
         ]
     }
 }
@@ -1078,6 +1128,30 @@ impl SsmService {
                     }
                 }
             }
+            "MaintenanceWindow" => {
+                let mw = state
+                    .maintenance_windows
+                    .get_mut(resource_id)
+                    .ok_or_else(|| invalid_resource_id(resource_id))?;
+
+                for tag in tags {
+                    if let (Some(key), Some(val)) = (tag["Key"].as_str(), tag["Value"].as_str()) {
+                        mw.tags.insert(key.to_string(), val.to_string());
+                    }
+                }
+            }
+            "PatchBaseline" => {
+                let pb = state
+                    .patch_baselines
+                    .get_mut(resource_id)
+                    .ok_or_else(|| invalid_resource_id(resource_id))?;
+
+                for tag in tags {
+                    if let (Some(key), Some(val)) = (tag["Key"].as_str(), tag["Value"].as_str()) {
+                        pb.tags.insert(key.to_string(), val.to_string());
+                    }
+                }
+            }
             _ => {
                 return Err(AwsServiceError::aws_error(
                     StatusCode::BAD_REQUEST,
@@ -1129,6 +1203,30 @@ impl SsmService {
                     }
                 }
             }
+            "MaintenanceWindow" => {
+                let mw = state
+                    .maintenance_windows
+                    .get_mut(resource_id)
+                    .ok_or_else(|| invalid_resource_id(resource_id))?;
+
+                for key in tag_keys {
+                    if let Some(k) = key.as_str() {
+                        mw.tags.remove(k);
+                    }
+                }
+            }
+            "PatchBaseline" => {
+                let pb = state
+                    .patch_baselines
+                    .get_mut(resource_id)
+                    .ok_or_else(|| invalid_resource_id(resource_id))?;
+
+                for key in tag_keys {
+                    if let Some(k) = key.as_str() {
+                        pb.tags.remove(k);
+                    }
+                }
+            }
             _ => {}
         }
 
@@ -1164,6 +1262,26 @@ impl SsmService {
                     .map(|(k, v)| json!({"Key": k, "Value": v}))
                     .collect()
             }
+            "MaintenanceWindow" => {
+                let mw = state
+                    .maintenance_windows
+                    .get(resource_id)
+                    .ok_or_else(|| invalid_resource_id(resource_id))?;
+                mw.tags
+                    .iter()
+                    .map(|(k, v)| json!({"Key": k, "Value": v}))
+                    .collect()
+            }
+            "PatchBaseline" => {
+                let pb = state
+                    .patch_baselines
+                    .get(resource_id)
+                    .ok_or_else(|| invalid_resource_id(resource_id))?;
+                pb.tags
+                    .iter()
+                    .map(|(k, v)| json!({"Key": k, "Value": v}))
+                    .collect()
+            }
             _ => {
                 return Err(AwsServiceError::aws_error(
                     StatusCode::BAD_REQUEST,
@@ -1176,6 +1294,13 @@ impl SsmService {
                 ));
             }
         };
+
+        let mut tags = tags;
+        tags.sort_by(|a, b| {
+            let ka = a["Key"].as_str().unwrap_or("");
+            let kb = b["Key"].as_str().unwrap_or("");
+            ka.cmp(kb)
+        });
 
         Ok(json_resp(json!({ "TagList": tags })))
     }
@@ -1399,6 +1524,8 @@ impl SsmService {
         }
 
         let now = Utc::now();
+        let content_hash = format!("{:x}", Sha256::digest(content.as_bytes()));
+
         let version = SsmDocumentVersion {
             content: content.clone(),
             document_version: "1".to_string(),
@@ -1442,8 +1569,8 @@ impl SsmService {
                 "Owner": state.account_id,
                 "SchemaVersion": "2.2",
                 "PlatformTypes": ["Linux", "MacOS", "Windows"],
-                "Hash": format!("{:x}", md5::compute(b"placeholder")),
-                "HashType": "Md5",
+                "Hash": content_hash,
+                "HashType": "Sha256",
             }
         })))
     }
@@ -1610,8 +1737,8 @@ impl SsmService {
                 "Owner": doc.owner,
                 "SchemaVersion": "2.2",
                 "PlatformTypes": ["Linux", "MacOS", "Windows"],
-                "Hash": format!("{:x}", md5::compute(b"placeholder")),
-                "HashType": "Md5",
+                "Hash": format!("{:x}", Sha256::digest(doc.content.as_bytes())),
+                "HashType": "Sha256",
             }
         })))
     }
@@ -1966,6 +2093,17 @@ impl SsmService {
             })
             .collect();
 
+        // If a specific CommandId was requested and not found, return an error
+        if let Some(cid) = command_id {
+            if commands.is_empty() {
+                return Err(AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "InvalidCommandId",
+                    format!("Command with id {cid} does not exist."),
+                ));
+            }
+        }
+
         Ok(json_resp(json!({ "Commands": commands })))
     }
 
@@ -1990,6 +2128,15 @@ impl SsmService {
                     format!("Command {command_id} not found"),
                 )
             })?;
+
+        // Check instance is part of the command
+        if !cmd.instance_ids.contains(&instance_id.to_string()) {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "InvocationDoesNotExist",
+                "An error occurred (InvocationDoesNotExist) when calling the GetCommandInvocation operation",
+            ));
+        }
 
         Ok(json_resp(json!({
             "CommandId": cmd.command_id,
@@ -2054,6 +2201,867 @@ impl SsmService {
         }
 
         Ok(json_resp(json!({})))
+    }
+
+    // ===== Maintenance Window operations =====
+
+    fn create_maintenance_window(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = parse_body(req);
+        let name = body["Name"]
+            .as_str()
+            .ok_or_else(|| missing("Name"))?
+            .to_string();
+        let schedule = body["Schedule"]
+            .as_str()
+            .ok_or_else(|| missing("Schedule"))?
+            .to_string();
+        let duration = body["Duration"]
+            .as_i64()
+            .ok_or_else(|| missing("Duration"))?;
+        let cutoff = body["Cutoff"].as_i64().ok_or_else(|| missing("Cutoff"))?;
+        let allow_unassociated_targets =
+            body["AllowUnassociatedTargets"].as_bool().unwrap_or(false);
+        let description = body["Description"].as_str().map(|s| s.to_string());
+        let schedule_timezone = body["ScheduleTimezone"].as_str().map(|s| s.to_string());
+        let schedule_offset = body["ScheduleOffset"].as_i64();
+        let start_date = body["StartDate"].as_str().map(|s| s.to_string());
+        let end_date = body["EndDate"].as_str().map(|s| s.to_string());
+
+        let tags: HashMap<String, String> = body["Tags"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|t| {
+                        let k = t["Key"].as_str()?;
+                        let v = t["Value"].as_str()?;
+                        Some((k.to_string(), v.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let window_id = format!("mw-{}", &uuid::Uuid::new_v4().to_string()[..17]);
+
+        let mw = MaintenanceWindow {
+            id: window_id.clone(),
+            name,
+            schedule,
+            duration,
+            cutoff,
+            allow_unassociated_targets,
+            enabled: true,
+            description,
+            tags,
+            targets: Vec::new(),
+            tasks: Vec::new(),
+            schedule_timezone,
+            schedule_offset,
+            start_date,
+            end_date,
+        };
+
+        let mut state = self.state.write();
+        state.maintenance_windows.insert(window_id.clone(), mw);
+
+        Ok(json_resp(json!({ "WindowId": window_id })))
+    }
+
+    fn describe_maintenance_windows(
+        &self,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let body = parse_body(req);
+        let filters = body["Filters"].as_array();
+
+        let state = self.state.read();
+        let windows: Vec<Value> = state
+            .maintenance_windows
+            .values()
+            .filter(|mw| {
+                if let Some(filters) = filters {
+                    for filter in filters {
+                        let key = filter["Key"].as_str().unwrap_or("");
+                        let values: Vec<&str> = filter["Values"]
+                            .as_array()
+                            .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+                            .unwrap_or_default();
+                        match key {
+                            "Name" => {
+                                if !values.iter().any(|v| *v == mw.name) {
+                                    return false;
+                                }
+                            }
+                            "Enabled" => {
+                                let enabled_str = if mw.enabled { "true" } else { "false" };
+                                if !values.contains(&enabled_str) {
+                                    return false;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                true
+            })
+            .map(|mw| {
+                let mut v = json!({
+                    "WindowId": mw.id,
+                    "Name": mw.name,
+                    "Schedule": mw.schedule,
+                    "Duration": mw.duration,
+                    "Cutoff": mw.cutoff,
+                    "AllowUnassociatedTargets": mw.allow_unassociated_targets,
+                    "Enabled": mw.enabled,
+                });
+                if let Some(ref desc) = mw.description {
+                    v["Description"] = json!(desc);
+                }
+                if let Some(ref tz) = mw.schedule_timezone {
+                    v["ScheduleTimezone"] = json!(tz);
+                }
+                if let Some(offset) = mw.schedule_offset {
+                    v["ScheduleOffset"] = json!(offset);
+                }
+                if let Some(ref sd) = mw.start_date {
+                    v["StartDate"] = json!(sd);
+                }
+                if let Some(ref ed) = mw.end_date {
+                    v["EndDate"] = json!(ed);
+                }
+                v
+            })
+            .collect();
+
+        Ok(json_resp(json!({ "WindowIdentities": windows })))
+    }
+
+    fn get_maintenance_window(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = parse_body(req);
+        let window_id = body["WindowId"]
+            .as_str()
+            .ok_or_else(|| missing("WindowId"))?;
+
+        let state = self.state.read();
+        let mw = state
+            .maintenance_windows
+            .get(window_id)
+            .ok_or_else(|| mw_not_found(window_id))?;
+
+        let mut resp = json!({
+            "WindowId": mw.id,
+            "Name": mw.name,
+            "Schedule": mw.schedule,
+            "Duration": mw.duration,
+            "Cutoff": mw.cutoff,
+            "AllowUnassociatedTargets": mw.allow_unassociated_targets,
+            "Enabled": mw.enabled,
+        });
+        if let Some(ref desc) = mw.description {
+            resp["Description"] = json!(desc);
+        }
+        if let Some(ref tz) = mw.schedule_timezone {
+            resp["ScheduleTimezone"] = json!(tz);
+        }
+        if let Some(offset) = mw.schedule_offset {
+            resp["ScheduleOffset"] = json!(offset);
+        }
+        if let Some(ref sd) = mw.start_date {
+            resp["StartDate"] = json!(sd);
+        }
+        if let Some(ref ed) = mw.end_date {
+            resp["EndDate"] = json!(ed);
+        }
+
+        Ok(json_resp(resp))
+    }
+
+    fn delete_maintenance_window(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = parse_body(req);
+        let window_id = body["WindowId"]
+            .as_str()
+            .ok_or_else(|| missing("WindowId"))?;
+
+        let mut state = self.state.write();
+        if state.maintenance_windows.remove(window_id).is_none() {
+            return Err(mw_not_found(window_id));
+        }
+
+        Ok(json_resp(json!({ "WindowId": window_id })))
+    }
+
+    fn update_maintenance_window(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = parse_body(req);
+        let window_id = body["WindowId"]
+            .as_str()
+            .ok_or_else(|| missing("WindowId"))?;
+
+        let mut state = self.state.write();
+        let mw = state
+            .maintenance_windows
+            .get_mut(window_id)
+            .ok_or_else(|| mw_not_found(window_id))?;
+
+        if let Some(name) = body["Name"].as_str() {
+            mw.name = name.to_string();
+        }
+        if let Some(schedule) = body["Schedule"].as_str() {
+            mw.schedule = schedule.to_string();
+        }
+        if let Some(duration) = body["Duration"].as_i64() {
+            mw.duration = duration;
+        }
+        if let Some(cutoff) = body["Cutoff"].as_i64() {
+            mw.cutoff = cutoff;
+        }
+        if let Some(enabled) = body["Enabled"].as_bool() {
+            mw.enabled = enabled;
+        }
+        if let Some(allow) = body["AllowUnassociatedTargets"].as_bool() {
+            mw.allow_unassociated_targets = allow;
+        }
+        if body.get("Description").is_some() {
+            mw.description = body["Description"].as_str().map(|s| s.to_string());
+        }
+
+        let mut resp = json!({
+            "WindowId": mw.id,
+            "Name": mw.name,
+            "Schedule": mw.schedule,
+            "Duration": mw.duration,
+            "Cutoff": mw.cutoff,
+            "AllowUnassociatedTargets": mw.allow_unassociated_targets,
+            "Enabled": mw.enabled,
+        });
+        if let Some(ref desc) = mw.description {
+            resp["Description"] = json!(desc);
+        }
+
+        Ok(json_resp(resp))
+    }
+
+    fn register_target_with_maintenance_window(
+        &self,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let body = parse_body(req);
+        let window_id = body["WindowId"]
+            .as_str()
+            .ok_or_else(|| missing("WindowId"))?;
+        let resource_type = body["ResourceType"]
+            .as_str()
+            .ok_or_else(|| missing("ResourceType"))?
+            .to_string();
+        let targets = body["Targets"]
+            .as_array()
+            .cloned()
+            .ok_or_else(|| missing("Targets"))?;
+        let name = body["Name"].as_str().map(|s| s.to_string());
+        let description = body["Description"].as_str().map(|s| s.to_string());
+        let owner_information = body["OwnerInformation"].as_str().map(|s| s.to_string());
+
+        let target_id = format!(
+            "{}-{}",
+            window_id,
+            &uuid::Uuid::new_v4().to_string().replace('-', "")
+        );
+
+        let mut state = self.state.write();
+        let mw = state
+            .maintenance_windows
+            .get_mut(window_id)
+            .ok_or_else(|| mw_not_found(window_id))?;
+
+        let target = MaintenanceWindowTarget {
+            window_target_id: target_id.clone(),
+            window_id: window_id.to_string(),
+            resource_type,
+            targets,
+            name,
+            description,
+            owner_information,
+        };
+        mw.targets.push(target);
+
+        Ok(json_resp(json!({ "WindowTargetId": target_id })))
+    }
+
+    fn deregister_target_from_maintenance_window(
+        &self,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let body = parse_body(req);
+        let window_id = body["WindowId"]
+            .as_str()
+            .ok_or_else(|| missing("WindowId"))?;
+        let target_id = body["WindowTargetId"]
+            .as_str()
+            .ok_or_else(|| missing("WindowTargetId"))?;
+
+        let mut state = self.state.write();
+        let mw = state
+            .maintenance_windows
+            .get_mut(window_id)
+            .ok_or_else(|| mw_not_found(window_id))?;
+
+        mw.targets.retain(|t| t.window_target_id != target_id);
+
+        Ok(json_resp(json!({
+            "WindowId": window_id,
+            "WindowTargetId": target_id,
+        })))
+    }
+
+    fn describe_maintenance_window_targets(
+        &self,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let body = parse_body(req);
+        let window_id = body["WindowId"]
+            .as_str()
+            .ok_or_else(|| missing("WindowId"))?;
+
+        let state = self.state.read();
+        let mw = state
+            .maintenance_windows
+            .get(window_id)
+            .ok_or_else(|| mw_not_found(window_id))?;
+
+        let targets: Vec<Value> = mw
+            .targets
+            .iter()
+            .map(|t| {
+                let mut v = json!({
+                    "WindowId": t.window_id,
+                    "WindowTargetId": t.window_target_id,
+                    "ResourceType": t.resource_type,
+                    "Targets": t.targets,
+                });
+                if let Some(ref name) = t.name {
+                    v["Name"] = json!(name);
+                }
+                if let Some(ref desc) = t.description {
+                    v["Description"] = json!(desc);
+                }
+                if let Some(ref oi) = t.owner_information {
+                    v["OwnerInformation"] = json!(oi);
+                }
+                v
+            })
+            .collect();
+
+        Ok(json_resp(json!({ "Targets": targets })))
+    }
+
+    fn register_task_with_maintenance_window(
+        &self,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let body = parse_body(req);
+        let window_id = body["WindowId"]
+            .as_str()
+            .ok_or_else(|| missing("WindowId"))?;
+        let task_arn = body["TaskArn"]
+            .as_str()
+            .ok_or_else(|| missing("TaskArn"))?
+            .to_string();
+        let task_type = body["TaskType"]
+            .as_str()
+            .ok_or_else(|| missing("TaskType"))?
+            .to_string();
+        let targets = body["Targets"].as_array().cloned().unwrap_or_default();
+        let max_concurrency = body["MaxConcurrency"].as_str().map(|s| s.to_string());
+        let max_errors = body["MaxErrors"].as_str().map(|s| s.to_string());
+        let priority = body["Priority"].as_i64().unwrap_or(1);
+        let service_role_arn = body["ServiceRoleArn"].as_str().map(|s| s.to_string());
+        let name = body["Name"].as_str().map(|s| s.to_string());
+        let description = body["Description"].as_str().map(|s| s.to_string());
+
+        let task_id = format!(
+            "{}-{}",
+            window_id,
+            &uuid::Uuid::new_v4().to_string().replace('-', "")
+        );
+
+        let mut state = self.state.write();
+        let mw = state
+            .maintenance_windows
+            .get_mut(window_id)
+            .ok_or_else(|| mw_not_found(window_id))?;
+
+        let task = MaintenanceWindowTask {
+            window_task_id: task_id.clone(),
+            window_id: window_id.to_string(),
+            task_arn,
+            task_type,
+            targets,
+            max_concurrency,
+            max_errors,
+            priority,
+            service_role_arn,
+            name,
+            description,
+        };
+        mw.tasks.push(task);
+
+        Ok(json_resp(json!({ "WindowTaskId": task_id })))
+    }
+
+    fn deregister_task_from_maintenance_window(
+        &self,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let body = parse_body(req);
+        let window_id = body["WindowId"]
+            .as_str()
+            .ok_or_else(|| missing("WindowId"))?;
+        let task_id = body["WindowTaskId"]
+            .as_str()
+            .ok_or_else(|| missing("WindowTaskId"))?;
+
+        let mut state = self.state.write();
+        let mw = state
+            .maintenance_windows
+            .get_mut(window_id)
+            .ok_or_else(|| mw_not_found(window_id))?;
+
+        mw.tasks.retain(|t| t.window_task_id != task_id);
+
+        Ok(json_resp(json!({
+            "WindowId": window_id,
+            "WindowTaskId": task_id,
+        })))
+    }
+
+    fn describe_maintenance_window_tasks(
+        &self,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let body = parse_body(req);
+        let window_id = body["WindowId"]
+            .as_str()
+            .ok_or_else(|| missing("WindowId"))?;
+
+        let state = self.state.read();
+        let mw = state
+            .maintenance_windows
+            .get(window_id)
+            .ok_or_else(|| mw_not_found(window_id))?;
+
+        let tasks: Vec<Value> = mw
+            .tasks
+            .iter()
+            .map(|t| {
+                let mut v = json!({
+                    "WindowId": t.window_id,
+                    "WindowTaskId": t.window_task_id,
+                    "TaskArn": t.task_arn,
+                    "Type": t.task_type,
+                    "Targets": t.targets,
+                    "Priority": t.priority,
+                });
+                if let Some(ref mc) = t.max_concurrency {
+                    v["MaxConcurrency"] = json!(mc);
+                }
+                if let Some(ref me) = t.max_errors {
+                    v["MaxErrors"] = json!(me);
+                }
+                if let Some(ref sr) = t.service_role_arn {
+                    v["ServiceRoleArn"] = json!(sr);
+                }
+                if let Some(ref name) = t.name {
+                    v["Name"] = json!(name);
+                }
+                if let Some(ref desc) = t.description {
+                    v["Description"] = json!(desc);
+                }
+                v
+            })
+            .collect();
+
+        Ok(json_resp(json!({ "Tasks": tasks })))
+    }
+
+    // ===== Patch Baseline operations =====
+
+    fn create_patch_baseline(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = parse_body(req);
+        let name = body["Name"]
+            .as_str()
+            .ok_or_else(|| missing("Name"))?
+            .to_string();
+        let operating_system = body["OperatingSystem"]
+            .as_str()
+            .unwrap_or("WINDOWS")
+            .to_string();
+        let description = body["Description"].as_str().map(|s| s.to_string());
+        let approval_rules = body.get("ApprovalRules").cloned();
+        let approved_patches: Vec<String> = body["ApprovedPatches"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let rejected_patches: Vec<String> = body["RejectedPatches"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let approved_patches_compliance_level = body["ApprovedPatchesComplianceLevel"]
+            .as_str()
+            .unwrap_or("UNSPECIFIED")
+            .to_string();
+        let rejected_patches_action = body["RejectedPatchesAction"]
+            .as_str()
+            .unwrap_or("ALLOW_AS_DEPENDENCY")
+            .to_string();
+        let global_filters = body.get("GlobalFilters").cloned();
+        let sources: Vec<Value> = body["Sources"].as_array().cloned().unwrap_or_default();
+        let approved_patches_enable_non_security = body["ApprovedPatchesEnableNonSecurity"]
+            .as_bool()
+            .unwrap_or(false);
+        let tags: HashMap<String, String> = body["Tags"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|t| {
+                        let k = t["Key"].as_str()?;
+                        let v = t["Value"].as_str()?;
+                        Some((k.to_string(), v.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let baseline_id = format!(
+            "pb-{}",
+            &uuid::Uuid::new_v4().to_string().replace('-', "")[..17]
+        );
+
+        let pb = PatchBaseline {
+            id: baseline_id.clone(),
+            name,
+            operating_system,
+            description,
+            approval_rules,
+            approved_patches,
+            rejected_patches,
+            tags,
+            approved_patches_compliance_level,
+            rejected_patches_action,
+            global_filters,
+            sources,
+            approved_patches_enable_non_security,
+        };
+
+        let mut state = self.state.write();
+        state.patch_baselines.insert(baseline_id.clone(), pb);
+
+        Ok(json_resp(json!({ "BaselineId": baseline_id })))
+    }
+
+    fn delete_patch_baseline(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = parse_body(req);
+        let baseline_id = body["BaselineId"]
+            .as_str()
+            .ok_or_else(|| missing("BaselineId"))?;
+
+        let mut state = self.state.write();
+        state.patch_baselines.remove(baseline_id);
+        // Also remove any patch group associations
+        state
+            .patch_groups
+            .retain(|pg| pg.baseline_id != baseline_id);
+
+        Ok(json_resp(json!({ "BaselineId": baseline_id })))
+    }
+
+    fn describe_patch_baselines(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = parse_body(req);
+        let filters = body["Filters"].as_array();
+
+        let state = self.state.read();
+        let baselines: Vec<Value> = state
+            .patch_baselines
+            .values()
+            .filter(|pb| {
+                if let Some(filters) = filters {
+                    for filter in filters {
+                        let key = filter["Key"].as_str().unwrap_or("");
+                        let values: Vec<&str> = filter["Values"]
+                            .as_array()
+                            .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+                            .unwrap_or_default();
+                        match key {
+                            "NAME_PREFIX" => {
+                                if !values.iter().any(|v| pb.name.starts_with(v)) {
+                                    return false;
+                                }
+                            }
+                            "OWNER" => {
+                                // We don't track owner, but "Self" means user-created
+                                if values.contains(&"AWS") {
+                                    return false;
+                                }
+                            }
+                            "OPERATING_SYSTEM" => {
+                                if !values.contains(&pb.operating_system.as_str()) {
+                                    return false;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                true
+            })
+            .map(|pb| {
+                let mut v = json!({
+                    "BaselineId": pb.id,
+                    "BaselineName": pb.name,
+                    "OperatingSystem": pb.operating_system,
+                    "DefaultBaseline": false,
+                });
+                if let Some(ref desc) = pb.description {
+                    v["BaselineDescription"] = json!(desc);
+                }
+                v
+            })
+            .collect();
+
+        Ok(json_resp(json!({ "BaselineIdentities": baselines })))
+    }
+
+    fn get_patch_baseline(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = parse_body(req);
+        let baseline_id = body["BaselineId"]
+            .as_str()
+            .ok_or_else(|| missing("BaselineId"))?;
+
+        let state = self.state.read();
+        let pb = state.patch_baselines.get(baseline_id).ok_or_else(|| {
+            AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "DoesNotExistException",
+                format!("Baseline {baseline_id} does not exist."),
+            )
+        })?;
+
+        let mut resp = json!({
+            "BaselineId": pb.id,
+            "Name": pb.name,
+            "OperatingSystem": pb.operating_system,
+            "ApprovedPatches": pb.approved_patches,
+            "RejectedPatches": pb.rejected_patches,
+            "ApprovedPatchesComplianceLevel": pb.approved_patches_compliance_level,
+            "RejectedPatchesAction": pb.rejected_patches_action,
+            "ApprovedPatchesEnableNonSecurity": pb.approved_patches_enable_non_security,
+            "Sources": pb.sources,
+            "PatchGroups": state.patch_groups.iter()
+                .filter(|pg| pg.baseline_id == baseline_id)
+                .map(|pg| pg.patch_group.clone())
+                .collect::<Vec<_>>(),
+        });
+        if let Some(ref desc) = pb.description {
+            resp["Description"] = json!(desc);
+        }
+        if let Some(ref rules) = pb.approval_rules {
+            resp["ApprovalRules"] = rules.clone();
+        }
+        if let Some(ref gf) = pb.global_filters {
+            resp["GlobalFilters"] = gf.clone();
+        }
+
+        Ok(json_resp(resp))
+    }
+
+    fn register_patch_baseline_for_patch_group(
+        &self,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let body = parse_body(req);
+        let baseline_id = body["BaselineId"]
+            .as_str()
+            .ok_or_else(|| missing("BaselineId"))?
+            .to_string();
+        let patch_group = body["PatchGroup"]
+            .as_str()
+            .ok_or_else(|| missing("PatchGroup"))?
+            .to_string();
+
+        let mut state = self.state.write();
+
+        // Check baseline exists
+        if !state.patch_baselines.contains_key(&baseline_id) {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "DoesNotExistException",
+                format!("Patch baseline {baseline_id} does not exist"),
+            ));
+        }
+
+        // Check if this patch group is already registered to a baseline with same OS
+        let os = state.patch_baselines[&baseline_id].operating_system.clone();
+        if let Some(existing) = state
+            .patch_groups
+            .iter()
+            .find(|pg| pg.patch_group == patch_group)
+        {
+            if let Some(existing_pb) = state.patch_baselines.get(&existing.baseline_id) {
+                if existing_pb.operating_system == os {
+                    return Err(AwsServiceError::aws_error(
+                        StatusCode::BAD_REQUEST,
+                        "AlreadyExistsException",
+                        format!(
+                            "Patch Group baseline already has a baseline registered for OperatingSystem {os}."
+                        ),
+                    ));
+                }
+            }
+        }
+
+        state.patch_groups.push(PatchGroup {
+            baseline_id: baseline_id.clone(),
+            patch_group: patch_group.clone(),
+        });
+
+        Ok(json_resp(json!({
+            "BaselineId": baseline_id,
+            "PatchGroup": patch_group,
+        })))
+    }
+
+    fn deregister_patch_baseline_for_patch_group(
+        &self,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let body = parse_body(req);
+        let baseline_id = body["BaselineId"]
+            .as_str()
+            .ok_or_else(|| missing("BaselineId"))?;
+        let patch_group = body["PatchGroup"]
+            .as_str()
+            .ok_or_else(|| missing("PatchGroup"))?;
+
+        let mut state = self.state.write();
+
+        // Check if the association exists
+        let exists = state
+            .patch_groups
+            .iter()
+            .any(|pg| pg.baseline_id == baseline_id && pg.patch_group == patch_group);
+        if !exists {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "DoesNotExistException",
+                "Patch Baseline to be retrieved does not exist.",
+            ));
+        }
+
+        state
+            .patch_groups
+            .retain(|pg| !(pg.baseline_id == baseline_id && pg.patch_group == patch_group));
+
+        Ok(json_resp(json!({
+            "BaselineId": baseline_id,
+            "PatchGroup": patch_group,
+        })))
+    }
+
+    fn get_patch_baseline_for_patch_group(
+        &self,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let body = parse_body(req);
+        let patch_group = body["PatchGroup"]
+            .as_str()
+            .ok_or_else(|| missing("PatchGroup"))?;
+        let operating_system = body["OperatingSystem"].as_str().unwrap_or("WINDOWS");
+
+        let state = self.state.read();
+
+        // Find a patch group association matching both patch group and OS
+        let found = state.patch_groups.iter().find(|pg| {
+            pg.patch_group == patch_group
+                && state
+                    .patch_baselines
+                    .get(&pg.baseline_id)
+                    .is_some_and(|pb| pb.operating_system == operating_system)
+        });
+
+        if let Some(pg) = found {
+            Ok(json_resp(json!({
+                "BaselineId": pg.baseline_id,
+                "PatchGroup": pg.patch_group,
+                "OperatingSystem": operating_system,
+            })))
+        } else {
+            Ok(json_resp(json!({
+                "PatchGroup": patch_group,
+                "OperatingSystem": operating_system,
+            })))
+        }
+    }
+
+    fn describe_patch_groups(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = parse_body(req);
+        let filters = body["Filters"].as_array();
+
+        let state = self.state.read();
+        let mappings: Vec<Value> = state
+            .patch_groups
+            .iter()
+            .filter(|pg| {
+                if let Some(filters) = filters {
+                    for filter in filters {
+                        let key = filter["Key"].as_str().unwrap_or("");
+                        let values: Vec<&str> = filter["Values"]
+                            .as_array()
+                            .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+                            .unwrap_or_default();
+                        match key {
+                            "NAME_PREFIX" => {
+                                if !values.iter().any(|v| pg.patch_group.starts_with(v)) {
+                                    return false;
+                                }
+                            }
+                            "OPERATING_SYSTEM" => {
+                                if let Some(pb) = state.patch_baselines.get(&pg.baseline_id) {
+                                    if !values.contains(&pb.operating_system.as_str()) {
+                                        return false;
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                true
+            })
+            .map(|pg| {
+                let mut baseline_identity = json!({
+                    "BaselineId": pg.baseline_id,
+                    "DefaultBaseline": false,
+                });
+                if let Some(pb) = state.patch_baselines.get(&pg.baseline_id) {
+                    baseline_identity["BaselineName"] = json!(pb.name);
+                    baseline_identity["OperatingSystem"] = json!(pb.operating_system);
+                    if let Some(ref desc) = pb.description {
+                        baseline_identity["BaselineDescription"] = json!(desc);
+                    }
+                }
+                json!({
+                    "PatchGroup": pg.patch_group,
+                    "BaselineIdentity": baseline_identity,
+                })
+            })
+            .collect();
+
+        Ok(json_resp(json!({ "Mappings": mappings })))
     }
 }
 
@@ -2572,5 +3580,13 @@ fn invalid_resource_id(id: &str) -> AwsServiceError {
         StatusCode::BAD_REQUEST,
         "InvalidResourceId",
         format!("The resource ID \"{id}\" is not valid. Verify the ID and try again."),
+    )
+}
+
+fn mw_not_found(id: &str) -> AwsServiceError {
+    AwsServiceError::aws_error(
+        StatusCode::BAD_REQUEST,
+        "DoesNotExistException",
+        format!("Maintenance window {id} does not exist"),
     )
 }
