@@ -1288,9 +1288,13 @@ impl IamService {
         }
         roles.sort_by(|a, b| a.role_name.cmp(&b.role_name));
 
-        // Apply marker-based pagination
+        // Apply marker-based pagination (start after the marker item)
         let start_idx = if let Some(ref m) = marker {
-            roles.iter().position(|r| r.role_name == *m).unwrap_or(0)
+            roles
+                .iter()
+                .position(|r| r.role_name == *m)
+                .map(|pos| pos + 1)
+                .unwrap_or(0)
         } else {
             0
         };
@@ -4723,7 +4727,21 @@ impl IamService {
         let mut state = self.state.write();
 
         if let Some(keys) = state.ssh_public_keys.get_mut(&user_name) {
+            let len_before = keys.len();
             keys.retain(|k| k.ssh_public_key_id != ssh_public_key_id);
+            if keys.len() == len_before {
+                return Err(AwsServiceError::aws_error(
+                    StatusCode::NOT_FOUND,
+                    "NoSuchEntity",
+                    format!("The SSH Public Key with id {ssh_public_key_id} cannot be found."),
+                ));
+            }
+        } else {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::NOT_FOUND,
+                "NoSuchEntity",
+                format!("The user with name {user_name} cannot be found."),
+            ));
         }
 
         let xml = empty_response("DeleteSSHPublicKey", &req.request_id);
