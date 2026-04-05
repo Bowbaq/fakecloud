@@ -29,23 +29,23 @@ alternatives have emerged since then. Here's how they compare:
 
 | Feature | FakeCloud | LocalStack | [Floci](https://github.com/hectorvent/floci) | [MiniStack](https://github.com/Nahuel990/ministack) |
 |---|---|---|---|---|
-| License | AGPL-3.0 | Proprietary | Apache-2.0 | MIT |
+| License | AGPL-3.0 | Proprietary | MIT | MIT |
 | Language | Rust | Python | Java (Quarkus Native) | Python |
 | Auth required | No | Yes (account + token) | No | No |
 | Commercial use | Free | Paid plans only | Free | Free |
-| AWS services | 6 | 80+ | 22+ | 38 |
-| S3 | Yes (16 actions) | Yes | Yes | Yes |
-| SQS | Yes (20 actions) | Yes | Yes | Yes |
-| SNS | Yes (16 actions) | Yes | Yes | Yes |
-| EventBridge | Yes (15 actions) | Yes | Yes | Yes |
-| IAM / STS | Yes (100+ actions) | Yes | Yes | Yes |
-| SSM | Yes (28 actions) | Yes | Yes | Yes |
+| AWS services | 6 | 80+ | 25 | 38 |
+| S3 | Yes | Yes | Yes | Yes |
+| SQS | Yes | Yes | Yes | Yes |
+| SNS | Yes | Yes | Yes | Yes |
+| EventBridge | Yes | Yes | Yes | Yes |
+| IAM / STS | Yes | Yes | Yes | Yes |
+| SSM | Yes | Yes | Yes | Yes |
 | DynamoDB | -- | Yes | Yes | Yes |
-| Lambda | -- | Yes | Yes (real containers) | Yes (real execution) |
+| Lambda | -- | Yes | Yes | Yes |
 | Secrets Manager | -- | Yes | Yes | Yes |
 | Step Functions | -- | Yes | Yes | Yes |
-| CloudFormation | -- | Yes | Yes | -- |
-| RDS | -- | Yes | Yes (real containers) | Yes (real containers) |
+| CloudFormation | -- | Yes | Yes | Yes |
+| RDS | -- | Yes | Yes | Yes |
 
 ## Quick Start
 
