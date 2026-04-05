@@ -51,11 +51,11 @@ crc32fast = "1"
 reqwest = { version = "0.12", features = ["json"] }
 
 # Internal crates
-fakecloud-core = { path = "crates/fakecloud-core" }
-fakecloud-aws = { path = "crates/fakecloud-aws" }
-fakecloud-sqs = { path = "crates/fakecloud-sqs" }
-fakecloud-sns = { path = "crates/fakecloud-sns" }
-fakecloud-eventbridge = { path = "crates/fakecloud-eventbridge" }
-fakecloud-iam = { path = "crates/fakecloud-iam" }
-fakecloud-ssm = { path = "crates/fakecloud-ssm" }
-fakecloud-s3 = { path = "crates/fakecloud-s3" }
+fakecloud-core = { path = "crates/fakecloud-core", version = "0.1.0" }
+fakecloud-aws = { path = "crates/fakecloud-aws", version = "0.1.0" }
+fakecloud-sqs = { path = "crates/fakecloud-sqs", version = "0.1.0" }
+fakecloud-sns = { path = "crates/fakecloud-sns", version = "0.1.0" }
+fakecloud-eventbridge = { path = "crates/fakecloud-eventbridge", version = "0.1.0" }
+fakecloud-iam = { path = "crates/fakecloud-iam", version = "0.1.0" }
+fakecloud-ssm = { path = "crates/fakecloud-ssm", version = "0.1.0" }
+fakecloud-s3 = { path = "crates/fakecloud-s3", version = "0.1.0" }

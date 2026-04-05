@@ -1,8 +1,10 @@
 [package]
 name = "fakecloud-ssm"
+description = "SSM implementation for FakeCloud"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 version.workspace = true
 
 [dependencies]

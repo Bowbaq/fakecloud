@@ -1,8 +1,10 @@
 [package]
 name = "fakecloud-core"
+description = "Core service traits and dispatch for FakeCloud"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 version.workspace = true
 
 [dependencies]
