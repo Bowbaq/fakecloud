@@ -79,6 +79,22 @@ pub fn detect_service(
         }
     }
 
+    // 5. Check query params for presigned URL auth (X-Amz-Credential)
+    if let Some(credential) = query_params.get("X-Amz-Credential") {
+        // Format: AKID/date/region/service/aws4_request
+        let parts: Vec<&str> = credential.split('/').collect();
+        if parts.len() >= 4 {
+            let service = parts[3].to_string();
+            if REST_SERVICES.contains(&service.as_str()) {
+                return Some(DetectedRequest {
+                    service,
+                    action: String::new(),
+                    protocol: AwsProtocol::Rest,
+                });
+            }
+        }
+    }
+
     None
 }
 

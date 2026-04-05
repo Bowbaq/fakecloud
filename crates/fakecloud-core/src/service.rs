@@ -62,6 +62,10 @@ pub enum AwsServiceError {
         status: StatusCode,
         code: String,
         message: String,
+        /// Additional key-value pairs to include in the error XML (e.g., BucketName, Key, Condition).
+        extra: Vec<(String, String)>,
+        /// Additional HTTP headers to include in the error response.
+        headers: Vec<(String, String)>,
     },
 }
 
@@ -82,6 +86,41 @@ impl AwsServiceError {
             status,
             code: code.into(),
             message: message.into(),
+            extra: Vec::new(),
+            headers: Vec::new(),
+        }
+    }
+
+    pub fn aws_error_with_extra(
+        status: StatusCode,
+        code: impl Into<String>,
+        message: impl Into<String>,
+        extra: &[(&str, &str)],
+    ) -> Self {
+        Self::AwsError {
+            status,
+            code: code.into(),
+            message: message.into(),
+            extra: extra
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            headers: Vec::new(),
+        }
+    }
+
+    pub fn aws_error_with_headers(
+        status: StatusCode,
+        code: impl Into<String>,
+        message: impl Into<String>,
+        headers: Vec<(String, String)>,
+    ) -> Self {
+        Self::AwsError {
+            status,
+            code: code.into(),
+            message: message.into(),
+            extra: Vec::new(),
+            headers,
         }
     }
 
@@ -108,6 +147,20 @@ impl AwsServiceError {
                 format!("action {action} not implemented for service {service}")
             }
             Self::AwsError { message, .. } => message.clone(),
+        }
+    }
+
+    pub fn extra(&self) -> &[(String, String)] {
+        match self {
+            Self::AwsError { extra, .. } => extra,
+            _ => &[],
+        }
+    }
+
+    pub fn response_headers(&self) -> &[(String, String)] {
+        match self {
+            Self::AwsError { headers, .. } => headers,
+            _ => &[],
         }
     }
 }
