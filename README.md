@@ -282,6 +282,31 @@ lifecycle rules with background expiration and storage class transitions, object
 lock (retention and legal hold), encryption, replication, and website
 configuration.
 
+### Lambda (10 actions, stub)
+
+**Functions:** CreateFunction, GetFunction, DeleteFunction, ListFunctions,
+Invoke, PublishVersion
+
+**Event Source Mappings:** CreateEventSourceMapping, ListEventSourceMappings,
+GetEventSourceMapping, DeleteEventSourceMapping
+
+Key features: function CRUD with config storage (runtime, handler, role,
+memory, timeout, environment variables, tags, architectures), canned Invoke
+response (does not execute code), event source mapping management. Uses
+REST-style routing (HTTP method + URL path) with SigV4 credential-scope
+routing.
+
+### Secrets Manager (11 actions)
+
+CreateSecret, GetSecretValue, PutSecretValue, UpdateSecret, DeleteSecret,
+RestoreSecret, DescribeSecret, ListSecrets, TagResource, UntagResource,
+ListSecretVersionIds
+
+Key features: secret versioning with AWSCURRENT/AWSPREVIOUS stage tracking,
+soft delete with configurable recovery window and force delete, secret
+restoration, lookup by name or ARN, pagination, tag management, description
+and KMS key metadata.
+
 ### CloudWatch Logs (14 actions)
 
 **Log Groups:** CreateLogGroup, DeleteLogGroup, DescribeLogGroups
@@ -356,7 +381,7 @@ curl http://localhost:4566/_fakecloud/health
 {
   "status": "ok",
   "version": "0.1.0",
-  "services": ["sqs", "sns", "events", "iam", "sts", "ssm", "logs", "kms", "s3"]
+  "services": ["sqs", "sns", "events", "iam", "sts", "ssm", "lambda", "secretsmanager", "logs", "kms", "s3"]
 }
 ```
 
@@ -375,6 +400,8 @@ FakeCloud is organized as a Cargo workspace:
 | `fakecloud-iam` | IAM and STS implementation |
 | `fakecloud-ssm` | SSM Parameter Store implementation |
 | `fakecloud-dynamodb` | DynamoDB implementation |
+| `fakecloud-lambda` | Lambda stub implementation |
+| `fakecloud-secretsmanager` | Secrets Manager implementation |
 | `fakecloud-s3` | S3 implementation |
 | `fakecloud-logs` | CloudWatch Logs implementation |
 | `fakecloud-kms` | KMS implementation |
@@ -384,6 +411,8 @@ Protocol handling:
 - **Query protocol** (SQS, SNS, IAM, STS): form-encoded body, `Action` parameter, XML responses
 - **JSON protocol** (SSM, EventBridge, DynamoDB, CloudWatch Logs, KMS): JSON body, `X-Amz-Target` header, JSON responses
 - **REST protocol** (S3): HTTP method + path-based routing, XML responses
+- **JSON protocol** (SSM, EventBridge, Secrets Manager, CloudWatch Logs, KMS): JSON body, `X-Amz-Target` header, JSON responses
+- **REST protocol** (S3, Lambda): HTTP method + path-based routing, XML/JSON responses
 - SigV4 signatures are parsed for service routing but never validated
 
 ## Testing
@@ -413,7 +442,7 @@ Contributions are welcome. FakeCloud is still in early development (Phase 1).
 
 ### Planned services (Phase 2)
 
-DynamoDB, Lambda, Secrets Manager.
+DynamoDB.
 
 ## License
 

@@ -23,6 +23,8 @@ provider "aws" {
     sts              = "http://localhost:4566"
     ssm              = "http://localhost:4566"
     eventbridge      = "http://localhost:4566"
+    lambda           = "http://localhost:4566"
+    secretsmanager   = "http://localhost:4566"
   }
 
   s3_use_path_style = true
@@ -122,4 +124,16 @@ resource "aws_cloudwatch_event_rule" "every_minute" {
 resource "aws_cloudwatch_event_target" "sqs_target" {
   rule = aws_cloudwatch_event_rule.every_minute.name
   arn  = aws_sqs_queue.standard.arn
+}
+
+# ---------------------------------------------------------------------------
+# Secrets Manager
+# ---------------------------------------------------------------------------
+resource "aws_secretsmanager_secret" "api_key" {
+  name = "tf-test/api-key"
+}
+
+resource "aws_secretsmanager_secret_version" "api_key_value" {
+  secret_id     = aws_secretsmanager_secret.api_key.id
+  secret_string = "supersecret123"
 }
