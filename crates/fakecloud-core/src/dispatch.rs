@@ -145,13 +145,24 @@ pub async fn dispatch(
                 error = %err,
                 "request failed"
             );
-            build_error_response(
+            let error_headers = err.response_headers().to_vec();
+            let mut resp = build_error_response_with_extra(
                 err.status(),
                 err.code(),
                 &err.message(),
                 &request_id,
                 detected.protocol,
-            )
+                err.extra(),
+            );
+            for (k, v) in &error_headers {
+                if let (Ok(name), Ok(val)) = (
+                    k.parse::<http::header::HeaderName>(),
+                    v.parse::<http::header::HeaderValue>(),
+                ) {
+                    resp.headers_mut().insert(name, val);
+                }
+            }
+            resp
         }
     }
 }
@@ -183,13 +194,24 @@ fn build_error_response(
     request_id: &str,
     protocol: AwsProtocol,
 ) -> Response<Body> {
+    build_error_response_with_extra(status, code, message, request_id, protocol, &[])
+}
+
+fn build_error_response_with_extra(
+    status: StatusCode,
+    code: &str,
+    message: &str,
+    request_id: &str,
+    protocol: AwsProtocol,
+    extra: &[(String, String)],
+) -> Response<Body> {
     let (status, content_type, body) = match protocol {
         AwsProtocol::Query => {
             fakecloud_aws::error::xml_error_response(status, code, message, request_id)
         }
-        AwsProtocol::Rest => {
-            fakecloud_aws::error::s3_xml_error_response(status, code, message, request_id)
-        }
+        AwsProtocol::Rest => fakecloud_aws::error::s3_xml_error_response_with_extra(
+            status, code, message, request_id, extra,
+        ),
         AwsProtocol::Json => fakecloud_aws::error::json_error_response(status, code, message),
     };
 

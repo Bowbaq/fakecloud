@@ -79,30 +79,38 @@ pub fn s3_xml_error_response(
     message: &str,
     request_id: &str,
 ) -> (StatusCode, String, Bytes) {
-    #[derive(Serialize)]
-    #[serde(rename = "Error")]
-    struct S3Error<'a> {
-        #[serde(rename = "Code")]
-        code: &'a str,
-        #[serde(rename = "Message")]
-        message: &'a str,
-        #[serde(rename = "RequestId")]
-        request_id: &'a str,
+    s3_xml_error_response_with_extra(status, code, message, request_id, &[])
+}
+
+/// Build an S3-style XML error response with additional fields.
+pub fn s3_xml_error_response_with_extra(
+    status: StatusCode,
+    code: &str,
+    message: &str,
+    request_id: &str,
+    extra: &[(String, String)],
+) -> (StatusCode, String, Bytes) {
+    let mut buffer = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Error>\n");
+    buffer.push_str(&format!("  <Code>{}</Code>\n", xml_escape(code)));
+    buffer.push_str(&format!("  <Message>{}</Message>\n", xml_escape(message)));
+    for (key, value) in extra {
+        buffer.push_str(&format!("  <{}>{}</{}>\n", key, xml_escape(value), key));
     }
-
-    let resp = S3Error {
-        code,
-        message,
-        request_id,
-    };
-
-    let mut buffer = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
-    let mut ser = XmlSerializer::new(&mut buffer);
-    ser.indent(' ', 2);
-    resp.serialize(ser)
-        .expect("XML serialization should not fail");
+    buffer.push_str(&format!(
+        "  <RequestId>{}</RequestId>\n",
+        xml_escape(request_id)
+    ));
+    buffer.push_str("</Error>");
 
     (status, "application/xml".to_string(), Bytes::from(buffer))
+}
+
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 #[cfg(test)]
