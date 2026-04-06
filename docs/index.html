@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>FakeCloud - Local AWS Cloud Emulator</title>
 <meta name="description" content="FakeCloud is a free, open-source local AWS cloud emulator. Single binary, no auth required, no paid tiers.">
+<link rel="help" href="/llms.txt" type="text/markdown" title="LLM documentation">
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   :root {
@@ -311,12 +312,12 @@
     <h2 class="section-title">Quick Start</h2>
     <p class="section-sub">One command. No signup. No config file.</p>
     <div class="code-block">
-      <span class="comment"># Run with Docker</span><br>
-      <span class="prompt">$ </span>docker run -p 4566:4566 ghcr.io/faiscadev/fakecloud<br>
-      <br>
-      <span class="comment"># Or build from source</span><br>
-      <span class="prompt">$ </span>cargo install fakecloud<br>
+      <span class="comment"># Install (no Cargo or Docker needed)</span><br>
+      <span class="prompt">$ </span>curl -fsSL https://raw.githubusercontent.com/faiscadev/fakecloud/main/install.sh | bash<br>
       <span class="prompt">$ </span>fakecloud<br>
+      <br>
+      <span class="comment"># Or with Docker</span><br>
+      <span class="prompt">$ </span>docker run -p 4566:4566 ghcr.io/faiscadev/fakecloud<br>
       <br>
       <span class="comment"># Point any AWS SDK at localhost</span><br>
       <span class="prompt">$ </span>aws --endpoint-url http://localhost:4566 sqs create-queue \<br>

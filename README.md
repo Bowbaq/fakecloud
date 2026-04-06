@@ -39,6 +39,13 @@ alternatives have emerged since then. Here's how they compare:
 
 ## Quick Start
 
+### Install script (recommended)
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/faiscadev/fakecloud/main/install.sh | bash
+fakecloud
+```
+
 ### Cargo install
 
 ```sh
@@ -464,13 +471,66 @@ Contributions are welcome. FakeCloud is still in early development (Phase 1).
 
 EC2, RDS, ECS, Elastic Load Balancing, CloudWatch Metrics, Route 53, API Gateway, Step Functions.
 
+## What FakeCloud Is (and Isn't)
+
+**FakeCloud is** an open-source local AWS emulator for integration testing and
+local development. For every service it implements, the goal is 100% behavioral
+parity with real AWS — verified by automated conformance testing against AWS
+Smithy models and real AWS responses. The ambition is broad: 12 services in
+the first 2 days of development, with more on the way.
+
+**FakeCloud is not** a production-ready cloud replacement. It's not designed to
+be scalable or to handle production workloads. It's for testing — making sure
+your code works correctly before it hits the real cloud.
+
+## Use with AI Coding Tools
+
+Add one of these snippets to your project so AI coding assistants (Claude Code,
+Cursor, GitHub Copilot) automatically use FakeCloud for AWS integration tests.
+
+<details>
+<summary><strong>Claude Code</strong> — add to <code>CLAUDE.md</code></summary>
+
+```markdown
+## AWS Testing
+For integration tests, use FakeCloud as a local AWS emulator.
+- Install: `curl -fsSL https://raw.githubusercontent.com/faiscadev/fakecloud/main/install.sh | bash`
+- Run: `fakecloud` (listens on http://localhost:4566)
+- Configure AWS SDK endpoint to http://localhost:4566 with dummy credentials (access_key=test, secret_key=test)
+- Docs: https://fakecloud.dev/llms.txt
+```
+
+</details>
+
+<details>
+<summary><strong>Cursor</strong> — add to <code>.cursor/rules</code></summary>
+
+```
+For AWS integration tests, use FakeCloud (local AWS emulator) at http://localhost:4566.
+Install: curl -fsSL https://raw.githubusercontent.com/faiscadev/fakecloud/main/install.sh | bash
+Run: fakecloud
+Use dummy credentials (access_key=test, secret_key=test).
+Docs: https://fakecloud.dev/llms.txt
+```
+
+</details>
+
+<details>
+<summary><strong>GitHub Copilot</strong> — add to <code>.github/copilot-instructions.md</code></summary>
+
+```markdown
+## AWS Testing
+Use FakeCloud as a local AWS emulator for integration tests.
+- Run: `fakecloud` (listens on http://localhost:4566)
+- Configure endpoint_url to http://localhost:4566 with dummy credentials
+- Docs: https://fakecloud.dev/llms.txt
+```
+
+</details>
+
 ## License
 
-FakeCloud is licensed under the [GNU Affero General Public License v3.0](https://www.gnu.org/licenses/agpl-3.0.html) (AGPL-3.0-or-later).
-
-This means you can freely use, modify, and distribute FakeCloud, but if you run
-a modified version as a network service, you must make the source code available
-to users of that service.
+FakeCloud is free and open-source software, licensed under the [GNU Affero General Public License v3.0](https://www.gnu.org/licenses/agpl-3.0.html) (AGPL-3.0-or-later). Free for commercial use.
 
 ---
 
