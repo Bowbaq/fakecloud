@@ -84,6 +84,18 @@ async fn main() {
     let lambda_state = Arc::new(parking_lot::RwLock::new(
         fakecloud_lambda::state::LambdaState::new(&cli.account_id, &cli.region),
     ));
+
+    // Auto-detect Docker/Podman for Lambda execution
+    let container_runtime = fakecloud_lambda::runtime::ContainerRuntime::new().map(Arc::new);
+    if let Some(ref rt) = container_runtime {
+        tracing::info!(
+            cli = rt.cli_name(),
+            "Lambda execution enabled via container runtime"
+        );
+    } else {
+        tracing::info!("Docker/Podman not available — Lambda Invoke will return errors for functions with code");
+    }
+
     let secretsmanager_state = Arc::new(parking_lot::RwLock::new(
         fakecloud_secretsmanager::state::SecretsManagerState::new(&cli.account_id, &cli.region),
     ));
@@ -146,6 +158,7 @@ async fn main() {
         logs: logs_state.clone(),
         kms: kms_state.clone(),
         cloudformation: cloudformation_state.clone(),
+        container_runtime: container_runtime.clone(),
     };
 
     // Register services
@@ -182,7 +195,11 @@ async fn main() {
     registry.register(Arc::new(
         DynamoDbService::new(dynamodb_state).with_s3(s3_state.clone()),
     ));
-    registry.register(Arc::new(LambdaService::new(lambda_state.clone())));
+    let mut lambda_service = LambdaService::new(lambda_state.clone());
+    if let Some(ref rt) = container_runtime {
+        lambda_service = lambda_service.with_runtime(rt.clone());
+    }
+    registry.register(Arc::new(lambda_service));
     registry.register(Arc::new(SecretsManagerService::new(secretsmanager_state)));
     registry.register(Arc::new(LogsService::new(logs_state, delivery_for_logs)));
     registry.register(Arc::new(KmsService::new(kms_state.clone())));
@@ -196,6 +213,11 @@ async fn main() {
 
     let sqs_lambda_poller = SqsLambdaPoller::new(sqs_state, lambda_state);
     tokio::spawn(sqs_lambda_poller.run());
+
+    if let Some(ref rt) = container_runtime {
+        let rt = rt.clone();
+        tokio::spawn(rt.run_cleanup_loop(std::time::Duration::from_secs(300)));
+    }
 
     let services: Vec<&str> = registry.service_names();
     tracing::info!(services = ?services, "registered services");
@@ -266,6 +288,11 @@ async fn main() {
         .with_graceful_shutdown(shutdown_signal())
         .await
         .unwrap();
+
+    // Clean up Lambda containers on shutdown
+    if let Some(rt) = container_runtime {
+        rt.stop_all().await;
+    }
 }
 
 #[derive(Clone)]
@@ -282,6 +309,7 @@ struct ResetState {
     logs: fakecloud_logs::state::SharedLogsState,
     kms: fakecloud_kms::state::SharedKmsState,
     cloudformation: fakecloud_cloudformation::state::SharedCloudFormationState,
+    container_runtime: Option<Arc<fakecloud_lambda::runtime::ContainerRuntime>>,
 }
 
 impl ResetState {
@@ -310,6 +338,11 @@ impl ResetState {
         self.ssm.write().reset();
         self.dynamodb.write().reset();
         self.lambda.write().reset();
+        // Stop all Lambda containers on reset
+        if let Some(ref rt) = self.container_runtime {
+            let rt = rt.clone();
+            tokio::spawn(async move { rt.stop_all().await });
+        }
         self.secretsmanager.write().reset();
         self.s3.write().reset();
         self.logs.write().reset();

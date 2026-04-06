@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use chrono::Utc;
 use http::{Method, StatusCode};
@@ -6,15 +8,25 @@ use sha2::{Digest, Sha256};
 
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
 
+use crate::runtime::ContainerRuntime;
 use crate::state::{EventSourceMapping, LambdaFunction, SharedLambdaState};
 
 pub struct LambdaService {
     state: SharedLambdaState,
+    runtime: Option<Arc<ContainerRuntime>>,
 }
 
 impl LambdaService {
     pub fn new(state: SharedLambdaState) -> Self {
-        Self { state }
+        Self {
+            state,
+            runtime: None,
+        }
+    }
+
+    pub fn with_runtime(mut self, runtime: Arc<ContainerRuntime>) -> Self {
+        self.runtime = Some(runtime);
+        self
     }
 
     /// Determine the action from the HTTP method and path segments.
@@ -139,13 +151,30 @@ impl LambdaService {
             })
             .unwrap_or_else(|| vec!["x86_64".to_string()]);
 
-        // Compute a code hash from the code body (or use a deterministic placeholder)
-        let code_body = serde_json::to_vec(&body["Code"]).unwrap_or_default();
+        // Decode Code.ZipFile if present (base64-encoded ZIP)
+        let code_zip: Option<Vec<u8>> = match body["Code"]["ZipFile"].as_str() {
+            Some(b64) => Some(
+                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64).map_err(
+                    |_| {
+                        AwsServiceError::aws_error(
+                            StatusCode::BAD_REQUEST,
+                            "InvalidParameterValueException",
+                            "Could not decode Code.ZipFile: invalid base64",
+                        )
+                    },
+                )?,
+            ),
+            None => None,
+        };
+
+        // Compute a code hash from the actual ZIP bytes (or from the Code JSON as fallback)
+        let code_fallback = serde_json::to_vec(&body["Code"]).unwrap_or_default();
+        let code_bytes = code_zip.as_deref().unwrap_or(&code_fallback);
         let mut hasher = Sha256::new();
-        hasher.update(&code_body);
+        hasher.update(code_bytes);
         let hash = hasher.finalize();
         let code_sha256 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, hash);
-        let code_size = code_body.len() as i64;
+        let code_size = code_bytes.len() as i64;
 
         let function_arn = format!(
             "arn:aws:lambda:{}:{}:function:{}",
@@ -170,6 +199,7 @@ impl LambdaService {
             environment: environment.clone(),
             architectures: architectures.clone(),
             package_type: package_type.clone(),
+            code_zip,
         };
 
         let response = self.function_config_json(&func);
@@ -222,6 +252,13 @@ impl LambdaService {
             ));
         }
 
+        // Clean up any running container for this function
+        if let Some(ref runtime) = self.runtime {
+            let rt = runtime.clone();
+            let name = function_name.to_string();
+            tokio::spawn(async move { rt.stop_container(&name).await });
+        }
+
         Ok(AwsResponse::json(StatusCode::NO_CONTENT, ""))
     }
 
@@ -240,28 +277,59 @@ impl LambdaService {
         Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
     }
 
-    fn invoke(&self, function_name: &str) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
-        if !state.functions.contains_key(function_name) {
-            let region = state.region.clone();
-            let account_id = state.account_id.clone();
+    async fn invoke(
+        &self,
+        function_name: &str,
+        payload: &[u8],
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let func = {
+            let state = self.state.read();
+            state.functions.get(function_name).cloned().ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::NOT_FOUND,
+                    "ResourceNotFoundException",
+                    format!(
+                        "Function not found: arn:aws:lambda:{}:{}:function:{}",
+                        state.region, state.account_id, function_name
+                    ),
+                )
+            })?
+        };
+
+        let runtime = self.runtime.as_ref().ok_or_else(|| {
+            AwsServiceError::aws_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "ServiceException",
+                "Docker/Podman is required for Lambda execution but is not available",
+            )
+        })?;
+
+        if func.code_zip.is_none() {
             return Err(AwsServiceError::aws_error(
-                StatusCode::NOT_FOUND,
-                "ResourceNotFoundException",
-                format!(
-                    "Function not found: arn:aws:lambda:{}:{}:function:{}",
-                    region, account_id, function_name
-                ),
+                StatusCode::BAD_REQUEST,
+                "InvalidParameterValueException",
+                "Function has no deployment package",
             ));
         }
 
-        // Canned success response - Lambda stub doesn't execute code
-        let mut resp = AwsResponse::json(StatusCode::OK, "{}");
-        resp.headers.insert(
-            http::header::HeaderName::from_static("x-amz-executed-version"),
-            http::header::HeaderValue::from_static("$LATEST"),
-        );
-        Ok(resp)
+        match runtime.invoke(&func, payload).await {
+            Ok(response_bytes) => {
+                let mut resp = AwsResponse::json(StatusCode::OK, response_bytes);
+                resp.headers.insert(
+                    http::header::HeaderName::from_static("x-amz-executed-version"),
+                    http::header::HeaderValue::from_static("$LATEST"),
+                );
+                Ok(resp)
+            }
+            Err(e) => {
+                tracing::error!(function = %function_name, error = %e, "Lambda invocation failed");
+                Err(AwsServiceError::aws_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "ServiceException",
+                    format!("Lambda execution failed: {e}"),
+                ))
+            }
+        }
     }
 
     fn publish_version(&self, function_name: &str) -> Result<AwsResponse, AwsServiceError> {
@@ -467,7 +535,10 @@ impl AwsService for LambdaService {
             "ListFunctions" => self.list_functions(),
             "GetFunction" => self.get_function(resource_name.as_deref().unwrap_or("")),
             "DeleteFunction" => self.delete_function(resource_name.as_deref().unwrap_or("")),
-            "Invoke" => self.invoke(resource_name.as_deref().unwrap_or("")),
+            "Invoke" => {
+                self.invoke(resource_name.as_deref().unwrap_or(""), &req.body)
+                    .await
+            }
             "PublishVersion" => self.publish_version(resource_name.as_deref().unwrap_or("")),
             "CreateEventSourceMapping" => self.create_event_source_mapping(&req),
             "ListEventSourceMappings" => self.list_event_source_mappings(),
@@ -598,7 +669,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_invoke() {
+    async fn test_invoke_without_runtime_returns_error() {
         let state = make_state();
         let svc = LambdaService::new(state);
 
@@ -622,8 +693,22 @@ mod tests {
             "/2015-03-31/functions/invoke-me/invocations",
             r#"{"key": "value"}"#,
         );
-        let resp = svc.handle(req).await.unwrap();
-        assert_eq!(resp.status, StatusCode::OK);
+        let resp = svc.handle(req).await;
+        assert!(resp.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_invoke_nonexistent_function() {
+        let state = make_state();
+        let svc = LambdaService::new(state);
+
+        let req = make_request(
+            Method::POST,
+            "/2015-03-31/functions/does-not-exist/invocations",
+            "{}",
+        );
+        let resp = svc.handle(req).await;
+        assert!(resp.is_err());
     }
 
     #[tokio::test]
