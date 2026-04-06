@@ -17,7 +17,7 @@ FakeCloud is an open-source local AWS cloud emulator. It runs on a single port
 (`4566`), requires no account or auth token, and aims to faithfully replicate
 AWS service behavior for local development and testing.
 
-Part of the [faisca project family](https://github.com/faiscadev).
+Part of the [faisca project family](https://faisca.dev).
 
 ## Why FakeCloud?
 
@@ -475,5 +475,5 @@ to users of that service.
 ---
 
 <p align="center">
-  Built by <a href="https://github.com/faiscadev">faiscadev</a> | <a href="https://fakecloud.dev">fakecloud.dev</a>
+  Built by <a href="https://faisca.dev">faisca</a> | <a href="https://fakecloud.dev">fakecloud.dev</a>
 </p>
