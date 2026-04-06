@@ -157,8 +157,25 @@ impl TestServer {
 impl Drop for TestServer {
     fn drop(&mut self) {
         if let Some(mut child) = self.child.take() {
+            let pid = child.id();
             let _ = child.kill();
             let _ = child.wait();
+
+            // Clean up any Lambda containers spawned by this server instance
+            let label = format!("fakecloud-instance=fakecloud-{}", pid);
+            let output = Command::new("docker")
+                .args(["ps", "-q", "--filter", &format!("label={}", label)])
+                .output();
+            if let Ok(output) = output {
+                let ids = String::from_utf8_lossy(&output.stdout);
+                for id in ids.split_whitespace() {
+                    let _ = Command::new("docker")
+                        .args(["rm", "-f", id])
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status();
+                }
+            }
         }
     }
 }

@@ -21,6 +21,7 @@ pub struct LambdaFunction {
     pub environment: HashMap<String, String>,
     pub architectures: Vec<String>,
     pub package_type: String,
+    pub code_zip: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone)]

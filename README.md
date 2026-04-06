@@ -67,6 +67,12 @@ cargo run --release --bin fakecloud
 docker run --rm -p 4566:4566 ghcr.io/faiscadev/fakecloud
 ```
 
+To enable Lambda function execution, mount the Docker socket:
+
+```sh
+docker run --rm -p 4566:4566 -v /var/run/docker.sock:/var/run/docker.sock ghcr.io/faiscadev/fakecloud
+```
+
 ### Docker Compose
 
 ```yaml
@@ -76,6 +82,8 @@ services:
     image: ghcr.io/faiscadev/fakecloud
     ports:
       - "4566:4566"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock  # required for Lambda Invoke
     environment:
       FAKECLOUD_LOG: info
 ```
@@ -295,7 +303,7 @@ lifecycle rules with background expiration and storage class transitions, object
 lock (retention and legal hold), encryption, replication, and website
 configuration.
 
-### Lambda (10 actions, stub)
+### Lambda (10 actions)
 
 **Functions:** CreateFunction, GetFunction, DeleteFunction, ListFunctions,
 Invoke, PublishVersion
@@ -304,10 +312,12 @@ Invoke, PublishVersion
 GetEventSourceMapping, DeleteEventSourceMapping
 
 Key features: function CRUD with config storage (runtime, handler, role,
-memory, timeout, environment variables, tags, architectures), canned Invoke
-response (does not execute code), event source mapping management. Uses
-REST-style routing (HTTP method + URL path) with SigV4 credential-scope
-routing.
+memory, timeout, environment variables, tags, architectures), **real code
+execution** via Docker containers using official AWS Lambda base images,
+warm container reuse for fast repeated invocations, event source mapping
+management. Supported runtimes: Python 3.11–3.13, Node.js 18–22, Ruby 3.3–3.4,
+Java 17/21, .NET 8, and custom runtimes (provided.al2, provided.al2023).
+Requires Docker or Podman for Invoke; all other operations work without it.
 
 ### Secrets Manager (11 actions)
 
@@ -392,6 +402,7 @@ fakecloud is configured via CLI flags or environment variables.
 | `--region` | `FAKECLOUD_REGION` | `us-east-1` | AWS region to advertise |
 | `--account-id` | `FAKECLOUD_ACCOUNT_ID` | `123456789012` | AWS account ID |
 | `--log-level` | `FAKECLOUD_LOG` | `info` | Log level (trace, debug, info, warn, error) |
+| | `FAKECLOUD_CONTAINER_CLI` | auto-detect | Container CLI to use (`docker` or `podman`) |
 
 ```sh
 # Examples
@@ -428,7 +439,7 @@ fakecloud is organized as a Cargo workspace:
 | `fakecloud-iam` | IAM and STS implementation |
 | `fakecloud-ssm` | SSM Parameter Store implementation |
 | `fakecloud-dynamodb` | DynamoDB implementation |
-| `fakecloud-lambda` | Lambda stub implementation |
+| `fakecloud-lambda` | Lambda implementation with Docker-based execution |
 | `fakecloud-secretsmanager` | Secrets Manager implementation |
 | `fakecloud-s3` | S3 implementation |
 | `fakecloud-logs` | CloudWatch Logs implementation |
