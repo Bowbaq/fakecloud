@@ -489,7 +489,7 @@ impl AwsService for S3Service {
             "DeleteBucketEncryption",
             "PutBucketLifecycleConfiguration",
             "GetBucketLifecycleConfiguration",
-            "DeleteBucketLifecycleConfiguration",
+            "DeleteBucketLifecycle",
             "PutBucketLogging",
             "GetBucketLogging",
             "PutBucketPolicy",

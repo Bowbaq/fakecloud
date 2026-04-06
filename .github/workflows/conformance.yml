@@ -29,6 +29,9 @@ jobs:
       - name: Check conformance (fails if coverage drops)
         run: cargo run -p fakecloud-conformance -- check 2>&1 | tee conformance-report.txt
 
+      - name: Audit handwritten tests (fails if implemented action lacks a test)
+        run: cargo run -p fakecloud-conformance -- audit
+
       - name: Generate JSON report
         if: always()
         run: cargo run -p fakecloud-conformance -- run --format json > conformance-report.json 2>/dev/null || true

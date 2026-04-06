@@ -110,7 +110,7 @@ pub fn scan_test_annotations(project_root: &Path) -> Result<HashMap<String, Vec<
         return Ok(HashMap::new());
     }
 
-    let re = Regex::new(r#"test_action\("([^"]+)",\s*"([^"]+)""#).unwrap();
+    let re = Regex::new(r#"test_action\(\s*"([^"]+)",\s*"([^"]+)""#).unwrap();
     let mut result: HashMap<String, Vec<String>> = HashMap::new();
 
     for entry in walkdir(&tests_dir)? {
