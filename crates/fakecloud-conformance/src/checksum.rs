@@ -99,7 +99,7 @@ fn collect_shape_tree(
         ShapeType::String {
             enum_values: Some(values),
         } => {
-            canonical.constraints = format!(
+            let enum_constraint = format!(
                 "enum:{}",
                 values
                     .iter()
@@ -107,10 +107,15 @@ fn collect_shape_tree(
                     .collect::<Vec<_>>()
                     .join(",")
             );
+            if canonical.constraints.is_empty() {
+                canonical.constraints = enum_constraint;
+            } else {
+                canonical.constraints = format!("{};{}", canonical.constraints, enum_constraint);
+            }
         }
         ShapeType::String { enum_values: None } => {}
         ShapeType::Enum { values } => {
-            canonical.constraints = format!(
+            let enum_constraint = format!(
                 "enum:{}",
                 values
                     .iter()
@@ -118,6 +123,11 @@ fn collect_shape_tree(
                     .collect::<Vec<_>>()
                     .join(",")
             );
+            if canonical.constraints.is_empty() {
+                canonical.constraints = enum_constraint;
+            } else {
+                canonical.constraints = format!("{};{}", canonical.constraints, enum_constraint);
+            }
         }
         _ => {}
     }

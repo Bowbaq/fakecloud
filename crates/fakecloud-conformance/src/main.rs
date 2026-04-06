@@ -5,6 +5,16 @@ use std::collections::HashMap;
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Child, Command as ProcessCommand, Stdio};
+
+/// Guard that kills the child process on drop.
+struct ChildGuard(Child);
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
 use std::time::Duration;
 
 mod checksum;
@@ -130,12 +140,13 @@ fn cmd_run(
     let filter: Option<Vec<String>> =
         services_filter.map(|s| s.split(',').map(|s| s.trim().to_string()).collect());
 
-    // Start fakecloud or connect to existing
+    // Start fakecloud or connect to existing.
+    // _server holds a ChildGuard that kills the process on drop.
     let (endpoint, _server) = if let Some(ep) = endpoint {
         (ep, None)
     } else {
         let (ep, child) = start_fakecloud();
-        (ep, Some(child))
+        (ep, Some(ChildGuard(child)))
     };
 
     let client = reqwest::blocking::Client::builder()

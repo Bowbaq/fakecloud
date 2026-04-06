@@ -753,7 +753,13 @@ fn classify_response(
     let status = match expectation {
         Expectation::Success => {
             if (200..500).contains(&http_status) {
-                // 2xx = success, 4xx = known AWS error (missing fixtures etc.) — both count as handled
+                // 2xx = genuine success.
+                // 4xx = also treated as Pass because most "success" probes send synthetic
+                // placeholder data (no real fixtures), which triggers AWS validation errors
+                // (e.g. ResourceNotFoundException, ValidationException). The important signal
+                // is that the action was routed and processed — not that the dummy data was
+                // accepted. Once fixture support is added, this should be tightened to
+                // distinguish real validation errors from routing failures.
                 ProbeStatus::Pass
             } else {
                 ProbeStatus::UnexpectedResult(format!("Expected success, got HTTP {}", http_status))
@@ -767,8 +773,13 @@ fn classify_response(
             }
         }
         Expectation::Error(expected_code) => {
-            if body.contains(expected_code) || http_status >= 400 {
+            if body.contains(expected_code) {
                 ProbeStatus::Pass
+            } else if http_status >= 400 {
+                ProbeStatus::UnexpectedResult(format!(
+                    "Expected error '{}', got HTTP {} with different error",
+                    expected_code, http_status
+                ))
             } else {
                 ProbeStatus::UnexpectedResult(format!(
                     "Expected error '{}', got HTTP {}",
@@ -833,6 +844,13 @@ fn truncate(s: &str, max: usize) -> &str {
     if s.len() <= max {
         s
     } else {
-        &s[..max]
+        // Find a char boundary at or before `max` to avoid panicking on multi-byte chars.
+        let boundary = s
+            .char_indices()
+            .map(|(i, _)| i)
+            .take_while(|&i| i <= max)
+            .last()
+            .unwrap_or(0);
+        &s[..boundary]
     }
 }

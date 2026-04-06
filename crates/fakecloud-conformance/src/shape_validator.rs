@@ -198,8 +198,14 @@ fn validate_shape(
         }
         ShapeType::Union { members } => {
             // A union should be an object with exactly one key matching a member name.
-            // For validation purposes, we treat it like a structure but don't require fields.
             if let Value::Object(obj) = value {
+                if obj.len() != 1 {
+                    violations.push(ShapeViolation::WrongType {
+                        path: path.to_string(),
+                        expected: "union (object with exactly 1 member)".to_string(),
+                        got: format!("object with {} members", obj.len()),
+                    });
+                }
                 for (key, val) in obj {
                     if let Some(member) = members.iter().find(|m| m.name == *key) {
                         let child_path = format!("{}.{}", path, key);
@@ -236,10 +242,10 @@ fn validate_shape(
             }
         }
         ShapeType::Integer | ShapeType::Long | ShapeType::IntEnum { .. } => {
-            if !value.is_number() {
+            if !(value.is_i64() || value.is_u64()) {
                 violations.push(ShapeViolation::WrongType {
                     path: path.to_string(),
-                    expected: "number".to_string(),
+                    expected: "integer".to_string(),
                     got: json_type_name(value).to_string(),
                 });
             }
@@ -610,7 +616,7 @@ mod tests {
         assert_eq!(violations.len(), 1);
         assert!(matches!(
             &violations[0],
-            ShapeViolation::WrongType { path, expected, got } if path == "$.Items[1].Id" && expected == "number" && got == "string"
+            ShapeViolation::WrongType { path, expected, got } if path == "$.Items[1].Id" && expected == "integer" && got == "string"
         ));
     }
 

@@ -83,9 +83,10 @@ pub fn build_report(
         for op_name in op_names {
             let probe_results = &ops[&op_name];
 
-            let not_implemented = probe_results
-                .iter()
-                .all(|r| r.status == ProbeStatus::NotImplemented);
+            let not_implemented = probe_results.is_empty()
+                || probe_results
+                    .iter()
+                    .all(|r| r.status == ProbeStatus::NotImplemented);
 
             let passed = probe_results
                 .iter()

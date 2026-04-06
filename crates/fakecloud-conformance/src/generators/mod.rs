@@ -270,16 +270,25 @@ pub fn generate_all_variants(
 
     // Strategy 5: Examples from model
     let op_shape_id = format!("{}#{}", model.service_name, operation_name);
-    // Try to find examples on the operation shape
+    // Try to find examples on the operation shape. We look up by the canonical
+    // shape ID first, then fall back to scanning all shapes. Use a flag to avoid
+    // generating duplicate examples when both paths resolve to the same shape.
+    let mut examples_added = false;
     if let Some(op_shape) = model.shapes.get(&op_shape_id) {
-        variants.extend(examples::generate(&op_shape.traits));
+        let ex = examples::generate(&op_shape.traits);
+        if !ex.is_empty() {
+            variants.extend(ex);
+            examples_added = true;
+        }
     }
-    // Also check the operation's own examples
-    for (shape_id, shape) in &model.shapes {
-        if shape_id.ends_with(&format!("#{}", operation_name))
-            && matches!(shape.shape_type, ShapeType::Operation)
-        {
-            variants.extend(examples::generate(&shape.traits));
+    if !examples_added {
+        for (shape_id, shape) in &model.shapes {
+            if shape_id.ends_with(&format!("#{}", operation_name))
+                && matches!(shape.shape_type, ShapeType::Operation)
+            {
+                variants.extend(examples::generate(&shape.traits));
+                break;
+            }
         }
     }
 

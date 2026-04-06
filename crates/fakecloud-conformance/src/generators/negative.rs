@@ -54,7 +54,7 @@ pub fn generate(
 
         // String too short (below min length)
         if let Some(min) = traits.length_min {
-            if min > 1 {
+            if min > 0 {
                 if let ShapeType::String { .. } = &shape.shape_type {
                     let mut input = build_required_input(model, input_shape_id, overrides);
                     if let Value::Object(ref mut obj) = input {
@@ -96,17 +96,18 @@ pub fn generate(
         if let Some(min) = traits.range_min {
             match &shape.shape_type {
                 ShapeType::Integer | ShapeType::Long => {
-                    let below = (min as i64) - 1;
-                    let mut input = build_required_input(model, input_shape_id, overrides);
-                    if let Value::Object(ref mut obj) = input {
-                        obj.insert(member.name.clone(), Value::Number(below.into()));
+                    if let Some(below) = (min as i64).checked_sub(1) {
+                        let mut input = build_required_input(model, input_shape_id, overrides);
+                        if let Value::Object(ref mut obj) = input {
+                            obj.insert(member.name.clone(), Value::Number(below.into()));
+                        }
+                        variants.push(TestVariant {
+                            name: format!("negative_below_min_{}", member.name),
+                            strategy: Strategy::Negative,
+                            input,
+                            expectation: Expectation::AnyError,
+                        });
                     }
-                    variants.push(TestVariant {
-                        name: format!("negative_below_min_{}", member.name),
-                        strategy: Strategy::Negative,
-                        input,
-                        expectation: Expectation::AnyError,
-                    });
                 }
                 _ => {}
             }
@@ -116,17 +117,18 @@ pub fn generate(
         if let Some(max) = traits.range_max {
             match &shape.shape_type {
                 ShapeType::Integer | ShapeType::Long => {
-                    let above = (max as i64) + 1;
-                    let mut input = build_required_input(model, input_shape_id, overrides);
-                    if let Value::Object(ref mut obj) = input {
-                        obj.insert(member.name.clone(), Value::Number(above.into()));
+                    if let Some(above) = (max as i64).checked_add(1) {
+                        let mut input = build_required_input(model, input_shape_id, overrides);
+                        if let Value::Object(ref mut obj) = input {
+                            obj.insert(member.name.clone(), Value::Number(above.into()));
+                        }
+                        variants.push(TestVariant {
+                            name: format!("negative_above_max_{}", member.name),
+                            strategy: Strategy::Negative,
+                            input,
+                            expectation: Expectation::AnyError,
+                        });
                     }
-                    variants.push(TestVariant {
-                        name: format!("negative_above_max_{}", member.name),
-                        strategy: Strategy::Negative,
-                        input,
-                        expectation: Expectation::AnyError,
-                    });
                 }
                 _ => {}
             }
