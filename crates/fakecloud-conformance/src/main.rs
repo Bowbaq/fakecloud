@@ -380,20 +380,30 @@ fn cmd_check(
     // Check per-service ratchet
     let mut regressions = Vec::new();
 
-    for svc in &report_data.services {
-        let current_passed: usize = svc.operations.iter().map(|o| o.passed).sum();
+    // Build a map of current results for lookup
+    let current_by_service: HashMap<&str, usize> = report_data
+        .services
+        .iter()
+        .map(|svc| {
+            let passed: usize = svc.operations.iter().map(|o| o.passed).sum();
+            (svc.service_name.as_str(), passed)
+        })
+        .collect();
 
-        if let Some(svc_baseline) = baseline.per_service.get(&svc.service_name) {
-            if current_passed < svc_baseline.passed {
-                regressions.push(format!(
-                    "{}: {} → {} variants passing (was {}, lost {})",
-                    svc.service_name,
-                    svc_baseline.passed,
-                    current_passed,
-                    svc_baseline.passed,
-                    svc_baseline.passed - current_passed,
-                ));
-            }
+    for (svc_name, svc_baseline) in &baseline.per_service {
+        let current_passed = current_by_service
+            .get(svc_name.as_str())
+            .copied()
+            .unwrap_or(0);
+        if current_passed < svc_baseline.passed {
+            regressions.push(format!(
+                "{}: {} → {} variants passing (was {}, lost {})",
+                svc_name,
+                svc_baseline.passed,
+                current_passed,
+                svc_baseline.passed,
+                svc_baseline.passed - current_passed,
+            ));
         }
     }
 
