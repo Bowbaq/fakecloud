@@ -327,7 +327,7 @@ impl LambdaService {
             ));
         }
 
-        // No code ZIP — return stub response
+        // No code ZIP — return empty response
         let mut resp = AwsResponse::json(StatusCode::OK, "{}");
         resp.headers.insert(
             http::header::HeaderName::from_static("x-amz-executed-version"),
