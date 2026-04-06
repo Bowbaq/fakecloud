@@ -33,7 +33,7 @@ alternatives have emerged since then. Here's how they compare:
 | Language | Rust | Python | Java (Quarkus Native) | Python |
 | Auth required | No | Yes (account + token) | No | No |
 | Commercial use | Free | Paid plans only | Free | Free |
-| AWS services | 12 | 80+ | 25 | 38 |
+| AWS services | 13 | 80+ | 25 | 38 |
 | Cross-service delivery | Yes | Yes | Yes | Yes |
 | Scheduled rules fire | Yes | Yes | -- | -- |
 
@@ -446,7 +446,7 @@ Protocol handling:
 
 ```sh
 cargo test --workspace              # unit tests
-cargo build && cargo test -p fakecloud-e2e  # E2E tests (213 tests)
+cargo build && cargo test -p fakecloud-e2e  # E2E tests (280+ tests)
 cargo clippy --workspace -- -D warnings     # lint
 cargo fmt --check                           # format check
 ```
