@@ -132,7 +132,6 @@ jobs:
           publish fakecloud-cloudformation
 
           # Layer 5: depends on all
-          echo "Publishing fakecloud..."
-          cargo publish -p fakecloud
+          publish fakecloud
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
