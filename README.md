@@ -39,10 +39,16 @@ alternatives have emerged since then. Here's how they compare:
 
 ## Quick Start
 
+### Cargo install
+
+```sh
+cargo install --git https://github.com/faiscadev/fakecloud.git
+fakecloud
+```
+
 ### From source
 
 ```sh
-# Requires Rust 1.85+
 git clone https://github.com/faiscadev/fakecloud.git
 cd fakecloud
 cargo run --release --bin fakecloud
