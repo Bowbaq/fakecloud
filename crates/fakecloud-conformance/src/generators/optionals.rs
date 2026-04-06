@@ -21,6 +21,9 @@ pub fn generate(
 ) -> Vec<TestVariant> {
     let mut variants = Vec::new();
 
+    let members = super::get_members(model, input_shape_id);
+    let optional_count = members.iter().filter(|m| !m.required).count();
+
     // Required-only variant
     let required_input = build_required_input(model, input_shape_id, overrides);
     variants.push(TestVariant {
@@ -30,17 +33,19 @@ pub fn generate(
         expectation: Expectation::Success,
     });
 
-    // All-fields variant
-    let full_input = build_full_input(model, input_shape_id, overrides);
-    variants.push(TestVariant {
-        name: "all_fields".to_string(),
-        strategy: Strategy::Optionals,
-        input: full_input,
-        expectation: Expectation::Success,
-    });
+    // All-fields variant (only when there are 2+ optional fields, otherwise it
+    // duplicates required_only or the single optional_* variant)
+    if optional_count >= 2 {
+        let full_input = build_full_input(model, input_shape_id, overrides);
+        variants.push(TestVariant {
+            name: "all_fields".to_string(),
+            strategy: Strategy::Optionals,
+            input: full_input,
+            expectation: Expectation::Success,
+        });
+    }
 
     // One variant per optional field
-    let members = super::get_members(model, input_shape_id);
     for member in members {
         if member.required {
             continue;
