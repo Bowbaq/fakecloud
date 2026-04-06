@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use fakecloud_core::delivery::DeliveryBus;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
+use fakecloud_core::validation::*;
 
 use fakecloud_lambda::state::{LambdaInvocation, SharedLambdaState};
 use fakecloud_logs::state::SharedLogsState;
@@ -200,10 +201,25 @@ fn target_to_json(t: &EventTarget) -> Value {
 impl EventBridgeService {
     fn create_event_bus(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_required("Name", &body["Name"])?;
         let name = body["Name"]
             .as_str()
             .ok_or_else(|| missing("Name"))?
             .to_string();
+        validate_string_length("name", &name, 1, 256)?;
+        validate_optional_string_length(
+            "eventSourceName",
+            body["EventSourceName"].as_str(),
+            1,
+            256,
+        )?;
+        validate_optional_string_length("description", body["Description"].as_str(), 0, 512)?;
+        validate_optional_string_length(
+            "kmsKeyIdentifier",
+            body["KmsKeyIdentifier"].as_str(),
+            0,
+            2048,
+        )?;
 
         // Validate name doesn't contain '/' (unless partner bus)
         if name.contains('/') && !name.starts_with("aws.partner/") {
@@ -268,7 +284,9 @@ impl EventBridgeService {
 
     fn delete_event_bus(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_required("Name", &body["Name"])?;
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
+        validate_string_length("name", name, 1, 256)?;
 
         if name == "default" {
             return Err(AwsServiceError::aws_error(
@@ -287,24 +305,48 @@ impl EventBridgeService {
 
     fn list_event_buses(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_optional_string_length("namePrefix", body["NamePrefix"].as_str(), 1, 256)?;
+        validate_optional_string_length("nextToken", body["NextToken"].as_str(), 1, 2048)?;
+        validate_optional_range_i64("limit", body["Limit"].as_i64(), 1, 100)?;
         let name_prefix = body["NamePrefix"].as_str();
+        let limit = body["Limit"].as_i64().unwrap_or(100) as usize;
+        let offset: usize = match body["NextToken"].as_str() {
+            Some(t) => t.parse().map_err(|_| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "InvalidNextTokenException",
+                    format!("Invalid NextToken value: '{t}'"),
+                )
+            })?,
+            None => 0,
+        };
 
         let state = self.state.read();
-        let buses: Vec<Value> = state
+        let filtered: Vec<Value> = state
             .buses
             .values()
             .filter(|b| match name_prefix {
                 Some(prefix) => b.name.starts_with(prefix),
                 None => true,
             })
+            .skip(offset)
+            .take(limit + 1)
             .map(|b| json!({ "Name": b.name, "Arn": b.arn }))
             .collect();
 
-        Ok(json_resp(json!({ "EventBuses": buses })))
+        let has_more = filtered.len() > limit;
+        let buses: Vec<Value> = filtered.into_iter().take(limit).collect();
+        let mut resp = json!({ "EventBuses": buses });
+        if has_more {
+            resp["NextToken"] = json!((offset + limit).to_string());
+        }
+
+        Ok(json_resp(resp))
     }
 
     fn describe_event_bus(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_optional_string_length("name", body["Name"].as_str(), 1, 1600)?;
         let name = body["Name"].as_str().unwrap_or("default");
 
         let state = self.state.read();
@@ -343,6 +385,10 @@ impl EventBridgeService {
 
     fn put_permission(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_optional_string_length("eventBusName", body["EventBusName"].as_str(), 1, 256)?;
+        validate_optional_string_length("action", body["Action"].as_str(), 1, 64)?;
+        validate_optional_string_length("principal", body["Principal"].as_str(), 1, 12)?;
+        validate_optional_string_length("statementId", body["StatementId"].as_str(), 1, 64)?;
         let event_bus_name = body["EventBusName"].as_str().unwrap_or("default");
 
         let mut state = self.state.write();
@@ -401,6 +447,8 @@ impl EventBridgeService {
 
     fn remove_permission(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_optional_string_length("statementId", body["StatementId"].as_str(), 1, 64)?;
+        validate_optional_string_length("eventBusName", body["EventBusName"].as_str(), 1, 256)?;
         let event_bus_name = body["EventBusName"].as_str().unwrap_or("default");
         let statement_id = body["StatementId"].as_str().unwrap_or("");
         let remove_all = body["RemoveAllPermissions"].as_bool().unwrap_or(false);
@@ -450,10 +498,31 @@ impl EventBridgeService {
 
     fn put_rule(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_required("Name", &body["Name"])?;
         let name = body["Name"]
             .as_str()
             .ok_or_else(|| missing("Name"))?
             .to_string();
+        validate_string_length("name", &name, 1, 64)?;
+        validate_optional_string_length("eventBusName", body["EventBusName"].as_str(), 1, 1600)?;
+        validate_optional_string_length(
+            "scheduleExpression",
+            body["ScheduleExpression"].as_str(),
+            0,
+            256,
+        )?;
+        validate_optional_string_length("eventPattern", body["EventPattern"].as_str(), 0, 4096)?;
+        validate_optional_enum(
+            "state",
+            body["State"].as_str(),
+            &[
+                "ENABLED",
+                "DISABLED",
+                "ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS",
+            ],
+        )?;
+        validate_optional_string_length("description", body["Description"].as_str(), 0, 512)?;
+        validate_optional_string_length("roleArn", body["RoleArn"].as_str(), 1, 1600)?;
 
         let raw_bus = body["EventBusName"]
             .as_str()
@@ -541,7 +610,10 @@ impl EventBridgeService {
 
     fn delete_rule(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_required("Name", &body["Name"])?;
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
+        validate_string_length("name", name, 1, 64)?;
+        validate_optional_string_length("eventBusName", body["EventBusName"].as_str(), 1, 1600)?;
         let event_bus_name = body["EventBusName"].as_str().unwrap_or("default");
 
         let mut state = self.state.write();
@@ -565,6 +637,10 @@ impl EventBridgeService {
 
     fn list_rules(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_optional_string_length("namePrefix", body["NamePrefix"].as_str(), 1, 64)?;
+        validate_optional_string_length("eventBusName", body["EventBusName"].as_str(), 1, 1600)?;
+        validate_optional_string_length("nextToken", body["NextToken"].as_str(), 1, 2048)?;
+        validate_optional_range_i64("limit", body["Limit"].as_i64(), 1, 100)?;
         let event_bus_name = body["EventBusName"].as_str().unwrap_or("default");
         let name_prefix = body["NamePrefix"].as_str();
         let limit = body["Limit"].as_u64().map(|n| n as usize);
@@ -636,7 +712,10 @@ impl EventBridgeService {
 
     fn describe_rule(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_required("Name", &body["Name"])?;
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
+        validate_string_length("name", name, 1, 64)?;
+        validate_optional_string_length("eventBusName", body["EventBusName"].as_str(), 1, 1600)?;
         let event_bus_name = body["EventBusName"].as_str().unwrap_or("default");
 
         let state = self.state.read();
@@ -686,7 +765,10 @@ impl EventBridgeService {
 
     fn enable_rule(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_required("Name", &body["Name"])?;
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
+        validate_string_length("name", name, 1, 64)?;
+        validate_optional_string_length("eventBusName", body["EventBusName"].as_str(), 1, 1600)?;
         let event_bus_name = body["EventBusName"].as_str().unwrap_or("default");
 
         let mut state = self.state.write();
@@ -707,7 +789,10 @@ impl EventBridgeService {
 
     fn disable_rule(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_required("Name", &body["Name"])?;
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
+        validate_string_length("name", name, 1, 64)?;
+        validate_optional_string_length("eventBusName", body["EventBusName"].as_str(), 1, 1600)?;
         let event_bus_name = body["EventBusName"].as_str().unwrap_or("default");
 
         let mut state = self.state.write();
@@ -730,7 +815,11 @@ impl EventBridgeService {
 
     fn put_targets(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_required("Rule", &body["Rule"])?;
         let rule_name = body["Rule"].as_str().ok_or_else(|| missing("Rule"))?;
+        validate_string_length("rule", rule_name, 1, 64)?;
+        validate_optional_string_length("eventBusName", body["EventBusName"].as_str(), 1, 1600)?;
+        validate_required("Targets", &body["Targets"])?;
         let event_bus_name = body["EventBusName"].as_str().unwrap_or("default");
         let targets = body["Targets"]
             .as_array()
@@ -790,7 +879,11 @@ impl EventBridgeService {
 
     fn remove_targets(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_required("Rule", &body["Rule"])?;
         let rule_name = body["Rule"].as_str().ok_or_else(|| missing("Rule"))?;
+        validate_string_length("rule", rule_name, 1, 64)?;
+        validate_optional_string_length("eventBusName", body["EventBusName"].as_str(), 1, 1600)?;
+        validate_required("Ids", &body["Ids"])?;
         let event_bus_name = body["EventBusName"].as_str().unwrap_or("default");
         let ids = body["Ids"].as_array().ok_or_else(|| missing("Ids"))?;
 
@@ -821,7 +914,12 @@ impl EventBridgeService {
 
     fn list_targets_by_rule(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_required("Rule", &body["Rule"])?;
         let rule_name = body["Rule"].as_str().ok_or_else(|| missing("Rule"))?;
+        validate_string_length("rule", rule_name, 1, 64)?;
+        validate_optional_string_length("eventBusName", body["EventBusName"].as_str(), 1, 1600)?;
+        validate_optional_string_length("nextToken", body["NextToken"].as_str(), 1, 2048)?;
+        validate_optional_range_i64("limit", body["Limit"].as_i64(), 1, 100)?;
         let event_bus_name = body["EventBusName"].as_str().unwrap_or("default");
         let limit = body["Limit"].as_u64().map(|n| n as usize);
         let next_token = body["NextToken"].as_str();
@@ -867,9 +965,14 @@ impl EventBridgeService {
 
     fn list_rule_names_by_target(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_required("TargetArn", &body["TargetArn"])?;
         let target_arn = body["TargetArn"]
             .as_str()
             .ok_or_else(|| missing("TargetArn"))?;
+        validate_string_length("targetArn", target_arn, 1, 1600)?;
+        validate_optional_string_length("eventBusName", body["EventBusName"].as_str(), 1, 1600)?;
+        validate_optional_string_length("nextToken", body["NextToken"].as_str(), 1, 2048)?;
+        validate_optional_range_i64("limit", body["Limit"].as_i64(), 1, 100)?;
         let event_bus_name = body["EventBusName"].as_str().unwrap_or("default");
         let limit = body["Limit"].as_u64().map(|n| n as usize);
         let next_token = body["NextToken"].as_str();
@@ -920,14 +1023,18 @@ impl EventBridgeService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_required("Name", &body["Name"])?;
         let name = body["Name"]
             .as_str()
             .ok_or_else(|| missing("Name"))?
             .to_string();
+        validate_string_length("name", &name, 1, 256)?;
+        validate_required("Account", &body["Account"])?;
         let account = body["Account"]
             .as_str()
             .ok_or_else(|| missing("Account"))?
             .to_string();
+        validate_string_length("account", &account, 12, 12)?;
 
         let mut state = self.state.write();
         if state.partner_event_sources.contains_key(&name) {
@@ -949,10 +1056,12 @@ impl EventBridgeService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_required("Name", &body["Name"])?;
         let name = body["Name"]
             .as_str()
             .ok_or_else(|| missing("Name"))?
             .to_string();
+        validate_string_length("name", &name, 1, 256)?;
 
         let state = self.state.read();
         if !state.partner_event_sources.contains_key(&name) {
@@ -978,11 +1087,21 @@ impl EventBridgeService {
 
     fn put_events(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_required("Entries", &body["Entries"])?;
+        validate_optional_string_length("endpointId", body["EndpointId"].as_str(), 1, 50)?;
+        let endpoint_id = body["EndpointId"].as_str();
         let entries = body["Entries"]
             .as_array()
             .ok_or_else(|| missing("Entries"))?;
 
-        // Validate max 10 entries
+        // Validate entries count
+        if entries.is_empty() {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "ValidationException",
+                "1 validation error detected: Value '[PutEventsRequestEntry]' at 'entries' failed to satisfy constraint: Member must have length greater than or equal to 1",
+            ));
+        }
         if entries.len() > 10 {
             return Err(AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -1282,19 +1401,27 @@ impl EventBridgeService {
             }
         }
 
-        Ok(json_resp(json!({
+        let mut resp = json!({
             "FailedEntryCount": failed_count,
             "Entries": result_entries,
-        })))
+        });
+        if let Some(eid) = endpoint_id {
+            resp["EndpointId"] = json!(eid);
+        }
+
+        Ok(json_resp(resp))
     }
 
     // ─── Tagging ────────────────────────────────────────────────────────
 
     fn tag_resource(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_required("ResourceARN", &body["ResourceARN"])?;
         let arn = body["ResourceARN"]
             .as_str()
             .ok_or_else(|| missing("ResourceARN"))?;
+        validate_string_length("resourceARN", arn, 1, 1600)?;
+        validate_required("Tags", &body["Tags"])?;
         let tags = body["Tags"].as_array().ok_or_else(|| missing("Tags"))?;
 
         let mut state = self.state.write();
@@ -1312,9 +1439,12 @@ impl EventBridgeService {
 
     fn untag_resource(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_required("ResourceARN", &body["ResourceARN"])?;
         let arn = body["ResourceARN"]
             .as_str()
             .ok_or_else(|| missing("ResourceARN"))?;
+        validate_string_length("resourceARN", arn, 1, 1600)?;
+        validate_required("TagKeys", &body["TagKeys"])?;
         let tag_keys = body["TagKeys"]
             .as_array()
             .ok_or_else(|| missing("TagKeys"))?;
@@ -1333,9 +1463,11 @@ impl EventBridgeService {
 
     fn list_tags_for_resource(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_required("ResourceARN", &body["ResourceARN"])?;
         let arn = body["ResourceARN"]
             .as_str()
             .ok_or_else(|| missing("ResourceARN"))?;
+        validate_string_length("resourceARN", arn, 1, 1600)?;
 
         let state = self.state.read();
         let tag_map = find_tags(&state, arn)?;
@@ -1352,29 +1484,26 @@ impl EventBridgeService {
 
     fn create_archive(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_required("ArchiveName", &body["ArchiveName"])?;
         let name = body["ArchiveName"]
             .as_str()
             .ok_or_else(|| missing("ArchiveName"))?
             .to_string();
+        validate_string_length("archiveName", &name, 1, 48)?;
+        validate_required("EventSourceArn", &body["EventSourceArn"])?;
         let event_source_arn = body["EventSourceArn"]
             .as_str()
             .ok_or_else(|| missing("EventSourceArn"))?
             .to_string();
+        validate_string_length("eventSourceArn", &event_source_arn, 1, 1600)?;
+        validate_optional_string_length("description", body["Description"].as_str(), 0, 512)?;
+        validate_optional_string_length("eventPattern", body["EventPattern"].as_str(), 0, 4096)?;
+        if let Some(rd) = body["RetentionDays"].as_i64() {
+            validate_range_i64("retentionDays", rd, 0, i64::MAX)?;
+        }
         let description = body["Description"].as_str().map(|s| s.to_string());
         let event_pattern = body["EventPattern"].as_str().map(|s| s.to_string());
         let retention_days = body["RetentionDays"].as_i64().unwrap_or(0);
-
-        // Validate name length
-        if name.len() > 48 {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ValidationException",
-                format!(
-                    " 1 validation error detected: Value '{}' at 'archiveName' failed to satisfy constraint: Member must have length less than or equal to 48",
-                    name
-                ),
-            ));
-        }
 
         // Validate event pattern if provided
         if let Some(ref pattern) = event_pattern {
@@ -1485,9 +1614,11 @@ impl EventBridgeService {
 
     fn describe_archive(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_required("ArchiveName", &body["ArchiveName"])?;
         let name = body["ArchiveName"]
             .as_str()
             .ok_or_else(|| missing("ArchiveName"))?;
+        validate_string_length("archiveName", name, 1, 48)?;
 
         let state = self.state.read();
         let archive = state.archives.get(name).ok_or_else(|| {
@@ -1520,6 +1651,15 @@ impl EventBridgeService {
 
     fn list_archives(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_optional_string_length("namePrefix", body["NamePrefix"].as_str(), 1, 48)?;
+        validate_optional_string_length(
+            "eventSourceArn",
+            body["EventSourceArn"].as_str(),
+            1,
+            1600,
+        )?;
+        validate_optional_string_length("nextToken", body["NextToken"].as_str(), 1, 2048)?;
+        validate_optional_range_i64("limit", body["Limit"].as_i64(), 1, 100)?;
         let name_prefix = body["NamePrefix"].as_str();
         let source_arn = body["EventSourceArn"].as_str();
         let archive_state = body["State"].as_str();
@@ -1563,8 +1703,14 @@ impl EventBridgeService {
             }
         }
 
+        let limit = body["Limit"].as_i64().unwrap_or(100) as usize;
+        let offset: usize = body["NextToken"]
+            .as_str()
+            .and_then(|t| t.parse().ok())
+            .unwrap_or(0);
+
         let state = self.state.read();
-        let archives: Vec<Value> = state
+        let filtered: Vec<Value> = state
             .archives
             .values()
             .filter(|a| {
@@ -1578,6 +1724,8 @@ impl EventBridgeService {
                     true
                 }
             })
+            .skip(offset)
+            .take(limit + 1)
             .map(|a| {
                 json!({
                     "ArchiveName": a.name,
@@ -1591,14 +1739,28 @@ impl EventBridgeService {
             })
             .collect();
 
-        Ok(json_resp(json!({ "Archives": archives })))
+        let has_more = filtered.len() > limit;
+        let archives: Vec<Value> = filtered.into_iter().take(limit).collect();
+        let mut resp = json!({ "Archives": archives });
+        if has_more {
+            resp["NextToken"] = json!((offset + limit).to_string());
+        }
+
+        Ok(json_resp(resp))
     }
 
     fn update_archive(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_required("ArchiveName", &body["ArchiveName"])?;
         let name = body["ArchiveName"]
             .as_str()
             .ok_or_else(|| missing("ArchiveName"))?;
+        validate_string_length("archiveName", name, 1, 48)?;
+        validate_optional_string_length("description", body["Description"].as_str(), 0, 512)?;
+        validate_optional_string_length("eventPattern", body["EventPattern"].as_str(), 0, 4096)?;
+        if let Some(rd) = body["RetentionDays"].as_i64() {
+            validate_range_i64("retentionDays", rd, 0, i64::MAX)?;
+        }
 
         // Validate event pattern if provided
         if let Some(pattern) = body["EventPattern"].as_str() {
@@ -1633,9 +1795,11 @@ impl EventBridgeService {
 
     fn delete_archive(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_required("ArchiveName", &body["ArchiveName"])?;
         let name = body["ArchiveName"]
             .as_str()
             .ok_or_else(|| missing("ArchiveName"))?;
+        validate_string_length("archiveName", name, 1, 48)?;
 
         let mut state = self.state.write();
         if !state.archives.contains_key(name) {
@@ -1659,15 +1823,25 @@ impl EventBridgeService {
 
     fn create_connection(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_required("Name", &body["Name"])?;
         let name = body["Name"]
             .as_str()
             .ok_or_else(|| missing("Name"))?
             .to_string();
+        validate_string_length("name", &name, 1, 64)?;
+        validate_optional_string_length("description", body["Description"].as_str(), 0, 512)?;
+        validate_required("AuthorizationType", &body["AuthorizationType"])?;
         let description = body["Description"].as_str().map(|s| s.to_string());
         let auth_type = body["AuthorizationType"]
             .as_str()
             .ok_or_else(|| missing("AuthorizationType"))?
             .to_string();
+        validate_enum(
+            "authorizationType",
+            &auth_type,
+            &["BASIC", "OAUTH_CLIENT_CREDENTIALS", "API_KEY"],
+        )?;
+        validate_required("AuthParameters", &body["AuthParameters"])?;
         let auth_params = body["AuthParameters"].clone();
 
         let mut state = self.state.write();
@@ -1706,7 +1880,9 @@ impl EventBridgeService {
 
     fn describe_connection(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_required("Name", &body["Name"])?;
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
+        validate_string_length("name", name, 1, 64)?;
 
         let state = self.state.read();
         let conn = state.connections.get(name).ok_or_else(|| {
@@ -1739,13 +1915,56 @@ impl EventBridgeService {
         Ok(json_resp(resp))
     }
 
-    fn list_connections(&self, _req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+    fn list_connections(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = parse_body(req);
+        validate_optional_string_length("namePrefix", body["NamePrefix"].as_str(), 1, 64)?;
+        validate_optional_enum(
+            "connectionState",
+            body["ConnectionState"].as_str(),
+            &[
+                "CREATING",
+                "UPDATING",
+                "DELETING",
+                "AUTHORIZED",
+                "DEAUTHORIZED",
+                "AUTHORIZING",
+                "DEAUTHORIZING",
+                "ACTIVE",
+                "FAILED_CONNECTIVITY",
+            ],
+        )?;
+        validate_optional_string_length("nextToken", body["NextToken"].as_str(), 1, 2048)?;
+        validate_optional_range_i64("limit", body["Limit"].as_i64(), 1, 100)?;
+
+        let name_prefix = body["NamePrefix"].as_str();
+        let connection_state = body["ConnectionState"].as_str();
+        let limit = body["Limit"].as_i64().unwrap_or(100) as usize;
+        let offset: usize = body["NextToken"]
+            .as_str()
+            .and_then(|t| t.parse().ok())
+            .unwrap_or(0);
+
         let state = self.state.read();
-        let conns: Vec<Value> = state
+        let filtered: Vec<Value> = state
             .connections
             .values()
+            .filter(|c| {
+                if let Some(prefix) = name_prefix {
+                    if !c.name.starts_with(prefix) {
+                        return false;
+                    }
+                }
+                if let Some(cs) = connection_state {
+                    if c.connection_state != cs {
+                        return false;
+                    }
+                }
+                true
+            })
+            .skip(offset)
+            .take(limit + 1)
             .map(|c| {
-                let mut obj = json!({
+                json!({
                     "ConnectionArn": c.arn,
                     "Name": c.name,
                     "AuthorizationType": c.authorization_type,
@@ -1753,20 +1972,31 @@ impl EventBridgeService {
                     "CreationTime": c.creation_time.timestamp() as f64,
                     "LastModifiedTime": c.last_modified_time.timestamp() as f64,
                     "LastAuthorizedTime": c.last_authorized_time.timestamp() as f64,
-                });
-                if let Some(ref desc) = c.description {
-                    obj["Description"] = json!(desc);
-                }
-                obj
+                })
             })
             .collect();
 
-        Ok(json_resp(json!({ "Connections": conns })))
+        let has_more = filtered.len() > limit;
+        let conns: Vec<Value> = filtered.into_iter().take(limit).collect();
+        let mut resp = json!({ "Connections": conns });
+        if has_more {
+            resp["NextToken"] = json!((offset + limit).to_string());
+        }
+
+        Ok(json_resp(resp))
     }
 
     fn update_connection(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_required("Name", &body["Name"])?;
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
+        validate_string_length("name", name, 1, 64)?;
+        validate_optional_string_length("description", body["Description"].as_str(), 0, 512)?;
+        validate_optional_enum(
+            "authorizationType",
+            body["AuthorizationType"].as_str(),
+            &["BASIC", "OAUTH_CLIENT_CREDENTIALS", "API_KEY"],
+        )?;
 
         let mut state = self.state.write();
         let conn = state.connections.get_mut(name).ok_or_else(|| {
@@ -1799,7 +2029,9 @@ impl EventBridgeService {
 
     fn delete_connection(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_required("Name", &body["Name"])?;
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
+        validate_string_length("name", name, 1, 64)?;
 
         let mut state = self.state.write();
         let conn = state.connections.remove(name).ok_or_else(|| {
@@ -1823,24 +2055,40 @@ impl EventBridgeService {
 
     fn create_api_destination(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_required("Name", &body["Name"])?;
         let name = body["Name"]
             .as_str()
             .ok_or_else(|| missing("Name"))?
             .to_string();
+        validate_string_length("name", &name, 1, 64)?;
+        validate_optional_string_length("description", body["Description"].as_str(), 0, 512)?;
+        validate_required("ConnectionArn", &body["ConnectionArn"])?;
         let description = body["Description"].as_str().map(|s| s.to_string());
         let connection_arn = body["ConnectionArn"]
             .as_str()
             .ok_or_else(|| missing("ConnectionArn"))?
             .to_string();
+        validate_string_length("connectionArn", &connection_arn, 1, 1600)?;
+        validate_required("InvocationEndpoint", &body["InvocationEndpoint"])?;
         let endpoint = body["InvocationEndpoint"]
             .as_str()
             .ok_or_else(|| missing("InvocationEndpoint"))?
             .to_string();
+        validate_string_length("invocationEndpoint", &endpoint, 1, 2048)?;
+        validate_required("HttpMethod", &body["HttpMethod"])?;
         let http_method = body["HttpMethod"]
             .as_str()
             .ok_or_else(|| missing("HttpMethod"))?
             .to_string();
+        validate_enum(
+            "httpMethod",
+            &http_method,
+            &["POST", "GET", "HEAD", "OPTIONS", "PUT", "PATCH", "DELETE"],
+        )?;
         let rate_limit = body["InvocationRateLimitPerSecond"].as_i64();
+        if let Some(r) = rate_limit {
+            validate_range_i64("invocationRateLimitPerSecond", r, 1, i64::MAX)?;
+        }
 
         let mut state = self.state.write();
         let now = Utc::now();
@@ -1874,7 +2122,9 @@ impl EventBridgeService {
 
     fn describe_api_destination(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_required("Name", &body["Name"])?;
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
+        validate_string_length("name", name, 1, 64)?;
 
         let state = self.state.read();
         let dest = state.api_destinations.get(name).ok_or_else(|| {
@@ -1905,11 +2155,40 @@ impl EventBridgeService {
         Ok(json_resp(resp))
     }
 
-    fn list_api_destinations(&self, _req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+    fn list_api_destinations(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = parse_body(req);
+        validate_optional_string_length("namePrefix", body["NamePrefix"].as_str(), 1, 64)?;
+        validate_optional_string_length("connectionArn", body["ConnectionArn"].as_str(), 1, 1600)?;
+        validate_optional_string_length("nextToken", body["NextToken"].as_str(), 1, 2048)?;
+        validate_optional_range_i64("limit", body["Limit"].as_i64(), 1, 100)?;
+
+        let name_prefix = body["NamePrefix"].as_str();
+        let connection_arn = body["ConnectionArn"].as_str();
+        let limit = body["Limit"].as_i64().unwrap_or(100) as usize;
+        let offset: usize = body["NextToken"]
+            .as_str()
+            .and_then(|t| t.parse().ok())
+            .unwrap_or(0);
+
         let state = self.state.read();
-        let dests: Vec<Value> = state
+        let filtered: Vec<Value> = state
             .api_destinations
             .values()
+            .filter(|d| {
+                if let Some(prefix) = name_prefix {
+                    if !d.name.starts_with(prefix) {
+                        return false;
+                    }
+                }
+                if let Some(arn) = connection_arn {
+                    if d.connection_arn != arn {
+                        return false;
+                    }
+                }
+                true
+            })
+            .skip(offset)
+            .take(limit + 1)
             .map(|d| {
                 let mut obj = json!({
                     "ApiDestinationArn": d.arn,
@@ -1921,9 +2200,6 @@ impl EventBridgeService {
                     "CreationTime": d.creation_time.timestamp() as f64,
                     "LastModifiedTime": d.last_modified_time.timestamp() as f64,
                 });
-                if let Some(ref desc) = d.description {
-                    obj["Description"] = json!(desc);
-                }
                 if let Some(rate) = d.invocation_rate_limit_per_second {
                     obj["InvocationRateLimitPerSecond"] = json!(rate);
                 }
@@ -1931,12 +2207,37 @@ impl EventBridgeService {
             })
             .collect();
 
-        Ok(json_resp(json!({ "ApiDestinations": dests })))
+        let has_more = filtered.len() > limit;
+        let dests: Vec<Value> = filtered.into_iter().take(limit).collect();
+        let mut resp = json!({ "ApiDestinations": dests });
+        if has_more {
+            resp["NextToken"] = json!((offset + limit).to_string());
+        }
+
+        Ok(json_resp(resp))
     }
 
     fn update_api_destination(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_required("Name", &body["Name"])?;
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
+        validate_string_length("name", name, 1, 64)?;
+        validate_optional_string_length("description", body["Description"].as_str(), 0, 512)?;
+        validate_optional_string_length("connectionArn", body["ConnectionArn"].as_str(), 1, 1600)?;
+        validate_optional_string_length(
+            "invocationEndpoint",
+            body["InvocationEndpoint"].as_str(),
+            1,
+            2048,
+        )?;
+        validate_optional_enum(
+            "httpMethod",
+            body["HttpMethod"].as_str(),
+            &["POST", "GET", "HEAD", "OPTIONS", "PUT", "PATCH", "DELETE"],
+        )?;
+        if let Some(r) = body["InvocationRateLimitPerSecond"].as_i64() {
+            validate_range_i64("invocationRateLimitPerSecond", r, 1, i64::MAX)?;
+        }
 
         let mut state = self.state.write();
         let dest = state.api_destinations.get_mut(name).ok_or_else(|| {
@@ -1974,7 +2275,9 @@ impl EventBridgeService {
 
     fn delete_api_destination(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_required("Name", &body["Name"])?;
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
+        validate_string_length("name", name, 1, 64)?;
 
         let mut state = self.state.write();
         if !state.api_destinations.contains_key(name) {
@@ -1993,15 +2296,23 @@ impl EventBridgeService {
 
     fn start_replay(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_required("ReplayName", &body["ReplayName"])?;
         let name = body["ReplayName"]
             .as_str()
             .ok_or_else(|| missing("ReplayName"))?
             .to_string();
+        validate_string_length("replayName", &name, 1, 64)?;
+        validate_optional_string_length("description", body["Description"].as_str(), 0, 512)?;
+        validate_required("EventSourceArn", &body["EventSourceArn"])?;
         let description = body["Description"].as_str().map(|s| s.to_string());
         let event_source_arn = body["EventSourceArn"]
             .as_str()
             .ok_or_else(|| missing("EventSourceArn"))?
             .to_string();
+        validate_string_length("eventSourceArn", &event_source_arn, 1, 1600)?;
+        validate_required("EventStartTime", &body["EventStartTime"])?;
+        validate_required("EventEndTime", &body["EventEndTime"])?;
+        validate_required("Destination", &body["Destination"])?;
         let destination = body["Destination"].clone();
         let event_start_time_f = body["EventStartTime"].as_f64();
         let event_end_time_f = body["EventEndTime"].as_f64();
@@ -2108,9 +2419,11 @@ impl EventBridgeService {
 
     fn describe_replay(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_required("ReplayName", &body["ReplayName"])?;
         let name = body["ReplayName"]
             .as_str()
             .ok_or_else(|| missing("ReplayName"))?;
+        validate_string_length("replayName", name, 1, 64)?;
 
         let state = self.state.read();
         let replay = state.replays.get(name).ok_or_else(|| {
@@ -2143,6 +2456,15 @@ impl EventBridgeService {
 
     fn list_replays(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_optional_string_length("namePrefix", body["NamePrefix"].as_str(), 1, 64)?;
+        validate_optional_string_length(
+            "eventSourceArn",
+            body["EventSourceArn"].as_str(),
+            1,
+            1600,
+        )?;
+        validate_optional_string_length("nextToken", body["NextToken"].as_str(), 1, 2048)?;
+        validate_optional_range_i64("limit", body["Limit"].as_i64(), 1, 100)?;
         let name_prefix = body["NamePrefix"].as_str();
         let source_arn = body["EventSourceArn"].as_str();
         let replay_state = body["State"].as_str();
@@ -2186,8 +2508,14 @@ impl EventBridgeService {
             }
         }
 
+        let limit = body["Limit"].as_i64().unwrap_or(100) as usize;
+        let offset: usize = body["NextToken"]
+            .as_str()
+            .and_then(|t| t.parse().ok())
+            .unwrap_or(0);
+
         let state = self.state.read();
-        let replays: Vec<Value> = state
+        let filtered: Vec<Value> = state
             .replays
             .values()
             .filter(|r| {
@@ -2201,6 +2529,8 @@ impl EventBridgeService {
                     true
                 }
             })
+            .skip(offset)
+            .take(limit + 1)
             .map(|r| {
                 let mut obj = json!({
                     "EventSourceArn": r.event_source_arn,
@@ -2217,14 +2547,23 @@ impl EventBridgeService {
             })
             .collect();
 
-        Ok(json_resp(json!({ "Replays": replays })))
+        let has_more = filtered.len() > limit;
+        let replays: Vec<Value> = filtered.into_iter().take(limit).collect();
+        let mut resp = json!({ "Replays": replays });
+        if has_more {
+            resp["NextToken"] = json!((offset + limit).to_string());
+        }
+
+        Ok(json_resp(resp))
     }
 
     fn cancel_replay(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_required("ReplayName", &body["ReplayName"])?;
         let name = body["ReplayName"]
             .as_str()
             .ok_or_else(|| missing("ReplayName"))?;
+        validate_string_length("replayName", name, 1, 64)?;
 
         let mut state = self.state.write();
         let replay = state.replays.get_mut(name).ok_or_else(|| {
@@ -2987,5 +3326,501 @@ mod tests {
             "{}"
         ));
         assert!(!test_matches(Some(pattern), "other.source", "Event", "{}"));
+    }
+
+    // ---- list_connections / list_api_destinations filtering & pagination ----
+
+    use crate::state::EventBridgeState;
+    use fakecloud_core::delivery::DeliveryBus;
+    use parking_lot::RwLock;
+
+    fn make_service() -> EventBridgeService {
+        let state = Arc::new(RwLock::new(EventBridgeState::new(
+            "123456789012",
+            "us-east-1",
+        )));
+        let delivery = Arc::new(DeliveryBus::new());
+        EventBridgeService::new(state, delivery)
+    }
+
+    fn make_request(action: &str, body: Value) -> AwsRequest {
+        AwsRequest {
+            service: "events".to_string(),
+            action: action.to_string(),
+            region: "us-east-1".to_string(),
+            account_id: "123456789012".to_string(),
+            request_id: "test-id".to_string(),
+            headers: http::HeaderMap::new(),
+            query_params: HashMap::new(),
+            body: serde_json::to_vec(&body).unwrap().into(),
+            path_segments: vec![],
+            raw_path: "/".to_string(),
+            method: http::Method::POST,
+            is_query_protocol: false,
+            access_key_id: None,
+        }
+    }
+
+    fn create_connection(svc: &EventBridgeService, name: &str) {
+        let req = make_request(
+            "CreateConnection",
+            json!({
+                "Name": name,
+                "AuthorizationType": "API_KEY",
+                "AuthParameters": {
+                    "ApiKeyAuthParameters": {
+                        "ApiKeyName": "x-api-key",
+                        "ApiKeyValue": "secret"
+                    }
+                }
+            }),
+        );
+        svc.create_connection(&req).unwrap();
+    }
+
+    fn create_api_destination(svc: &EventBridgeService, name: &str, conn_name: &str) {
+        let conn_arn_field = {
+            let state = svc.state.read();
+            state.connections.get(conn_name).unwrap().arn.clone()
+        };
+        let req = make_request(
+            "CreateApiDestination",
+            json!({
+                "Name": name,
+                "ConnectionArn": conn_arn_field,
+                "InvocationEndpoint": "https://example.com",
+                "HttpMethod": "POST"
+            }),
+        );
+        svc.create_api_destination(&req).unwrap();
+    }
+
+    // -- ListConnections tests --
+
+    #[test]
+    fn list_connections_returns_all_by_default() {
+        let svc = make_service();
+        create_connection(&svc, "conn-alpha");
+        create_connection(&svc, "conn-beta");
+        create_connection(&svc, "conn-gamma");
+
+        let req = make_request("ListConnections", json!({}));
+        let resp = svc.list_connections(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["Connections"].as_array().unwrap().len(), 3);
+        assert!(body["NextToken"].is_null());
+    }
+
+    #[test]
+    fn list_connections_name_prefix_filter() {
+        let svc = make_service();
+        create_connection(&svc, "prod-conn-1");
+        create_connection(&svc, "prod-conn-2");
+        create_connection(&svc, "dev-conn-1");
+
+        let req = make_request("ListConnections", json!({ "NamePrefix": "prod-" }));
+        let resp = svc.list_connections(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let names: Vec<&str> = body["Connections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["Name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names.len(), 2);
+        assert!(names.iter().all(|n| n.starts_with("prod-")));
+    }
+
+    #[test]
+    fn list_connections_state_filter() {
+        let svc = make_service();
+        create_connection(&svc, "conn-a");
+        create_connection(&svc, "conn-b");
+
+        // All connections start as AUTHORIZED; change one
+        {
+            let mut state = svc.state.write();
+            state
+                .connections
+                .get_mut("conn-b")
+                .unwrap()
+                .connection_state = "DEAUTHORIZED".to_string();
+        }
+
+        let req = make_request(
+            "ListConnections",
+            json!({ "ConnectionState": "AUTHORIZED" }),
+        );
+        let resp = svc.list_connections(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let conns = body["Connections"].as_array().unwrap();
+        assert_eq!(conns.len(), 1);
+        assert_eq!(conns[0]["Name"].as_str().unwrap(), "conn-a");
+    }
+
+    #[test]
+    fn list_connections_pagination() {
+        let svc = make_service();
+        for i in 0..5 {
+            create_connection(&svc, &format!("conn-{i:02}"));
+        }
+
+        // First page: limit 2
+        let req = make_request("ListConnections", json!({ "Limit": 2 }));
+        let resp = svc.list_connections(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["Connections"].as_array().unwrap().len(), 2);
+        let token = body["NextToken"].as_str().unwrap();
+        assert_eq!(token, "2");
+
+        // Second page
+        let req = make_request("ListConnections", json!({ "Limit": 2, "NextToken": token }));
+        let resp = svc.list_connections(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["Connections"].as_array().unwrap().len(), 2);
+        let token = body["NextToken"].as_str().unwrap();
+        assert_eq!(token, "4");
+
+        // Third page (only 1 remaining)
+        let req = make_request("ListConnections", json!({ "Limit": 2, "NextToken": token }));
+        let resp = svc.list_connections(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["Connections"].as_array().unwrap().len(), 1);
+        assert!(body["NextToken"].is_null());
+    }
+
+    #[test]
+    fn list_connections_pagination_with_filter() {
+        let svc = make_service();
+        for i in 0..4 {
+            create_connection(&svc, &format!("prod-{i:02}"));
+        }
+        create_connection(&svc, "dev-00");
+
+        let req = make_request(
+            "ListConnections",
+            json!({ "NamePrefix": "prod-", "Limit": 2 }),
+        );
+        let resp = svc.list_connections(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["Connections"].as_array().unwrap().len(), 2);
+        assert!(body["NextToken"].as_str().is_some());
+    }
+
+    // -- ListApiDestinations tests --
+
+    #[test]
+    fn list_api_destinations_returns_all_by_default() {
+        let svc = make_service();
+        create_connection(&svc, "my-conn");
+        create_api_destination(&svc, "dest-alpha", "my-conn");
+        create_api_destination(&svc, "dest-beta", "my-conn");
+
+        let req = make_request("ListApiDestinations", json!({}));
+        let resp = svc.list_api_destinations(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["ApiDestinations"].as_array().unwrap().len(), 2);
+        assert!(body["NextToken"].is_null());
+    }
+
+    #[test]
+    fn list_api_destinations_name_prefix_filter() {
+        let svc = make_service();
+        create_connection(&svc, "my-conn");
+        create_api_destination(&svc, "prod-dest-1", "my-conn");
+        create_api_destination(&svc, "prod-dest-2", "my-conn");
+        create_api_destination(&svc, "dev-dest-1", "my-conn");
+
+        let req = make_request("ListApiDestinations", json!({ "NamePrefix": "prod-" }));
+        let resp = svc.list_api_destinations(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let names: Vec<&str> = body["ApiDestinations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["Name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names.len(), 2);
+        assert!(names.iter().all(|n| n.starts_with("prod-")));
+    }
+
+    #[test]
+    fn list_api_destinations_connection_arn_filter() {
+        let svc = make_service();
+        create_connection(&svc, "conn-a");
+        create_connection(&svc, "conn-b");
+        create_api_destination(&svc, "dest-1", "conn-a");
+        create_api_destination(&svc, "dest-2", "conn-b");
+        create_api_destination(&svc, "dest-3", "conn-a");
+
+        let conn_a_arn = {
+            let state = svc.state.read();
+            state.connections.get("conn-a").unwrap().arn.clone()
+        };
+
+        let req = make_request(
+            "ListApiDestinations",
+            json!({ "ConnectionArn": conn_a_arn }),
+        );
+        let resp = svc.list_api_destinations(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let names: Vec<&str> = body["ApiDestinations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["Name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"dest-1"));
+        assert!(names.contains(&"dest-3"));
+    }
+
+    #[test]
+    fn list_api_destinations_pagination() {
+        let svc = make_service();
+        create_connection(&svc, "my-conn");
+        for i in 0..5 {
+            create_api_destination(&svc, &format!("dest-{i:02}"), "my-conn");
+        }
+
+        // First page
+        let req = make_request("ListApiDestinations", json!({ "Limit": 2 }));
+        let resp = svc.list_api_destinations(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["ApiDestinations"].as_array().unwrap().len(), 2);
+        let token = body["NextToken"].as_str().unwrap();
+        assert_eq!(token, "2");
+
+        // Second page
+        let req = make_request(
+            "ListApiDestinations",
+            json!({ "Limit": 2, "NextToken": token }),
+        );
+        let resp = svc.list_api_destinations(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["ApiDestinations"].as_array().unwrap().len(), 2);
+        let token = body["NextToken"].as_str().unwrap();
+        assert_eq!(token, "4");
+
+        // Last page
+        let req = make_request(
+            "ListApiDestinations",
+            json!({ "Limit": 2, "NextToken": token }),
+        );
+        let resp = svc.list_api_destinations(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["ApiDestinations"].as_array().unwrap().len(), 1);
+        assert!(body["NextToken"].is_null());
+    }
+
+    // -- ListEventBuses pagination tests --
+
+    fn create_event_bus(svc: &EventBridgeService, name: &str) {
+        let req = make_request("CreateEventBus", json!({ "Name": name }));
+        svc.create_event_bus(&req).unwrap();
+    }
+
+    #[test]
+    fn list_event_buses_pagination() {
+        let svc = make_service();
+        // "default" bus already exists, create 4 more
+        for i in 0..4 {
+            create_event_bus(&svc, &format!("bus-{i:02}"));
+        }
+
+        // First page: limit 2
+        let req = make_request("ListEventBuses", json!({ "Limit": 2 }));
+        let resp = svc.list_event_buses(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["EventBuses"].as_array().unwrap().len(), 2);
+        let token = body["NextToken"].as_str().unwrap();
+        assert_eq!(token, "2");
+
+        // Second page
+        let req = make_request("ListEventBuses", json!({ "Limit": 2, "NextToken": token }));
+        let resp = svc.list_event_buses(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["EventBuses"].as_array().unwrap().len(), 2);
+        let token = body["NextToken"].as_str().unwrap();
+        assert_eq!(token, "4");
+
+        // Third page (only 1 remaining)
+        let req = make_request("ListEventBuses", json!({ "Limit": 2, "NextToken": token }));
+        let resp = svc.list_event_buses(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["EventBuses"].as_array().unwrap().len(), 1);
+        assert!(body["NextToken"].is_null());
+    }
+
+    #[test]
+    fn list_event_buses_no_pagination_returns_all() {
+        let svc = make_service();
+        create_event_bus(&svc, "bus-alpha");
+        create_event_bus(&svc, "bus-beta");
+
+        let req = make_request("ListEventBuses", json!({}));
+        let resp = svc.list_event_buses(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        // default + 2 custom = 3
+        assert_eq!(body["EventBuses"].as_array().unwrap().len(), 3);
+        assert!(body["NextToken"].is_null());
+    }
+
+    // -- PutEvents EndpointId tests --
+
+    #[test]
+    fn put_events_returns_endpoint_id() {
+        let svc = make_service();
+        let req = make_request(
+            "PutEvents",
+            json!({
+                "EndpointId": "my-endpoint.abc123",
+                "Entries": [{
+                    "Source": "my.source",
+                    "DetailType": "MyType",
+                    "Detail": "{}",
+                    "EventBusName": "default"
+                }]
+            }),
+        );
+        let resp = svc.put_events(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["EndpointId"].as_str().unwrap(), "my-endpoint.abc123");
+        assert_eq!(body["FailedEntryCount"], 0);
+    }
+
+    #[test]
+    fn put_events_omits_endpoint_id_when_not_provided() {
+        let svc = make_service();
+        let req = make_request(
+            "PutEvents",
+            json!({
+                "Entries": [{
+                    "Source": "my.source",
+                    "DetailType": "MyType",
+                    "Detail": "{}",
+                    "EventBusName": "default"
+                }]
+            }),
+        );
+        let resp = svc.put_events(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert!(body["EndpointId"].is_null());
+    }
+
+    // -- ListArchives pagination tests --
+
+    fn create_archive(svc: &EventBridgeService, name: &str) {
+        let req = make_request(
+            "CreateArchive",
+            json!({
+                "ArchiveName": name,
+                "EventSourceArn": "arn:aws:events:us-east-1:123456789012:event-bus/default"
+            }),
+        );
+        svc.create_archive(&req).unwrap();
+    }
+
+    #[test]
+    fn list_archives_pagination() {
+        let svc = make_service();
+        for i in 0..5 {
+            create_archive(&svc, &format!("archive-{i:02}"));
+        }
+
+        // First page: limit 2
+        let req = make_request("ListArchives", json!({ "Limit": 2 }));
+        let resp = svc.list_archives(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["Archives"].as_array().unwrap().len(), 2);
+        let token = body["NextToken"].as_str().unwrap();
+        assert_eq!(token, "2");
+
+        // Second page
+        let req = make_request("ListArchives", json!({ "Limit": 2, "NextToken": token }));
+        let resp = svc.list_archives(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["Archives"].as_array().unwrap().len(), 2);
+        let token = body["NextToken"].as_str().unwrap();
+        assert_eq!(token, "4");
+
+        // Third page (only 1 remaining)
+        let req = make_request("ListArchives", json!({ "Limit": 2, "NextToken": token }));
+        let resp = svc.list_archives(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["Archives"].as_array().unwrap().len(), 1);
+        assert!(body["NextToken"].is_null());
+    }
+
+    // -- ListReplays pagination tests --
+
+    fn create_replay(svc: &EventBridgeService, name: &str) {
+        // Need an archive first for the replay's event source
+        let archive_arn = {
+            let state = svc.state.read();
+            if state.archives.contains_key("replay-archive") {
+                state.archives["replay-archive"].arn.clone()
+            } else {
+                drop(state);
+                create_archive(svc, "replay-archive");
+                svc.state.read().archives["replay-archive"].arn.clone()
+            }
+        };
+        let req = make_request(
+            "StartReplay",
+            json!({
+                "ReplayName": name,
+                "EventSourceArn": archive_arn,
+                "EventStartTime": 1000000.0,
+                "EventEndTime": 2000000.0,
+                "Destination": {
+                    "Arn": "arn:aws:events:us-east-1:123456789012:event-bus/default"
+                }
+            }),
+        );
+        svc.start_replay(&req).unwrap();
+    }
+
+    #[test]
+    fn list_replays_pagination() {
+        let svc = make_service();
+        for i in 0..5 {
+            create_replay(&svc, &format!("replay-{i:02}"));
+        }
+
+        // First page: limit 2
+        let req = make_request("ListReplays", json!({ "Limit": 2 }));
+        let resp = svc.list_replays(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["Replays"].as_array().unwrap().len(), 2);
+        let token = body["NextToken"].as_str().unwrap();
+        assert_eq!(token, "2");
+
+        // Second page
+        let req = make_request("ListReplays", json!({ "Limit": 2, "NextToken": token }));
+        let resp = svc.list_replays(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["Replays"].as_array().unwrap().len(), 2);
+        let token = body["NextToken"].as_str().unwrap();
+        assert_eq!(token, "4");
+
+        // Third page (only 1 remaining)
+        let req = make_request("ListReplays", json!({ "Limit": 2, "NextToken": token }));
+        let resp = svc.list_replays(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["Replays"].as_array().unwrap().len(), 1);
+        assert!(body["NextToken"].is_null());
+    }
+
+    #[test]
+    fn list_event_buses_invalid_next_token_returns_error() {
+        let svc = make_service();
+
+        let req = make_request("ListEventBuses", json!({ "NextToken": "not-a-number" }));
+        let result = svc.list_event_buses(&req);
+        assert!(
+            result.is_err(),
+            "non-numeric NextToken should return an error"
+        );
     }
 }

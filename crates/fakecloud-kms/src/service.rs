@@ -8,6 +8,7 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
+use fakecloud_core::validation::*;
 
 use crate::state::{KeyRotation, KmsAlias, KmsGrant, KmsKey, SharedKmsState};
 
@@ -291,6 +292,15 @@ impl KmsService {
 
     fn create_key(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = body_json(req);
+
+        validate_optional_string_length(
+            "customKeyStoreId",
+            body["CustomKeyStoreId"].as_str(),
+            1,
+            64,
+        )?;
+
+        let custom_key_store_id = body["CustomKeyStoreId"].as_str().map(|s| s.to_string());
         let description = body["Description"].as_str().unwrap_or("").to_string();
         let key_usage = body["KeyUsage"]
             .as_str()
@@ -381,6 +391,7 @@ impl KmsService {
             signing_algorithms: signing_algs,
             encryption_algorithms: encryption_algs,
             mac_algorithms: mac_algs,
+            custom_key_store_id,
         };
 
         let metadata = key_metadata_json(&key, &state.account_id);
@@ -431,9 +442,16 @@ impl KmsService {
         ))
     }
 
-    fn list_keys(&self, _req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+    fn list_keys(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = body_json(req);
+
+        validate_optional_range_i64("limit", body["Limit"].as_i64(), 1, 1000)?;
+
+        let limit = body["Limit"].as_u64().unwrap_or(1000) as usize;
+        let marker = body["Marker"].as_str();
+
         let state = self.state.read();
-        let keys: Vec<Value> = state
+        let all_keys: Vec<Value> = state
             .keys
             .values()
             .map(|k| {
@@ -444,13 +462,33 @@ impl KmsService {
             })
             .collect();
 
+        let start = if let Some(m) = marker {
+            all_keys
+                .iter()
+                .position(|k| k["KeyId"].as_str() == Some(m))
+                .map(|pos| pos + 1)
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
+        let page = &all_keys[start..all_keys.len().min(start + limit)];
+        let truncated = start + limit < all_keys.len();
+
+        let mut result = json!({
+            "Keys": page,
+            "Truncated": truncated,
+        });
+
+        if truncated {
+            if let Some(last) = page.last() {
+                result["NextMarker"] = last["KeyId"].clone();
+            }
+        }
+
         Ok(AwsResponse::json(
             StatusCode::OK,
-            serde_json::to_string(&json!({
-                "Keys": keys,
-                "Truncated": false,
-            }))
-            .unwrap(),
+            serde_json::to_string(&result).unwrap(),
         ))
     }
 
@@ -830,6 +868,16 @@ impl KmsService {
 
     fn generate_random(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = body_json(req);
+
+        // CustomKeyStoreId is accepted for API compatibility but has no effect on
+        // random number generation in this emulator.
+        validate_optional_string_length(
+            "customKeyStoreId",
+            body["CustomKeyStoreId"].as_str(),
+            1,
+            64,
+        )?;
+
         let num_bytes = body["NumberOfBytes"].as_u64().unwrap_or(32) as usize;
 
         if num_bytes > 1024 {
@@ -1044,6 +1092,16 @@ impl KmsService {
 
     fn list_aliases(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = body_json(req);
+
+        if !body["KeyId"].is_null() && !body["KeyId"].is_string() {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "ValidationException",
+                "KeyId must be a string",
+            ));
+        }
+        validate_optional_string_length("keyId", body["KeyId"].as_str(), 1, 2048)?;
+
         let key_id_filter = body["KeyId"].as_str();
 
         let state = self.state.read();
@@ -1729,10 +1787,22 @@ impl KmsService {
 
     fn list_retirable_grants(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = body_json(req);
-        let retiring_principal = body["RetiringPrincipal"].as_str().unwrap_or("");
+
+        validate_required("RetiringPrincipal", &body["RetiringPrincipal"])?;
+        let retiring_principal = body["RetiringPrincipal"].as_str().ok_or_else(|| {
+            AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "ValidationException",
+                "RetiringPrincipal must be a string",
+            )
+        })?;
+        validate_optional_range_i64("limit", body["Limit"].as_i64(), 1, 1000)?;
+
+        let limit = body["Limit"].as_u64().unwrap_or(1000) as usize;
+        let marker = body["Marker"].as_str();
 
         let state = self.state.read();
-        let grants: Vec<Value> = state
+        let all_grants: Vec<Value> = state
             .grants
             .iter()
             .filter(|g| {
@@ -1743,13 +1813,33 @@ impl KmsService {
             .map(grant_to_json)
             .collect();
 
+        let start = if let Some(m) = marker {
+            all_grants
+                .iter()
+                .position(|g| g["GrantId"].as_str() == Some(m))
+                .map(|pos| pos + 1)
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
+        let page = &all_grants[start..all_grants.len().min(start + limit)];
+        let truncated = start + limit < all_grants.len();
+
+        let mut result = json!({
+            "Grants": page,
+            "Truncated": truncated,
+        });
+
+        if truncated {
+            if let Some(last) = page.last() {
+                result["NextMarker"] = last["GrantId"].clone();
+            }
+        }
+
         Ok(AwsResponse::json(
             StatusCode::OK,
-            serde_json::to_string(&json!({
-                "Grants": grants,
-                "Truncated": false,
-            }))
-            .unwrap(),
+            serde_json::to_string(&result).unwrap(),
         ))
     }
 
@@ -2013,6 +2103,7 @@ impl KmsService {
             signing_algorithms: source_signing_algorithms,
             encryption_algorithms: source_encryption_algorithms,
             mac_algorithms: source_mac_algorithms,
+            custom_key_store_id: None,
         };
 
         let replica_storage_key = format!("{}:{}", replica_region, source_key_id);
@@ -2057,6 +2148,9 @@ fn key_metadata_json(key: &KmsKey, account_id: &str) -> Value {
     }
     if let Some(dd) = key.deletion_date {
         meta["DeletionDate"] = json!(dd);
+    }
+    if let Some(ref cks_id) = key.custom_key_store_id {
+        meta["CustomKeyStoreId"] = json!(cks_id);
     }
 
     if key.multi_region {
@@ -2280,4 +2374,156 @@ fn action_matches(policy_action: &str, requested_action: &str) -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use parking_lot::RwLock;
+    use serde_json::json;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    fn make_service() -> KmsService {
+        let state: SharedKmsState = Arc::new(RwLock::new(crate::state::KmsState::new(
+            "123456789012",
+            "us-east-1",
+        )));
+        KmsService::new(state)
+    }
+
+    fn make_request(action: &str, body: Value) -> AwsRequest {
+        AwsRequest {
+            service: "kms".to_string(),
+            action: action.to_string(),
+            region: "us-east-1".to_string(),
+            account_id: "123456789012".to_string(),
+            request_id: "test-id".to_string(),
+            headers: http::HeaderMap::new(),
+            query_params: HashMap::new(),
+            body: serde_json::to_vec(&body).unwrap().into(),
+            path_segments: vec![],
+            raw_path: "/".to_string(),
+            method: http::Method::POST,
+            is_query_protocol: false,
+            access_key_id: None,
+        }
+    }
+
+    fn create_key(svc: &KmsService) -> String {
+        let req = make_request("CreateKey", json!({}));
+        let resp = svc.create_key(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        body["KeyMetadata"]["KeyId"].as_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn list_keys_pagination_no_duplicates() {
+        let svc = make_service();
+        let mut all_key_ids: Vec<String> = Vec::new();
+        for _ in 0..5 {
+            all_key_ids.push(create_key(&svc));
+        }
+
+        let mut collected_ids: Vec<String> = Vec::new();
+        let mut marker: Option<String> = None;
+
+        loop {
+            let mut body = json!({ "Limit": 2 });
+            if let Some(ref m) = marker {
+                body["Marker"] = json!(m);
+            }
+            let req = make_request("ListKeys", body);
+            let resp = svc.list_keys(&req).unwrap();
+            let resp_body: Value = serde_json::from_slice(&resp.body).unwrap();
+
+            for key in resp_body["Keys"].as_array().unwrap() {
+                collected_ids.push(key["KeyId"].as_str().unwrap().to_string());
+            }
+
+            if resp_body["Truncated"].as_bool().unwrap_or(false) {
+                marker = resp_body["NextMarker"].as_str().map(|s| s.to_string());
+            } else {
+                break;
+            }
+        }
+
+        // Verify no duplicates
+        let mut deduped = collected_ids.clone();
+        deduped.sort();
+        deduped.dedup();
+        assert_eq!(
+            collected_ids.len(),
+            deduped.len(),
+            "pagination produced duplicate keys"
+        );
+
+        // Verify all keys returned
+        for kid in &all_key_ids {
+            assert!(
+                collected_ids.contains(kid),
+                "key {kid} missing from paginated results"
+            );
+        }
+    }
+
+    #[test]
+    fn list_retirable_grants_pagination() {
+        let svc = make_service();
+        let key_id = create_key(&svc);
+        let retiring = "arn:aws:iam::123456789012:user/retiring-user";
+
+        // Create 5 grants with the same retiring principal
+        for i in 0..5 {
+            let req = make_request(
+                "CreateGrant",
+                json!({
+                    "KeyId": key_id,
+                    "GranteePrincipal": format!("arn:aws:iam::123456789012:user/grantee-{i}"),
+                    "RetiringPrincipal": retiring,
+                    "Operations": ["Encrypt"]
+                }),
+            );
+            svc.create_grant(&req).unwrap();
+        }
+
+        let mut collected_ids: Vec<String> = Vec::new();
+        let mut marker: Option<String> = None;
+
+        loop {
+            let mut body = json!({
+                "RetiringPrincipal": retiring,
+                "Limit": 2
+            });
+            if let Some(ref m) = marker {
+                body["Marker"] = json!(m);
+            }
+            let req = make_request("ListRetirableGrants", body);
+            let resp = svc.list_retirable_grants(&req).unwrap();
+            let resp_body: Value = serde_json::from_slice(&resp.body).unwrap();
+
+            for grant in resp_body["Grants"].as_array().unwrap() {
+                collected_ids.push(grant["GrantId"].as_str().unwrap().to_string());
+            }
+
+            if resp_body["Truncated"].as_bool().unwrap_or(false) {
+                marker = resp_body["NextMarker"].as_str().map(|s| s.to_string());
+            } else {
+                break;
+            }
+        }
+
+        // Verify no duplicates
+        let mut deduped = collected_ids.clone();
+        deduped.sort();
+        deduped.dedup();
+        assert_eq!(
+            collected_ids.len(),
+            deduped.len(),
+            "pagination produced duplicate grants"
+        );
+
+        // All 5 grants returned
+        assert_eq!(collected_ids.len(), 5, "expected 5 grants total");
+    }
 }

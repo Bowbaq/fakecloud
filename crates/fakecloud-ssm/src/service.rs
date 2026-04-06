@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
+use fakecloud_core::validation::*;
 
 use crate::state::{
     MaintenanceWindow, MaintenanceWindowTarget, MaintenanceWindowTask, PatchBaseline, PatchGroup,
@@ -2385,6 +2386,37 @@ impl SsmService {
             .as_str()
             .ok_or_else(|| missing("DocumentName"))?
             .to_string();
+
+        // Validate optional fields
+        validate_optional_string_length("DocumentHash", body["DocumentHash"].as_str(), 0, 256)?;
+        validate_optional_enum(
+            "DocumentHashType",
+            body["DocumentHashType"].as_str(),
+            &["Sha256", "Sha1"],
+        )?;
+        validate_optional_range_i64(
+            "TimeoutSeconds",
+            body["TimeoutSeconds"].as_i64(),
+            30,
+            2592000,
+        )?;
+        validate_optional_string_length("Comment", body["Comment"].as_str(), 0, 100)?;
+        validate_optional_string_length("OutputS3Region", body["OutputS3Region"].as_str(), 3, 20)?;
+        validate_optional_string_length(
+            "OutputS3BucketName",
+            body["OutputS3BucketName"].as_str(),
+            3,
+            63,
+        )?;
+        validate_optional_string_length(
+            "OutputS3KeyPrefix",
+            body["OutputS3KeyPrefix"].as_str(),
+            0,
+            500,
+        )?;
+        validate_optional_string_length("MaxConcurrency", body["MaxConcurrency"].as_str(), 1, 7)?;
+        validate_optional_string_length("MaxErrors", body["MaxErrors"].as_str(), 1, 7)?;
+
         let instance_ids: Vec<String> = body["InstanceIds"]
             .as_array()
             .map(|arr| {
@@ -2421,6 +2453,8 @@ impl SsmService {
         let max_errors = body["MaxErrors"].as_str().map(|s| s.to_string());
         let service_role = body["ServiceRoleArn"].as_str().map(|s| s.to_string());
         let notification = body.get("NotificationConfig").cloned();
+        let document_hash = body["DocumentHash"].as_str().map(|s| s.to_string());
+        let document_hash_type = body["DocumentHashType"].as_str().map(|s| s.to_string());
 
         let command_id = uuid::Uuid::new_v4().to_string();
         let now = Utc::now();
@@ -2448,45 +2482,70 @@ impl SsmService {
             service_role_arn: service_role.clone(),
             notification_config: notification.clone(),
             targets: targets.clone(),
+            document_hash: document_hash.clone(),
+            document_hash_type: document_hash_type.clone(),
         };
 
         let mut state = self.state.write();
         state.commands.push(cmd);
 
         let expires = now + chrono::Duration::seconds(timeout.unwrap_or(3600));
-        let cmd_json = json!({
-            "Command": {
-                "CommandId": command_id,
-                "DocumentName": document_name,
-                "InstanceIds": effective_instance_ids,
-                "Targets": targets,
-                "Parameters": parameters,
-                "Status": "Success",
-                "StatusDetails": "Details placeholder",
-                "RequestedDateTime": now.timestamp_millis() as f64 / 1000.0,
-                "ExpiresAfter": expires.timestamp_millis() as f64 / 1000.0,
-                "Comment": comment,
-                "OutputS3Region": output_s3_region,
-                "OutputS3BucketName": output_s3_bucket,
-                "OutputS3KeyPrefix": output_s3_prefix,
-                "ServiceRoleArn": service_role,
-                "TimeoutSeconds": timeout,
-                "MaxConcurrency": max_concurrency.unwrap_or_default(),
-                "MaxErrors": max_errors.unwrap_or_default(),
-                "DeliveryTimedOutCount": 0,
-            }
+        let mut cmd_obj = json!({
+            "CommandId": command_id,
+            "DocumentName": document_name,
+            "InstanceIds": effective_instance_ids,
+            "Targets": targets,
+            "Parameters": parameters,
+            "Status": "Success",
+            "StatusDetails": "Details placeholder",
+            "RequestedDateTime": now.timestamp_millis() as f64 / 1000.0,
+            "ExpiresAfter": expires.timestamp_millis() as f64 / 1000.0,
+            "MaxConcurrency": max_concurrency.unwrap_or_default(),
+            "MaxErrors": max_errors.unwrap_or_default(),
+            "DeliveryTimedOutCount": 0,
         });
+        if let Some(ref c) = comment {
+            cmd_obj["Comment"] = json!(c);
+        }
+        if let Some(ref r) = output_s3_region {
+            cmd_obj["OutputS3Region"] = json!(r);
+        }
+        if let Some(ref b) = output_s3_bucket {
+            cmd_obj["OutputS3BucketName"] = json!(b);
+        }
+        if let Some(ref p) = output_s3_prefix {
+            cmd_obj["OutputS3KeyPrefix"] = json!(p);
+        }
+        if let Some(ref s) = service_role {
+            cmd_obj["ServiceRoleArn"] = json!(s);
+        }
+        if let Some(t) = timeout {
+            cmd_obj["TimeoutSeconds"] = json!(t);
+        }
+        if let Some(ref dh) = document_hash {
+            cmd_obj["DocumentHash"] = json!(dh);
+        }
+        if let Some(ref dht) = document_hash_type {
+            cmd_obj["DocumentHashType"] = json!(dht);
+        }
 
-        Ok(json_resp(cmd_json))
+        Ok(json_resp(json!({ "Command": cmd_obj })))
     }
 
     fn list_commands(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_optional_string_length("CommandId", body["CommandId"].as_str(), 36, 36)?;
+        validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
+        let max_results = body["MaxResults"].as_i64().unwrap_or(50) as usize;
+        let next_token_offset: usize = body["NextToken"]
+            .as_str()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
         let command_id = body["CommandId"].as_str();
         let instance_id = body["InstanceId"].as_str();
 
         let state = self.state.read();
-        let commands: Vec<Value> = state
+        let all_commands: Vec<Value> = state
             .commands
             .iter()
             .filter(|c| {
@@ -2505,7 +2564,7 @@ impl SsmService {
             .map(|c| {
                 let expires = c.requested_date_time
                     + chrono::Duration::seconds(c.timeout_seconds.unwrap_or(3600));
-                json!({
+                let mut v = json!({
                     "CommandId": c.command_id,
                     "DocumentName": c.document_name,
                     "InstanceIds": c.instance_ids,
@@ -2520,13 +2579,20 @@ impl SsmService {
                     "OutputS3BucketName": c.output_s3_bucket_name,
                     "OutputS3KeyPrefix": c.output_s3_key_prefix,
                     "DeliveryTimedOutCount": 0,
-                })
+                });
+                if let Some(ref dh) = c.document_hash {
+                    v["DocumentHash"] = json!(dh);
+                }
+                if let Some(ref dht) = c.document_hash_type {
+                    v["DocumentHashType"] = json!(dht);
+                }
+                v
             })
             .collect();
 
         // If a specific CommandId was requested and not found, return an error
         if let Some(cid) = command_id {
-            if commands.is_empty() {
+            if all_commands.is_empty() {
                 return Err(AwsServiceError::aws_error(
                     StatusCode::BAD_REQUEST,
                     "InvalidCommandId",
@@ -2535,7 +2601,20 @@ impl SsmService {
             }
         }
 
-        Ok(json_resp(json!({ "Commands": commands })))
+        let page = if next_token_offset < all_commands.len() {
+            &all_commands[next_token_offset..]
+        } else {
+            &[]
+        };
+        let has_more = page.len() > max_results;
+        let commands: Vec<Value> = page.iter().take(max_results).cloned().collect();
+
+        let mut resp = json!({ "Commands": commands });
+        if has_more {
+            resp["NextToken"] = json!((next_token_offset + max_results).to_string());
+        }
+
+        Ok(json_resp(resp))
     }
 
     fn get_command_invocation(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
@@ -2543,10 +2622,12 @@ impl SsmService {
         let command_id = body["CommandId"]
             .as_str()
             .ok_or_else(|| missing("CommandId"))?;
+        validate_string_length("CommandId", command_id, 36, 36)?;
         let instance_id = body["InstanceId"]
             .as_str()
             .ok_or_else(|| missing("InstanceId"))?;
         let plugin_name = body["PluginName"].as_str();
+        validate_optional_string_length("PluginName", plugin_name, 4, 500)?;
 
         let state = self.state.read();
         let cmd = state
@@ -2598,10 +2679,17 @@ impl SsmService {
 
     fn list_command_invocations(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_optional_string_length("CommandId", body["CommandId"].as_str(), 36, 36)?;
+        validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
+        let max_results = body["MaxResults"].as_i64().unwrap_or(50) as usize;
+        let next_token_offset: usize = body["NextToken"]
+            .as_str()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
         let command_id = body["CommandId"].as_str();
 
         let state = self.state.read();
-        let invocations: Vec<Value> = state
+        let all_invocations: Vec<Value> = state
             .commands
             .iter()
             .filter(|c| {
@@ -2626,7 +2714,20 @@ impl SsmService {
             })
             .collect();
 
-        Ok(json_resp(json!({ "CommandInvocations": invocations })))
+        let page = if next_token_offset < all_invocations.len() {
+            &all_invocations[next_token_offset..]
+        } else {
+            &[]
+        };
+        let has_more = page.len() > max_results;
+        let invocations: Vec<Value> = page.iter().take(max_results).cloned().collect();
+
+        let mut resp = json!({ "CommandInvocations": invocations });
+        if has_more {
+            resp["NextToken"] = json!((next_token_offset + max_results).to_string());
+        }
+
+        Ok(json_resp(resp))
     }
 
     fn cancel_command(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
@@ -2634,6 +2735,7 @@ impl SsmService {
         let command_id = body["CommandId"]
             .as_str()
             .ok_or_else(|| missing("CommandId"))?;
+        validate_string_length("CommandId", command_id, 36, 36)?;
 
         let mut state = self.state.write();
         if let Some(cmd) = state
@@ -2655,22 +2757,34 @@ impl SsmService {
             .as_str()
             .ok_or_else(|| missing("Name"))?
             .to_string();
+        validate_string_length("Name", &name, 3, 128)?;
         let schedule = body["Schedule"]
             .as_str()
             .ok_or_else(|| missing("Schedule"))?
             .to_string();
+        validate_string_length("Schedule", &schedule, 1, 256)?;
         let duration = body["Duration"]
             .as_i64()
             .ok_or_else(|| missing("Duration"))?;
+        validate_range_i64("Duration", duration, 1, 24)?;
         let cutoff = body["Cutoff"].as_i64().ok_or_else(|| missing("Cutoff"))?;
+        validate_range_i64("Cutoff", cutoff, 0, 23)?;
+        validate_required(
+            "AllowUnassociatedTargets",
+            &body["AllowUnassociatedTargets"],
+        )?;
         let allow_unassociated_targets =
             body["AllowUnassociatedTargets"].as_bool().unwrap_or(false);
+        validate_optional_string_length("Description", body["Description"].as_str(), 1, 128)?;
+        validate_optional_string_length("ClientToken", body["ClientToken"].as_str(), 1, 64)?;
         let description = body["Description"].as_str().map(|s| s.to_string());
         let schedule_timezone = body["ScheduleTimezone"].as_str().map(|s| s.to_string());
         let schedule_offset = body["ScheduleOffset"].as_i64();
+        validate_optional_range_i64("ScheduleOffset", schedule_offset, 1, 6)?;
         let start_date = body["StartDate"].as_str().map(|s| s.to_string());
         let end_date = body["EndDate"].as_str().map(|s| s.to_string());
 
+        let client_token = body["ClientToken"].as_str().map(|s| s.to_string());
         let tags: HashMap<String, String> = body["Tags"]
             .as_array()
             .map(|arr| {
@@ -2683,6 +2797,19 @@ impl SsmService {
                     .collect()
             })
             .unwrap_or_default();
+
+        let mut state = self.state.write();
+
+        // Idempotency: if a window with the same ClientToken already exists, return it
+        if let Some(ref token) = client_token {
+            if let Some(existing) = state
+                .maintenance_windows
+                .values()
+                .find(|mw| mw.client_token.as_deref() == Some(token))
+            {
+                return Ok(json_resp(json!({ "WindowId": existing.id })));
+            }
+        }
 
         let window_id = format!("mw-{}", &uuid::Uuid::new_v4().to_string()[..17]);
 
@@ -2702,9 +2829,9 @@ impl SsmService {
             schedule_offset,
             start_date,
             end_date,
+            client_token,
         };
 
-        let mut state = self.state.write();
         state.maintenance_windows.insert(window_id.clone(), mw);
 
         Ok(json_resp(json!({ "WindowId": window_id })))
@@ -2715,10 +2842,16 @@ impl SsmService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 10, 100)?;
+        let max_results = body["MaxResults"].as_i64().unwrap_or(50) as usize;
+        let next_token_offset: usize = body["NextToken"]
+            .as_str()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
         let filters = body["Filters"].as_array();
 
         let state = self.state.read();
-        let windows: Vec<Value> = state
+        let all_windows: Vec<Value> = state
             .maintenance_windows
             .values()
             .filter(|mw| {
@@ -2754,7 +2887,6 @@ impl SsmService {
                     "Schedule": mw.schedule,
                     "Duration": mw.duration,
                     "Cutoff": mw.cutoff,
-                    "AllowUnassociatedTargets": mw.allow_unassociated_targets,
                     "Enabled": mw.enabled,
                 });
                 if let Some(ref desc) = mw.description {
@@ -2776,7 +2908,20 @@ impl SsmService {
             })
             .collect();
 
-        Ok(json_resp(json!({ "WindowIdentities": windows })))
+        let page = if next_token_offset < all_windows.len() {
+            &all_windows[next_token_offset..]
+        } else {
+            &[]
+        };
+        let has_more = page.len() > max_results;
+        let windows: Vec<Value> = page.iter().take(max_results).cloned().collect();
+
+        let mut resp = json!({ "WindowIdentities": windows });
+        if has_more {
+            resp["NextToken"] = json!((next_token_offset + max_results).to_string());
+        }
+
+        Ok(json_resp(resp))
     }
 
     fn get_maintenance_window(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
@@ -2824,6 +2969,7 @@ impl SsmService {
         let window_id = body["WindowId"]
             .as_str()
             .ok_or_else(|| missing("WindowId"))?;
+        validate_string_length("WindowId", window_id, 20, 20)?;
 
         let mut state = self.state.write();
         if state.maintenance_windows.remove(window_id).is_none() {
@@ -2838,6 +2984,13 @@ impl SsmService {
         let window_id = body["WindowId"]
             .as_str()
             .ok_or_else(|| missing("WindowId"))?;
+        validate_string_length("WindowId", window_id, 20, 20)?;
+        validate_optional_string_length("Name", body["Name"].as_str(), 3, 128)?;
+        validate_optional_string_length("Description", body["Description"].as_str(), 1, 128)?;
+        validate_optional_string_length("Schedule", body["Schedule"].as_str(), 1, 256)?;
+        validate_optional_range_i64("ScheduleOffset", body["ScheduleOffset"].as_i64(), 1, 6)?;
+        validate_optional_range_i64("Duration", body["Duration"].as_i64(), 1, 24)?;
+        validate_optional_range_i64("Cutoff", body["Cutoff"].as_i64(), 0, 23)?;
 
         let mut state = self.state.write();
         let mw = state
@@ -3133,10 +3286,56 @@ impl SsmService {
             .as_str()
             .ok_or_else(|| missing("Name"))?
             .to_string();
+        validate_string_length("Name", &name, 3, 128)?;
+        validate_optional_enum(
+            "OperatingSystem",
+            body["OperatingSystem"].as_str(),
+            &[
+                "WINDOWS",
+                "AMAZON_LINUX",
+                "AMAZON_LINUX_2",
+                "AMAZON_LINUX_2022",
+                "UBUNTU",
+                "REDHAT_ENTERPRISE_LINUX",
+                "SUSE",
+                "CENTOS",
+                "ORACLE_LINUX",
+                "DEBIAN",
+                "MACOS",
+                "RASPBIAN",
+                "ROCKY_LINUX",
+                "ALMA_LINUX",
+                "AMAZON_LINUX_2023",
+            ],
+        )?;
         let operating_system = body["OperatingSystem"]
             .as_str()
             .unwrap_or("WINDOWS")
             .to_string();
+        validate_optional_string_length("Description", body["Description"].as_str(), 1, 1024)?;
+        validate_optional_enum(
+            "ApprovedPatchesComplianceLevel",
+            body["ApprovedPatchesComplianceLevel"].as_str(),
+            &[
+                "CRITICAL",
+                "HIGH",
+                "MEDIUM",
+                "LOW",
+                "INFORMATIONAL",
+                "UNSPECIFIED",
+            ],
+        )?;
+        validate_optional_enum(
+            "RejectedPatchesAction",
+            body["RejectedPatchesAction"].as_str(),
+            &["ALLOW_AS_DEPENDENCY", "BLOCK"],
+        )?;
+        validate_optional_enum(
+            "AvailableSecurityUpdatesComplianceStatus",
+            body["AvailableSecurityUpdatesComplianceStatus"].as_str(),
+            &["COMPLIANT", "NON_COMPLIANT"],
+        )?;
+        validate_optional_string_length("ClientToken", body["ClientToken"].as_str(), 1, 64)?;
         let description = body["Description"].as_str().map(|s| s.to_string());
         let approval_rules = body.get("ApprovalRules").cloned();
         let approved_patches: Vec<String> = body["ApprovedPatches"]
@@ -3181,6 +3380,25 @@ impl SsmService {
             })
             .unwrap_or_default();
 
+        let available_security_updates_compliance_status = body
+            ["AvailableSecurityUpdatesComplianceStatus"]
+            .as_str()
+            .map(|s| s.to_string());
+        let client_token = body["ClientToken"].as_str().map(|s| s.to_string());
+
+        let mut state = self.state.write();
+
+        // Idempotency: if a baseline with the same ClientToken already exists, return it
+        if let Some(ref token) = client_token {
+            if let Some(existing) = state
+                .patch_baselines
+                .values()
+                .find(|pb| pb.client_token.as_deref() == Some(token))
+            {
+                return Ok(json_resp(json!({ "BaselineId": existing.id })));
+            }
+        }
+
         let baseline_id = format!(
             "pb-{}",
             &uuid::Uuid::new_v4().to_string().replace('-', "")[..17]
@@ -3200,9 +3418,10 @@ impl SsmService {
             global_filters,
             sources,
             approved_patches_enable_non_security,
+            available_security_updates_compliance_status,
+            client_token,
         };
 
-        let mut state = self.state.write();
         state.patch_baselines.insert(baseline_id.clone(), pb);
 
         Ok(json_resp(json!({ "BaselineId": baseline_id })))
@@ -3213,6 +3432,7 @@ impl SsmService {
         let baseline_id = body["BaselineId"]
             .as_str()
             .ok_or_else(|| missing("BaselineId"))?;
+        validate_string_length("BaselineId", baseline_id, 20, 128)?;
 
         let mut state = self.state.write();
         state.patch_baselines.remove(baseline_id);
@@ -3226,10 +3446,16 @@ impl SsmService {
 
     fn describe_patch_baselines(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 100)?;
+        let max_results = body["MaxResults"].as_i64().unwrap_or(50) as usize;
+        let next_token_offset: usize = body["NextToken"]
+            .as_str()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
         let filters = body["Filters"].as_array();
 
         let state = self.state.read();
-        let baselines: Vec<Value> = state
+        let all_baselines: Vec<Value> = state
             .patch_baselines
             .values()
             .filter(|pb| {
@@ -3277,7 +3503,20 @@ impl SsmService {
             })
             .collect();
 
-        Ok(json_resp(json!({ "BaselineIdentities": baselines })))
+        let page = if next_token_offset < all_baselines.len() {
+            &all_baselines[next_token_offset..]
+        } else {
+            &[]
+        };
+        let has_more = page.len() > max_results;
+        let baselines: Vec<Value> = page.iter().take(max_results).cloned().collect();
+
+        let mut resp = json!({ "BaselineIdentities": baselines });
+        if has_more {
+            resp["NextToken"] = json!((next_token_offset + max_results).to_string());
+        }
+
+        Ok(json_resp(resp))
     }
 
     fn get_patch_baseline(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
@@ -3285,6 +3524,7 @@ impl SsmService {
         let baseline_id = body["BaselineId"]
             .as_str()
             .ok_or_else(|| missing("BaselineId"))?;
+        validate_string_length("BaselineId", baseline_id, 20, 128)?;
 
         let state = self.state.read();
         let pb = state.patch_baselines.get(baseline_id).ok_or_else(|| {
@@ -3319,6 +3559,9 @@ impl SsmService {
         if let Some(ref gf) = pb.global_filters {
             resp["GlobalFilters"] = gf.clone();
         }
+        if let Some(ref status) = pb.available_security_updates_compliance_status {
+            resp["AvailableSecurityUpdatesComplianceStatus"] = json!(status);
+        }
 
         Ok(json_resp(resp))
     }
@@ -3332,10 +3575,12 @@ impl SsmService {
             .as_str()
             .ok_or_else(|| missing("BaselineId"))?
             .to_string();
+        validate_string_length("BaselineId", &baseline_id, 20, 128)?;
         let patch_group = body["PatchGroup"]
             .as_str()
             .ok_or_else(|| missing("PatchGroup"))?
             .to_string();
+        validate_string_length("PatchGroup", &patch_group, 1, 256)?;
 
         let mut state = self.state.write();
 
@@ -3387,9 +3632,11 @@ impl SsmService {
         let baseline_id = body["BaselineId"]
             .as_str()
             .ok_or_else(|| missing("BaselineId"))?;
+        validate_string_length("BaselineId", baseline_id, 20, 128)?;
         let patch_group = body["PatchGroup"]
             .as_str()
             .ok_or_else(|| missing("PatchGroup"))?;
+        validate_string_length("PatchGroup", patch_group, 1, 256)?;
 
         let mut state = self.state.write();
 
@@ -3462,10 +3709,16 @@ impl SsmService {
 
     fn describe_patch_groups(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
+        validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 100)?;
+        let max_results = body["MaxResults"].as_i64().unwrap_or(50) as usize;
+        let next_token_offset: usize = body["NextToken"]
+            .as_str()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
         let filters = body["Filters"].as_array();
 
         let state = self.state.read();
-        let mappings: Vec<Value> = state
+        let all_mappings: Vec<Value> = state
             .patch_groups
             .iter()
             .filter(|pg| {
@@ -3514,7 +3767,20 @@ impl SsmService {
             })
             .collect();
 
-        Ok(json_resp(json!({ "Mappings": mappings })))
+        let page = if next_token_offset < all_mappings.len() {
+            &all_mappings[next_token_offset..]
+        } else {
+            &[]
+        };
+        let has_more = page.len() > max_results;
+        let mappings: Vec<Value> = page.iter().take(max_results).cloned().collect();
+
+        let mut resp = json!({ "Mappings": mappings });
+        if has_more {
+            resp["NextToken"] = json!((next_token_offset + max_results).to_string());
+        }
+
+        Ok(json_resp(resp))
     }
 }
 
@@ -4194,5 +4460,129 @@ fn json_dumps(val: &Value) -> String {
                 .collect();
             format!("{{{}}}", items.join(", "))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use parking_lot::RwLock;
+    use serde_json::json;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    fn make_service() -> SsmService {
+        let state: SharedSsmState = Arc::new(RwLock::new(crate::state::SsmState::new(
+            "123456789012",
+            "us-east-1",
+        )));
+        SsmService::new(state)
+    }
+
+    fn make_request(action: &str, body: Value) -> AwsRequest {
+        AwsRequest {
+            service: "ssm".to_string(),
+            action: action.to_string(),
+            region: "us-east-1".to_string(),
+            account_id: "123456789012".to_string(),
+            request_id: "test-id".to_string(),
+            headers: http::HeaderMap::new(),
+            query_params: HashMap::new(),
+            body: serde_json::to_vec(&body).unwrap().into(),
+            path_segments: vec![],
+            raw_path: "/".to_string(),
+            method: http::Method::POST,
+            is_query_protocol: false,
+            access_key_id: None,
+        }
+    }
+
+    fn send_command(svc: &SsmService, doc_name: &str) -> String {
+        let req = make_request(
+            "SendCommand",
+            json!({
+                "DocumentName": doc_name,
+                "InstanceIds": ["i-1234567890abcdef0"]
+            }),
+        );
+        let resp = svc.send_command(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        body["Command"]["CommandId"].as_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn list_commands_pagination() {
+        let svc = make_service();
+
+        // Send 3 commands
+        let mut command_ids = Vec::new();
+        for i in 0..3 {
+            command_ids.push(send_command(&svc, &format!("AWS-RunShellScript-{i}")));
+        }
+
+        // First page: MaxResults=1
+        let req = make_request("ListCommands", json!({ "MaxResults": 1 }));
+        let resp = svc.list_commands(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["Commands"].as_array().unwrap().len(), 1);
+        let token = body["NextToken"].as_str().unwrap();
+
+        // Second page
+        let req = make_request(
+            "ListCommands",
+            json!({ "MaxResults": 1, "NextToken": token }),
+        );
+        let resp = svc.list_commands(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["Commands"].as_array().unwrap().len(), 1);
+        let token = body["NextToken"].as_str().unwrap();
+
+        // Third page (last)
+        let req = make_request(
+            "ListCommands",
+            json!({ "MaxResults": 1, "NextToken": token }),
+        );
+        let resp = svc.list_commands(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["Commands"].as_array().unwrap().len(), 1);
+        assert!(body.get("NextToken").is_none() || body["NextToken"].is_null());
+    }
+
+    #[test]
+    fn describe_maintenance_windows_pagination() {
+        let svc = make_service();
+
+        // Create 3 maintenance windows (min MaxResults for this API is 10,
+        // so we create 11 to test pagination with the minimum page size)
+        for i in 0..11 {
+            let req = make_request(
+                "CreateMaintenanceWindow",
+                json!({
+                    "Name": format!("test-window-{i:02}"),
+                    "Schedule": "cron(0 2 ? * SUN *)",
+                    "Duration": 3,
+                    "Cutoff": 1,
+                    "AllowUnassociatedTargets": true
+                }),
+            );
+            svc.create_maintenance_window(&req).unwrap();
+        }
+
+        // First page: MaxResults=10 (minimum allowed)
+        let req = make_request("DescribeMaintenanceWindows", json!({ "MaxResults": 10 }));
+        let resp = svc.describe_maintenance_windows(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["WindowIdentities"].as_array().unwrap().len(), 10);
+        let token = body["NextToken"].as_str().unwrap();
+
+        // Second page (1 remaining)
+        let req = make_request(
+            "DescribeMaintenanceWindows",
+            json!({ "MaxResults": 10, "NextToken": token }),
+        );
+        let resp = svc.describe_maintenance_windows(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["WindowIdentities"].as_array().unwrap().len(), 1);
+        assert!(body.get("NextToken").is_none() || body["NextToken"].is_null());
     }
 }

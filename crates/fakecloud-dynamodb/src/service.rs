@@ -6,6 +6,7 @@ use http::StatusCode;
 use serde_json::{json, Value};
 
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
+use fakecloud_core::validation::*;
 
 use crate::state::{
     attribute_type_and_value, AttributeDefinition, AttributeValue, DynamoTable,
@@ -208,6 +209,14 @@ impl DynamoDbService {
 
     fn list_tables(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = Self::parse_body(req)?;
+
+        validate_optional_string_length(
+            "exclusiveStartTableName",
+            body["ExclusiveStartTableName"].as_str(),
+            3,
+            255,
+        )?;
+
         let limit = body["Limit"].as_i64().unwrap_or(100) as usize;
         let exclusive_start = body["ExclusiveStartTableName"]
             .as_str()
@@ -352,6 +361,28 @@ impl DynamoDbService {
 
     fn delete_item(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = Self::parse_body(req)?;
+
+        validate_optional_enum_value(
+            "conditionalOperator",
+            &body["ConditionalOperator"],
+            &["AND", "OR"],
+        )?;
+        validate_optional_enum_value(
+            "returnConsumedCapacity",
+            &body["ReturnConsumedCapacity"],
+            &["INDEXES", "TOTAL", "NONE"],
+        )?;
+        validate_optional_enum_value(
+            "returnValues",
+            &body["ReturnValues"],
+            &["NONE", "ALL_OLD", "UPDATED_OLD", "ALL_NEW", "UPDATED_NEW"],
+        )?;
+        validate_optional_enum_value(
+            "returnItemCollectionMetrics",
+            &body["ReturnItemCollectionMetrics"],
+            &["SIZE", "NONE"],
+        )?;
+
         let table_name = require_str(&body, "TableName")?;
         let key = require_object(&body, "Key")?;
 
@@ -371,6 +402,11 @@ impl DynamoDbService {
 
         let return_values = body["ReturnValues"].as_str().unwrap_or("NONE");
 
+        let return_consumed = body["ReturnConsumedCapacity"].as_str().unwrap_or("NONE");
+        let return_icm = body["ReturnItemCollectionMetrics"]
+            .as_str()
+            .unwrap_or("NONE");
+
         let mut result = json!({});
 
         if let Some(idx) = existing_idx {
@@ -379,6 +415,17 @@ impl DynamoDbService {
             }
             table.items.remove(idx);
             table.recalculate_stats();
+        }
+
+        if return_consumed == "TOTAL" || return_consumed == "INDEXES" {
+            result["ConsumedCapacity"] = json!({
+                "TableName": table_name,
+                "CapacityUnits": 1.0,
+            });
+        }
+
+        if return_icm == "SIZE" {
+            result["ItemCollectionMetrics"] = json!({});
         }
 
         Self::ok_json(result)
@@ -617,6 +664,15 @@ impl DynamoDbService {
 
     fn batch_get_item(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = Self::parse_body(req)?;
+
+        validate_optional_enum_value(
+            "returnConsumedCapacity",
+            &body["ReturnConsumedCapacity"],
+            &["INDEXES", "TOTAL", "NONE"],
+        )?;
+
+        let return_consumed = body["ReturnConsumedCapacity"].as_str().unwrap_or("NONE");
+
         let request_items = body["RequestItems"]
             .as_object()
             .ok_or_else(|| {
@@ -630,6 +686,7 @@ impl DynamoDbService {
 
         let state = self.state.read();
         let mut responses: HashMap<String, Vec<Value>> = HashMap::new();
+        let mut consumed_capacity: Vec<Value> = Vec::new();
 
         for (table_name, params) in &request_items {
             let table = get_table(&state.tables, table_name)?;
@@ -650,16 +707,46 @@ impl DynamoDbService {
                 }
             }
             responses.insert(table_name.clone(), items);
+
+            if return_consumed == "TOTAL" || return_consumed == "INDEXES" {
+                consumed_capacity.push(json!({
+                    "TableName": table_name,
+                    "CapacityUnits": 1.0,
+                }));
+            }
         }
 
-        Self::ok_json(json!({
+        let mut result = json!({
             "Responses": responses,
             "UnprocessedKeys": {},
-        }))
+        });
+
+        if return_consumed == "TOTAL" || return_consumed == "INDEXES" {
+            result["ConsumedCapacity"] = json!(consumed_capacity);
+        }
+
+        Self::ok_json(result)
     }
 
     fn batch_write_item(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = Self::parse_body(req)?;
+
+        validate_optional_enum_value(
+            "returnConsumedCapacity",
+            &body["ReturnConsumedCapacity"],
+            &["INDEXES", "TOTAL", "NONE"],
+        )?;
+        validate_optional_enum_value(
+            "returnItemCollectionMetrics",
+            &body["ReturnItemCollectionMetrics"],
+            &["SIZE", "NONE"],
+        )?;
+
+        let return_consumed = body["ReturnConsumedCapacity"].as_str().unwrap_or("NONE");
+        let return_icm = body["ReturnItemCollectionMetrics"]
+            .as_str()
+            .unwrap_or("NONE");
+
         let request_items = body["RequestItems"]
             .as_object()
             .ok_or_else(|| {
@@ -672,6 +759,8 @@ impl DynamoDbService {
             .clone();
 
         let mut state = self.state.write();
+        let mut consumed_capacity: Vec<Value> = Vec::new();
+        let mut item_collection_metrics: HashMap<String, Vec<Value>> = HashMap::new();
 
         for (table_name, requests) in &request_items {
             let table = state.tables.get_mut(table_name.as_str()).ok_or_else(|| {
@@ -710,11 +799,32 @@ impl DynamoDbService {
             }
 
             table.recalculate_stats();
+
+            if return_consumed == "TOTAL" || return_consumed == "INDEXES" {
+                consumed_capacity.push(json!({
+                    "TableName": table_name,
+                    "CapacityUnits": 1.0,
+                }));
+            }
+
+            if return_icm == "SIZE" {
+                item_collection_metrics.insert(table_name.clone(), vec![]);
+            }
         }
 
-        Self::ok_json(json!({
+        let mut result = json!({
             "UnprocessedItems": {},
-        }))
+        });
+
+        if return_consumed == "TOTAL" || return_consumed == "INDEXES" {
+            result["ConsumedCapacity"] = json!(consumed_capacity);
+        }
+
+        if return_icm == "SIZE" {
+            result["ItemCollectionMetrics"] = json!(item_collection_metrics);
+        }
+
+        Self::ok_json(result)
     }
 
     // ── Tags ────────────────────────────────────────────────────────────
@@ -2316,5 +2426,104 @@ mod tests {
 
         let result = resolve_nested_path(&item, "items[0].sku");
         assert_eq!(result, Some(json!({"S": "ABC"})));
+    }
+
+    // -- Integration-style tests using DynamoDbService --
+
+    use crate::state::SharedDynamoDbState;
+    use parking_lot::RwLock;
+    use std::sync::Arc;
+
+    fn make_service() -> DynamoDbService {
+        let state: SharedDynamoDbState = Arc::new(RwLock::new(crate::state::DynamoDbState::new(
+            "123456789012",
+            "us-east-1",
+        )));
+        DynamoDbService::new(state)
+    }
+
+    fn make_request(action: &str, body: Value) -> AwsRequest {
+        AwsRequest {
+            service: "dynamodb".to_string(),
+            action: action.to_string(),
+            region: "us-east-1".to_string(),
+            account_id: "123456789012".to_string(),
+            request_id: "test-id".to_string(),
+            headers: http::HeaderMap::new(),
+            query_params: HashMap::new(),
+            body: serde_json::to_vec(&body).unwrap().into(),
+            path_segments: vec![],
+            raw_path: "/".to_string(),
+            method: http::Method::POST,
+            is_query_protocol: false,
+            access_key_id: None,
+        }
+    }
+
+    fn create_test_table(svc: &DynamoDbService) {
+        let req = make_request(
+            "CreateTable",
+            json!({
+                "TableName": "test-table",
+                "KeySchema": [
+                    { "AttributeName": "pk", "KeyType": "HASH" }
+                ],
+                "AttributeDefinitions": [
+                    { "AttributeName": "pk", "AttributeType": "S" }
+                ],
+                "BillingMode": "PAY_PER_REQUEST"
+            }),
+        );
+        svc.create_table(&req).unwrap();
+    }
+
+    #[test]
+    fn delete_item_return_values_all_old() {
+        let svc = make_service();
+        create_test_table(&svc);
+
+        // Put an item
+        let req = make_request(
+            "PutItem",
+            json!({
+                "TableName": "test-table",
+                "Item": {
+                    "pk": { "S": "key1" },
+                    "name": { "S": "Alice" },
+                    "age": { "N": "30" }
+                }
+            }),
+        );
+        svc.put_item(&req).unwrap();
+
+        // Delete with ReturnValues=ALL_OLD
+        let req = make_request(
+            "DeleteItem",
+            json!({
+                "TableName": "test-table",
+                "Key": { "pk": { "S": "key1" } },
+                "ReturnValues": "ALL_OLD"
+            }),
+        );
+        let resp = svc.delete_item(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+
+        // Verify the old item is returned
+        let attrs = &body["Attributes"];
+        assert_eq!(attrs["pk"]["S"].as_str().unwrap(), "key1");
+        assert_eq!(attrs["name"]["S"].as_str().unwrap(), "Alice");
+        assert_eq!(attrs["age"]["N"].as_str().unwrap(), "30");
+
+        // Verify the item is actually deleted
+        let req = make_request(
+            "GetItem",
+            json!({
+                "TableName": "test-table",
+                "Key": { "pk": { "S": "key1" } }
+            }),
+        );
+        let resp = svc.get_item(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert!(body.get("Item").is_none(), "item should be deleted");
     }
 }

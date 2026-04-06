@@ -4,6 +4,7 @@ use http::StatusCode;
 use serde_json::{json, Value};
 
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
+use fakecloud_core::validation::*;
 
 use crate::state::{
     Delivery, DeliveryDestination, DeliverySource, Destination, ExportTask, LogEvent, LogGroup,
@@ -191,14 +192,8 @@ impl LogsService {
             })?
             .to_string();
 
-        // Validate name length
-        if name.len() > 512 {
-            return Err(validation_error(
-                "logGroupName",
-                &name,
-                "Member must have length less than or equal to 512",
-            ));
-        }
+        validate_string_length("logGroupName", &name, 1, 512)?;
+        validate_optional_string_length("kmsKeyId", body["kmsKeyId"].as_str(), 1, 256)?;
 
         let mut state = self.state.write();
         if state.log_groups.contains_key(&name) {
@@ -254,6 +249,8 @@ impl LogsService {
             )
         })?;
 
+        validate_string_length("logGroupName", name, 1, 512)?;
+
         let mut state = self.state.write();
         if state.log_groups.remove(name).is_none() {
             return Err(AwsServiceError::aws_error(
@@ -269,8 +266,22 @@ impl LogsService {
     fn describe_log_groups(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = body_json(req);
         let prefix = body["logGroupNamePrefix"].as_str().unwrap_or("");
+        let pattern = body["logGroupNamePattern"].as_str().unwrap_or("");
         let limit = body["limit"].as_i64().unwrap_or(50) as usize;
         let next_token = body["nextToken"].as_str();
+
+        validate_optional_string_length(
+            "logGroupNamePrefix",
+            body["logGroupNamePrefix"].as_str(),
+            1,
+            512,
+        )?;
+        validate_optional_string_length(
+            "logGroupNamePattern",
+            body["logGroupNamePattern"].as_str(),
+            0,
+            512,
+        )?;
 
         // Validate limit
         if limit > 50 {
@@ -285,7 +296,10 @@ impl LogsService {
         let mut groups: Vec<&LogGroup> = state
             .log_groups
             .values()
-            .filter(|g| prefix.is_empty() || g.name.starts_with(prefix))
+            .filter(|g| {
+                (prefix.is_empty() || g.name.starts_with(prefix))
+                    && (pattern.is_empty() || g.name.contains(pattern))
+            })
             .collect();
         groups.sort_by(|a, b| a.name.cmp(&b.name));
 
@@ -360,6 +374,9 @@ impl LogsService {
             })?
             .to_string();
 
+        validate_string_length("logGroupName", group_name, 1, 512)?;
+        validate_string_length("logStreamName", &stream_name, 1, 512)?;
+
         let mut state = self.state.write();
         let region = state.region.clone();
         let account_id = state.account_id.clone();
@@ -419,6 +436,9 @@ impl LogsService {
             )
         })?;
 
+        validate_string_length("logGroupName", group_name, 1, 512)?;
+        validate_string_length("logStreamName", stream_name, 1, 512)?;
+
         let mut state = self.state.write();
         let group = state.log_groups.get_mut(group_name).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -475,6 +495,20 @@ impl LogsService {
         let limit = body["limit"].as_i64().unwrap_or(50) as usize;
         let order_by = body["orderBy"].as_str().unwrap_or("LogStreamName");
         let next_token = body["nextToken"].as_str();
+
+        validate_optional_string_length("logGroupName", body["logGroupName"].as_str(), 1, 512)?;
+        validate_optional_string_length(
+            "logGroupIdentifier",
+            body["logGroupIdentifier"].as_str(),
+            1,
+            2048,
+        )?;
+        validate_optional_string_length(
+            "logStreamNamePrefix",
+            body["logStreamNamePrefix"].as_str(),
+            1,
+            512,
+        )?;
 
         // Validate limit
         if limit > 50 {
@@ -590,6 +624,9 @@ impl LogsService {
                 "logStreamName is required",
             )
         })?;
+
+        validate_string_length("logGroupName", group_name, 1, 512)?;
+        validate_string_length("logStreamName", stream_name, 1, 512)?;
 
         let log_events = body["logEvents"].as_array().ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -749,6 +786,16 @@ impl LogsService {
                 "logStreamName is required",
             )
         })?;
+
+        validate_optional_string_length("logGroupName", body["logGroupName"].as_str(), 1, 512)?;
+        validate_optional_string_length(
+            "logGroupIdentifier",
+            body["logGroupIdentifier"].as_str(),
+            1,
+            2048,
+        )?;
+        validate_string_length("logStreamName", stream_name, 1, 512)?;
+
         let start_time = body["startTime"].as_i64();
         let end_time = body["endTime"].as_i64();
         let limit = body["limit"].as_i64().unwrap_or(10000) as usize;
@@ -904,13 +951,8 @@ impl LogsService {
 
     fn filter_log_events(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = body_json(req);
-        let group_name = body["logGroupName"].as_str().ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "InvalidParameterException",
-                "logGroupName is required",
-            )
-        })?;
+        let log_group_identifier = body["logGroupIdentifier"].as_str();
+        let log_group_name = body["logGroupName"].as_str();
         let filter_pattern = body["filterPattern"].as_str().unwrap_or("");
         let start_time = body["startTime"].as_i64();
         let end_time = body["endTime"].as_i64();
@@ -920,6 +962,43 @@ impl LogsService {
             .as_array()
             .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
             .unwrap_or_default();
+        let stream_name_prefix = body["logStreamNamePrefix"].as_str().unwrap_or("");
+
+        if let Some(name) = log_group_name {
+            validate_string_length("logGroupName", name, 1, 512)?;
+        }
+        validate_optional_string_length("logGroupIdentifier", log_group_identifier, 1, 2048)?;
+        validate_optional_string_length(
+            "logStreamNamePrefix",
+            body["logStreamNamePrefix"].as_str(),
+            1,
+            512,
+        )?;
+        validate_optional_string_length("filterPattern", Some(filter_pattern), 0, 1024)?;
+
+        // Resolve the effective log group name: logGroupIdentifier takes precedence,
+        // and can be either a name or an ARN.
+        let resolved_group_name = if let Some(identifier) = log_group_identifier {
+            if identifier.starts_with("arn:") {
+                extract_log_group_from_arn(identifier).ok_or_else(|| {
+                    AwsServiceError::aws_error(
+                        StatusCode::BAD_REQUEST,
+                        "InvalidParameterException",
+                        format!("Invalid ARN: {identifier}"),
+                    )
+                })?
+            } else {
+                identifier.to_string()
+            }
+        } else if let Some(name) = log_group_name {
+            name.to_string()
+        } else {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidParameterException",
+                "Either logGroupName or logGroupIdentifier is required",
+            ));
+        };
 
         // Validate limit
         if limit > 10000 {
@@ -931,24 +1010,33 @@ impl LogsService {
         }
 
         let state = self.state.read();
-        let group = state.log_groups.get(group_name).ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ResourceNotFoundException",
-                format!("The specified log group does not exist: {group_name}"),
-            )
-        })?;
+        let group = state
+            .log_groups
+            .get(resolved_group_name.as_str())
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "ResourceNotFoundException",
+                    format!("The specified log group does not exist: {resolved_group_name}"),
+                )
+            })?;
 
         let mut filtered_events: Vec<Value> = Vec::new();
 
-        let streams: Vec<(&String, &LogStream)> = if stream_names.is_empty() {
-            group.log_streams.iter().collect()
-        } else {
+        let streams: Vec<(&String, &LogStream)> = if !stream_names.is_empty() {
             group
                 .log_streams
                 .iter()
                 .filter(|(name, _)| stream_names.contains(&name.as_str()))
                 .collect()
+        } else if !stream_name_prefix.is_empty() {
+            group
+                .log_streams
+                .iter()
+                .filter(|(name, _)| name.starts_with(stream_name_prefix))
+                .collect()
+        } else {
+            group.log_streams.iter().collect()
         };
 
         for (_, stream) in streams {
@@ -1021,7 +1109,7 @@ impl LogsService {
                 let event_id = last["eventId"].as_str().unwrap_or("");
                 result["nextToken"] = json!(format!(
                     "{}@{}@{}",
-                    group_name,
+                    resolved_group_name,
                     last["logStreamName"].as_str().unwrap_or(""),
                     event_id
                 ));
@@ -1045,6 +1133,9 @@ impl LogsService {
                 "logGroupName is required",
             )
         })?;
+
+        validate_string_length("logGroupName", name, 1, 512)?;
+
         let tags = body["tags"].as_object().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -1080,6 +1171,9 @@ impl LogsService {
                 "logGroupName is required",
             )
         })?;
+
+        validate_string_length("logGroupName", name, 1, 512)?;
+
         let keys = body["tags"].as_array().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -1116,6 +1210,8 @@ impl LogsService {
             )
         })?;
 
+        validate_string_length("logGroupName", name, 1, 512)?;
+
         let state = self.state.read();
         let group = state.log_groups.get(name).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -1142,6 +1238,9 @@ impl LogsService {
                 "resourceArn is required",
             )
         })?;
+
+        validate_string_length("resourceArn", arn, 1, 1011)?;
+
         let tags = body["tags"].as_object().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -1193,6 +1292,9 @@ impl LogsService {
                 "resourceArn is required",
             )
         })?;
+
+        validate_string_length("resourceArn", arn, 1, 1011)?;
+
         let tag_keys = body["tagKeys"].as_array().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -1245,6 +1347,8 @@ impl LogsService {
             )
         })?;
 
+        validate_string_length("resourceArn", arn, 1, 1011)?;
+
         let state = self.state.read();
 
         // Try log group
@@ -1285,6 +1389,9 @@ impl LogsService {
                 "logGroupName is required",
             )
         })?;
+
+        validate_string_length("logGroupName", name, 1, 512)?;
+
         let days = body["retentionInDays"].as_i64().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -1316,6 +1423,8 @@ impl LogsService {
                 "logGroupName is required",
             )
         })?;
+
+        validate_string_length("logGroupName", name, 1, 512)?;
 
         let mut state = self.state.write();
         let group = state.log_groups.get_mut(name).ok_or_else(|| {
@@ -1368,6 +1477,10 @@ impl LogsService {
             .as_str()
             .unwrap_or("ByLogStream")
             .to_string();
+
+        validate_string_length("logGroupName", log_group_name, 1, 512)?;
+        validate_string_length("filterName", &filter_name, 1, 512)?;
+        validate_optional_string_length("filterPattern", Some(&filter_pattern), 0, 1024)?;
 
         let mut state = self.state.write();
         let group = state.log_groups.get_mut(log_group_name).ok_or_else(|| {
@@ -1427,6 +1540,14 @@ impl LogsService {
             )
         })?;
 
+        validate_string_length("logGroupName", log_group_name, 1, 512)?;
+        validate_optional_string_length(
+            "filterNamePrefix",
+            body["filterNamePrefix"].as_str(),
+            1,
+            512,
+        )?;
+
         let state = self.state.read();
         let group = state.log_groups.get(log_group_name).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -1477,6 +1598,9 @@ impl LogsService {
                 "filterName is required",
             )
         })?;
+
+        validate_string_length("logGroupName", log_group_name, 1, 512)?;
+        validate_string_length("filterName", filter_name, 1, 512)?;
 
         let mut state = self.state.write();
         let group = state.log_groups.get_mut(log_group_name).ok_or_else(|| {
@@ -1530,23 +1654,9 @@ impl LogsService {
             })?
             .to_string();
 
-        // Validate filter name length
-        if filter_name.len() > 512 {
-            return Err(validation_error(
-                "filterName",
-                &filter_name,
-                "Minimum length of 1. Maximum length of 512.",
-            ));
-        }
-
-        // Validate filter pattern length
-        if filter_pattern.len() > 1024 {
-            return Err(validation_error(
-                "filterPattern",
-                &filter_pattern,
-                "Minimum length of 0. Maximum length of 1024.",
-            ));
-        }
+        validate_string_length("filterName", &filter_name, 1, 512)?;
+        validate_string_length("logGroupName", &log_group_name, 1, 512)?;
+        validate_optional_string_length("filterPattern", Some(&filter_pattern), 0, 1024)?;
 
         let transformations_json = body["metricTransformations"].as_array().ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -1607,43 +1717,10 @@ impl LogsService {
         let metric_name = body["metricName"].as_str();
         let metric_namespace = body["metricNamespace"].as_str();
 
-        // Validate lengths
-        if let Some(prefix) = filter_name_prefix {
-            if prefix.len() > 512 {
-                return Err(validation_error(
-                    "filterNamePrefix",
-                    prefix,
-                    "Minimum length of 1. Maximum length of 512.",
-                ));
-            }
-        }
-        if let Some(name) = log_group_name {
-            if name.len() > 512 {
-                return Err(validation_error(
-                    "logGroupName",
-                    name,
-                    "Minimum length of 1. Maximum length of 512.",
-                ));
-            }
-        }
-        if let Some(name) = metric_name {
-            if name.len() > 255 {
-                return Err(validation_error(
-                    "metricName",
-                    name,
-                    "Maximum length of 255.",
-                ));
-            }
-        }
-        if let Some(ns) = metric_namespace {
-            if ns.len() > 255 {
-                return Err(validation_error(
-                    "metricNamespace",
-                    ns,
-                    "Maximum length of 255.",
-                ));
-            }
-        }
+        validate_optional_string_length("filterNamePrefix", filter_name_prefix, 1, 512)?;
+        validate_optional_string_length("logGroupName", log_group_name, 1, 512)?;
+        validate_optional_string_length("metricName", metric_name, 0, 255)?;
+        validate_optional_string_length("metricNamespace", metric_namespace, 0, 255)?;
 
         let state = self.state.read();
         let filters: Vec<Value> = state
@@ -1726,37 +1803,8 @@ impl LogsService {
             )
         })?;
 
-        // Validate filter name
-        if filter_name.len() > 512 {
-            return Err(validation_error(
-                "filterName",
-                filter_name,
-                "Minimum length of 1. Maximum length of 512.",
-            ));
-        }
-        if filter_name.contains(':') {
-            return Err(validation_error(
-                "filterName",
-                filter_name,
-                "Must match pattern",
-            ));
-        }
-
-        // Validate log group name
-        if log_group_name.len() > 512 {
-            return Err(validation_error(
-                "logGroupName",
-                log_group_name,
-                "Minimum length of 1. Maximum length of 512.",
-            ));
-        }
-        if log_group_name.contains('!') {
-            return Err(validation_error(
-                "logGroupName",
-                log_group_name,
-                "Must match pattern",
-            ));
-        }
+        validate_string_length("filterName", filter_name, 1, 512)?;
+        validate_string_length("logGroupName", log_group_name, 1, 512)?;
 
         let mut state = self.state.write();
         let idx = state
@@ -1917,6 +1965,8 @@ impl LogsService {
             })?
             .to_string();
 
+        validate_string_length("destinationName", &destination_name, 1, 512)?;
+
         let tags: std::collections::HashMap<String, String> = body["tags"]
             .as_object()
             .map(|m| {
@@ -1951,16 +2001,13 @@ impl LogsService {
 
         state.destinations.insert(destination_name.clone(), dest);
 
-        let mut dest_json = json!({
+        let dest_json = json!({
             "destinationName": destination_name,
             "targetArn": target_arn,
             "roleArn": role_arn,
             "arn": arn,
             "creationTime": now,
         });
-        if !tags.is_empty() {
-            dest_json["tags"] = json!(tags);
-        }
 
         Ok(AwsResponse::json(
             StatusCode::OK,
@@ -1971,6 +2018,13 @@ impl LogsService {
     fn describe_destinations(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = body_json(req);
         let prefix = body["DestinationNamePrefix"].as_str().unwrap_or("");
+
+        validate_optional_string_length(
+            "DestinationNamePrefix",
+            body["DestinationNamePrefix"].as_str(),
+            1,
+            512,
+        )?;
 
         let state = self.state.read();
         let destinations: Vec<Value> = state
@@ -2008,6 +2062,8 @@ impl LogsService {
             )
         })?;
 
+        validate_string_length("destinationName", name, 1, 512)?;
+
         let mut state = self.state.write();
         if state.destinations.remove(name).is_none() {
             return Err(AwsServiceError::aws_error(
@@ -2029,6 +2085,9 @@ impl LogsService {
                 "destinationName is required",
             )
         })?;
+
+        validate_string_length("destinationName", name, 1, 512)?;
+
         let policy = body["accessPolicy"].as_str().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -2065,6 +2124,9 @@ impl LogsService {
         let start_time = body["startTime"].as_i64().unwrap_or(0);
         let end_time = body["endTime"].as_i64().unwrap_or(0);
         let query_string = body["queryString"].as_str().unwrap_or("").to_string();
+
+        validate_string_length("logGroupName", log_group_name, 1, 512)?;
+        validate_optional_string_length("queryString", Some(&query_string), 0, 10000)?;
 
         let mut state = self.state.write();
 
@@ -2108,6 +2170,8 @@ impl LogsService {
                 "queryId is required",
             )
         })?;
+
+        validate_string_length("queryId", query_id, 1, 256)?;
 
         let state = self.state.read();
         let query = state.queries.get(query_id).ok_or_else(|| {
@@ -2161,6 +2225,8 @@ impl LogsService {
         let body = body_json(req);
         let log_group_name = body["logGroupName"].as_str();
         let status_filter = body["status"].as_str();
+
+        validate_optional_string_length("logGroupName", log_group_name, 1, 512)?;
 
         let state = self.state.read();
         let queries: Vec<Value> = state
@@ -2227,6 +2293,16 @@ impl LogsService {
             .unwrap_or("exportedlogs")
             .to_string();
 
+        validate_string_length("logGroupName", &log_group_name, 1, 512)?;
+        validate_optional_string_length("taskName", body["taskName"].as_str(), 1, 512)?;
+        validate_optional_string_length(
+            "logStreamNamePrefix",
+            body["logStreamNamePrefix"].as_str(),
+            1,
+            512,
+        )?;
+        validate_string_length("destination", &destination, 1, 512)?;
+
         let state = self.state.read();
         if !state.log_groups.contains_key(&log_group_name) {
             return Err(AwsServiceError::aws_error(
@@ -2236,6 +2312,9 @@ impl LogsService {
             ));
         }
         drop(state);
+
+        let task_name = body["taskName"].as_str().map(|s| s.to_string());
+        let log_stream_name_prefix = body["logStreamNamePrefix"].as_str().map(|s| s.to_string());
 
         let task_id = uuid::Uuid::new_v4().to_string();
         let (status_code, status_message) = if from_time < to_time {
@@ -2250,7 +2329,9 @@ impl LogsService {
         let mut state = self.state.write();
         state.export_tasks.push(ExportTask {
             task_id: task_id.clone(),
+            task_name,
             log_group_name,
+            log_stream_name_prefix,
             from_time,
             to_time,
             destination,
@@ -2268,6 +2349,8 @@ impl LogsService {
     fn describe_export_tasks(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = body_json(req);
         let task_id_filter = body["taskId"].as_str();
+
+        validate_optional_string_length("taskId", task_id_filter, 1, 512)?;
 
         let state = self.state.read();
 
@@ -2293,7 +2376,7 @@ impl LogsService {
                 }
             })
             .map(|t| {
-                json!({
+                let mut obj = json!({
                     "taskId": t.task_id,
                     "logGroupName": t.log_group_name,
                     "from": t.from_time,
@@ -2304,7 +2387,14 @@ impl LogsService {
                         "code": t.status_code,
                         "message": t.status_message,
                     },
-                })
+                });
+                if let Some(ref name) = t.task_name {
+                    obj["taskName"] = json!(name);
+                }
+                if let Some(ref prefix) = t.log_stream_name_prefix {
+                    obj["logStreamNamePrefix"] = json!(prefix);
+                }
+                obj
             })
             .collect();
 
@@ -2323,6 +2413,8 @@ impl LogsService {
                 "taskId is required",
             )
         })?;
+
+        validate_string_length("taskId", task_id, 1, 512)?;
 
         let mut state = self.state.write();
         let task = state
@@ -2357,6 +2449,9 @@ impl LogsService {
                 )
             })?
             .to_string();
+
+        validate_string_length("name", &name, 1, 60)?;
+
         let output_format = body["outputFormat"].as_str().map(|s| s.to_string());
 
         // Validate output format
@@ -2428,11 +2523,21 @@ impl LogsService {
 
         state.delivery_destinations.insert(name.clone(), dd);
 
+        // Build the configuration object for the response, preserving existing fields
+        // and ensuring destinationResourceArn is always present
+        let config_resp = {
+            let mut c: serde_json::Map<String, Value> =
+                config.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
+            c.entry("destinationResourceArn".to_string())
+                .or_insert(Value::Null);
+            Value::Object(c)
+        };
+
         let mut resp = json!({
             "deliveryDestination": {
                 "name": name,
                 "arn": arn,
-                "deliveryDestinationConfiguration": config,
+                "deliveryDestinationConfiguration": config_resp,
             }
         });
         if let Some(ref fmt) = output_format {
@@ -2457,6 +2562,8 @@ impl LogsService {
                 "name is required",
             )
         })?;
+
+        validate_string_length("name", name, 1, 60)?;
 
         let state = self.state.read();
         let dd = state.delivery_destinations.get(name).ok_or_else(|| {
@@ -2522,6 +2629,8 @@ impl LogsService {
             )
         })?;
 
+        validate_string_length("name", name, 1, 60)?;
+
         let mut state = self.state.write();
         if state.delivery_destinations.remove(name).is_none() {
             return Err(AwsServiceError::aws_error(
@@ -2557,6 +2666,9 @@ impl LogsService {
             })?
             .to_string();
 
+        validate_string_length("deliveryDestinationName", name, 1, 60)?;
+        validate_string_length("deliveryDestinationPolicy", &policy, 1, 51200)?;
+
         let mut state = self.state.write();
         let dd = state.delivery_destinations.get_mut(name).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -2591,6 +2703,8 @@ impl LogsService {
                 "deliveryDestinationName is required",
             )
         })?;
+
+        validate_string_length("deliveryDestinationName", name, 1, 60)?;
 
         let state = self.state.read();
         let dd = state.delivery_destinations.get(name).ok_or_else(|| {
@@ -2630,6 +2744,8 @@ impl LogsService {
                 "deliveryDestinationName is required",
             )
         })?;
+
+        validate_string_length("deliveryDestinationName", name, 1, 60)?;
 
         let mut state = self.state.write();
         let dd = state.delivery_destinations.get_mut(name).ok_or_else(|| {
@@ -2679,6 +2795,9 @@ impl LogsService {
                 )
             })?
             .to_string();
+
+        validate_string_length("name", &name, 1, 60)?;
+        validate_string_length("logType", &log_type, 1, 255)?;
 
         let tags: std::collections::HashMap<String, String> = body["tags"]
             .as_object()
@@ -2784,6 +2903,8 @@ impl LogsService {
             )
         })?;
 
+        validate_string_length("name", name, 1, 60)?;
+
         let state = self.state.read();
         let ds = state.delivery_sources.get(name).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -2842,6 +2963,8 @@ impl LogsService {
             )
         })?;
 
+        validate_string_length("name", name, 1, 60)?;
+
         let mut state = self.state.write();
         if state.delivery_sources.remove(name).is_none() {
             return Err(AwsServiceError::aws_error(
@@ -2878,6 +3001,9 @@ impl LogsService {
                 )
             })?
             .to_string();
+
+        validate_string_length("deliverySourceName", &delivery_source_name, 1, 60)?;
+        validate_optional_string_length("fieldDelimiter", body["fieldDelimiter"].as_str(), 0, 5)?;
 
         let tags: std::collections::HashMap<String, String> = body["tags"]
             .as_object()
@@ -3002,6 +3128,8 @@ impl LogsService {
             )
         })?;
 
+        validate_string_length("id", delivery_id, 1, 64)?;
+
         let state = self.state.read();
         let d = state.deliveries.get(delivery_id).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -3060,6 +3188,8 @@ impl LogsService {
             )
         })?;
 
+        validate_string_length("id", delivery_id, 1, 64)?;
+
         let mut state = self.state.write();
         if state.deliveries.remove(delivery_id).is_none() {
             return Err(AwsServiceError::aws_error(
@@ -3076,13 +3206,8 @@ impl LogsService {
 
     fn associate_kms_key(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = body_json(req);
-        let name = body["logGroupName"].as_str().ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "InvalidParameterException",
-                "logGroupName is required",
-            )
-        })?;
+        let log_group_name = body["logGroupName"].as_str();
+        let resource_identifier = body["resourceIdentifier"].as_str();
         let kms_key_id = body["kmsKeyId"]
             .as_str()
             .ok_or_else(|| {
@@ -3094,14 +3219,25 @@ impl LogsService {
             })?
             .to_string();
 
+        if let Some(name) = log_group_name {
+            validate_string_length("logGroupName", name, 1, 512)?;
+        }
+        validate_string_length("kmsKeyId", &kms_key_id, 1, 256)?;
+        validate_optional_string_length("resourceIdentifier", resource_identifier, 1, 2048)?;
+
+        let resolved_name = resolve_log_group_name(log_group_name, resource_identifier)?;
+
         let mut state = self.state.write();
-        let group = state.log_groups.get_mut(name).ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ResourceNotFoundException",
-                format!("The specified log group does not exist: {name}"),
-            )
-        })?;
+        let group = state
+            .log_groups
+            .get_mut(resolved_name.as_str())
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "ResourceNotFoundException",
+                    format!("The specified log group does not exist: {resolved_name}"),
+                )
+            })?;
 
         group.kms_key_id = Some(kms_key_id);
 
@@ -3110,22 +3246,27 @@ impl LogsService {
 
     fn disassociate_kms_key(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = body_json(req);
-        let name = body["logGroupName"].as_str().ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "InvalidParameterException",
-                "logGroupName is required",
-            )
-        })?;
+        let log_group_name = body["logGroupName"].as_str();
+        let resource_identifier = body["resourceIdentifier"].as_str();
+
+        if let Some(name) = log_group_name {
+            validate_string_length("logGroupName", name, 1, 512)?;
+        }
+        validate_optional_string_length("resourceIdentifier", resource_identifier, 1, 2048)?;
+
+        let resolved_name = resolve_log_group_name(log_group_name, resource_identifier)?;
 
         let mut state = self.state.write();
-        let group = state.log_groups.get_mut(name).ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ResourceNotFoundException",
-                format!("The specified log group does not exist: {name}"),
-            )
-        })?;
+        let group = state
+            .log_groups
+            .get_mut(resolved_name.as_str())
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "ResourceNotFoundException",
+                    format!("The specified log group does not exist: {resolved_name}"),
+                )
+            })?;
 
         group.kms_key_id = None;
 
@@ -3170,6 +3311,15 @@ impl LogsService {
             .map(|s| s.to_string())
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
+        validate_string_length("name", &name, 1, 255)?;
+        validate_string_length("queryString", &query_string, 1, 10000)?;
+        validate_optional_string_length(
+            "queryDefinitionId",
+            body["queryDefinitionId"].as_str(),
+            1,
+            256,
+        )?;
+
         let now = Utc::now().timestamp_millis();
 
         let mut state = self.state.write();
@@ -3193,14 +3343,21 @@ impl LogsService {
         ))
     }
 
-    fn describe_query_definitions(
-        &self,
-        _req: &AwsRequest,
-    ) -> Result<AwsResponse, AwsServiceError> {
+    fn describe_query_definitions(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = body_json(req);
+        let name_prefix = body["queryDefinitionNamePrefix"].as_str().unwrap_or("");
+        validate_optional_string_length(
+            "queryDefinitionNamePrefix",
+            body["queryDefinitionNamePrefix"].as_str(),
+            1,
+            255,
+        )?;
+
         let state = self.state.read();
         let defs: Vec<Value> = state
             .query_definitions
             .values()
+            .filter(|qd| name_prefix.is_empty() || qd.name.starts_with(name_prefix))
             .map(|qd| {
                 json!({
                     "queryDefinitionId": qd.query_definition_id,
@@ -3228,6 +3385,8 @@ impl LogsService {
             )
         })?;
 
+        validate_string_length("queryDefinitionId", qd_id, 1, 256)?;
+
         let mut state = self.state.write();
         let success = state.query_definitions.remove(qd_id).is_some();
 
@@ -3238,12 +3397,42 @@ impl LogsService {
     }
 }
 
-/// Extract log group name from ARN like "arn:aws:logs:region:account:log-group:name"
+/// Resolve log group name from either logGroupName or resourceIdentifier.
+/// resourceIdentifier can be a log group name or an ARN.
+fn resolve_log_group_name(
+    log_group_name: Option<&str>,
+    resource_identifier: Option<&str>,
+) -> Result<String, AwsServiceError> {
+    if let Some(identifier) = resource_identifier {
+        if identifier.starts_with("arn:") {
+            extract_log_group_from_arn(identifier).ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "InvalidParameterException",
+                    format!("Invalid ARN: {identifier}"),
+                )
+            })
+        } else {
+            Ok(identifier.to_string())
+        }
+    } else if let Some(name) = log_group_name {
+        Ok(name.to_string())
+    } else {
+        Err(AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "InvalidParameterException",
+            "Either logGroupName or resourceIdentifier is required",
+        ))
+    }
+}
+
+/// Extract log group name from ARN like "arn:aws:logs:region:account:log-group:name:*"
 fn extract_log_group_from_arn(arn: &str) -> Option<String> {
-    // arn:aws:logs:region:account:log-group:name
+    // arn:aws:logs:region:account:log-group:name:*
     let parts: Vec<&str> = arn.splitn(7, ':').collect();
     if parts.len() >= 7 && parts[5] == "log-group" {
-        Some(parts[6].to_string())
+        let name = parts[6].strip_suffix(":*").unwrap_or(parts[6]);
+        Some(name.to_string())
     } else {
         None
     }
@@ -3278,4 +3467,346 @@ fn matches_filter_pattern(pattern: &str, message: &str) -> bool {
     // Multiple words: all must be present
     let words: Vec<&str> = pattern.split_whitespace().collect();
     words.iter().all(|word| message.contains(word))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::LogsState;
+    use bytes::Bytes;
+    use http::{HeaderMap, Method};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    fn make_service() -> LogsService {
+        let state = Arc::new(parking_lot::RwLock::new(LogsState::new(
+            "123456789012",
+            "us-east-1",
+        )));
+        LogsService::new(state)
+    }
+
+    fn make_request(action: &str, body: Value) -> AwsRequest {
+        AwsRequest {
+            service: "logs".to_string(),
+            action: action.to_string(),
+            region: "us-east-1".to_string(),
+            account_id: "123456789012".to_string(),
+            request_id: "test-request-id".to_string(),
+            headers: HeaderMap::new(),
+            query_params: HashMap::new(),
+            body: Bytes::from(serde_json::to_vec(&body).unwrap()),
+            path_segments: vec![],
+            raw_path: "/".to_string(),
+            method: Method::POST,
+            is_query_protocol: false,
+            access_key_id: None,
+        }
+    }
+
+    fn create_group(svc: &LogsService, name: &str) {
+        let req = make_request("CreateLogGroup", json!({ "logGroupName": name }));
+        svc.create_log_group(&req).unwrap();
+    }
+
+    fn create_stream(svc: &LogsService, group: &str, stream: &str) {
+        let req = make_request(
+            "CreateLogStream",
+            json!({ "logGroupName": group, "logStreamName": stream }),
+        );
+        svc.create_log_stream(&req).unwrap();
+    }
+
+    fn put_events(svc: &LogsService, group: &str, stream: &str, messages: &[&str]) {
+        let now = chrono::Utc::now().timestamp_millis();
+        let events: Vec<Value> = messages
+            .iter()
+            .enumerate()
+            .map(|(i, msg)| json!({ "timestamp": now + i as i64, "message": msg }))
+            .collect();
+        let req = make_request(
+            "PutLogEvents",
+            json!({
+                "logGroupName": group,
+                "logStreamName": stream,
+                "logEvents": events,
+            }),
+        );
+        svc.put_log_events(&req).unwrap();
+    }
+
+    // ---- describe_log_groups: logGroupNamePattern ----
+
+    #[test]
+    fn describe_log_groups_pattern_filters_by_substring() {
+        let svc = make_service();
+        create_group(&svc, "/app/web");
+        create_group(&svc, "/app/api");
+        create_group(&svc, "/system/metrics");
+
+        let req = make_request("DescribeLogGroups", json!({ "logGroupNamePattern": "app" }));
+        let resp = svc.describe_log_groups(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let names: Vec<&str> = body["logGroups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|g| g["logGroupName"].as_str().unwrap())
+            .collect();
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"/app/web"));
+        assert!(names.contains(&"/app/api"));
+    }
+
+    #[test]
+    fn describe_log_groups_pattern_empty_returns_all() {
+        let svc = make_service();
+        create_group(&svc, "/app/web");
+        create_group(&svc, "/system/metrics");
+
+        let req = make_request("DescribeLogGroups", json!({}));
+        let resp = svc.describe_log_groups(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["logGroups"].as_array().unwrap().len(), 2);
+    }
+
+    // ---- filter_log_events: logGroupIdentifier ----
+
+    #[test]
+    fn filter_log_events_uses_log_group_identifier_as_name() {
+        let svc = make_service();
+        create_group(&svc, "my-group");
+        create_stream(&svc, "my-group", "stream-1");
+        put_events(&svc, "my-group", "stream-1", &["hello"]);
+
+        let req = make_request(
+            "FilterLogEvents",
+            json!({ "logGroupIdentifier": "my-group" }),
+        );
+        let resp = svc.filter_log_events(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["events"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn filter_log_events_uses_log_group_identifier_as_arn() {
+        let svc = make_service();
+        create_group(&svc, "my-group");
+        create_stream(&svc, "my-group", "stream-1");
+        put_events(&svc, "my-group", "stream-1", &["hello"]);
+
+        let req = make_request(
+            "FilterLogEvents",
+            json!({ "logGroupIdentifier": "arn:aws:logs:us-east-1:123456789012:log-group:my-group:*" }),
+        );
+        let resp = svc.filter_log_events(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["events"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn filter_log_events_errors_without_group_name_or_identifier() {
+        let svc = make_service();
+        let req = make_request("FilterLogEvents", json!({}));
+        assert!(svc.filter_log_events(&req).is_err());
+    }
+
+    // ---- filter_log_events: logStreamNamePrefix ----
+
+    #[test]
+    fn filter_log_events_filters_by_stream_name_prefix() {
+        let svc = make_service();
+        create_group(&svc, "grp");
+        create_stream(&svc, "grp", "web-1");
+        create_stream(&svc, "grp", "web-2");
+        create_stream(&svc, "grp", "api-1");
+        put_events(&svc, "grp", "web-1", &["a"]);
+        put_events(&svc, "grp", "web-2", &["b"]);
+        put_events(&svc, "grp", "api-1", &["c"]);
+
+        let req = make_request(
+            "FilterLogEvents",
+            json!({ "logGroupName": "grp", "logStreamNamePrefix": "web" }),
+        );
+        let resp = svc.filter_log_events(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let events = body["events"].as_array().unwrap();
+        assert_eq!(events.len(), 2);
+        for e in events {
+            assert!(e["logStreamName"].as_str().unwrap().starts_with("web"));
+        }
+    }
+
+    // ---- create_export_task: taskName + logStreamNamePrefix stored ----
+
+    #[test]
+    fn create_export_task_stores_task_name_and_stream_prefix() {
+        let svc = make_service();
+        create_group(&svc, "grp");
+
+        let req = make_request(
+            "CreateExportTask",
+            json!({
+                "logGroupName": "grp",
+                "from": 0,
+                "to": 1000,
+                "destination": "my-bucket",
+                "taskName": "my-export",
+                "logStreamNamePrefix": "web-",
+            }),
+        );
+        let resp = svc.create_export_task(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let task_id = body["taskId"].as_str().unwrap();
+
+        let req = make_request("DescribeExportTasks", json!({ "taskId": task_id }));
+        let resp = svc.describe_export_tasks(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let task = &body["exportTasks"][0];
+        assert_eq!(task["taskName"].as_str().unwrap(), "my-export");
+        assert_eq!(task["logStreamNamePrefix"].as_str().unwrap(), "web-");
+    }
+
+    #[test]
+    fn create_export_task_omits_optional_fields_when_not_provided() {
+        let svc = make_service();
+        create_group(&svc, "grp");
+
+        let req = make_request(
+            "CreateExportTask",
+            json!({
+                "logGroupName": "grp",
+                "from": 0,
+                "to": 1000,
+                "destination": "my-bucket",
+            }),
+        );
+        let resp = svc.create_export_task(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let task_id = body["taskId"].as_str().unwrap();
+
+        let req = make_request("DescribeExportTasks", json!({ "taskId": task_id }));
+        let resp = svc.describe_export_tasks(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let task = &body["exportTasks"][0];
+        assert!(task.get("taskName").is_none() || task["taskName"].is_null());
+        assert!(task.get("logStreamNamePrefix").is_none() || task["logStreamNamePrefix"].is_null());
+    }
+
+    // ---- associate_kms_key / disassociate_kms_key: resourceIdentifier ----
+
+    #[test]
+    fn associate_kms_key_via_resource_identifier_arn() {
+        let svc = make_service();
+        create_group(&svc, "grp");
+
+        let req = make_request(
+            "AssociateKmsKey",
+            json!({
+                "resourceIdentifier": "arn:aws:logs:us-east-1:123456789012:log-group:grp:*",
+                "kmsKeyId": "arn:aws:kms:us-east-1:123456789012:key/abc-123",
+            }),
+        );
+        svc.associate_kms_key(&req).unwrap();
+
+        let state = svc.state.read();
+        assert_eq!(
+            state.log_groups["grp"].kms_key_id.as_deref(),
+            Some("arn:aws:kms:us-east-1:123456789012:key/abc-123")
+        );
+    }
+
+    #[test]
+    fn disassociate_kms_key_via_resource_identifier_name() {
+        let svc = make_service();
+        create_group(&svc, "grp");
+
+        // First associate
+        let req = make_request(
+            "AssociateKmsKey",
+            json!({ "logGroupName": "grp", "kmsKeyId": "some-key" }),
+        );
+        svc.associate_kms_key(&req).unwrap();
+
+        // Disassociate via resourceIdentifier (plain name)
+        let req = make_request("DisassociateKmsKey", json!({ "resourceIdentifier": "grp" }));
+        svc.disassociate_kms_key(&req).unwrap();
+
+        let state = svc.state.read();
+        assert!(state.log_groups["grp"].kms_key_id.is_none());
+    }
+
+    // ---- describe_query_definitions: queryDefinitionNamePrefix ----
+
+    #[test]
+    fn describe_query_definitions_filters_by_name_prefix() {
+        let svc = make_service();
+
+        // Create some query definitions
+        for name in &["error-queries-1", "error-queries-2", "latency-queries-1"] {
+            let req = make_request(
+                "PutQueryDefinition",
+                json!({
+                    "name": name,
+                    "queryString": "fields @timestamp | limit 20",
+                }),
+            );
+            svc.put_query_definition(&req).unwrap();
+        }
+
+        let req = make_request(
+            "DescribeQueryDefinitions",
+            json!({ "queryDefinitionNamePrefix": "error" }),
+        );
+        let resp = svc.describe_query_definitions(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let defs = body["queryDefinitions"].as_array().unwrap();
+        assert_eq!(defs.len(), 2);
+        for d in defs {
+            assert!(d["name"].as_str().unwrap().starts_with("error"));
+        }
+    }
+
+    #[test]
+    fn describe_query_definitions_no_prefix_returns_all() {
+        let svc = make_service();
+
+        for name in &["a", "b", "c"] {
+            let req = make_request(
+                "PutQueryDefinition",
+                json!({ "name": name, "queryString": "fields @timestamp" }),
+            );
+            svc.put_query_definition(&req).unwrap();
+        }
+
+        let req = make_request("DescribeQueryDefinitions", json!({}));
+        let resp = svc.describe_query_definitions(&req).unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["queryDefinitions"].as_array().unwrap().len(), 3);
+    }
+
+    // ---- extract_log_group_from_arn ----
+
+    #[test]
+    fn extract_log_group_from_arn_strips_wildcard_suffix() {
+        let arn = "arn:aws:logs:us-east-1:123456789012:log-group:my-group:*";
+        assert_eq!(
+            extract_log_group_from_arn(arn),
+            Some("my-group".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_log_group_from_arn_without_wildcard() {
+        let arn = "arn:aws:logs:us-east-1:123456789012:log-group:my-group";
+        assert_eq!(
+            extract_log_group_from_arn(arn),
+            Some("my-group".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_log_group_from_arn_invalid() {
+        assert_eq!(extract_log_group_from_arn("not-an-arn"), None);
+    }
 }
