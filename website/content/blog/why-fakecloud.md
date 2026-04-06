@@ -1,7 +1,7 @@
 +++
 title = "Why I'm building a free, open-source AWS emulator"
 date = 2026-04-06
-description = "LocalStack went proprietary. Our builds broke. So I built a free, open-source replacement in Rust — 12 AWS services in 3 days."
+description = "LocalStack went proprietary. Our builds broke. So I built a free, open-source replacement in Rust — 13 AWS services, 983 API operations, 98% conformance."
 
 [extra]
 author = "Lucas Vieira"
@@ -41,19 +41,20 @@ We currently verify this with 280+ E2E tests that use the official `aws-sdk-rust
 
 ## What's here today
 
-12 services, all open source, all free:
+13 services, 983 API operations, all open source, all free:
 
-- **S3** (74 actions) — objects, multipart uploads, versioning, lifecycle, notifications
-- **SQS** (20 actions) — FIFO queues, dead-letter queues, long polling
-- **SNS** (34 actions) — fan-out to SQS, HTTP delivery, filter policies
-- **EventBridge** (41 actions) — pattern matching, scheduled rules that actually fire
-- **IAM/STS** (135 actions) — users, roles, policies, assume role
-- **SSM** (46 actions) — parameters, documents, maintenance windows
-- **DynamoDB** — table and item operations
-- **Lambda** (10 actions) — function CRUD (stub invoke)
-- **Secrets Manager** (11 actions) — versioning, soft delete
-- **CloudWatch Logs** (14 actions) — groups, streams, filtering
-- **KMS** (16 actions) — encryption, aliases, key management
+- **S3** (107 actions) — objects, multipart uploads, versioning, lifecycle, notifications, encryption
+- **SQS** (23 actions) — FIFO queues, dead-letter queues, long polling, batch operations
+- **SNS** (34 actions) — fan-out to SQS, HTTP delivery, filter policies, platform applications
+- **EventBridge** (57 actions) — pattern matching, scheduled rules, connections, API destinations, endpoints
+- **IAM** (128 actions) — users, roles, policies, groups, instance profiles, OIDC/SAML providers
+- **STS** (11 actions) — assume role, session tokens, federation, credential expiration
+- **SSM** (146 actions) — parameters, documents, commands, maintenance windows, associations, automation, sessions
+- **DynamoDB** (57 actions) — tables, items, transactions, PartiQL, backups, global tables, streaming
+- **Lambda** (10 actions) — function CRUD, invoke, event source mappings
+- **Secrets Manager** (23 actions) — versioning, soft delete, rotation, replication, resource policies
+- **CloudWatch Logs** (113 actions) — groups, streams, filtering, deliveries, transformers, anomaly detection
+- **KMS** (53 actions) — encryption, aliases, key management, grants, custom key stores
 - **CloudFormation** (8 actions) — template parsing, resource provisioning
 
 Services talk to each other: S3 notifications deliver to SNS/SQS. SNS fans out to SQS. EventBridge rules fire on schedule and deliver to targets. This is the kind of cross-service behavior that matters in integration tests and that most emulators get wrong or skip entirely.
