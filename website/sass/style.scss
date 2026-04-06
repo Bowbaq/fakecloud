@@ -189,6 +189,23 @@ nav {
   p { font-size: 14px; color: var(--text-muted); line-height: 1.5; }
 }
 
+// Copy button
+.copy-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 4px 10px;
+  font-family: var(--mono);
+  transition: color 0.2s, border-color 0.2s;
+  &:hover { color: var(--text); border-color: var(--text-muted); }
+}
+
 // Code blocks
 .code-block {
   background: var(--code-bg);
@@ -201,6 +218,7 @@ nav {
   max-width: 700px;
   margin: 0 auto;
   line-height: 1.8;
+  position: relative;
   .prompt { color: var(--accent); user-select: none; }
   .comment { color: var(--text-muted); }
 }
@@ -311,6 +329,7 @@ footer {
     margin-bottom: 24px;
     white-space: pre-wrap;
     word-break: break-all;
+    position: relative;
     code { background: none; padding: 0; }
   }
   blockquote {
