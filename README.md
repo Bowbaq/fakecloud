@@ -42,7 +42,7 @@ alternatives have emerged since then. Here's how they compare:
 ### Cargo install
 
 ```sh
-cargo install --git https://github.com/faiscadev/fakecloud.git
+cargo install fakecloud
 fakecloud
 ```
 
