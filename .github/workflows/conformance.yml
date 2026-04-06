@@ -1,0 +1,50 @@
+name: Conformance
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 6 * * 0' # weekly Sunday 6am UTC
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build server
+        run: cargo build --bin fakecloud
+
+      - name: Build conformance tool
+        run: cargo build -p fakecloud-conformance
+
+      - name: Run conformance probes
+        run: |
+          cargo run -p fakecloud-conformance -- run --format text 2>&1 | tee conformance-report.txt
+          cargo run -p fakecloud-conformance -- run --format json > conformance-report.json
+
+      - name: Post summary
+        if: always()
+        run: |
+          echo '## Conformance Report' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -20 conformance-report.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-report
+          path: |
+            conformance-report.txt
+            conformance-report.json
+          retention-days: 90

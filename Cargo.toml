@@ -16,6 +16,8 @@ members = [
     "crates/fakecloud-kms",
     "crates/fakecloud-cloudformation",
     "crates/fakecloud-e2e",
+    "crates/fakecloud-conformance",
+    "crates/fakecloud-conformance-macros",
 ]
 resolver = "2"
 

@@ -1,0 +1,54 @@
+{
+  "sqs": {
+    "repo_dir": "sqs",
+    "service_name": "sqs"
+  },
+  "sns": {
+    "repo_dir": "sns",
+    "service_name": "sns"
+  },
+  "eventbridge": {
+    "repo_dir": "eventbridge",
+    "service_name": "events"
+  },
+  "iam": {
+    "repo_dir": "iam",
+    "service_name": "iam"
+  },
+  "sts": {
+    "repo_dir": "sts",
+    "service_name": "sts"
+  },
+  "ssm": {
+    "repo_dir": "ssm",
+    "service_name": "ssm"
+  },
+  "s3": {
+    "repo_dir": "s3",
+    "service_name": "s3"
+  },
+  "dynamodb": {
+    "repo_dir": "dynamodb",
+    "service_name": "dynamodb"
+  },
+  "lambda": {
+    "repo_dir": "lambda",
+    "service_name": "lambda"
+  },
+  "secretsmanager": {
+    "repo_dir": "secrets-manager",
+    "service_name": "secretsmanager"
+  },
+  "cloudwatch-logs": {
+    "repo_dir": "cloudwatch-logs",
+    "service_name": "logs"
+  },
+  "kms": {
+    "repo_dir": "kms",
+    "service_name": "kms"
+  },
+  "cloudformation": {
+    "repo_dir": "cloudformation",
+    "service_name": "cloudformation"
+  }
+}

@@ -1,0 +1,19 @@
+[package]
+name = "fakecloud-conformance"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+publish = false
+
+[[bin]]
+name = "fakecloud-conformance"
+path = "src/main.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+reqwest = { version = "0.12", features = ["json", "blocking"] }
+tokio = { workspace = true }
+clap = { workspace = true }
