@@ -639,7 +639,7 @@ mod tests {
         let model = parse_model(&path).unwrap();
 
         // DynamoDB should have operations with examples
-        let ops_with_examples: Vec<_> = model
+        let _ops_with_examples: Vec<_> = model
             .operations
             .iter()
             .filter(|op| {

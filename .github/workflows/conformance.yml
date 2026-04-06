@@ -35,8 +35,19 @@ jobs:
         if: always()
         run: |
           echo '## Conformance Report' >> $GITHUB_STEP_SUMMARY
+          echo '' >> $GITHUB_STEP_SUMMARY
+          echo '| Service | Handled | Passing | Variants |' >> $GITHUB_STEP_SUMMARY
+          echo '|---------|---------|---------|----------|' >> $GITHUB_STEP_SUMMARY
+          grep -E "^[a-z].*operations handled" conformance-report.txt | while read -r line; do
+            svc=$(echo "$line" | cut -d: -f1)
+            handled=$(echo "$line" | grep -oP '\d+/\d+ operations handled' | head -1)
+            passing=$(echo "$line" | grep -oP '\d+/\d+ fully passing' | head -1)
+            echo "| $svc | $handled | $passing | |" >> $GITHUB_STEP_SUMMARY
+          done
+          echo '' >> $GITHUB_STEP_SUMMARY
+          echo '**Summary**' >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          tail -20 conformance-report.txt >> $GITHUB_STEP_SUMMARY
+          grep -E "^(Operations|Variants):" conformance-report.txt >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Upload report
