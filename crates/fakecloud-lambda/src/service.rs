@@ -152,9 +152,20 @@ impl LambdaService {
             .unwrap_or_else(|| vec!["x86_64".to_string()]);
 
         // Decode Code.ZipFile if present (base64-encoded ZIP)
-        let code_zip: Option<Vec<u8>> = body["Code"]["ZipFile"].as_str().and_then(|b64| {
-            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64).ok()
-        });
+        let code_zip: Option<Vec<u8>> = match body["Code"]["ZipFile"].as_str() {
+            Some(b64) => Some(
+                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64).map_err(
+                    |_| {
+                        AwsServiceError::aws_error(
+                            StatusCode::BAD_REQUEST,
+                            "InvalidParameterValueException",
+                            "Could not decode Code.ZipFile: invalid base64",
+                        )
+                    },
+                )?,
+            ),
+            None => None,
+        };
 
         // Compute a code hash from the actual ZIP bytes (or from the Code JSON as fallback)
         let code_fallback = serde_json::to_vec(&body["Code"]).unwrap_or_default();
@@ -290,10 +301,7 @@ impl LambdaService {
             if func.code_zip.is_some() {
                 match runtime.invoke(&func, payload).await {
                     Ok(response_bytes) => {
-                        let mut resp = AwsResponse::json(
-                            StatusCode::OK,
-                            String::from_utf8_lossy(&response_bytes).to_string(),
-                        );
+                        let mut resp = AwsResponse::json(StatusCode::OK, response_bytes);
                         resp.headers.insert(
                             http::header::HeaderName::from_static("x-amz-executed-version"),
                             http::header::HeaderValue::from_static("$LATEST"),

@@ -320,17 +320,16 @@ async fn test_invoke_java21() {
         .await
         .unwrap();
 
-    // Invoke will start a container but the handler will fail (invalid class)
-    // We just verify the container machinery works (no panic, returns an error or result)
-    let result = client
+    // Invoke will start a container but the handler will fail (invalid class).
+    // RIE returns 200 with the error in the payload body.
+    let resp = client
         .invoke()
         .function_name("java21-func")
         .payload(Blob::new(b"{}".to_vec()))
         .send()
-        .await;
-    // Either success (with error in payload) or service error - both are acceptable
-    // The point is that Docker execution was attempted
-    assert!(result.is_ok() || result.is_err());
+        .await
+        .unwrap();
+    assert_eq!(resp.status_code(), 200);
 }
 
 #[tokio::test]
@@ -350,13 +349,14 @@ async fn test_invoke_java17() {
         .await
         .unwrap();
 
-    let result = client
+    let resp = client
         .invoke()
         .function_name("java17-func")
         .payload(Blob::new(b"{}".to_vec()))
         .send()
-        .await;
-    assert!(result.is_ok() || result.is_err());
+        .await
+        .unwrap();
+    assert_eq!(resp.status_code(), 200);
 }
 
 // ---- .NET runtime test ----
@@ -378,13 +378,14 @@ async fn test_invoke_dotnet8() {
         .await
         .unwrap();
 
-    let result = client
+    let resp = client
         .invoke()
         .function_name("dotnet8-func")
         .payload(Blob::new(b"{}".to_vec()))
         .send()
-        .await;
-    assert!(result.is_ok() || result.is_err());
+        .await
+        .unwrap();
+    assert_eq!(resp.status_code(), 200);
 }
 
 // ---- Behavior tests ----

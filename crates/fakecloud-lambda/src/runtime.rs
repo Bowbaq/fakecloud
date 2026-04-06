@@ -20,6 +20,8 @@ struct WarmContainer {
 pub struct ContainerRuntime {
     cli: String,
     containers: RwLock<HashMap<String, WarmContainer>>,
+    /// Serializes container startup per function to prevent duplicate containers.
+    starting: RwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     instance_id: String,
 }
 
@@ -48,7 +50,8 @@ impl ContainerRuntime {
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .status()
-                .is_ok()
+                .map(|s| s.success())
+                .unwrap_or(false)
             {
                 cli
             } else {
@@ -67,6 +70,7 @@ impl ContainerRuntime {
         Some(Self {
             cli,
             containers: RwLock::new(HashMap::new()),
+            starting: RwLock::new(HashMap::new()),
             instance_id,
         })
     }
@@ -104,14 +108,38 @@ impl ContainerRuntime {
         let port = match port {
             Some(p) => p,
             None => {
-                // Stop old container if code changed
-                self.stop_container(&func.function_name).await;
-                let container = self.start_container(func, zip_bytes).await?;
-                let p = container.host_port;
-                self.containers
-                    .write()
-                    .insert(func.function_name.clone(), container);
-                p
+                // Serialize container startup per function to prevent duplicates
+                let startup_lock = {
+                    let mut starting = self.starting.write();
+                    starting
+                        .entry(func.function_name.clone())
+                        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                        .clone()
+                };
+                let _guard = startup_lock.lock().await;
+
+                // Re-check after acquiring lock — another task may have started it
+                let existing_port = {
+                    let containers = self.containers.read();
+                    containers
+                        .get(&func.function_name)
+                        .filter(|c| c.code_sha256 == func.code_sha256)
+                        .map(|c| {
+                            *c.last_used.write() = Instant::now();
+                            c.host_port
+                        })
+                };
+                if let Some(p) = existing_port {
+                    p
+                } else {
+                    self.stop_container(&func.function_name).await;
+                    let container = self.start_container(func, zip_bytes).await?;
+                    let p = container.host_port;
+                    self.containers
+                        .write()
+                        .insert(func.function_name.clone(), container);
+                    p
+                }
             }
         };
 

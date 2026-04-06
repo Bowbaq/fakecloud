@@ -164,7 +164,7 @@ impl Drop for TestServer {
             // Clean up any Lambda containers spawned by this server instance
             let label = format!("fakecloud-instance=fakecloud-{}", pid);
             let output = Command::new("docker")
-                .args(["ps", "-q", "--filter", &format!("label={}", label)])
+                .args(["ps", "-aq", "--filter", &format!("label={}", label)])
                 .output();
             if let Ok(output) = output {
                 let ids = String::from_utf8_lossy(&output.stdout);
