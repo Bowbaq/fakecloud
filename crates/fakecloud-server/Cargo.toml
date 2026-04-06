@@ -1,6 +1,6 @@
 [package]
 name = "fakecloud"
-description = "Local AWS cloud emulator — open-source LocalStack alternative"
+description = "Local AWS cloud emulator — free, open-source LocalStack alternative"
 keywords = ["aws", "cloud", "emulator", "localstack", "testing"]
 categories = ["development-tools::testing", "simulation"]
 edition.workspace = true

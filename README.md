@@ -13,7 +13,7 @@
 
 ---
 
-FakeCloud is an open-source local AWS cloud emulator. It runs on a single port
+FakeCloud is a free, open-source local AWS cloud emulator. It runs on a single port
 (`4566`), requires no account or auth token, and aims to faithfully replicate
 AWS service behavior for local development and testing.
 
@@ -473,7 +473,7 @@ EC2, RDS, ECS, Elastic Load Balancing, CloudWatch Metrics, Route 53, API Gateway
 
 ## What FakeCloud Is (and Isn't)
 
-**FakeCloud is** an open-source local AWS emulator for integration testing and
+**FakeCloud is** a free, open-source local AWS emulator for integration testing and
 local development. For every service it implements, the goal is 100% behavioral
 parity with real AWS — verified by automated conformance testing against AWS
 Smithy models and real AWS responses. The ambition is broad: 12 services in

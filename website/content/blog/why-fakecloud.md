@@ -1,7 +1,7 @@
 +++
-title = "Why I'm building an open-source AWS emulator"
+title = "Why I'm building a free, open-source AWS emulator"
 date = 2026-04-06
-description = "LocalStack went proprietary. Our builds broke. So I built an open-source replacement in Rust — 12 AWS services in 3 days."
+description = "LocalStack went proprietary. Our builds broke. So I built a free, open-source replacement in Rust — 12 AWS services in 3 days."
 
 [extra]
 author = "Lucas Vieira"
@@ -21,7 +21,7 @@ The worst part is when mocked tests give you false confidence. I've seen tests t
 
 If you're building on AWS, you need integration tests that actually talk to something that behaves like AWS. Not a mock. Not a stub that returns 200 to everything. Something that implements the real behavior: if you call API A then API B, and AWS would produce side effect C, then your test environment should produce side effect C too.
 
-That's what LocalStack used to give us. And that's what I wanted to keep — but open source.
+That's what LocalStack used to give us. And that's what I wanted to keep — but free and open source.
 
 ## So I built it
 
