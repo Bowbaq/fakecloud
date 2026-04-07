@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 use fakecloud_core::validation::*;
 
-use super::{body_json, LogsService};
+use super::LogsService;
 use chrono::Utc;
 
 use crate::state::Destination;
@@ -13,7 +13,7 @@ impl LogsService {
     // ---- Destinations ----
 
     pub(crate) fn put_destination(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let destination_name = body["destinationName"]
             .as_str()
             .ok_or_else(|| {
@@ -101,7 +101,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let prefix = body["DestinationNamePrefix"].as_str().unwrap_or("");
 
         validate_optional_string_length(
@@ -143,7 +143,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let name = body["destinationName"].as_str().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -170,7 +170,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let name = body["destinationName"].as_str().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,

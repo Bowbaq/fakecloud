@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 use fakecloud_core::validation::*;
 
-use super::{body_json, validation_error, LogsService};
+use super::{validation_error, LogsService};
 use base64::Engine;
 use chrono::Utc;
 use flate2::write::GzEncoder;
@@ -23,7 +23,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let group_name = body["logGroupName"].as_str().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -91,7 +91,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let group_name = body["logGroupName"].as_str().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -134,7 +134,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
 
         // Support both logGroupName and logGroupIdentifier
         let group_name = if let Some(name) = body["logGroupName"].as_str() {
@@ -283,7 +283,7 @@ impl LogsService {
     // ---- Log Events ----
 
     pub(crate) fn put_log_events(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let group_name = body["logGroupName"].as_str().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -549,7 +549,7 @@ impl LogsService {
     }
 
     pub(crate) fn get_log_events(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
 
         // Support both logGroupName and logGroupIdentifier
         let group_name = if let Some(name) = body["logGroupName"].as_str() {
@@ -752,7 +752,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let log_group_identifier = body["logGroupIdentifier"].as_str();
         let log_group_name = body["logGroupName"].as_str();
         let filter_pattern = body["filterPattern"].as_str().unwrap_or("");
@@ -925,7 +925,7 @@ impl LogsService {
     }
 
     pub(crate) fn get_log_record(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let _log_record_pointer = body["logRecordPointer"].as_str().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,

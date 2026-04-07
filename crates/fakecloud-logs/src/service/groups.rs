@@ -6,7 +6,7 @@ use fakecloud_core::validation::*;
 
 use chrono::Utc;
 
-use super::{body_json, LogsService};
+use super::LogsService;
 use super::{extract_log_group_from_arn, resolve_log_group_name};
 
 use crate::state::LogGroup;
@@ -18,7 +18,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let name = body["logGroupName"]
             .as_str()
             .ok_or_else(|| {
@@ -85,7 +85,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let name = body["logGroupName"].as_str().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -122,7 +122,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let prefix = body["logGroupNamePrefix"].as_str().unwrap_or("");
         let pattern = body["logGroupNamePattern"].as_str().unwrap_or("");
         let limit = body["limit"].as_i64().unwrap_or(50) as usize;
@@ -214,7 +214,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let name = body["logGroupName"].as_str().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -251,7 +251,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let name = body["logGroupName"].as_str().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -282,7 +282,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let log_group_name = body["logGroupName"].as_str();
         let resource_identifier = body["resourceIdentifier"].as_str();
         let kms_key_id = body["kmsKeyId"]
@@ -325,7 +325,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let log_group_name = body["logGroupName"].as_str();
         let resource_identifier = body["resourceIdentifier"].as_str();
 
@@ -357,7 +357,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let log_group_id = body["logGroupName"]
             .as_str()
             .or_else(|| body["logGroupIdentifier"].as_str())
@@ -406,7 +406,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let log_group_id = body["logGroupIdentifier"]
             .as_str()
             .ok_or_else(|| {
@@ -448,7 +448,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         validate_required("groupBy", &body["groupBy"])?;
         validate_optional_enum_value(
             "groupBy",
@@ -479,7 +479,7 @@ impl LogsService {
     }
 
     pub(crate) fn list_log_groups(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let prefix = body["logGroupNamePrefix"].as_str().unwrap_or("");
         let pattern = body["logGroupNamePattern"].as_str().unwrap_or("");
         let limit = body["limit"].as_i64().unwrap_or(50) as usize;

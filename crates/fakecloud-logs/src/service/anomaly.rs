@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 use fakecloud_core::validation::*;
 
-use super::{body_json, LogsService};
+use super::LogsService;
 use chrono::Utc;
 
 use crate::state::AnomalyDetector;
@@ -16,7 +16,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         validate_optional_string_length("detectorName", body["detectorName"].as_str(), 1, 2048)?;
         validate_optional_enum_value(
             "evaluationFrequency",
@@ -97,7 +97,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let arn = body["anomalyDetectorArn"].as_str().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -143,7 +143,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let arn = body["anomalyDetectorArn"].as_str().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -168,7 +168,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         validate_optional_string_length(
             "filterLogGroupArn",
             body["filterLogGroupArn"].as_str(),
@@ -219,7 +219,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let arn = body["anomalyDetectorArn"].as_str().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -266,7 +266,7 @@ impl LogsService {
     }
 
     pub(crate) fn list_anomalies(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         validate_optional_string_length(
             "anomalyDetectorArn",
             body["anomalyDetectorArn"].as_str(),
@@ -288,7 +288,7 @@ impl LogsService {
     }
 
     pub(crate) fn update_anomaly(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         validate_required("anomalyDetectorArn", &body["anomalyDetectorArn"])?;
         validate_optional_string_length(
             "anomalyDetectorArn",

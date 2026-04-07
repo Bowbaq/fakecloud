@@ -16,7 +16,6 @@ mod tags;
 
 use async_trait::async_trait;
 use http::StatusCode;
-use serde_json::Value;
 
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
 
@@ -421,14 +420,6 @@ impl AwsService for SsmService {
     }
 }
 
-fn parse_body(req: &AwsRequest) -> Value {
-    serde_json::from_slice(&req.body).unwrap_or(Value::Object(Default::default()))
-}
-
-fn json_resp(body: Value) -> AwsResponse {
-    AwsResponse::json(StatusCode::OK, serde_json::to_string(&body).unwrap())
-}
-
 fn missing(name: &str) -> AwsServiceError {
     AwsServiceError::aws_error(
         StatusCode::BAD_REQUEST,
@@ -441,7 +432,7 @@ fn missing(name: &str) -> AwsServiceError {
 mod tests {
     use super::*;
     use parking_lot::RwLock;
-    use serde_json::json;
+    use serde_json::{json, Value};
     use std::collections::HashMap;
     use std::sync::Arc;
 

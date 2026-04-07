@@ -8,14 +8,14 @@ use fakecloud_core::validation::*;
 
 use crate::state::{PatchBaseline, PatchGroup};
 
-use super::{json_resp, missing, parse_body, SsmService};
+use super::{missing, SsmService};
 
 impl SsmService {
     pub(super) fn create_patch_baseline(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let name = body["Name"]
             .as_str()
             .ok_or_else(|| missing("Name"))?
@@ -129,7 +129,7 @@ impl SsmService {
                 .values()
                 .find(|pb| pb.client_token.as_deref() == Some(token))
             {
-                return Ok(json_resp(json!({ "BaselineId": existing.id })));
+                return Ok(AwsResponse::ok_json(json!({ "BaselineId": existing.id })));
             }
         }
 
@@ -158,14 +158,14 @@ impl SsmService {
 
         state.patch_baselines.insert(baseline_id.clone(), pb);
 
-        Ok(json_resp(json!({ "BaselineId": baseline_id })))
+        Ok(AwsResponse::ok_json(json!({ "BaselineId": baseline_id })))
     }
 
     pub(super) fn delete_patch_baseline(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let baseline_id = body["BaselineId"]
             .as_str()
             .ok_or_else(|| missing("BaselineId"))?;
@@ -178,14 +178,14 @@ impl SsmService {
             .patch_groups
             .retain(|pg| pg.baseline_id != baseline_id);
 
-        Ok(json_resp(json!({ "BaselineId": baseline_id })))
+        Ok(AwsResponse::ok_json(json!({ "BaselineId": baseline_id })))
     }
 
     pub(super) fn describe_patch_baselines(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 100)?;
         let max_results = body["MaxResults"].as_i64().unwrap_or(50) as usize;
         let next_token_offset: usize = body["NextToken"]
@@ -256,14 +256,14 @@ impl SsmService {
             resp["NextToken"] = json!((next_token_offset + max_results).to_string());
         }
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     pub(super) fn get_patch_baseline(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let baseline_id = body["BaselineId"]
             .as_str()
             .ok_or_else(|| missing("BaselineId"))?;
@@ -306,14 +306,14 @@ impl SsmService {
             resp["AvailableSecurityUpdatesComplianceStatus"] = json!(status);
         }
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     pub(super) fn register_patch_baseline_for_patch_group(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let baseline_id = body["BaselineId"]
             .as_str()
             .ok_or_else(|| missing("BaselineId"))?
@@ -361,7 +361,7 @@ impl SsmService {
             patch_group: patch_group.clone(),
         });
 
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "BaselineId": baseline_id,
             "PatchGroup": patch_group,
         })))
@@ -371,7 +371,7 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let baseline_id = body["BaselineId"]
             .as_str()
             .ok_or_else(|| missing("BaselineId"))?;
@@ -404,7 +404,7 @@ impl SsmService {
             }
         }
 
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "BaselineId": baseline_id,
             "PatchGroup": patch_group,
         })))
@@ -414,7 +414,7 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let patch_group = body["PatchGroup"]
             .as_str()
             .ok_or_else(|| missing("PatchGroup"))?;
@@ -454,7 +454,7 @@ impl SsmService {
         });
 
         if let Some(pg) = found {
-            Ok(json_resp(json!({
+            Ok(AwsResponse::ok_json(json!({
                 "BaselineId": pg.baseline_id,
                 "PatchGroup": pg.patch_group,
                 "OperatingSystem": operating_system,
@@ -468,7 +468,7 @@ impl SsmService {
             if let Some(baseline_id) = default_patch_baseline(&req.region, operating_system) {
                 resp["BaselineId"] = json!(baseline_id);
             }
-            Ok(json_resp(resp))
+            Ok(AwsResponse::ok_json(resp))
         }
     }
 
@@ -476,7 +476,7 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 100)?;
         let max_results = body["MaxResults"].as_i64().unwrap_or(50) as usize;
         let next_token_offset: usize = body["NextToken"]
@@ -548,7 +548,7 @@ impl SsmService {
             resp["NextToken"] = json!((next_token_offset + max_results).to_string());
         }
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     // -----------------------------------------------------------------------
@@ -559,7 +559,7 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let baseline_id = body["BaselineId"]
             .as_str()
             .ok_or_else(|| missing("BaselineId"))?;
@@ -631,65 +631,65 @@ impl SsmService {
             resp["GlobalFilters"] = gf.clone();
         }
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     pub(super) fn describe_instance_patch_states(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 10, 100)?;
         let _instance_ids = body["InstanceIds"]
             .as_array()
             .ok_or_else(|| missing("InstanceIds"))?;
         // Return empty - no real instances in emulator
-        Ok(json_resp(json!({ "InstancePatchStates": [] })))
+        Ok(AwsResponse::ok_json(json!({ "InstancePatchStates": [] })))
     }
 
     pub(super) fn describe_instance_patch_states_for_patch_group(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("PatchGroup", body["PatchGroup"].as_str(), 1, 256)?;
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 10, 100)?;
         let _patch_group = body["PatchGroup"]
             .as_str()
             .ok_or_else(|| missing("PatchGroup"))?;
-        Ok(json_resp(json!({ "InstancePatchStates": [] })))
+        Ok(AwsResponse::ok_json(json!({ "InstancePatchStates": [] })))
     }
 
     pub(super) fn describe_instance_patches(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 10, 100)?;
         let _instance_id = body["InstanceId"]
             .as_str()
             .ok_or_else(|| missing("InstanceId"))?;
-        Ok(json_resp(json!({ "Patches": [] })))
+        Ok(AwsResponse::ok_json(json!({ "Patches": [] })))
     }
 
     pub(super) fn describe_effective_patches_for_patch_baseline(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("BaselineId", body["BaselineId"].as_str(), 20, 128)?;
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 100)?;
         let _baseline_id = body["BaselineId"]
             .as_str()
             .ok_or_else(|| missing("BaselineId"))?;
-        Ok(json_resp(json!({ "EffectivePatches": [] })))
+        Ok(AwsResponse::ok_json(json!({ "EffectivePatches": [] })))
     }
 
     pub(super) fn get_deployable_patch_snapshot_for_instance(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("SnapshotId", body["SnapshotId"].as_str(), 36, 36)?;
         let instance_id = body["InstanceId"]
             .as_str()
@@ -698,7 +698,7 @@ impl SsmService {
             .as_str()
             .ok_or_else(|| missing("SnapshotId"))?;
 
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "InstanceId": instance_id,
             "SnapshotId": snapshot_id,
             "Product": "{}",
@@ -712,12 +712,12 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("PatchGroup", body["PatchGroup"].as_str(), 1, 256)?;
         let _patch_group = body["PatchGroup"]
             .as_str()
             .ok_or_else(|| missing("PatchGroup"))?;
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "Instances": 0,
             "InstancesWithInstalledPatches": 0,
             "InstancesWithInstalledOtherPatches": 0,
@@ -737,7 +737,7 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("OperatingSystem", &body["OperatingSystem"])?;
         validate_optional_enum(
             "OperatingSystem",
@@ -779,14 +779,14 @@ impl SsmService {
             &["OS", "APPLICATION"],
         )?;
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
-        Ok(json_resp(json!({ "Properties": [] })))
+        Ok(AwsResponse::ok_json(json!({ "Properties": [] })))
     }
 
     pub(super) fn get_default_patch_baseline(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_enum(
             "OperatingSystem",
             body["OperatingSystem"].as_str(),
@@ -814,7 +814,7 @@ impl SsmService {
 
         // Check if a custom default has been registered
         if let Some(ref baseline_id) = state.default_patch_baseline_id {
-            return Ok(json_resp(json!({
+            return Ok(AwsResponse::ok_json(json!({
                 "BaselineId": baseline_id,
                 "OperatingSystem": operating_system,
             })));
@@ -823,7 +823,7 @@ impl SsmService {
         // Otherwise look up from defaults
         let baseline_id =
             default_patch_baseline(&state.region, operating_system).unwrap_or_default();
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "BaselineId": baseline_id,
             "OperatingSystem": operating_system,
         })))
@@ -833,7 +833,7 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let baseline_id = body["BaselineId"]
             .as_str()
             .ok_or_else(|| missing("BaselineId"))?
@@ -853,7 +853,7 @@ impl SsmService {
         }
 
         state.default_patch_baseline_id = Some(baseline_id.clone());
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "BaselineId": baseline_id,
         })))
     }
@@ -862,9 +862,9 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 100)?;
-        Ok(json_resp(json!({ "Patches": [] })))
+        Ok(AwsResponse::ok_json(json!({ "Patches": [] })))
     }
 }
 

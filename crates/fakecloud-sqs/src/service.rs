@@ -170,10 +170,6 @@ fn val_as_i64(v: &Value) -> Option<i64> {
         .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
 }
 
-fn json_response(body: Value) -> AwsResponse {
-    AwsResponse::json(StatusCode::OK, serde_json::to_string(&body).unwrap())
-}
-
 use fakecloud_aws::xml::xml_escape;
 
 fn xml_wrap(action: &str, inner: &str, request_id: &str) -> String {
@@ -198,7 +194,7 @@ fn xml_metadata_only(action: &str, request_id: &str) -> AwsResponse {
 
 fn sqs_response(action: &str, body: Value, request_id: &str, is_query: bool) -> AwsResponse {
     if !is_query {
-        return json_response(body);
+        return AwsResponse::ok_json(body);
     }
     match action {
         "CreateQueue" => {

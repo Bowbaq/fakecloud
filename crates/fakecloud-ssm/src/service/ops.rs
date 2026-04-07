@@ -9,11 +9,11 @@ use fakecloud_core::validation::*;
 
 use crate::state::{OpsItemRelatedItem, OpsMetadataEntry, SsmOpsItem};
 
-use super::{json_resp, missing, parse_body, SsmService};
+use super::{missing, SsmService};
 
 impl SsmService {
     pub(super) fn create_ops_item(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("Description", &body["Description"])?;
         validate_optional_string_length("Title", body["Title"].as_str(), 1, 1024)?;
         validate_optional_string_length("Source", body["Source"].as_str(), 1, 128)?;
@@ -90,11 +90,11 @@ impl SsmService {
 
         state.ops_items.insert(ops_item_id.clone(), item);
 
-        Ok(json_resp(json!({ "OpsItemId": ops_item_id })))
+        Ok(AwsResponse::ok_json(json!({ "OpsItemId": ops_item_id })))
     }
 
     pub(super) fn get_ops_item(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let ops_item_id = body["OpsItemId"]
             .as_str()
             .ok_or_else(|| missing("OpsItemId"))?;
@@ -108,11 +108,13 @@ impl SsmService {
             )
         })?;
 
-        Ok(json_resp(json!({ "OpsItem": ops_item_to_json(item) })))
+        Ok(AwsResponse::ok_json(
+            json!({ "OpsItem": ops_item_to_json(item) }),
+        ))
     }
 
     pub(super) fn update_ops_item(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let ops_item_id = body["OpsItemId"]
             .as_str()
             .ok_or_else(|| missing("OpsItemId"))?;
@@ -160,25 +162,25 @@ impl SsmService {
         item.last_modified_time = Utc::now();
         item.last_modified_by = format!("arn:aws:iam::{}:root", account_id);
 
-        Ok(json_resp(json!({})))
+        Ok(AwsResponse::ok_json(json!({})))
     }
 
     pub(super) fn delete_ops_item(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let ops_item_id = body["OpsItemId"]
             .as_str()
             .ok_or_else(|| missing("OpsItemId"))?;
 
         let mut state = self.state.write();
         state.ops_items.remove(ops_item_id);
-        Ok(json_resp(json!({})))
+        Ok(AwsResponse::ok_json(json!({})))
     }
 
     pub(super) fn describe_ops_items(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
         let max_results = body["MaxResults"].as_i64().unwrap_or(50) as usize;
         let next_token_offset: usize = body["NextToken"]
@@ -226,7 +228,7 @@ impl SsmService {
         if has_more {
             resp["NextToken"] = json!((next_token_offset + max_results).to_string());
         }
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     // -----------------------------------------------------------------------
@@ -234,10 +236,10 @@ impl SsmService {
     // -----------------------------------------------------------------------
 
     pub(super) fn get_ops_summary(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("SyncName", body["SyncName"].as_str(), 1, 64)?;
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
-        Ok(json_resp(json!({ "Entities": [] })))
+        Ok(AwsResponse::ok_json(json!({ "Entities": [] })))
     }
 
     // ── OpsItem Related Items ─────────────────────────────────────
@@ -246,7 +248,7 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let ops_item_id = body["OpsItemId"]
             .as_str()
             .ok_or_else(|| missing("OpsItemId"))?
@@ -292,14 +294,16 @@ impl SsmService {
             last_modified_by: format!("arn:aws:iam::{account_id}:root"),
         });
 
-        Ok(json_resp(json!({ "AssociationId": association_id })))
+        Ok(AwsResponse::ok_json(
+            json!({ "AssociationId": association_id }),
+        ))
     }
 
     pub(super) fn disassociate_ops_item_related_item(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let ops_item_id = body["OpsItemId"]
             .as_str()
             .ok_or_else(|| missing("OpsItemId"))?;
@@ -320,14 +324,14 @@ impl SsmService {
             ));
         }
 
-        Ok(json_resp(json!({})))
+        Ok(AwsResponse::ok_json(json!({})))
     }
 
     pub(super) fn list_ops_item_related_items(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
         let state = self.state.read();
         let ops_item_id = body["OpsItemId"].as_str();
@@ -351,14 +355,14 @@ impl SsmService {
             })
             .collect();
 
-        Ok(json_resp(json!({ "Summaries": items })))
+        Ok(AwsResponse::ok_json(json!({ "Summaries": items })))
     }
 
     pub(super) fn list_ops_item_events(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
         let state = self.state.read();
 
@@ -393,7 +397,7 @@ impl SsmService {
             })
             .collect();
 
-        Ok(json_resp(json!({ "Summaries": events })))
+        Ok(AwsResponse::ok_json(json!({ "Summaries": events })))
     }
 
     // ── OpsMetadata ───────────────────────────────────────────────
@@ -402,7 +406,7 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("ResourceId", body["ResourceId"].as_str(), 1, 1024)?;
         let resource_id = body["ResourceId"]
             .as_str()
@@ -435,14 +439,14 @@ impl SsmService {
         };
         state.ops_metadata.insert(arn.clone(), entry);
 
-        Ok(json_resp(json!({ "OpsMetadataArn": arn })))
+        Ok(AwsResponse::ok_json(json!({ "OpsMetadataArn": arn })))
     }
 
     pub(super) fn get_ops_metadata(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let arn = body["OpsMetadataArn"]
             .as_str()
             .ok_or_else(|| missing("OpsMetadataArn"))?;
@@ -456,7 +460,7 @@ impl SsmService {
             )
         })?;
 
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "ResourceId": entry.resource_id,
             "Metadata": entry.metadata,
         })))
@@ -466,7 +470,7 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let arn = body["OpsMetadataArn"]
             .as_str()
             .ok_or_else(|| missing("OpsMetadataArn"))?;
@@ -493,14 +497,14 @@ impl SsmService {
             }
         }
 
-        Ok(json_resp(json!({ "OpsMetadataArn": arn })))
+        Ok(AwsResponse::ok_json(json!({ "OpsMetadataArn": arn })))
     }
 
     pub(super) fn delete_ops_metadata(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let arn = body["OpsMetadataArn"]
             .as_str()
             .ok_or_else(|| missing("OpsMetadataArn"))?;
@@ -514,14 +518,14 @@ impl SsmService {
             ));
         }
 
-        Ok(json_resp(json!({})))
+        Ok(AwsResponse::ok_json(json!({})))
     }
 
     pub(super) fn list_ops_metadata(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
         let state = self.state.read();
         let items: Vec<Value> = state
@@ -536,7 +540,7 @@ impl SsmService {
             })
             .collect();
 
-        Ok(json_resp(json!({ "OpsMetadataList": items })))
+        Ok(AwsResponse::ok_json(json!({ "OpsMetadataList": items })))
     }
 
     // ── Automation ────────────────────────────────────────────────

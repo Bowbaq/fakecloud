@@ -189,14 +189,6 @@ impl AwsService for EventBridgeService {
     }
 }
 
-fn parse_body(req: &AwsRequest) -> Value {
-    serde_json::from_slice(&req.body).unwrap_or(Value::Object(Default::default()))
-}
-
-fn json_resp(body: Value) -> AwsResponse {
-    AwsResponse::json(StatusCode::OK, serde_json::to_string(&body).unwrap())
-}
-
 fn parse_tags(body: &Value) -> HashMap<String, String> {
     let mut tags = HashMap::new();
     if let Some(arr) = body["Tags"].as_array() {
@@ -240,7 +232,7 @@ fn target_to_json(t: &EventTarget) -> Value {
 // ─── Event Bus Operations ───────────────────────────────────────────
 impl EventBridgeService {
     fn create_event_bus(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("Name", &body["Name"])?;
         let name = body["Name"]
             .as_str()
@@ -319,11 +311,11 @@ impl EventBridgeService {
         };
         state.buses.insert(name, bus);
 
-        Ok(json_resp(json!({ "EventBusArn": arn })))
+        Ok(AwsResponse::ok_json(json!({ "EventBusArn": arn })))
     }
 
     fn delete_event_bus(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("Name", &body["Name"])?;
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
         validate_string_length("name", name, 1, 256)?;
@@ -340,11 +332,11 @@ impl EventBridgeService {
         state.buses.remove(name);
         state.rules.retain(|k, _| k.0 != name);
 
-        Ok(json_resp(json!({})))
+        Ok(AwsResponse::ok_json(json!({})))
     }
 
     fn list_event_buses(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("namePrefix", body["NamePrefix"].as_str(), 1, 256)?;
         validate_optional_string_length("nextToken", body["NextToken"].as_str(), 1, 2048)?;
         validate_optional_range_i64("limit", body["Limit"].as_i64(), 1, 100)?;
@@ -381,11 +373,11 @@ impl EventBridgeService {
             resp["NextToken"] = json!((offset + limit).to_string());
         }
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     fn describe_event_bus(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("name", body["Name"].as_str(), 1, 1600)?;
         let name = body["Name"].as_str().unwrap_or("default");
 
@@ -418,13 +410,13 @@ impl EventBridgeService {
             resp["DeadLetterConfig"] = dlc.clone();
         }
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     // ─── Permission Operations ──────────────────────────────────────────
 
     fn put_permission(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("eventBusName", body["EventBusName"].as_str(), 1, 256)?;
         validate_optional_string_length("action", body["Action"].as_str(), 1, 64)?;
         validate_optional_string_length("principal", body["Principal"].as_str(), 1, 12)?;
@@ -445,7 +437,7 @@ impl EventBridgeService {
         if let Some(policy_str) = body["Policy"].as_str() {
             if let Ok(policy) = serde_json::from_str::<Value>(policy_str) {
                 bus.policy = Some(policy);
-                return Ok(json_resp(json!({})));
+                return Ok(AwsResponse::ok_json(json!({})));
             }
         }
 
@@ -482,11 +474,11 @@ impl EventBridgeService {
             stmts.push(statement);
         }
 
-        Ok(json_resp(json!({})))
+        Ok(AwsResponse::ok_json(json!({})))
     }
 
     fn remove_permission(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("statementId", body["StatementId"].as_str(), 1, 64)?;
         validate_optional_string_length("eventBusName", body["EventBusName"].as_str(), 1, 256)?;
         let event_bus_name = body["EventBusName"].as_str().unwrap_or("default");
@@ -505,7 +497,7 @@ impl EventBridgeService {
 
         if remove_all {
             bus.policy = None;
-            return Ok(json_resp(json!({})));
+            return Ok(AwsResponse::ok_json(json!({})));
         }
 
         let policy = bus.policy.as_mut().ok_or_else(|| {
@@ -531,13 +523,13 @@ impl EventBridgeService {
             }
         }
 
-        Ok(json_resp(json!({})))
+        Ok(AwsResponse::ok_json(json!({})))
     }
 
     // ─── Rule Operations ────────────────────────────────────────────────
 
     fn put_rule(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("Name", &body["Name"])?;
         let name = body["Name"]
             .as_str()
@@ -645,11 +637,11 @@ impl EventBridgeService {
         };
 
         state.rules.insert(key, rule);
-        Ok(json_resp(json!({ "RuleArn": arn })))
+        Ok(AwsResponse::ok_json(json!({ "RuleArn": arn })))
     }
 
     fn delete_rule(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("Name", &body["Name"])?;
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
         validate_string_length("name", name, 1, 64)?;
@@ -672,11 +664,11 @@ impl EventBridgeService {
         }
 
         state.rules.remove(&key);
-        Ok(json_resp(json!({})))
+        Ok(AwsResponse::ok_json(json!({})))
     }
 
     fn list_rules(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("namePrefix", body["NamePrefix"].as_str(), 1, 64)?;
         validate_optional_string_length("eventBusName", body["EventBusName"].as_str(), 1, 1600)?;
         validate_optional_string_length("nextToken", body["NextToken"].as_str(), 1, 2048)?;
@@ -747,11 +739,11 @@ impl EventBridgeService {
             resp["NextToken"] = json!(token);
         }
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     fn describe_rule(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("Name", &body["Name"])?;
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
         validate_string_length("name", name, 1, 64)?;
@@ -800,11 +792,11 @@ impl EventBridgeService {
             resp["CreatedBy"] = json!(state.account_id);
         }
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     fn enable_rule(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("Name", &body["Name"])?;
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
         validate_string_length("name", name, 1, 64)?;
@@ -824,11 +816,11 @@ impl EventBridgeService {
         })?;
 
         rule.state = "ENABLED".to_string();
-        Ok(json_resp(json!({})))
+        Ok(AwsResponse::ok_json(json!({})))
     }
 
     fn disable_rule(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("Name", &body["Name"])?;
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
         validate_string_length("name", name, 1, 64)?;
@@ -848,13 +840,13 @@ impl EventBridgeService {
         })?;
 
         rule.state = "DISABLED".to_string();
-        Ok(json_resp(json!({})))
+        Ok(AwsResponse::ok_json(json!({})))
     }
 
     // ─── Target Operations ──────────────────────────────────────────────
 
     fn put_targets(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("Rule", &body["Rule"])?;
         let rule_name = body["Rule"].as_str().ok_or_else(|| missing("Rule"))?;
         validate_string_length("rule", rule_name, 1, 64)?;
@@ -911,14 +903,14 @@ impl EventBridgeService {
             rule.targets.push(et);
         }
 
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "FailedEntryCount": 0,
             "FailedEntries": [],
         })))
     }
 
     fn remove_targets(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("Rule", &body["Rule"])?;
         let rule_name = body["Rule"].as_str().ok_or_else(|| missing("Rule"))?;
         validate_string_length("rule", rule_name, 1, 64)?;
@@ -946,14 +938,14 @@ impl EventBridgeService {
 
         rule.targets.retain(|t| !target_ids.contains(&t.id));
 
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "FailedEntryCount": 0,
             "FailedEntries": [],
         })))
     }
 
     fn list_targets_by_rule(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("Rule", &body["Rule"])?;
         let rule_name = body["Rule"].as_str().ok_or_else(|| missing("Rule"))?;
         validate_string_length("rule", rule_name, 1, 64)?;
@@ -1000,11 +992,11 @@ impl EventBridgeService {
             resp["NextToken"] = json!(token);
         }
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     fn list_rule_names_by_target(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("TargetArn", &body["TargetArn"])?;
         let target_arn = body["TargetArn"]
             .as_str()
@@ -1053,7 +1045,7 @@ impl EventBridgeService {
             resp["NextToken"] = json!(token);
         }
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     // ─── Partner Event Sources ────────────���───────────────────────────
@@ -1062,7 +1054,7 @@ impl EventBridgeService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("Name", &body["Name"])?;
         let name = body["Name"]
             .as_str()
@@ -1099,14 +1091,14 @@ impl EventBridgeService {
         };
         state.partner_event_sources.insert(name.clone(), ps);
 
-        Ok(json_resp(json!({ "EventSourceArn": arn })))
+        Ok(AwsResponse::ok_json(json!({ "EventSourceArn": arn })))
     }
 
     fn delete_partner_event_source(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("Name", &body["Name"])?;
         let name = body["Name"]
             .as_str()
@@ -1139,14 +1131,14 @@ impl EventBridgeService {
             }
         }
 
-        Ok(json_resp(json!({})))
+        Ok(AwsResponse::ok_json(json!({})))
     }
 
     fn describe_partner_event_source(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("Name", &body["Name"])?;
         let name = body["Name"]
             .as_str()
@@ -1163,14 +1155,14 @@ impl EventBridgeService {
             )
         })?;
 
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "Arn": ps.arn,
             "Name": ps.name,
         })))
     }
 
     fn list_partner_event_sources(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("namePrefix", &body["NamePrefix"])?;
         let name_prefix = body["NamePrefix"]
             .as_str()
@@ -1206,14 +1198,14 @@ impl EventBridgeService {
             resp["NextToken"] = json!((offset + limit).to_string());
         }
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     fn list_partner_event_source_accounts(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("EventSourceName", &body["EventSourceName"])?;
         let event_source_name = body["EventSourceName"]
             .as_str()
@@ -1230,13 +1222,13 @@ impl EventBridgeService {
             .map(|ps| json!({ "Account": ps.account }))
             .collect();
 
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "PartnerEventSourceAccounts": accounts
         })))
     }
 
     fn activate_event_source(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("Name", &body["Name"])?;
         let name = body["Name"]
             .as_str()
@@ -1253,11 +1245,11 @@ impl EventBridgeService {
         })?;
         ps.state = "ACTIVE".to_string();
 
-        Ok(json_resp(json!({})))
+        Ok(AwsResponse::ok_json(json!({})))
     }
 
     fn deactivate_event_source(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("Name", &body["Name"])?;
         let name = body["Name"]
             .as_str()
@@ -1274,11 +1266,11 @@ impl EventBridgeService {
         })?;
         ps.state = "INACTIVE".to_string();
 
-        Ok(json_resp(json!({})))
+        Ok(AwsResponse::ok_json(json!({})))
     }
 
     fn describe_event_source(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("Name", &body["Name"])?;
         let name = body["Name"]
             .as_str()
@@ -1294,7 +1286,7 @@ impl EventBridgeService {
             )
         })?;
 
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "Arn": ps.arn,
             "Name": ps.name,
             "CreatedBy": ps.account,
@@ -1304,7 +1296,7 @@ impl EventBridgeService {
     }
 
     fn list_event_sources(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("namePrefix", body["NamePrefix"].as_str(), 1, 256)?;
         validate_optional_range_i64("limit", body["Limit"].as_i64(), 1, 100)?;
         validate_optional_string_length("nextToken", body["NextToken"].as_str(), 1, 2048)?;
@@ -1343,11 +1335,11 @@ impl EventBridgeService {
             resp["NextToken"] = json!((offset + limit).to_string());
         }
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     fn put_partner_events(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("Entries", &body["Entries"])?;
         let entries = body["Entries"]
             .as_array()
@@ -1359,7 +1351,7 @@ impl EventBridgeService {
             result_entries.push(json!({ "EventId": event_id }));
         }
 
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "FailedEntryCount": 0,
             "Entries": result_entries,
         })))
@@ -1368,7 +1360,7 @@ impl EventBridgeService {
     // ─── TestEventPattern ────────────────────────────────────────────────
 
     fn test_event_pattern(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("EventPattern", &body["EventPattern"])?;
         validate_required("Event", &body["Event"])?;
         let event_pattern = body["EventPattern"]
@@ -1421,13 +1413,13 @@ impl EventBridgeService {
             &resources,
         );
 
-        Ok(json_resp(json!({ "Result": result })))
+        Ok(AwsResponse::ok_json(json!({ "Result": result })))
     }
 
     // ─── UpdateEventBus ─────────────────────────────────────────────────
 
     fn update_event_bus(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("description", body["Description"].as_str(), 0, 512)?;
         validate_optional_string_length(
             "kmsKeyIdentifier",
@@ -1460,7 +1452,7 @@ impl EventBridgeService {
         let arn = bus.arn.clone();
         let bus_name = bus.name.clone();
 
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "Arn": arn,
             "Name": bus_name,
         })))
@@ -1469,7 +1461,7 @@ impl EventBridgeService {
     // ─── Endpoint Operations ────────────────────────────────────────────
 
     fn create_endpoint(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("Name", &body["Name"])?;
         let name = body["Name"]
             .as_str()
@@ -1535,11 +1527,11 @@ impl EventBridgeService {
             resp["RoleArn"] = json!(ra);
         }
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     fn delete_endpoint(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("Name", &body["Name"])?;
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
 
@@ -1552,11 +1544,11 @@ impl EventBridgeService {
             )
         })?;
 
-        Ok(json_resp(json!({})))
+        Ok(AwsResponse::ok_json(json!({})))
     }
 
     fn describe_endpoint(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("Name", &body["Name"])?;
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
 
@@ -1592,11 +1584,11 @@ impl EventBridgeService {
             resp["RoleArn"] = json!(ra);
         }
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     fn list_endpoints(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("namePrefix", body["NamePrefix"].as_str(), 1, 64)?;
         validate_optional_string_length("homeRegion", body["HomeRegion"].as_str(), 9, 20)?;
         validate_optional_string_length("nextToken", body["NextToken"].as_str(), 1, 2048)?;
@@ -1643,11 +1635,11 @@ impl EventBridgeService {
             resp["NextToken"] = json!((offset + limit).to_string());
         }
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     fn update_endpoint(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("Name", &body["Name"])?;
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
 
@@ -1686,13 +1678,13 @@ impl EventBridgeService {
             "EventBuses": ep.event_buses,
         });
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     // ─── DeauthorizeConnection ──────────────────────────────────────────
 
     fn deauthorize_connection(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("Name", &body["Name"])?;
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
         validate_string_length("name", name, 1, 64)?;
@@ -1717,13 +1709,13 @@ impl EventBridgeService {
             "LastAuthorizedTime": conn.last_authorized_time.timestamp() as f64,
         });
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     // ─── PutEvents ──────────────────────────────────────────────────────
 
     fn put_events(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("Entries", &body["Entries"])?;
         validate_optional_string_length("endpointId", body["EndpointId"].as_str(), 1, 50)?;
         let entries = body["Entries"]
@@ -2091,13 +2083,13 @@ impl EventBridgeService {
             "Entries": result_entries,
         });
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     // ─── Tagging ────────────────────────────────────────────────────────
 
     fn tag_resource(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("ResourceARN", &body["ResourceARN"])?;
         let arn = body["ResourceARN"]
             .as_str()
@@ -2116,11 +2108,11 @@ impl EventBridgeService {
             }
         }
 
-        Ok(json_resp(json!({})))
+        Ok(AwsResponse::ok_json(json!({})))
     }
 
     fn untag_resource(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("ResourceARN", &body["ResourceARN"])?;
         let arn = body["ResourceARN"]
             .as_str()
@@ -2140,11 +2132,11 @@ impl EventBridgeService {
             }
         }
 
-        Ok(json_resp(json!({})))
+        Ok(AwsResponse::ok_json(json!({})))
     }
 
     fn list_tags_for_resource(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("ResourceARN", &body["ResourceARN"])?;
         let arn = body["ResourceARN"]
             .as_str()
@@ -2159,13 +2151,13 @@ impl EventBridgeService {
             .map(|(k, v)| json!({"Key": k, "Value": v}))
             .collect();
 
-        Ok(json_resp(json!({ "Tags": tags })))
+        Ok(AwsResponse::ok_json(json!({ "Tags": tags })))
     }
 
     // ─── Archive Operations ─────────────────────────────────────────────
 
     fn create_archive(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("ArchiveName", &body["ArchiveName"])?;
         let name = body["ArchiveName"]
             .as_str()
@@ -2287,7 +2279,7 @@ impl EventBridgeService {
         let key = (bus_name, rule_name);
         state.rules.insert(key, archive_rule);
 
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "ArchiveArn": arn,
             "CreationTime": now.timestamp() as f64,
             "State": "ENABLED",
@@ -2295,7 +2287,7 @@ impl EventBridgeService {
     }
 
     fn describe_archive(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("ArchiveName", &body["ArchiveName"])?;
         let name = body["ArchiveName"]
             .as_str()
@@ -2328,11 +2320,11 @@ impl EventBridgeService {
             resp["EventPattern"] = json!(ep);
         }
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     fn list_archives(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("namePrefix", body["NamePrefix"].as_str(), 1, 48)?;
         validate_optional_string_length(
             "eventSourceArn",
@@ -2428,11 +2420,11 @@ impl EventBridgeService {
             resp["NextToken"] = json!((offset + limit).to_string());
         }
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     fn update_archive(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("ArchiveName", &body["ArchiveName"])?;
         let name = body["ArchiveName"]
             .as_str()
@@ -2468,7 +2460,7 @@ impl EventBridgeService {
             archive.retention_days = days;
         }
 
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "ArchiveArn": archive.arn,
             "CreationTime": archive.creation_time.timestamp() as f64,
             "State": archive.state,
@@ -2476,7 +2468,7 @@ impl EventBridgeService {
     }
 
     fn delete_archive(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("ArchiveName", &body["ArchiveName"])?;
         let name = body["ArchiveName"]
             .as_str()
@@ -2498,13 +2490,13 @@ impl EventBridgeService {
         let rule_name = format!("Events-Archive-{name}");
         state.rules.retain(|k, _| k.1 != rule_name);
 
-        Ok(json_resp(json!({})))
+        Ok(AwsResponse::ok_json(json!({})))
     }
 
     // ─── Connection Operations ──────────────────────────────────────────
 
     fn create_connection(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("Name", &body["Name"])?;
         let name = body["Name"]
             .as_str()
@@ -2558,7 +2550,7 @@ impl EventBridgeService {
         };
         state.connections.insert(name, conn);
 
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "ConnectionArn": arn,
             "ConnectionState": "AUTHORIZED",
             "CreationTime": now.timestamp() as f64,
@@ -2567,7 +2559,7 @@ impl EventBridgeService {
     }
 
     fn describe_connection(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("Name", &body["Name"])?;
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
         validate_string_length("name", name, 1, 64)?;
@@ -2600,11 +2592,11 @@ impl EventBridgeService {
             resp["Description"] = json!(desc);
         }
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     fn list_connections(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("namePrefix", body["NamePrefix"].as_str(), 1, 64)?;
         validate_optional_enum(
             "connectionState",
@@ -2671,11 +2663,11 @@ impl EventBridgeService {
             resp["NextToken"] = json!((offset + limit).to_string());
         }
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     fn update_connection(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("Name", &body["Name"])?;
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
         validate_string_length("name", name, 1, 64)?;
@@ -2706,7 +2698,7 @@ impl EventBridgeService {
         }
         conn.last_modified_time = Utc::now();
 
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "ConnectionArn": conn.arn,
             "ConnectionState": conn.connection_state,
             "CreationTime": conn.creation_time.timestamp() as f64,
@@ -2716,7 +2708,7 @@ impl EventBridgeService {
     }
 
     fn delete_connection(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("Name", &body["Name"])?;
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
         validate_string_length("name", name, 1, 64)?;
@@ -2730,7 +2722,7 @@ impl EventBridgeService {
             )
         })?;
 
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "ConnectionArn": conn.arn,
             "ConnectionState": conn.connection_state,
             "CreationTime": conn.creation_time.timestamp() as f64,
@@ -2742,7 +2734,7 @@ impl EventBridgeService {
     // ─── API Destination Operations ─────────────────────────────────────
 
     fn create_api_destination(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("Name", &body["Name"])?;
         let name = body["Name"]
             .as_str()
@@ -2800,7 +2792,7 @@ impl EventBridgeService {
         };
         state.api_destinations.insert(name, dest);
 
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "ApiDestinationArn": arn,
             "ApiDestinationState": "ACTIVE",
             "CreationTime": now.timestamp() as f64,
@@ -2809,7 +2801,7 @@ impl EventBridgeService {
     }
 
     fn describe_api_destination(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("Name", &body["Name"])?;
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
         validate_string_length("name", name, 1, 64)?;
@@ -2840,11 +2832,11 @@ impl EventBridgeService {
             resp["InvocationRateLimitPerSecond"] = json!(rate);
         }
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     fn list_api_destinations(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("namePrefix", body["NamePrefix"].as_str(), 1, 64)?;
         validate_optional_string_length("connectionArn", body["ConnectionArn"].as_str(), 1, 1600)?;
         validate_optional_string_length("nextToken", body["NextToken"].as_str(), 1, 2048)?;
@@ -2902,11 +2894,11 @@ impl EventBridgeService {
             resp["NextToken"] = json!((offset + limit).to_string());
         }
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     fn update_api_destination(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("Name", &body["Name"])?;
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
         validate_string_length("name", name, 1, 64)?;
@@ -2953,7 +2945,7 @@ impl EventBridgeService {
         }
         dest.last_modified_time = Utc::now();
 
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "ApiDestinationArn": dest.arn,
             "ApiDestinationState": dest.state,
             "CreationTime": dest.creation_time.timestamp() as f64,
@@ -2962,7 +2954,7 @@ impl EventBridgeService {
     }
 
     fn delete_api_destination(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("Name", &body["Name"])?;
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
         validate_string_length("name", name, 1, 64)?;
@@ -2977,13 +2969,13 @@ impl EventBridgeService {
         }
         state.api_destinations.remove(name);
 
-        Ok(json_resp(json!({})))
+        Ok(AwsResponse::ok_json(json!({})))
     }
 
     // ─── Replay Operations ──────────────────────────────────────────────
 
     fn start_replay(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("ReplayName", &body["ReplayName"])?;
         let name = body["ReplayName"]
             .as_str()
@@ -3250,7 +3242,7 @@ impl EventBridgeService {
             }
         }
 
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "ReplayArn": arn,
             "ReplayStartTime": now.timestamp() as f64,
             "State": "STARTING",
@@ -3258,7 +3250,7 @@ impl EventBridgeService {
     }
 
     fn describe_replay(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("ReplayName", &body["ReplayName"])?;
         let name = body["ReplayName"]
             .as_str()
@@ -3291,11 +3283,11 @@ impl EventBridgeService {
             resp["ReplayEndTime"] = json!(end.timestamp() as f64);
         }
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     fn list_replays(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("namePrefix", body["NamePrefix"].as_str(), 1, 64)?;
         validate_optional_string_length(
             "eventSourceArn",
@@ -3394,11 +3386,11 @@ impl EventBridgeService {
             resp["NextToken"] = json!((offset + limit).to_string());
         }
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     fn cancel_replay(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("ReplayName", &body["ReplayName"])?;
         let name = body["ReplayName"]
             .as_str()
@@ -3426,7 +3418,7 @@ impl EventBridgeService {
         let arn = replay.arn.clone();
         replay.state = "CANCELLED".to_string();
 
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "ReplayArn": arn,
             "State": "CANCELLING",
         })))

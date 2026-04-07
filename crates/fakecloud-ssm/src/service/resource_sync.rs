@@ -7,14 +7,14 @@ use fakecloud_core::validation::*;
 
 use crate::state::ResourceDataSync;
 
-use super::{json_resp, missing, parse_body, SsmService};
+use super::{missing, SsmService};
 
 impl SsmService {
     pub(super) fn create_resource_data_sync(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("SyncName", body["SyncName"].as_str(), 1, 64)?;
         let sync_name = body["SyncName"]
             .as_str()
@@ -44,14 +44,14 @@ impl SsmService {
         };
         state.resource_data_syncs.insert(sync_name, sync);
 
-        Ok(json_resp(json!({})))
+        Ok(AwsResponse::ok_json(json!({})))
     }
 
     pub(super) fn delete_resource_data_sync(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("SyncName", body["SyncName"].as_str(), 1, 64)?;
         let sync_name = body["SyncName"]
             .as_str()
@@ -66,14 +66,14 @@ impl SsmService {
             ));
         }
 
-        Ok(json_resp(json!({})))
+        Ok(AwsResponse::ok_json(json!({})))
     }
 
     pub(super) fn list_resource_data_sync(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("SyncType", body["SyncType"].as_str(), 1, 64)?;
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
         let state = self.state.read();
@@ -107,14 +107,16 @@ impl SsmService {
                 v
             })
             .collect();
-        Ok(json_resp(json!({ "ResourceDataSyncItems": syncs })))
+        Ok(AwsResponse::ok_json(
+            json!({ "ResourceDataSyncItems": syncs }),
+        ))
     }
 
     pub(super) fn update_resource_data_sync(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let sync_name = body["SyncName"]
             .as_str()
             .ok_or_else(|| missing("SyncName"))?;
@@ -140,7 +142,7 @@ impl SsmService {
         sync.sync_source = Some(sync_source);
         sync.sync_last_modified_time = Utc::now();
 
-        Ok(json_resp(json!({})))
+        Ok(AwsResponse::ok_json(json!({})))
     }
 
     // ── GetOpsSummary ─────────────────────────────────────────────

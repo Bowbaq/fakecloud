@@ -24,6 +24,13 @@ pub struct AwsRequest {
     pub access_key_id: Option<String>,
 }
 
+impl AwsRequest {
+    /// Parse the request body as JSON, returning `Value::Null` on failure.
+    pub fn json_body(&self) -> serde_json::Value {
+        serde_json::from_slice(&self.body).unwrap_or(serde_json::Value::Null)
+    }
+}
+
 /// A response from a service handler.
 pub struct AwsResponse {
     pub status: StatusCode,
@@ -49,6 +56,11 @@ impl AwsResponse {
             body: body.into(),
             headers: HeaderMap::new(),
         }
+    }
+
+    /// Convenience constructor for a 200 OK JSON response from a `serde_json::Value`.
+    pub fn ok_json(value: serde_json::Value) -> Self {
+        Self::json(StatusCode::OK, serde_json::to_vec(&value).unwrap())
     }
 }
 

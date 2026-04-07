@@ -8,11 +8,11 @@ use fakecloud_core::validation::*;
 
 use crate::state::{InventoryDeletion, InventoryEntry, InventoryItem};
 
-use super::{json_resp, missing, parse_body, SsmService};
+use super::{missing, SsmService};
 
 impl SsmService {
     pub(super) fn put_inventory(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let instance_id = body["InstanceId"]
             .as_str()
             .ok_or_else(|| missing("InstanceId"))?
@@ -88,13 +88,13 @@ impl SsmService {
             }
         }
 
-        Ok(json_resp(
+        Ok(AwsResponse::ok_json(
             json!({ "Message": "Inventory was saved successfully" }),
         ))
     }
 
     pub(super) fn get_inventory(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
         let state = self.state.read();
         let entities: Vec<Value> = state
@@ -122,14 +122,14 @@ impl SsmService {
                 })
             })
             .collect();
-        Ok(json_resp(json!({ "Entities": entities })))
+        Ok(AwsResponse::ok_json(json!({ "Entities": entities })))
     }
 
     pub(super) fn get_inventory_schema(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("TypeName", body["TypeName"].as_str(), 0, 100)?;
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 50, 200)?;
         // Return standard inventory type schemas
@@ -177,14 +177,14 @@ impl SsmService {
                 ]
             }),
         ];
-        Ok(json_resp(json!({ "Schemas": schemas })))
+        Ok(AwsResponse::ok_json(json!({ "Schemas": schemas })))
     }
 
     pub(super) fn list_inventory_entries(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("TypeName", body["TypeName"].as_str(), 1, 100)?;
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
         let instance_id = body["InstanceId"]
@@ -221,7 +221,7 @@ impl SsmService {
             .map(|i| i.schema_version.as_str())
             .unwrap_or("1.0");
 
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "TypeName": type_name,
             "InstanceId": instance_id,
             "SchemaVersion": schema_version,
@@ -234,7 +234,7 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("TypeName", body["TypeName"].as_str(), 1, 100)?;
         validate_optional_enum(
             "SchemaDeleteOption",
@@ -271,7 +271,7 @@ impl SsmService {
             last_status_update_time: now,
         });
 
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "DeletionId": deletion_id,
             "TypeName": type_name,
             "DeletionSummary": {
@@ -286,7 +286,7 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
         let state = self.state.read();
         let deletions: Vec<Value> = state
@@ -304,7 +304,9 @@ impl SsmService {
                 })
             })
             .collect();
-        Ok(json_resp(json!({ "InventoryDeletions": deletions })))
+        Ok(AwsResponse::ok_json(
+            json!({ "InventoryDeletions": deletions }),
+        ))
     }
 
     // ── Compliance ────────────────────────────────────────────────

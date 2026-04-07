@@ -5,7 +5,7 @@ use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 use fakecloud_core::validation::*;
 
 use super::dd_config_json;
-use super::{body_json, require_str, LogsService};
+use super::{require_str, LogsService};
 use crate::state::{Delivery, DeliveryDestination, DeliverySource};
 
 impl LogsService {
@@ -15,7 +15,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let name = body["name"]
             .as_str()
             .ok_or_else(|| {
@@ -140,7 +140,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let name = body["name"].as_str().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -179,7 +179,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         validate_optional_range_i64("limit", body["limit"].as_i64(), 1, 50)?;
         validate_optional_string_length("nextToken", body["nextToken"].as_str(), 1, 2048)?;
 
@@ -210,7 +210,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let name = body["name"].as_str().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -237,7 +237,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let name = body["deliveryDestinationName"].as_str().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -285,7 +285,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let name = body["deliveryDestinationName"].as_str().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -326,7 +326,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let name = body["deliveryDestinationName"].as_str().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -357,7 +357,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let name = body["name"]
             .as_str()
             .ok_or_else(|| {
@@ -490,7 +490,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let name = body["name"].as_str().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -530,7 +530,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         validate_optional_range_i64("limit", body["limit"].as_i64(), 1, 50)?;
         validate_optional_string_length("nextToken", body["nextToken"].as_str(), 1, 2048)?;
 
@@ -560,7 +560,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let name = body["name"].as_str().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -586,7 +586,7 @@ impl LogsService {
     // ---- Deliveries ----
 
     pub(crate) fn create_delivery(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let delivery_source_name = body["deliverySourceName"]
             .as_str()
             .ok_or_else(|| {
@@ -736,7 +736,7 @@ impl LogsService {
     }
 
     pub(crate) fn get_delivery(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let delivery_id = body["id"].as_str().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -776,7 +776,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         validate_optional_range_i64("limit", body["limit"].as_i64(), 1, 50)?;
         validate_optional_string_length("nextToken", body["nextToken"].as_str(), 1, 2048)?;
 
@@ -803,7 +803,7 @@ impl LogsService {
     }
 
     pub(crate) fn delete_delivery(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let delivery_id = body["id"].as_str().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -830,7 +830,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let id = require_str(&body, "id")?;
 
         let state = self.state.read();
@@ -851,7 +851,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         validate_optional_string_length("service", body["service"].as_str(), 1, 255)?;
         validate_optional_string_length("nextToken", body["nextToken"].as_str(), 1, 4096)?;
         validate_optional_range_i64("limit", body["limit"].as_i64(), 1, 50)?;

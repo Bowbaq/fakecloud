@@ -9,11 +9,11 @@ use fakecloud_core::validation::*;
 
 use crate::state::{SsmParameter, SsmParameterVersion};
 
-use super::{json_resp, missing, parse_body, SsmService, PARAMETER_VERSION_LIMIT};
+use super::{missing, SsmService, PARAMETER_VERSION_LIMIT};
 
 impl SsmService {
     pub(super) fn put_parameter(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let name = body["Name"]
             .as_str()
             .ok_or_else(|| missing("Name"))?
@@ -175,7 +175,7 @@ impl SsmService {
             }
 
             let resp_tier = existing.tier.clone();
-            return Ok(json_resp(json!({
+            return Ok(AwsResponse::ok_json(json!({
                 "Version": existing.version,
                 "Tier": resp_tier,
             })));
@@ -222,7 +222,7 @@ impl SsmService {
         };
 
         state.parameters.insert(name, param);
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "Version": 1,
             "Tier": tier,
         })))
@@ -300,7 +300,7 @@ impl SsmService {
             ssm_state.account_id, raw_name
         );
 
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "Parameter": {
                 "Name": raw_name,
                 "Type": "SecureString",
@@ -315,7 +315,7 @@ impl SsmService {
     }
 
     pub(super) fn get_parameter(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let raw_name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
         let with_decryption = body["WithDecryption"].as_bool().unwrap_or(false);
 
@@ -338,7 +338,7 @@ impl SsmService {
         // Handle ARN-style names directly (they contain many colons)
         if raw_name.starts_with("arn:aws:ssm:") {
             let param = resolve_param_by_name_or_arn(&state, raw_name)?;
-            return Ok(json_resp(json!({
+            return Ok(AwsResponse::ok_json(json!({
                 "Parameter": param_to_json(param, true, with_decryption, &req.region),
             })));
         }
@@ -355,12 +355,12 @@ impl SsmService {
             .map_err(|_| param_not_found(raw_name))?;
 
         match selector {
-            ParamSelector::None => Ok(json_resp(json!({
+            ParamSelector::None => Ok(AwsResponse::ok_json(json!({
                 "Parameter": param_to_json(param, true, with_decryption, &req.region),
             }))),
             ParamSelector::Version(ver) => {
                 if param.version == ver {
-                    return Ok(json_resp(json!({
+                    return Ok(AwsResponse::ok_json(json!({
                         "Parameter": param_to_json(param, true, with_decryption, &req.region),
                     })));
                 }
@@ -379,7 +379,7 @@ impl SsmService {
                     } else {
                         v["Value"] = json!(hist.value);
                     }
-                    return Ok(json_resp(json!({ "Parameter": v })));
+                    return Ok(AwsResponse::ok_json(json!({ "Parameter": v })));
                 }
                 Err(AwsServiceError::aws_error(
                     StatusCode::BAD_REQUEST,
@@ -396,7 +396,7 @@ impl SsmService {
                 for (ver, labels) in &param.labels {
                     if labels.contains(&label) {
                         if *ver == param.version {
-                            return Ok(json_resp(json!({
+                            return Ok(AwsResponse::ok_json(json!({
                                 "Parameter": param_to_json(param, true, with_decryption, &req.region),
                             })));
                         }
@@ -414,7 +414,7 @@ impl SsmService {
                             } else {
                                 v["Value"] = json!(hist.value);
                             }
-                            return Ok(json_resp(json!({ "Parameter": v })));
+                            return Ok(AwsResponse::ok_json(json!({ "Parameter": v })));
                         }
                     }
                 }
@@ -433,7 +433,7 @@ impl SsmService {
     }
 
     pub(super) fn get_parameters(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let names = body["Names"].as_array().ok_or_else(|| missing("Names"))?;
         let with_decryption = body["WithDecryption"].as_bool().unwrap_or(false);
 
@@ -560,7 +560,7 @@ impl SsmService {
             }
         }
 
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "Parameters": parameters,
             "InvalidParameters": invalid,
         })))
@@ -570,7 +570,7 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let path = body["Path"].as_str().ok_or_else(|| missing("Path"))?;
         let recursive = body["Recursive"].as_bool().unwrap_or(false);
         let with_decryption = body["WithDecryption"].as_bool().unwrap_or(false);
@@ -672,14 +672,14 @@ impl SsmService {
             resp["NextToken"] = json!((next_token_offset + max_results).to_string());
         }
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     pub(super) fn delete_parameter(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
 
         let mut state = self.state.write();
@@ -687,14 +687,14 @@ impl SsmService {
             return Err(param_not_found(name));
         }
 
-        Ok(json_resp(json!({})))
+        Ok(AwsResponse::ok_json(json!({})))
     }
 
     pub(super) fn delete_parameters(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let names = body["Names"].as_array().ok_or_else(|| missing("Names"))?;
 
         let mut state = self.state.write();
@@ -711,7 +711,7 @@ impl SsmService {
             }
         }
 
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "DeletedParameters": deleted,
             "InvalidParameters": invalid,
         })))
@@ -721,7 +721,7 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
         let param_filters = body["ParameterFilters"].as_array().cloned();
         let old_filters = body["Filters"].as_array().cloned();
@@ -802,14 +802,14 @@ impl SsmService {
             resp["NextToken"] = json!((next_token_offset + max_results).to_string());
         }
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     pub(super) fn get_parameter_history(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
         let with_decryption = body["WithDecryption"].as_bool().unwrap_or(false);
         let max_results = body["MaxResults"].as_i64();
@@ -910,14 +910,14 @@ impl SsmService {
             resp["NextToken"] = json!((next_token_offset + max_results).to_string());
         }
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     pub(super) fn label_parameter_version(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
         let labels = body["Labels"].as_array().ok_or_else(|| missing("Labels"))?;
         let version = if body["ParameterVersion"].is_null() {
@@ -990,7 +990,7 @@ impl SsmService {
             }
         }
         if !invalid_labels.is_empty() {
-            return Ok(json_resp(json!({
+            return Ok(AwsResponse::ok_json(json!({
                 "InvalidLabels": invalid_labels,
                 "ParameterVersion": target_version,
             })));
@@ -1038,7 +1038,7 @@ impl SsmService {
             }
         }
 
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "InvalidLabels": [],
             "ParameterVersion": target_version,
         })))
@@ -1048,7 +1048,7 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
         let labels = body["Labels"].as_array().ok_or_else(|| missing("Labels"))?;
         let version_opt = if body["ParameterVersion"].is_null() {
@@ -1107,7 +1107,7 @@ impl SsmService {
         // Clean up empty entries
         param.labels.retain(|_, v| !v.is_empty());
 
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "InvalidLabels": invalid,
             "RemovedLabels": label_strings.iter().filter(|l| !invalid.contains(l)).collect::<Vec<_>>(),
         })))

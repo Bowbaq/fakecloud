@@ -8,14 +8,14 @@ use fakecloud_core::validation::*;
 
 use crate::state::{MaintenanceWindow, MaintenanceWindowTarget, MaintenanceWindowTask};
 
-use super::{json_resp, missing, parse_body, SsmService};
+use super::{missing, SsmService};
 
 impl SsmService {
     pub(super) fn create_maintenance_window(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let name = body["Name"]
             .as_str()
             .ok_or_else(|| missing("Name"))?
@@ -70,7 +70,7 @@ impl SsmService {
                 .values()
                 .find(|mw| mw.client_token.as_deref() == Some(token))
             {
-                return Ok(json_resp(json!({ "WindowId": existing.id })));
+                return Ok(AwsResponse::ok_json(json!({ "WindowId": existing.id })));
             }
         }
 
@@ -97,14 +97,14 @@ impl SsmService {
 
         state.maintenance_windows.insert(window_id.clone(), mw);
 
-        Ok(json_resp(json!({ "WindowId": window_id })))
+        Ok(AwsResponse::ok_json(json!({ "WindowId": window_id })))
     }
 
     pub(super) fn describe_maintenance_windows(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 10, 100)?;
         let max_results = body["MaxResults"].as_i64().unwrap_or(50) as usize;
         let next_token_offset: usize = body["NextToken"]
@@ -184,14 +184,14 @@ impl SsmService {
             resp["NextToken"] = json!((next_token_offset + max_results).to_string());
         }
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     pub(super) fn get_maintenance_window(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let window_id = body["WindowId"]
             .as_str()
             .ok_or_else(|| missing("WindowId"))?;
@@ -227,14 +227,14 @@ impl SsmService {
             resp["EndDate"] = json!(ed);
         }
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     pub(super) fn delete_maintenance_window(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let window_id = body["WindowId"]
             .as_str()
             .ok_or_else(|| missing("WindowId"))?;
@@ -245,14 +245,14 @@ impl SsmService {
             return Err(mw_not_found(window_id));
         }
 
-        Ok(json_resp(json!({ "WindowId": window_id })))
+        Ok(AwsResponse::ok_json(json!({ "WindowId": window_id })))
     }
 
     pub(super) fn update_maintenance_window(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let window_id = body["WindowId"]
             .as_str()
             .ok_or_else(|| missing("WindowId"))?;
@@ -305,14 +305,14 @@ impl SsmService {
             resp["Description"] = json!(desc);
         }
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     pub(super) fn register_target_with_maintenance_window(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let window_id = body["WindowId"]
             .as_str()
             .ok_or_else(|| missing("WindowId"))?;
@@ -351,14 +351,14 @@ impl SsmService {
         };
         mw.targets.push(target);
 
-        Ok(json_resp(json!({ "WindowTargetId": target_id })))
+        Ok(AwsResponse::ok_json(json!({ "WindowTargetId": target_id })))
     }
 
     pub(super) fn deregister_target_from_maintenance_window(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let window_id = body["WindowId"]
             .as_str()
             .ok_or_else(|| missing("WindowId"))?;
@@ -374,7 +374,7 @@ impl SsmService {
 
         mw.targets.retain(|t| t.window_target_id != target_id);
 
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "WindowId": window_id,
             "WindowTargetId": target_id,
         })))
@@ -384,7 +384,7 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let window_id = body["WindowId"]
             .as_str()
             .ok_or_else(|| missing("WindowId"))?;
@@ -418,14 +418,14 @@ impl SsmService {
             })
             .collect();
 
-        Ok(json_resp(json!({ "Targets": targets })))
+        Ok(AwsResponse::ok_json(json!({ "Targets": targets })))
     }
 
     pub(super) fn register_task_with_maintenance_window(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let window_id = body["WindowId"]
             .as_str()
             .ok_or_else(|| missing("WindowId"))?;
@@ -472,14 +472,14 @@ impl SsmService {
         };
         mw.tasks.push(task);
 
-        Ok(json_resp(json!({ "WindowTaskId": task_id })))
+        Ok(AwsResponse::ok_json(json!({ "WindowTaskId": task_id })))
     }
 
     pub(super) fn deregister_task_from_maintenance_window(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let window_id = body["WindowId"]
             .as_str()
             .ok_or_else(|| missing("WindowId"))?;
@@ -495,7 +495,7 @@ impl SsmService {
 
         mw.tasks.retain(|t| t.window_task_id != task_id);
 
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "WindowId": window_id,
             "WindowTaskId": task_id,
         })))
@@ -505,7 +505,7 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let window_id = body["WindowId"]
             .as_str()
             .ok_or_else(|| missing("WindowId"))?;
@@ -547,7 +547,7 @@ impl SsmService {
             })
             .collect();
 
-        Ok(json_resp(json!({ "Tasks": tasks })))
+        Ok(AwsResponse::ok_json(json!({ "Tasks": tasks })))
     }
 
     // ===== Patch Baseline operations =====
@@ -556,7 +556,7 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let window_id = body["WindowId"]
             .as_str()
             .ok_or_else(|| missing("WindowId"))?;
@@ -610,14 +610,14 @@ impl SsmService {
             resp["OwnerInformation"] = json!(oi);
         }
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     pub(super) fn update_maintenance_window_task(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let window_id = body["WindowId"]
             .as_str()
             .ok_or_else(|| missing("WindowId"))?;
@@ -686,14 +686,14 @@ impl SsmService {
             resp["MaxErrors"] = json!(me);
         }
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     pub(super) fn get_maintenance_window_task(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let window_id = body["WindowId"]
             .as_str()
             .ok_or_else(|| missing("WindowId"))?;
@@ -743,14 +743,14 @@ impl SsmService {
             resp["ServiceRoleArn"] = json!(sra);
         }
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     pub(super) fn get_maintenance_window_execution(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let execution_id = body["WindowExecutionId"]
             .as_str()
             .ok_or_else(|| missing("WindowExecutionId"))?;
@@ -779,14 +779,14 @@ impl SsmService {
             resp["EndTime"] = json!(end.timestamp_millis() as f64 / 1000.0);
         }
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     pub(super) fn get_maintenance_window_execution_task(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let execution_id = body["WindowExecutionId"]
             .as_str()
             .ok_or_else(|| missing("WindowExecutionId"))?;
@@ -829,14 +829,14 @@ impl SsmService {
             resp["EndTime"] = json!(end.timestamp_millis() as f64 / 1000.0);
         }
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     pub(super) fn get_maintenance_window_execution_task_invocation(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let execution_id = body["WindowExecutionId"]
             .as_str()
             .ok_or_else(|| missing("WindowExecutionId"))?;
@@ -908,14 +908,14 @@ impl SsmService {
             resp["StatusDetails"] = json!(sd);
         }
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     pub(super) fn describe_maintenance_window_executions(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("WindowId", body["WindowId"].as_str(), 20, 20)?;
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 10, 100)?;
         let window_id = body["WindowId"]
@@ -957,14 +957,14 @@ impl SsmService {
         if has_more {
             resp["NextToken"] = json!((next_token_offset + max_results).to_string());
         }
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     pub(super) fn describe_maintenance_window_execution_tasks(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length(
             "WindowExecutionId",
             body["WindowExecutionId"].as_str(),
@@ -1002,14 +1002,16 @@ impl SsmService {
             })
             .unwrap_or_default();
 
-        Ok(json_resp(json!({ "WindowExecutionTaskIdentities": tasks })))
+        Ok(AwsResponse::ok_json(
+            json!({ "WindowExecutionTaskIdentities": tasks }),
+        ))
     }
 
     pub(super) fn describe_maintenance_window_execution_task_invocations(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length(
             "WindowExecutionId",
             body["WindowExecutionId"].as_str(),
@@ -1052,7 +1054,7 @@ impl SsmService {
             })
             .unwrap_or_default();
 
-        Ok(json_resp(
+        Ok(AwsResponse::ok_json(
             json!({ "WindowExecutionTaskInvocationIdentities": invocations }),
         ))
     }
@@ -1061,7 +1063,7 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("WindowId", body["WindowId"].as_str(), 20, 20)?;
         validate_optional_enum(
             "ResourceType",
@@ -1069,14 +1071,16 @@ impl SsmService {
             &["INSTANCE", "RESOURCE_GROUP"],
         )?;
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, i64::MAX)?;
-        Ok(json_resp(json!({ "ScheduledWindowExecutions": [] })))
+        Ok(AwsResponse::ok_json(
+            json!({ "ScheduledWindowExecutions": [] }),
+        ))
     }
 
     pub(super) fn describe_maintenance_windows_for_target(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_enum(
             "ResourceType",
             body["ResourceType"].as_str(),
@@ -1132,14 +1136,14 @@ impl SsmService {
             })
             .collect();
 
-        Ok(json_resp(json!({ "WindowIdentities": windows })))
+        Ok(AwsResponse::ok_json(json!({ "WindowIdentities": windows })))
     }
 
     pub(super) fn cancel_maintenance_window_execution(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let execution_id = body["WindowExecutionId"]
             .as_str()
             .ok_or_else(|| missing("WindowExecutionId"))?;
@@ -1159,7 +1163,9 @@ impl SsmService {
 
         exec.status = "CANCELLING".to_string();
 
-        Ok(json_resp(json!({ "WindowExecutionId": execution_id })))
+        Ok(AwsResponse::ok_json(
+            json!({ "WindowExecutionId": execution_id }),
+        ))
     }
 
     // ── Patch Management Details ──────────────────────────────────

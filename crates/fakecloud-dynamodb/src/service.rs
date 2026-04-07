@@ -46,10 +46,7 @@ impl DynamoDbService {
     }
 
     fn ok_json(body: Value) -> Result<AwsResponse, AwsServiceError> {
-        Ok(AwsResponse::json(
-            StatusCode::OK,
-            serde_json::to_vec(&body).unwrap(),
-        ))
+        Ok(AwsResponse::ok_json(body))
     }
 
     // ── Table Operations ────────────────────────────────────────────────

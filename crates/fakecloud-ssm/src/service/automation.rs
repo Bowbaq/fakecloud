@@ -9,14 +9,14 @@ use fakecloud_core::validation::*;
 
 use crate::state::{AutomationExecution, ExecutionPreview};
 
-use super::{json_resp, missing, parse_body, SsmService};
+use super::{missing, SsmService};
 
 impl SsmService {
     pub(super) fn start_automation_execution(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("ClientToken", body["ClientToken"].as_str(), 36, 36)?;
         validate_optional_string_length("MaxConcurrency", body["MaxConcurrency"].as_str(), 1, 7)?;
         validate_optional_string_length("MaxErrors", body["MaxErrors"].as_str(), 1, 7)?;
@@ -92,14 +92,16 @@ impl SsmService {
             .automation_executions
             .insert(exec_id.clone(), execution);
 
-        Ok(json_resp(json!({ "AutomationExecutionId": exec_id })))
+        Ok(AwsResponse::ok_json(
+            json!({ "AutomationExecutionId": exec_id }),
+        ))
     }
 
     pub(super) fn stop_automation_execution(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let exec_id = body["AutomationExecutionId"]
             .as_str()
             .ok_or_else(|| missing("AutomationExecutionId"))?;
@@ -119,14 +121,14 @@ impl SsmService {
         exec.automation_execution_status = "Cancelled".to_string();
         exec.execution_end_time = Some(Utc::now());
 
-        Ok(json_resp(json!({})))
+        Ok(AwsResponse::ok_json(json!({})))
     }
 
     pub(super) fn get_automation_execution(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let exec_id = body["AutomationExecutionId"]
             .as_str()
             .ok_or_else(|| missing("AutomationExecutionId"))?;
@@ -140,7 +142,7 @@ impl SsmService {
             )
         })?;
 
-        Ok(json_resp(
+        Ok(AwsResponse::ok_json(
             json!({ "AutomationExecution": automation_execution_to_json(exec) }),
         ))
     }
@@ -149,7 +151,7 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
         let state = self.state.read();
         let items: Vec<Value> = state
@@ -168,7 +170,7 @@ impl SsmService {
             })
             .collect();
 
-        Ok(json_resp(
+        Ok(AwsResponse::ok_json(
             json!({ "AutomationExecutionMetadataList": items }),
         ))
     }
@@ -177,7 +179,7 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let exec_id = body["AutomationExecutionId"]
             .as_str()
             .ok_or_else(|| missing("AutomationExecutionId"))?;
@@ -206,14 +208,14 @@ impl SsmService {
             })
             .collect();
 
-        Ok(json_resp(json!({ "StepExecutions": steps })))
+        Ok(AwsResponse::ok_json(json!({ "StepExecutions": steps })))
     }
 
     pub(super) fn send_automation_signal(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let exec_id = body["AutomationExecutionId"]
             .as_str()
             .ok_or_else(|| missing("AutomationExecutionId"))?;
@@ -230,14 +232,14 @@ impl SsmService {
             ));
         }
 
-        Ok(json_resp(json!({})))
+        Ok(AwsResponse::ok_json(json!({})))
     }
 
     pub(super) fn start_change_request_execution(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("ClientToken", body["ClientToken"].as_str(), 36, 36)?;
         validate_optional_string_length(
             "ChangeRequestName",
@@ -292,14 +294,16 @@ impl SsmService {
             .automation_executions
             .insert(exec_id.clone(), execution);
 
-        Ok(json_resp(json!({ "AutomationExecutionId": exec_id })))
+        Ok(AwsResponse::ok_json(
+            json!({ "AutomationExecutionId": exec_id }),
+        ))
     }
 
     pub(super) fn start_execution_preview(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let document_name = body["DocumentName"]
             .as_str()
             .ok_or_else(|| missing("DocumentName"))?
@@ -321,14 +325,16 @@ impl SsmService {
         };
         state.execution_previews.insert(preview_id.clone(), preview);
 
-        Ok(json_resp(json!({ "ExecutionPreviewId": preview_id })))
+        Ok(AwsResponse::ok_json(
+            json!({ "ExecutionPreviewId": preview_id }),
+        ))
     }
 
     pub(super) fn get_execution_preview(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let preview_id = body["ExecutionPreviewId"]
             .as_str()
             .ok_or_else(|| missing("ExecutionPreviewId"))?;
@@ -342,7 +348,7 @@ impl SsmService {
             )
         })?;
 
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "ExecutionPreviewId": preview.execution_preview_id,
             "Status": preview.status,
             "EndedAt": preview.created_time.timestamp_millis() as f64 / 1000.0,

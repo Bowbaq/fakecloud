@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 use fakecloud_core::validation::*;
 
-use super::{body_json, require_str, LogsService};
+use super::{require_str, LogsService};
 use chrono::Utc;
 
 use crate::query;
@@ -14,7 +14,7 @@ impl LogsService {
     // ---- Queries ----
 
     pub(crate) fn start_query(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let log_group_name = body["logGroupName"].as_str().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -66,7 +66,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let query_id = body["queryId"].as_str().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -126,7 +126,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let log_group_name = body["logGroupName"].as_str();
         let status_filter = body["status"].as_str();
 
@@ -192,7 +192,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let name = body["name"]
             .as_str()
             .ok_or_else(|| {
@@ -269,7 +269,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let name_prefix = body["queryDefinitionNamePrefix"].as_str().unwrap_or("");
         validate_optional_string_length(
             "queryDefinitionNamePrefix",
@@ -311,7 +311,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let qd_id = body["queryDefinitionId"].as_str().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -332,7 +332,7 @@ impl LogsService {
     }
 
     pub(crate) fn stop_query(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let query_id = body["queryId"].as_str().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -365,7 +365,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let query_id = require_str(&body, "queryId")?;
         validate_string_length("queryId", query_id, 1, 256)?;
         validate_optional_range_i64("maxResults", body["maxResults"].as_i64(), 50, 500)?;

@@ -10,11 +10,11 @@ use fakecloud_core::validation::*;
 use crate::state::{SsmDocument, SsmDocumentVersion, SsmResourcePolicy};
 use sha2::{Digest, Sha256};
 
-use super::{json_resp, missing, parse_body, SsmService};
+use super::{missing, SsmService};
 
 impl SsmService {
     pub(super) fn create_document(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let name = body["Name"]
             .as_str()
             .ok_or_else(|| missing("Name"))?
@@ -144,11 +144,13 @@ impl SsmService {
             }
         }
 
-        Ok(json_resp(json!({ "DocumentDescription": desc_json })))
+        Ok(AwsResponse::ok_json(
+            json!({ "DocumentDescription": desc_json }),
+        ))
     }
 
     pub(super) fn get_document(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
         let version = body["DocumentVersion"].as_str();
         let version_name = body["VersionName"].as_str();
@@ -221,11 +223,11 @@ impl SsmService {
             resp["VersionName"] = json!(vn);
         }
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     pub(super) fn delete_document(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
         let doc_version = body["DocumentVersion"].as_str();
         let version_name = body["VersionName"].as_str();
@@ -278,11 +280,11 @@ impl SsmService {
             }
         }
 
-        Ok(json_resp(json!({})))
+        Ok(AwsResponse::ok_json(json!({})))
     }
 
     pub(super) fn update_document(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
         let content = body["Content"]
             .as_str()
@@ -383,14 +385,16 @@ impl SsmService {
             }
         }
 
-        Ok(json_resp(json!({ "DocumentDescription": desc_json })))
+        Ok(AwsResponse::ok_json(
+            json!({ "DocumentDescription": desc_json }),
+        ))
     }
 
     pub(super) fn describe_document(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
 
         let state = self.state.read();
@@ -452,14 +456,14 @@ impl SsmService {
             }
         }
 
-        Ok(json_resp(json!({ "Document": desc_json })))
+        Ok(AwsResponse::ok_json(json!({ "Document": desc_json })))
     }
 
     pub(super) fn update_document_default_version(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
         let version = body["DocumentVersion"]
             .as_str()
@@ -498,11 +502,11 @@ impl SsmService {
             desc["DefaultVersionName"] = json!(vn);
         }
 
-        Ok(json_resp(json!({ "Description": desc })))
+        Ok(AwsResponse::ok_json(json!({ "Description": desc })))
     }
 
     pub(super) fn list_documents(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
         let max_results = body["MaxResults"].as_i64().unwrap_or(10) as usize;
         let next_token_offset: usize = body["NextToken"]
@@ -582,14 +586,14 @@ impl SsmService {
             resp["NextToken"] = json!("");
         }
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     pub(super) fn describe_document_permission(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
 
         let state = self.state.read();
@@ -603,7 +607,7 @@ impl SsmService {
 
         let account_ids = doc.permissions.get("Share").cloned().unwrap_or_default();
 
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "AccountIds": account_ids,
             "AccountSharingInfoList": account_ids.iter().map(|id| json!({
                 "AccountId": id,
@@ -616,7 +620,7 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
         let permission_type = body["PermissionType"].as_str().unwrap_or("Share");
         let accounts_to_add = body["AccountIdsToAdd"].as_array();
@@ -712,7 +716,7 @@ impl SsmService {
             }
         }
 
-        Ok(json_resp(json!({})))
+        Ok(AwsResponse::ok_json(json!({})))
     }
 
     // ===== Command operations =====
@@ -721,7 +725,7 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
         let max_results = body["MaxResults"].as_i64().unwrap_or(50) as usize;
         let next_token_offset: usize = body["NextToken"]
@@ -763,14 +767,14 @@ impl SsmService {
         if has_more {
             resp["NextToken"] = json!((next_token_offset + max_results).to_string());
         }
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     pub(super) fn list_document_metadata_history(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let _name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
         validate_required("Metadata", &body["Metadata"])?;
         validate_optional_enum("Metadata", body["Metadata"].as_str(), &["DocumentReviews"])?;
@@ -780,7 +784,7 @@ impl SsmService {
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
 
         // Stub: return empty metadata
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "Name": _name,
             "Author": "",
             "Metadata": {
@@ -793,7 +797,7 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
 
         let state = self.state.read();
@@ -802,7 +806,7 @@ impl SsmService {
         }
 
         // Stub: accept but do nothing
-        Ok(json_resp(json!({})))
+        Ok(AwsResponse::ok_json(json!({})))
     }
 
     // -----------------------------------------------------------------------
@@ -813,7 +817,7 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("ResourceArn", body["ResourceArn"].as_str(), 20, 2048)?;
         let resource_arn = body["ResourceArn"]
             .as_str()
@@ -849,7 +853,7 @@ impl SsmService {
                 existing.policy = policy;
                 let new_hash = format!("{:x}", md5::compute(existing.policy.as_bytes()));
                 existing.policy_hash = new_hash.clone();
-                return Ok(json_resp(json!({
+                return Ok(AwsResponse::ok_json(json!({
                     "PolicyId": pid,
                     "PolicyHash": new_hash,
                 })));
@@ -866,7 +870,7 @@ impl SsmService {
             resource_arn,
         });
 
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "PolicyId": new_id,
             "PolicyHash": new_hash,
         })))
@@ -876,7 +880,7 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("ResourceArn", body["ResourceArn"].as_str(), 20, 2048)?;
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
         let resource_arn = body["ResourceArn"]
@@ -897,14 +901,14 @@ impl SsmService {
             })
             .collect();
 
-        Ok(json_resp(json!({ "Policies": policies })))
+        Ok(AwsResponse::ok_json(json!({ "Policies": policies })))
     }
 
     pub(super) fn delete_resource_policy(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let resource_arn = body["ResourceArn"]
             .as_str()
             .ok_or_else(|| missing("ResourceArn"))?;
@@ -931,7 +935,7 @@ impl SsmService {
                     ));
                 }
                 state.resource_policies.remove(i);
-                Ok(json_resp(json!({})))
+                Ok(AwsResponse::ok_json(json!({})))
             }
             None => Err(AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
