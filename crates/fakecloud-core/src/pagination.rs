@@ -8,6 +8,7 @@ pub fn paginate<T: Clone>(
     next_token: Option<&str>,
     max_results: usize,
 ) -> (Vec<T>, Option<String>) {
+    let max_results = max_results.max(1);
     let offset: usize = next_token.and_then(|s| s.parse().ok()).unwrap_or(0);
     let page = if offset < items.len() {
         &items[offset..]
@@ -74,6 +75,14 @@ mod tests {
         let (page, token) = paginate(&items, Some("not_a_number"), 3);
         assert_eq!(page, vec![0, 1, 2]);
         assert_eq!(token, Some("3".to_string()));
+    }
+
+    #[test]
+    fn zero_max_results_returns_one_item() {
+        let items: Vec<i32> = (0..5).collect();
+        let (page, token) = paginate(&items, None, 0);
+        assert_eq!(page, vec![0]);
+        assert_eq!(token, Some("1".to_string()));
     }
 
     #[test]

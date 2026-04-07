@@ -355,17 +355,20 @@ impl EventBridgeService {
         }
 
         let state = self.state.read();
-        let all: Vec<Value> = state
+        let filtered: Vec<&_> = state
             .buses
             .values()
             .filter(|b| match name_prefix {
                 Some(prefix) => b.name.starts_with(prefix),
                 None => true,
             })
-            .map(|b| json!({ "Name": b.name, "Arn": b.arn }))
             .collect();
 
-        let (buses, next_token) = paginate(&all, body["NextToken"].as_str(), limit);
+        let (page, next_token) = paginate(&filtered, body["NextToken"].as_str(), limit);
+        let buses: Vec<Value> = page
+            .iter()
+            .map(|b| json!({ "Name": b.name, "Arn": b.arn }))
+            .collect();
         let mut resp = json!({ "EventBuses": buses });
         if let Some(token) = next_token {
             resp["NextToken"] = json!(token);
