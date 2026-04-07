@@ -39,7 +39,7 @@ proprietary image that requires an account and auth token.
 | S3 Object Lock (COMPLIANCE/GOVERNANCE) | Full | Partial |
 | STS (all 8 operations) | Full | Partial |
 | KMS (sign, verify, ECDH, key import) | Full | Partial (symmetric only) |
-| SES inbound email | Real receipt rules + action execution | [Mocked](https://docs.localstack.cloud/user-guide/aws/ses/) |
+| SES v2 (111 operations) | Full (v2 + v1 inbound) | [Paid only](https://docs.localstack.cloud/references/licensing/) |
 
 ## Quick Start
 
