@@ -4527,21 +4527,9 @@ impl fakecloud_core::service::AwsService for SesV2Service {
             "UpdateReputationEntityCustomerManagedStatus",
             "UpdateReputationEntityPolicy",
             "BatchGetMetricData",
-            // SES v1 receipt rules
-            "CreateReceiptRuleSet",
-            "DeleteReceiptRuleSet",
-            "DescribeReceiptRuleSet",
-            "ListReceiptRuleSets",
-            "CloneReceiptRuleSet",
-            "SetActiveReceiptRuleSet",
-            "ReorderReceiptRuleSet",
-            "CreateReceiptRule",
-            "DeleteReceiptRule",
-            "DescribeReceiptRule",
-            "UpdateReceiptRule",
-            "CreateReceiptFilter",
-            "DeleteReceiptFilter",
-            "ListReceiptFilters",
+            // NOTE: SES v1 receipt rule/filter actions are implemented (see v1.rs)
+            // but excluded from the conformance audit because there is no SES v1
+            // Smithy model (only sesv2.json exists) to generate checksums from.
         ]
     }
 }

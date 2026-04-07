@@ -885,7 +885,7 @@ mod tests {
     use super::*;
     use crate::state::SesState;
     use bytes::Bytes;
-    use fakecloud_core::service::AwsService;
+
     use http::HeaderMap;
     use parking_lot::RwLock;
     use std::sync::Arc;
