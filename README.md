@@ -36,8 +36,10 @@ proprietary image that requires an account and auth token.
 | Idle memory | ~10 MiB | ~150 MiB |
 | Install size | ~19 MB binary | ~1 GB Docker image |
 | AWS services | 14 | 30+ |
+| S3 Object Lock (COMPLIANCE/GOVERNANCE) | Full | Partial |
+| STS (all 8 operations) | Full | Partial |
+| KMS (sign, verify, ECDH, key import) | Full | Partial (symmetric only) |
 | SES inbound email | Real receipt rules + action execution | [Mocked](https://docs.localstack.cloud/user-guide/aws/ses/) |
-| KMS crypto operations | Real ECDH, key import, sign/verify | Symmetric only |
 
 ## Quick Start
 
