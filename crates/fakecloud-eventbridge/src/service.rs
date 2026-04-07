@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use fakecloud_aws::arn::Arn;
 use fakecloud_core::delivery::DeliveryBus;
+use fakecloud_core::pagination::paginate;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
 use fakecloud_core::validation::*;
 
@@ -343,35 +344,31 @@ impl EventBridgeService {
         validate_optional_range_i64("limit", body["Limit"].as_i64(), 1, 100)?;
         let name_prefix = body["NamePrefix"].as_str();
         let limit = body["Limit"].as_i64().unwrap_or(100) as usize;
-        let offset: usize = match body["NextToken"].as_str() {
-            Some(t) => t.parse().map_err(|_| {
+        if let Some(t) = body["NextToken"].as_str() {
+            t.parse::<usize>().map_err(|_| {
                 AwsServiceError::aws_error(
                     StatusCode::BAD_REQUEST,
                     "InvalidNextTokenException",
                     format!("Invalid NextToken value: '{t}'"),
                 )
-            })?,
-            None => 0,
-        };
+            })?;
+        }
 
         let state = self.state.read();
-        let filtered: Vec<Value> = state
+        let all: Vec<Value> = state
             .buses
             .values()
             .filter(|b| match name_prefix {
                 Some(prefix) => b.name.starts_with(prefix),
                 None => true,
             })
-            .skip(offset)
-            .take(limit + 1)
             .map(|b| json!({ "Name": b.name, "Arn": b.arn }))
             .collect();
 
-        let has_more = filtered.len() > limit;
-        let buses: Vec<Value> = filtered.into_iter().take(limit).collect();
+        let (buses, next_token) = paginate(&all, body["NextToken"].as_str(), limit);
         let mut resp = json!({ "EventBuses": buses });
-        if has_more {
-            resp["NextToken"] = json!((offset + limit).to_string());
+        if let Some(token) = next_token {
+            resp["NextToken"] = json!(token);
         }
 
         Ok(AwsResponse::ok_json(resp))
@@ -1172,18 +1169,12 @@ impl EventBridgeService {
         validate_optional_range_i64("limit", body["Limit"].as_i64(), 1, 100)?;
         validate_optional_string_length("nextToken", body["NextToken"].as_str(), 1, 2048)?;
         let limit = body["Limit"].as_i64().unwrap_or(100) as usize;
-        let offset: usize = body["NextToken"]
-            .as_str()
-            .map(|t| t.parse().unwrap_or(0))
-            .unwrap_or(0);
 
         let state = self.state.read();
-        let filtered: Vec<Value> = state
+        let all: Vec<Value> = state
             .partner_event_sources
             .values()
             .filter(|ps| ps.name.starts_with(name_prefix))
-            .skip(offset)
-            .take(limit + 1)
             .map(|ps| {
                 json!({
                     "Arn": ps.arn,
@@ -1192,11 +1183,10 @@ impl EventBridgeService {
             })
             .collect();
 
-        let has_more = filtered.len() > limit;
-        let sources: Vec<Value> = filtered.into_iter().take(limit).collect();
+        let (sources, next_token) = paginate(&all, body["NextToken"].as_str(), limit);
         let mut resp = json!({ "PartnerEventSources": sources });
-        if has_more {
-            resp["NextToken"] = json!((offset + limit).to_string());
+        if let Some(token) = next_token {
+            resp["NextToken"] = json!(token);
         }
 
         Ok(AwsResponse::ok_json(resp))
@@ -1303,21 +1293,15 @@ impl EventBridgeService {
         validate_optional_string_length("nextToken", body["NextToken"].as_str(), 1, 2048)?;
         let name_prefix = body["NamePrefix"].as_str();
         let limit = body["Limit"].as_i64().unwrap_or(100) as usize;
-        let offset: usize = body["NextToken"]
-            .as_str()
-            .map(|t| t.parse().unwrap_or(0))
-            .unwrap_or(0);
 
         let state = self.state.read();
-        let filtered: Vec<Value> = state
+        let all: Vec<Value> = state
             .partner_event_sources
             .values()
             .filter(|ps| match name_prefix {
                 Some(prefix) => ps.name.starts_with(prefix),
                 None => true,
             })
-            .skip(offset)
-            .take(limit + 1)
             .map(|ps| {
                 json!({
                     "Arn": ps.arn,
@@ -1329,11 +1313,10 @@ impl EventBridgeService {
             })
             .collect();
 
-        let has_more = filtered.len() > limit;
-        let sources: Vec<Value> = filtered.into_iter().take(limit).collect();
+        let (sources, next_token) = paginate(&all, body["NextToken"].as_str(), limit);
         let mut resp = json!({ "EventSources": sources });
-        if has_more {
-            resp["NextToken"] = json!((offset + limit).to_string());
+        if let Some(token) = next_token {
+            resp["NextToken"] = json!(token);
         }
 
         Ok(AwsResponse::ok_json(resp))
@@ -1596,21 +1579,15 @@ impl EventBridgeService {
         validate_optional_range_i64("maxResults", body["MaxResults"].as_i64(), 1, 100)?;
         let name_prefix = body["NamePrefix"].as_str();
         let limit = body["MaxResults"].as_i64().unwrap_or(100) as usize;
-        let offset: usize = body["NextToken"]
-            .as_str()
-            .map(|t| t.parse().unwrap_or(0))
-            .unwrap_or(0);
 
         let state = self.state.read();
-        let filtered: Vec<Value> = state
+        let all: Vec<Value> = state
             .endpoints
             .values()
             .filter(|ep| match name_prefix {
                 Some(prefix) => ep.name.starts_with(prefix),
                 None => true,
             })
-            .skip(offset)
-            .take(limit + 1)
             .map(|ep| {
                 let mut obj = json!({
                     "Name": ep.name,
@@ -1629,11 +1606,10 @@ impl EventBridgeService {
             })
             .collect();
 
-        let has_more = filtered.len() > limit;
-        let endpoints: Vec<Value> = filtered.into_iter().take(limit).collect();
+        let (endpoints, next_token) = paginate(&all, body["NextToken"].as_str(), limit);
         let mut resp = json!({ "Endpoints": endpoints });
-        if has_more {
-            resp["NextToken"] = json!((offset + limit).to_string());
+        if let Some(token) = next_token {
+            resp["NextToken"] = json!(token);
         }
 
         Ok(AwsResponse::ok_json(resp))
@@ -2379,13 +2355,9 @@ impl EventBridgeService {
         }
 
         let limit = body["Limit"].as_i64().unwrap_or(100) as usize;
-        let offset: usize = body["NextToken"]
-            .as_str()
-            .and_then(|t| t.parse().ok())
-            .unwrap_or(0);
 
         let state = self.state.read();
-        let filtered: Vec<Value> = state
+        let all: Vec<Value> = state
             .archives
             .values()
             .filter(|a| {
@@ -2399,8 +2371,6 @@ impl EventBridgeService {
                     true
                 }
             })
-            .skip(offset)
-            .take(limit + 1)
             .map(|a| {
                 json!({
                     "ArchiveName": a.name,
@@ -2414,11 +2384,10 @@ impl EventBridgeService {
             })
             .collect();
 
-        let has_more = filtered.len() > limit;
-        let archives: Vec<Value> = filtered.into_iter().take(limit).collect();
+        let (archives, next_token) = paginate(&all, body["NextToken"].as_str(), limit);
         let mut resp = json!({ "Archives": archives });
-        if has_more {
-            resp["NextToken"] = json!((offset + limit).to_string());
+        if let Some(token) = next_token {
+            resp["NextToken"] = json!(token);
         }
 
         Ok(AwsResponse::ok_json(resp))
@@ -2620,13 +2589,9 @@ impl EventBridgeService {
         let name_prefix = body["NamePrefix"].as_str();
         let connection_state = body["ConnectionState"].as_str();
         let limit = body["Limit"].as_i64().unwrap_or(100) as usize;
-        let offset: usize = body["NextToken"]
-            .as_str()
-            .and_then(|t| t.parse().ok())
-            .unwrap_or(0);
 
         let state = self.state.read();
-        let filtered: Vec<Value> = state
+        let all: Vec<Value> = state
             .connections
             .values()
             .filter(|c| {
@@ -2642,8 +2607,6 @@ impl EventBridgeService {
                 }
                 true
             })
-            .skip(offset)
-            .take(limit + 1)
             .map(|c| {
                 json!({
                     "ConnectionArn": c.arn,
@@ -2657,11 +2620,10 @@ impl EventBridgeService {
             })
             .collect();
 
-        let has_more = filtered.len() > limit;
-        let conns: Vec<Value> = filtered.into_iter().take(limit).collect();
+        let (conns, next_token) = paginate(&all, body["NextToken"].as_str(), limit);
         let mut resp = json!({ "Connections": conns });
-        if has_more {
-            resp["NextToken"] = json!((offset + limit).to_string());
+        if let Some(token) = next_token {
+            resp["NextToken"] = json!(token);
         }
 
         Ok(AwsResponse::ok_json(resp))
@@ -2846,13 +2808,9 @@ impl EventBridgeService {
         let name_prefix = body["NamePrefix"].as_str();
         let connection_arn = body["ConnectionArn"].as_str();
         let limit = body["Limit"].as_i64().unwrap_or(100) as usize;
-        let offset: usize = body["NextToken"]
-            .as_str()
-            .and_then(|t| t.parse().ok())
-            .unwrap_or(0);
 
         let state = self.state.read();
-        let filtered: Vec<Value> = state
+        let all: Vec<Value> = state
             .api_destinations
             .values()
             .filter(|d| {
@@ -2868,8 +2826,6 @@ impl EventBridgeService {
                 }
                 true
             })
-            .skip(offset)
-            .take(limit + 1)
             .map(|d| {
                 let mut obj = json!({
                     "ApiDestinationArn": d.arn,
@@ -2888,11 +2844,10 @@ impl EventBridgeService {
             })
             .collect();
 
-        let has_more = filtered.len() > limit;
-        let dests: Vec<Value> = filtered.into_iter().take(limit).collect();
+        let (dests, next_token) = paginate(&all, body["NextToken"].as_str(), limit);
         let mut resp = json!({ "ApiDestinations": dests });
-        if has_more {
-            resp["NextToken"] = json!((offset + limit).to_string());
+        if let Some(token) = next_token {
+            resp["NextToken"] = json!(token);
         }
 
         Ok(AwsResponse::ok_json(resp))
@@ -3342,13 +3297,9 @@ impl EventBridgeService {
         }
 
         let limit = body["Limit"].as_i64().unwrap_or(100) as usize;
-        let offset: usize = body["NextToken"]
-            .as_str()
-            .and_then(|t| t.parse().ok())
-            .unwrap_or(0);
 
         let state = self.state.read();
-        let filtered: Vec<Value> = state
+        let all: Vec<Value> = state
             .replays
             .values()
             .filter(|r| {
@@ -3362,8 +3313,6 @@ impl EventBridgeService {
                     true
                 }
             })
-            .skip(offset)
-            .take(limit + 1)
             .map(|r| {
                 let mut obj = json!({
                     "EventSourceArn": r.event_source_arn,
@@ -3380,11 +3329,10 @@ impl EventBridgeService {
             })
             .collect();
 
-        let has_more = filtered.len() > limit;
-        let replays: Vec<Value> = filtered.into_iter().take(limit).collect();
+        let (replays, next_token) = paginate(&all, body["NextToken"].as_str(), limit);
         let mut resp = json!({ "Replays": replays });
-        if has_more {
-            resp["NextToken"] = json!((offset + limit).to_string());
+        if let Some(token) = next_token {
+            resp["NextToken"] = json!(token);
         }
 
         Ok(AwsResponse::ok_json(resp))

@@ -5,6 +5,7 @@ use http::StatusCode;
 use serde_json::{json, Value};
 
 use fakecloud_aws::arn::Arn;
+use fakecloud_core::pagination::paginate;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 use fakecloud_core::validation::*;
 
@@ -577,10 +578,6 @@ impl SsmService {
         let with_decryption = body["WithDecryption"].as_bool().unwrap_or(false);
         let filters = body["ParameterFilters"].as_array().cloned();
         let max_results = body["MaxResults"].as_i64().unwrap_or(10) as usize;
-        let next_token_offset: usize = body["NextToken"]
-            .as_str()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
 
         // Validate MaxResults
         if max_results > 10 {
@@ -656,21 +653,16 @@ impl SsmService {
             .filter(|p| apply_parameter_filters(p, filters.as_ref()))
             .collect();
 
-        let page = if next_token_offset < all_params.len() {
-            &all_params[next_token_offset..]
-        } else {
-            &[]
-        };
-        let has_more = page.len() >= max_results;
-        let parameters: Vec<Value> = page
+        let (page_params, next_token) =
+            paginate(&all_params, body["NextToken"].as_str(), max_results);
+        let parameters: Vec<Value> = page_params
             .iter()
-            .take(max_results)
             .map(|p| param_to_json(p, true, with_decryption, &req.region))
             .collect();
 
         let mut resp = json!({ "Parameters": parameters });
-        if has_more {
-            resp["NextToken"] = json!((next_token_offset + max_results).to_string());
+        if let Some(token) = next_token {
+            resp["NextToken"] = json!(token);
         }
 
         Ok(AwsResponse::ok_json(resp))
@@ -727,10 +719,6 @@ impl SsmService {
         let param_filters = body["ParameterFilters"].as_array().cloned();
         let old_filters = body["Filters"].as_array().cloned();
         let max_results = body["MaxResults"].as_i64().unwrap_or(10) as usize;
-        let next_token_offset: usize = body["NextToken"]
-            .as_str()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
 
         // Can't use both Filters and ParameterFilters
         if param_filters.is_some() && old_filters.is_some() {
@@ -786,21 +774,16 @@ impl SsmService {
             .filter(|p| apply_old_filters(p, old_filters.as_ref()))
             .collect();
 
-        let page = if next_token_offset < all_params.len() {
-            &all_params[next_token_offset..]
-        } else {
-            &[]
-        };
-        let has_more = page.len() >= max_results;
-        let parameters: Vec<Value> = page
+        let (page_params, next_token) =
+            paginate(&all_params, body["NextToken"].as_str(), max_results);
+        let parameters: Vec<Value> = page_params
             .iter()
-            .take(max_results)
             .map(|p| param_to_describe_json(p, &req.region))
             .collect();
 
         let mut resp = json!({ "Parameters": parameters });
-        if has_more {
-            resp["NextToken"] = json!((next_token_offset + max_results).to_string());
+        if let Some(token) = next_token {
+            resp["NextToken"] = json!(token);
         }
 
         Ok(AwsResponse::ok_json(resp))
@@ -814,10 +797,6 @@ impl SsmService {
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
         let with_decryption = body["WithDecryption"].as_bool().unwrap_or(false);
         let max_results = body["MaxResults"].as_i64();
-        let next_token_offset: usize = body["NextToken"]
-            .as_str()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
 
         // Validate MaxResults
         if let Some(mr) = max_results {
@@ -898,17 +877,10 @@ impl SsmService {
         current["Labels"] = json!(current_labels);
         all_history.push(current);
 
-        let page = if next_token_offset < all_history.len() {
-            &all_history[next_token_offset..]
-        } else {
-            &[]
-        };
-        let has_more = page.len() >= max_results;
-        let result: Vec<Value> = page.iter().take(max_results).cloned().collect();
-
+        let (result, next_token) = paginate(&all_history, body["NextToken"].as_str(), max_results);
         let mut resp = json!({ "Parameters": result });
-        if has_more {
-            resp["NextToken"] = json!((next_token_offset + max_results).to_string());
+        if let Some(token) = next_token {
+            resp["NextToken"] = json!(token);
         }
 
         Ok(AwsResponse::ok_json(resp))

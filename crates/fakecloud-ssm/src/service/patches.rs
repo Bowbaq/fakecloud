@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use http::StatusCode;
 use serde_json::{json, Value};
 
+use fakecloud_core::pagination::paginate;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 use fakecloud_core::validation::*;
 
@@ -188,10 +189,6 @@ impl SsmService {
         let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 100)?;
         let max_results = body["MaxResults"].as_i64().unwrap_or(50) as usize;
-        let next_token_offset: usize = body["NextToken"]
-            .as_str()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
         let filters = body["Filters"].as_array();
 
         let state = self.state.read();
@@ -243,17 +240,11 @@ impl SsmService {
             })
             .collect();
 
-        let page = if next_token_offset < all_baselines.len() {
-            &all_baselines[next_token_offset..]
-        } else {
-            &[]
-        };
-        let has_more = page.len() > max_results;
-        let baselines: Vec<Value> = page.iter().take(max_results).cloned().collect();
-
+        let (baselines, next_token) =
+            paginate(&all_baselines, body["NextToken"].as_str(), max_results);
         let mut resp = json!({ "BaselineIdentities": baselines });
-        if has_more {
-            resp["NextToken"] = json!((next_token_offset + max_results).to_string());
+        if let Some(token) = next_token {
+            resp["NextToken"] = json!(token);
         }
 
         Ok(AwsResponse::ok_json(resp))
@@ -479,10 +470,6 @@ impl SsmService {
         let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 100)?;
         let max_results = body["MaxResults"].as_i64().unwrap_or(50) as usize;
-        let next_token_offset: usize = body["NextToken"]
-            .as_str()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
         let filters = body["Filters"].as_array();
 
         let state = self.state.read();
@@ -535,17 +522,11 @@ impl SsmService {
             })
             .collect();
 
-        let page = if next_token_offset < all_mappings.len() {
-            &all_mappings[next_token_offset..]
-        } else {
-            &[]
-        };
-        let has_more = page.len() > max_results;
-        let mappings: Vec<Value> = page.iter().take(max_results).cloned().collect();
-
+        let (mappings, next_token) =
+            paginate(&all_mappings, body["NextToken"].as_str(), max_results);
         let mut resp = json!({ "Mappings": mappings });
-        if has_more {
-            resp["NextToken"] = json!((next_token_offset + max_results).to_string());
+        if let Some(token) = next_token {
+            resp["NextToken"] = json!(token);
         }
 
         Ok(AwsResponse::ok_json(resp))
