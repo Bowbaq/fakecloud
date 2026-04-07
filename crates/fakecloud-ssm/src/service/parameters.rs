@@ -1024,23 +1024,13 @@ impl SsmService {
         let body = req.json_body();
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
         let labels = body["Labels"].as_array().ok_or_else(|| missing("Labels"))?;
-        let version_opt = if body["ParameterVersion"].is_null() {
-            None
-        } else {
-            Some(body["ParameterVersion"].as_i64().ok_or_else(|| {
-                AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "ValidationException",
-                    "ParameterVersion must be a valid integer",
-                )
-            })?)
-        };
+        let version = body["ParameterVersion"]
+            .as_i64()
+            .ok_or_else(|| missing("ParameterVersion"))?;
 
         let mut state = self.state.write();
         let param =
             lookup_param_mut(&mut state.parameters, name).ok_or_else(|| param_not_found(name))?;
-
-        let version = version_opt.unwrap_or(param.version);
 
         // Validate version exists
         let version_exists =

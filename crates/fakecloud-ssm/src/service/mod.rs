@@ -2011,6 +2011,23 @@ mod tests {
         assert_eq!(invalid[0].as_str().unwrap(), "nonexistent");
     }
 
+    #[test]
+    fn unlabel_parameter_version_requires_parameter_version() {
+        let svc = make_service();
+        put_param(&svc, "/label/reqver", "v1");
+
+        // Omit ParameterVersion — should fail with ValidationException
+        let req = make_request(
+            "UnlabelParameterVersion",
+            json!({
+                "Name": "/label/reqver",
+                "Labels": ["some-label"],
+            }),
+        );
+        let result = svc.unlabel_parameter_version(&req);
+        assert!(result.is_err());
+    }
+
     // ── Document Operations ──────────────────────────────────────
 
     fn create_doc(svc: &SsmService, name: &str) {
