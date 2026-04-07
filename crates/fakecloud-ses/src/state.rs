@@ -139,6 +139,49 @@ pub struct EventDestination {
     pub pinpoint_destination: Option<serde_json::Value>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct DedicatedIpPool {
+    pub pool_name: String,
+    pub scaling_mode: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DedicatedIp {
+    pub ip: String,
+    pub warmup_status: String,
+    pub warmup_percentage: i32,
+    pub pool_name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MultiRegionEndpoint {
+    pub endpoint_name: String,
+    pub endpoint_id: String,
+    pub status: String,
+    pub regions: Vec<String>,
+    pub created_at: DateTime<Utc>,
+    pub last_updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct AccountDetails {
+    pub mail_type: Option<String>,
+    pub website_url: Option<String>,
+    pub contact_language: Option<String>,
+    pub use_case_description: Option<String>,
+    pub additional_contact_email_addresses: Vec<String>,
+    pub production_access_enabled: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct AccountSettings {
+    pub sending_enabled: bool,
+    pub dedicated_ip_auto_warmup_enabled: bool,
+    pub suppressed_reasons: Vec<String>,
+    pub vdm_attributes: Option<serde_json::Value>,
+    pub details: Option<AccountDetails>,
+}
+
 pub struct SesState {
     pub account_id: String,
     pub region: String,
@@ -158,6 +201,14 @@ pub struct SesState {
     pub identity_policies: HashMap<String, HashMap<String, String>>,
     /// Custom verification email templates: template name → template.
     pub custom_verification_email_templates: HashMap<String, CustomVerificationEmailTemplate>,
+    /// Dedicated IP pools: pool name → pool.
+    pub dedicated_ip_pools: HashMap<String, DedicatedIpPool>,
+    /// Dedicated IPs: IP address → dedicated IP info.
+    pub dedicated_ips: HashMap<String, DedicatedIp>,
+    /// Multi-region endpoints: endpoint name → endpoint.
+    pub multi_region_endpoints: HashMap<String, MultiRegionEndpoint>,
+    /// Account-level settings (sending, suppression, VDM, details).
+    pub account_settings: AccountSettings,
 }
 
 impl SesState {
@@ -176,6 +227,16 @@ impl SesState {
             event_destinations: HashMap::new(),
             identity_policies: HashMap::new(),
             custom_verification_email_templates: HashMap::new(),
+            dedicated_ip_pools: HashMap::new(),
+            dedicated_ips: HashMap::new(),
+            multi_region_endpoints: HashMap::new(),
+            account_settings: AccountSettings {
+                sending_enabled: true,
+                dedicated_ip_auto_warmup_enabled: false,
+                suppressed_reasons: Vec::new(),
+                vdm_attributes: None,
+                details: None,
+            },
         }
     }
 
@@ -191,6 +252,16 @@ impl SesState {
         self.event_destinations.clear();
         self.identity_policies.clear();
         self.custom_verification_email_templates.clear();
+        self.dedicated_ip_pools.clear();
+        self.dedicated_ips.clear();
+        self.multi_region_endpoints.clear();
+        self.account_settings = AccountSettings {
+            sending_enabled: true,
+            dedicated_ip_auto_warmup_enabled: false,
+            suppressed_reasons: Vec::new(),
+            vdm_attributes: None,
+            details: None,
+        };
     }
 }
 

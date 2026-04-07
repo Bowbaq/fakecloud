@@ -3,8 +3,9 @@ mod helpers;
 use aws_sdk_sesv2::types::{
     BehaviorOnMxFailure, Body, Content, Destination, DkimSigningAttributes,
     DkimSigningAttributesOrigin, EmailContent, EmailTemplateContent, EventDestinationDefinition,
-    EventType, HttpsPolicy, Message, SnsDestination, SubscriptionStatus, SuppressionListReason,
-    Tag, Template, TlsPolicy, Topic, TopicPreference,
+    EventType, FeatureStatus, HttpsPolicy, MailType, Message, RouteDetails, ScalingMode,
+    SnsDestination, SubscriptionStatus, SuppressionListReason, Tag, Template, TlsPolicy, Topic,
+    TopicPreference, VdmAttributes,
 };
 use fakecloud_conformance_macros::test_action;
 use helpers::TestServer;
@@ -1195,4 +1196,265 @@ async fn ses_test_render_email_template() {
     assert!(rendered.contains("Subject: Hi Bob"));
     assert!(rendered.contains("Hello Bob"));
     assert!(rendered.contains("code=42"));
+}
+
+// -- Dedicated IP Pools --
+
+#[test_action("ses", "CreateDedicatedIpPool", checksum = "c6859bdb")]
+#[test_action("ses", "ListDedicatedIpPools", checksum = "8de1932f")]
+#[test_action("ses", "DeleteDedicatedIpPool", checksum = "c34eeddd")]
+#[tokio::test]
+async fn ses_dedicated_ip_pool_lifecycle() {
+    let server = TestServer::start().await;
+    let client = server.sesv2_client().await;
+
+    // Create
+    client
+        .create_dedicated_ip_pool()
+        .pool_name("conf-pool")
+        .scaling_mode(ScalingMode::Standard)
+        .send()
+        .await
+        .unwrap();
+
+    // List
+    let list = client.list_dedicated_ip_pools().send().await.unwrap();
+    assert!(list.dedicated_ip_pools().contains(&"conf-pool".to_string()));
+
+    // Delete
+    client
+        .delete_dedicated_ip_pool()
+        .pool_name("conf-pool")
+        .send()
+        .await
+        .unwrap();
+
+    let list = client.list_dedicated_ip_pools().send().await.unwrap();
+    assert!(list.dedicated_ip_pools().is_empty());
+}
+
+#[test_action("ses", "GetDedicatedIp", checksum = "c9b7a34f")]
+#[test_action("ses", "GetDedicatedIps", checksum = "f36010a9")]
+#[test_action("ses", "PutDedicatedIpInPool", checksum = "a9b2152b")]
+#[test_action("ses", "PutDedicatedIpWarmupAttributes", checksum = "b52e7ab0")]
+#[test_action("ses", "PutDedicatedIpPoolScalingAttributes", checksum = "b1acc3f5")]
+#[tokio::test]
+async fn ses_dedicated_ip_operations() {
+    let server = TestServer::start().await;
+    let client = server.sesv2_client().await;
+
+    // Create managed pool (generates IPs)
+    client
+        .create_dedicated_ip_pool()
+        .pool_name("ops-pool")
+        .scaling_mode(ScalingMode::Managed)
+        .send()
+        .await
+        .unwrap();
+
+    // GetDedicatedIps by pool
+    let ips = client
+        .get_dedicated_ips()
+        .pool_name("ops-pool")
+        .send()
+        .await
+        .unwrap();
+    let ip_list = ips.dedicated_ips();
+    assert_eq!(ip_list.len(), 3);
+
+    // GetDedicatedIp
+    let ip_addr = ip_list[0].ip();
+    let detail = client.get_dedicated_ip().ip(ip_addr).send().await.unwrap();
+    let dip = detail.dedicated_ip().unwrap();
+    assert_eq!(dip.pool_name().unwrap(), "ops-pool");
+
+    // Create second pool and move IP
+    client
+        .create_dedicated_ip_pool()
+        .pool_name("ops-pool-2")
+        .scaling_mode(ScalingMode::Standard)
+        .send()
+        .await
+        .unwrap();
+
+    client
+        .put_dedicated_ip_in_pool()
+        .ip(ip_addr)
+        .destination_pool_name("ops-pool-2")
+        .send()
+        .await
+        .unwrap();
+
+    let detail = client.get_dedicated_ip().ip(ip_addr).send().await.unwrap();
+    assert_eq!(
+        detail.dedicated_ip().unwrap().pool_name().unwrap(),
+        "ops-pool-2"
+    );
+
+    // Set warmup
+    client
+        .put_dedicated_ip_warmup_attributes()
+        .ip(ip_addr)
+        .warmup_percentage(100)
+        .send()
+        .await
+        .unwrap();
+
+    let detail = client.get_dedicated_ip().ip(ip_addr).send().await.unwrap();
+    let dip = detail.dedicated_ip().unwrap();
+    assert_eq!(dip.warmup_percentage(), 100);
+    assert_eq!(dip.warmup_status().as_str(), "DONE");
+
+    // Change scaling mode
+    client
+        .put_dedicated_ip_pool_scaling_attributes()
+        .pool_name("ops-pool-2")
+        .scaling_mode(ScalingMode::Managed)
+        .send()
+        .await
+        .unwrap();
+}
+
+#[test_action("ses", "PutAccountDedicatedIpWarmupAttributes", checksum = "e8008ed1")]
+#[tokio::test]
+async fn ses_account_dedicated_ip_warmup() {
+    let server = TestServer::start().await;
+    let client = server.sesv2_client().await;
+
+    client
+        .put_account_dedicated_ip_warmup_attributes()
+        .auto_warmup_enabled(true)
+        .send()
+        .await
+        .unwrap();
+
+    let acct = client.get_account().send().await.unwrap();
+    assert!(acct.dedicated_ip_auto_warmup_enabled());
+}
+
+// -- Multi-region Endpoints --
+
+#[test_action("ses", "CreateMultiRegionEndpoint", checksum = "137c91f1")]
+#[test_action("ses", "GetMultiRegionEndpoint", checksum = "a4333019")]
+#[test_action("ses", "ListMultiRegionEndpoints", checksum = "a6920e47")]
+#[test_action("ses", "DeleteMultiRegionEndpoint", checksum = "70974062")]
+#[tokio::test]
+async fn ses_multi_region_endpoint_lifecycle() {
+    let server = TestServer::start().await;
+    let client = server.sesv2_client().await;
+
+    let resp = client
+        .create_multi_region_endpoint()
+        .endpoint_name("conf-ep")
+        .details(
+            aws_sdk_sesv2::types::Details::builder()
+                .routes_details(RouteDetails::builder().region("us-west-2").build().unwrap())
+                .build()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().unwrap().as_str(), "READY");
+
+    let get = client
+        .get_multi_region_endpoint()
+        .endpoint_name("conf-ep")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(get.endpoint_name().unwrap(), "conf-ep");
+
+    let list = client.list_multi_region_endpoints().send().await.unwrap();
+    assert_eq!(list.multi_region_endpoints().len(), 1);
+
+    let del = client
+        .delete_multi_region_endpoint()
+        .endpoint_name("conf-ep")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(del.status().unwrap().as_str(), "DELETING");
+}
+
+// -- Account Settings --
+
+#[test_action("ses", "PutAccountDetails", checksum = "338da1cb")]
+#[tokio::test]
+async fn ses_put_account_details() {
+    let server = TestServer::start().await;
+    let client = server.sesv2_client().await;
+
+    client
+        .put_account_details()
+        .mail_type(MailType::Transactional)
+        .website_url("https://example.com")
+        .use_case_description("Testing")
+        .send()
+        .await
+        .unwrap();
+
+    let acct = client.get_account().send().await.unwrap();
+    let details = acct.details().unwrap();
+    assert_eq!(details.mail_type().unwrap().as_str(), "TRANSACTIONAL");
+    assert_eq!(details.website_url().unwrap(), "https://example.com");
+}
+
+#[test_action("ses", "PutAccountSendingAttributes", checksum = "24cc63cb")]
+#[tokio::test]
+async fn ses_put_account_sending_attributes() {
+    let server = TestServer::start().await;
+    let client = server.sesv2_client().await;
+
+    client
+        .put_account_sending_attributes()
+        .sending_enabled(false)
+        .send()
+        .await
+        .unwrap();
+
+    let acct = client.get_account().send().await.unwrap();
+    assert!(!acct.sending_enabled());
+}
+
+#[test_action("ses", "PutAccountSuppressionAttributes", checksum = "652ddb1e")]
+#[tokio::test]
+async fn ses_put_account_suppression_attributes() {
+    let server = TestServer::start().await;
+    let client = server.sesv2_client().await;
+
+    client
+        .put_account_suppression_attributes()
+        .suppressed_reasons(SuppressionListReason::Bounce)
+        .suppressed_reasons(SuppressionListReason::Complaint)
+        .send()
+        .await
+        .unwrap();
+
+    let acct = client.get_account().send().await.unwrap();
+    let reasons = acct.suppression_attributes().unwrap().suppressed_reasons();
+    assert_eq!(reasons.len(), 2);
+}
+
+#[test_action("ses", "PutAccountVdmAttributes", checksum = "068b4731")]
+#[tokio::test]
+async fn ses_put_account_vdm_attributes() {
+    let server = TestServer::start().await;
+    let client = server.sesv2_client().await;
+
+    client
+        .put_account_vdm_attributes()
+        .vdm_attributes(
+            VdmAttributes::builder()
+                .vdm_enabled(FeatureStatus::Enabled)
+                .build()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    let acct = client.get_account().send().await.unwrap();
+    let vdm = acct.vdm_attributes().unwrap();
+    assert_eq!(vdm.vdm_enabled().as_str(), "ENABLED");
 }
