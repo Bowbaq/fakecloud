@@ -1418,6 +1418,13 @@ async fn dynamodb_contributor_insights() {
 async fn dynamodb_export_lifecycle() {
     let server = TestServer::start().await;
     let client = server.dynamodb_client().await;
+    let s3_client = server.s3_client().await;
+    s3_client
+        .create_bucket()
+        .bucket("export-bucket")
+        .send()
+        .await
+        .unwrap();
 
     let create_resp = client
         .create_table()
@@ -1487,6 +1494,13 @@ async fn dynamodb_export_lifecycle() {
 async fn dynamodb_import_lifecycle() {
     let server = TestServer::start().await;
     let client = server.dynamodb_client().await;
+    let s3_client = server.s3_client().await;
+    s3_client
+        .create_bucket()
+        .bucket("import-bucket")
+        .send()
+        .await
+        .unwrap();
 
     let resp = client
         .import_table()

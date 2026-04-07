@@ -1071,7 +1071,7 @@ async fn kms_import_key_material_lifecycle() {
 async fn kms_update_primary_region() {
     let server = TestServer::start().await;
     let client = server.kms_client().await;
-    let key = client.create_key().send().await.unwrap();
+    let key = client.create_key().multi_region(true).send().await.unwrap();
     let key_id = key.key_metadata().unwrap().key_id();
     client
         .update_primary_region()

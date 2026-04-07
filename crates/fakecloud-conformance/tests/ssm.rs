@@ -924,6 +924,7 @@ async fn ssm_ops_item_lifecycle() {
     let create = client
         .create_ops_item()
         .title("Conf OpsItem")
+        .description("Conformance test ops item")
         .source("conf-test")
         .send()
         .await
@@ -1488,24 +1489,24 @@ async fn ssm_maintenance_window_execution_details() {
     // Get operations return errors for non-existent IDs
     let result = client
         .get_maintenance_window_execution()
-        .window_execution_id("nonexistent-exec")
+        .window_execution_id("00000000-0000-0000-0000-000000000000")
         .send()
         .await;
     assert!(result.is_err());
 
     let result = client
         .get_maintenance_window_execution_task()
-        .window_execution_id("nonexistent-exec")
-        .task_id("nonexistent-task")
+        .window_execution_id("00000000-0000-0000-0000-000000000000")
+        .task_id("00000000-0000-0000-0000-000000000001")
         .send()
         .await;
     assert!(result.is_err());
 
     let result = client
         .get_maintenance_window_execution_task_invocation()
-        .window_execution_id("nonexistent-exec")
-        .task_id("nonexistent-task")
-        .invocation_id("nonexistent-inv")
+        .window_execution_id("00000000-0000-0000-0000-000000000000")
+        .task_id("00000000-0000-0000-0000-000000000001")
+        .invocation_id("00000000-0000-0000-0000-000000000002")
         .send()
         .await;
     assert!(result.is_err());
@@ -1513,7 +1514,7 @@ async fn ssm_maintenance_window_execution_details() {
     // Describe operations return empty for non-existent executions
     let resp = client
         .describe_maintenance_window_execution_tasks()
-        .window_execution_id("nonexistent-exec")
+        .window_execution_id("00000000-0000-0000-0000-000000000000")
         .send()
         .await
         .unwrap();
@@ -1521,8 +1522,8 @@ async fn ssm_maintenance_window_execution_details() {
 
     let resp = client
         .describe_maintenance_window_execution_task_invocations()
-        .window_execution_id("nonexistent-exec")
-        .task_id("nonexistent-task")
+        .window_execution_id("00000000-0000-0000-0000-000000000000")
+        .task_id("00000000-0000-0000-0000-000000000001")
         .send()
         .await
         .unwrap();
@@ -1532,7 +1533,7 @@ async fn ssm_maintenance_window_execution_details() {
 
     let result = client
         .cancel_maintenance_window_execution()
-        .window_execution_id("nonexistent-exec")
+        .window_execution_id("00000000-0000-0000-0000-000000000000")
         .send()
         .await;
     assert!(result.is_err());
@@ -1646,13 +1647,16 @@ async fn ssm_get_deployable_patch_snapshot() {
     let client = server.ssm_client().await;
     let resp = client
         .get_deployable_patch_snapshot_for_instance()
-        .instance_id("i-001")
-        .snapshot_id("snap-conf-001")
+        .instance_id("i-0a1b2c3d4e5f67890")
+        .snapshot_id("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.instance_id().unwrap(), "i-001");
-    assert_eq!(resp.snapshot_id().unwrap(), "snap-conf-001");
+    assert_eq!(resp.instance_id().unwrap(), "i-0a1b2c3d4e5f67890");
+    assert_eq!(
+        resp.snapshot_id().unwrap(),
+        "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    );
 }
 
 // -- Resource Data Sync --
@@ -1736,6 +1740,7 @@ async fn ssm_ops_item_related_items() {
     let create = client
         .create_ops_item()
         .title("Related")
+        .description("Conformance test related items")
         .source("conf-test")
         .send()
         .await
@@ -2057,7 +2062,7 @@ async fn ssm_deregister_managed_instance() {
 
     client
         .deregister_managed_instance()
-        .instance_id("mi-conf001")
+        .instance_id("mi-0a1b2c3d4e5f67890")
         .send()
         .await
         .unwrap();
@@ -2092,7 +2097,7 @@ async fn ssm_update_managed_instance_role() {
     // This should fail since instance doesn't exist, but we test the endpoint works
     let result = client
         .update_managed_instance_role()
-        .instance_id("mi-conf001")
+        .instance_id("mi-0a1b2c3d4e5f67890")
         .iam_role("NewRole")
         .send()
         .await;

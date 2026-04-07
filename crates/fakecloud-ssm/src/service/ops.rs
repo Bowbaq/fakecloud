@@ -343,10 +343,10 @@ impl SsmService {
                     "AssociationType": ri.association_type,
                     "ResourceType": ri.resource_type,
                     "ResourceUri": ri.resource_uri,
-                    "CreatedTime": ri.created_time.timestamp(),
-                    "CreatedBy": ri.created_by,
-                    "LastModifiedTime": ri.last_modified_time.timestamp(),
-                    "LastModifiedBy": ri.last_modified_by,
+                    "CreatedTime": ri.created_time.timestamp() as f64,
+                    "CreatedBy": { "Arn": ri.created_by },
+                    "LastModifiedTime": ri.last_modified_time.timestamp() as f64,
+                    "LastModifiedBy": { "Arn": ri.last_modified_by },
                 })
             })
             .collect();
