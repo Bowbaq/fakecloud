@@ -5,10 +5,10 @@ use aws_sdk_sesv2::types::{
     DkimSigningAttributes, DkimSigningAttributesOrigin, EmailContent, EmailTemplateContent,
     EventDestinationDefinition, EventType, ExportDataSource, ExportDestination, ExportMetric,
     FeatureStatus, HttpsPolicy, ImportDataSource, ImportDestination, MailType, Message, Metric,
-    MetricNamespace, MetricsDataSource, RawMessage, ReputationEntityType, RouteDetails,
-    ScalingMode, SendingStatus, SnsDestination, SubscriptionStatus, SuppressionListDestination,
-    SuppressionListImportAction, SuppressionListReason, Tag, Template, TlsPolicy, Topic,
-    TopicPreference, VdmAttributes,
+    MetricDimensionName, MetricNamespace, MetricsDataSource, RawMessage, ReputationEntityType,
+    RouteDetails, ScalingMode, SendingStatus, SnsDestination, SubscriptionStatus,
+    SuppressionListDestination, SuppressionListImportAction, SuppressionListReason, Tag, Template,
+    TlsPolicy, Topic, TopicPreference, VdmAttributes,
 };
 use helpers::TestServer;
 
@@ -2060,6 +2060,7 @@ async fn ses_export_job_lifecycle() {
                     MetricsDataSource::builder()
                         .namespace(MetricNamespace::Vdm)
                         .metrics(ExportMetric::builder().name(Metric::Send).build())
+                        .dimensions(MetricDimensionName::Isp, vec!["*".to_string()])
                         .start_date(now)
                         .end_date(now)
                         .build()
