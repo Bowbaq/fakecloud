@@ -7,14 +7,14 @@ use fakecloud_core::validation::*;
 
 use crate::state::ComplianceItem;
 
-use super::{json_resp, missing, parse_body, SsmService};
+use super::{missing, SsmService};
 
 impl SsmService {
     pub(super) fn put_compliance_items(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("ResourceId", body["ResourceId"].as_str(), 1, 100)?;
         validate_optional_string_length("ResourceType", body["ResourceType"].as_str(), 1, 50)?;
         validate_optional_string_length("ComplianceType", body["ComplianceType"].as_str(), 1, 100)?;
@@ -84,14 +84,14 @@ impl SsmService {
             });
         }
 
-        Ok(json_resp(json!({})))
+        Ok(AwsResponse::ok_json(json!({})))
     }
 
     pub(super) fn list_compliance_items(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
         let max_results = body["MaxResults"].as_i64().unwrap_or(50) as usize;
         let next_token_offset: usize = body["NextToken"]
@@ -155,14 +155,14 @@ impl SsmService {
         if has_more {
             resp["NextToken"] = json!((next_token_offset + max_results).to_string());
         }
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     pub(super) fn list_compliance_summaries(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
         let state = self.state.read();
 
@@ -196,14 +196,16 @@ impl SsmService {
             })
             .collect();
 
-        Ok(json_resp(json!({ "ComplianceSummaryItems": summaries })))
+        Ok(AwsResponse::ok_json(
+            json!({ "ComplianceSummaryItems": summaries }),
+        ))
     }
 
     pub(super) fn list_resource_compliance_summaries(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
         let state = self.state.read();
 
@@ -243,7 +245,7 @@ impl SsmService {
             )
             .collect();
 
-        Ok(json_resp(
+        Ok(AwsResponse::ok_json(
             json!({ "ResourceComplianceSummaryItems": summaries }),
         ))
     }

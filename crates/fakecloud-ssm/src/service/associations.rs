@@ -9,7 +9,7 @@ use fakecloud_core::validation::*;
 
 use crate::state::{SsmAssociation, SsmAssociationVersion};
 
-use super::{json_resp, missing, parse_body, SsmService};
+use super::{missing, SsmService};
 
 impl SsmService {
     pub(super) fn create_association_inner(&self, body: &Value) -> Result<Value, AwsServiceError> {
@@ -178,16 +178,18 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let resp = self.create_association_inner(&body)?;
-        Ok(json_resp(json!({ "AssociationDescription": resp })))
+        Ok(AwsResponse::ok_json(
+            json!({ "AssociationDescription": resp }),
+        ))
     }
 
     pub(super) fn describe_association(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let association_id = body["AssociationId"].as_str();
         let name = body["Name"].as_str();
         let instance_id = body["InstanceId"].as_str();
@@ -205,7 +207,7 @@ impl SsmService {
         };
 
         match assoc {
-            Some(a) => Ok(json_resp(
+            Some(a) => Ok(AwsResponse::ok_json(
                 json!({ "AssociationDescription": association_to_json(a) }),
             )),
             None => Err(AwsServiceError::aws_error(
@@ -220,7 +222,7 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let association_id = body["AssociationId"].as_str();
         let name = body["Name"].as_str();
         let instance_id = body["InstanceId"].as_str();
@@ -249,7 +251,7 @@ impl SsmService {
         match key {
             Some(k) => {
                 state.associations.remove(&k);
-                Ok(json_resp(json!({})))
+                Ok(AwsResponse::ok_json(json!({})))
             }
             None => Err(AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -263,7 +265,7 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
         let max_results = body["MaxResults"].as_i64().unwrap_or(50) as usize;
         let next_token_offset: usize = body["NextToken"]
@@ -312,14 +314,14 @@ impl SsmService {
         if has_more {
             resp["NextToken"] = json!((next_token_offset + max_results).to_string());
         }
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     pub(super) fn update_association(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let association_id = body["AssociationId"]
             .as_str()
             .ok_or_else(|| missing("AssociationId"))?;
@@ -394,14 +396,16 @@ impl SsmService {
         });
 
         let resp = association_to_json(assoc);
-        Ok(json_resp(json!({ "AssociationDescription": resp })))
+        Ok(AwsResponse::ok_json(
+            json!({ "AssociationDescription": resp }),
+        ))
     }
 
     pub(super) fn list_association_versions(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let association_id = body["AssociationId"]
             .as_str()
             .ok_or_else(|| missing("AssociationId"))?;
@@ -467,14 +471,14 @@ impl SsmService {
         if has_more {
             resp["NextToken"] = json!((next_token_offset + max_results).to_string());
         }
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     pub(super) fn update_association_status(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
         let instance_id = body["InstanceId"]
             .as_str()
@@ -503,26 +507,28 @@ impl SsmService {
         assoc.status_date = Utc::now();
 
         let resp = association_to_json(assoc);
-        Ok(json_resp(json!({ "AssociationDescription": resp })))
+        Ok(AwsResponse::ok_json(
+            json!({ "AssociationDescription": resp }),
+        ))
     }
 
     pub(super) fn start_associations_once(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let _association_ids = body["AssociationIds"]
             .as_array()
             .ok_or_else(|| missing("AssociationIds"))?;
         // No-op: return success
-        Ok(json_resp(json!({})))
+        Ok(AwsResponse::ok_json(json!({})))
     }
 
     pub(super) fn create_association_batch(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length(
             "AssociationDispatchAssumeRole",
             body["AssociationDispatchAssumeRole"].as_str(),
@@ -551,7 +557,7 @@ impl SsmService {
             }
         }
 
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "Successful": successful,
             "Failed": failed,
         })))
@@ -561,20 +567,20 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
         let _association_id = body["AssociationId"]
             .as_str()
             .ok_or_else(|| missing("AssociationId"))?;
         // Return empty list — associations don't actually run
-        Ok(json_resp(json!({ "AssociationExecutions": [] })))
+        Ok(AwsResponse::ok_json(json!({ "AssociationExecutions": [] })))
     }
 
     pub(super) fn describe_association_execution_targets(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
         let _association_id = body["AssociationId"]
             .as_str()
@@ -582,7 +588,9 @@ impl SsmService {
         let _execution_id = body["ExecutionId"]
             .as_str()
             .ok_or_else(|| missing("ExecutionId"))?;
-        Ok(json_resp(json!({ "AssociationExecutionTargets": [] })))
+        Ok(AwsResponse::ok_json(
+            json!({ "AssociationExecutionTargets": [] }),
+        ))
     }
 
     // -----------------------------------------------------------------------
@@ -593,7 +601,7 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 5)?;
         let instance_id = body["InstanceId"]
             .as_str()
@@ -623,14 +631,16 @@ impl SsmService {
             })
             .collect();
 
-        Ok(json_resp(json!({ "Associations": associations })))
+        Ok(AwsResponse::ok_json(
+            json!({ "Associations": associations }),
+        ))
     }
 
     pub(super) fn describe_instance_associations_status(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
         let instance_id = body["InstanceId"]
             .as_str()
@@ -663,7 +673,7 @@ impl SsmService {
             })
             .collect();
 
-        Ok(json_resp(
+        Ok(AwsResponse::ok_json(
             json!({ "InstanceAssociationStatusInfos": statuses }),
         ))
     }

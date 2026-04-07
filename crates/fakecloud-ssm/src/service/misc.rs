@@ -7,17 +7,17 @@ use fakecloud_core::validation::*;
 
 use crate::state::SsmServiceSetting;
 
-use super::{json_resp, missing, parse_body, SsmService};
+use super::{missing, SsmService};
 
 impl SsmService {
     pub(super) fn get_connection_status(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("Target", body["Target"].as_str(), 1, 400)?;
         let target = body["Target"].as_str().ok_or_else(|| missing("Target"))?;
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "Target": target,
             "Status": "connected",
         })))
@@ -27,11 +27,11 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let _calendar_names = body["CalendarNames"]
             .as_array()
             .ok_or_else(|| missing("CalendarNames"))?;
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "State": "OPEN",
             "AtTime": Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
         })))
@@ -41,7 +41,7 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("SettingId", body["SettingId"].as_str(), 1, 1000)?;
         let setting_id = body["SettingId"]
             .as_str()
@@ -49,7 +49,7 @@ impl SsmService {
 
         let state = self.state.read();
         if let Some(setting) = state.service_settings.get(setting_id) {
-            Ok(json_resp(json!({
+            Ok(AwsResponse::ok_json(json!({
                 "ServiceSetting": {
                     "SettingId": setting.setting_id,
                     "SettingValue": setting.setting_value,
@@ -61,7 +61,7 @@ impl SsmService {
             })))
         } else {
             // Return sensible default for known settings
-            Ok(json_resp(json!({
+            Ok(AwsResponse::ok_json(json!({
                 "ServiceSetting": {
                     "SettingId": setting_id,
                     "SettingValue": get_default_service_setting(setting_id),
@@ -78,7 +78,7 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("SettingId", body["SettingId"].as_str(), 1, 1000)?;
         let setting_id = body["SettingId"]
             .as_str()
@@ -88,7 +88,7 @@ impl SsmService {
         state.service_settings.remove(setting_id);
 
         let default_value = get_default_service_setting(setting_id);
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "ServiceSetting": {
                 "SettingId": setting_id,
                 "SettingValue": default_value,
@@ -104,7 +104,7 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("SettingId", body["SettingId"].as_str(), 1, 1000)?;
         validate_optional_string_length("SettingValue", body["SettingValue"].as_str(), 1, 4096)?;
         let setting_id = body["SettingId"]
@@ -130,7 +130,7 @@ impl SsmService {
             },
         );
 
-        Ok(json_resp(json!({})))
+        Ok(AwsResponse::ok_json(json!({})))
     }
 
     // ── Inventory ─────────────────────────────────────────────────

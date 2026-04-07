@@ -285,10 +285,6 @@ impl AwsService for LogsService {
     }
 }
 
-fn body_json(req: &AwsRequest) -> Value {
-    serde_json::from_slice(&req.body).unwrap_or(Value::Null)
-}
-
 fn require_str<'a>(body: &'a Value, field: &str) -> Result<&'a str, AwsServiceError> {
     body[field].as_str().ok_or_else(|| {
         AwsServiceError::aws_error(

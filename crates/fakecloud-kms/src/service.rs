@@ -179,10 +179,6 @@ impl AwsService for KmsService {
     }
 }
 
-fn body_json(req: &AwsRequest) -> Value {
-    serde_json::from_slice(&req.body).unwrap_or(Value::Null)
-}
-
 fn default_key_policy(account_id: &str) -> String {
     serde_json::to_string(&json!({
         "Version": "2012-10-17",
@@ -320,7 +316,7 @@ impl KmsService {
     }
 
     fn create_key(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
 
         validate_optional_string_length(
             "customKeyStoreId",
@@ -456,7 +452,7 @@ impl KmsService {
     }
 
     fn describe_key(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let key_id_input = body["KeyId"].as_str().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -495,7 +491,7 @@ impl KmsService {
     }
 
     fn list_keys(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
 
         validate_optional_json_range("limit", &body["Limit"], 1, 1000)?;
         validate_optional_string_length("marker", body["Marker"].as_str(), 1, 320)?;
@@ -546,7 +542,7 @@ impl KmsService {
     }
 
     fn enable_key(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let resolved = self.resolve_required_key(&body)?;
 
         let mut state = self.state.write();
@@ -564,7 +560,7 @@ impl KmsService {
     }
 
     fn disable_key(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let resolved = self.resolve_required_key(&body)?;
 
         let mut state = self.state.write();
@@ -582,7 +578,7 @@ impl KmsService {
     }
 
     fn schedule_key_deletion(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let resolved = self.resolve_required_key(&body)?;
         let pending_days = body["PendingWindowInDays"].as_i64().unwrap_or(30);
 
@@ -613,7 +609,7 @@ impl KmsService {
     }
 
     fn cancel_key_deletion(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let resolved = self.resolve_required_key(&body)?;
 
         let mut state = self.state.write();
@@ -637,7 +633,7 @@ impl KmsService {
     }
 
     fn encrypt(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let key_id = Self::require_key_id(&body)?;
         let plaintext_b64 = body["Plaintext"].as_str().ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -720,7 +716,7 @@ impl KmsService {
     }
 
     fn decrypt(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let ciphertext_b64 = body["CiphertextBlob"].as_str().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -839,7 +835,7 @@ impl KmsService {
     }
 
     fn re_encrypt(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let ciphertext_b64 = body["CiphertextBlob"].as_str().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -997,7 +993,7 @@ impl KmsService {
     }
 
     fn generate_data_key(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let key_id = Self::require_key_id(&body)?;
 
         let resolved = self.resolve_key_id(&key_id).ok_or_else(|| {
@@ -1048,7 +1044,7 @@ impl KmsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let key_id = Self::require_key_id(&body)?;
 
         let resolved = self.resolve_key_id(&key_id).ok_or_else(|| {
@@ -1092,7 +1088,7 @@ impl KmsService {
     }
 
     fn generate_random(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
 
         // CustomKeyStoreId is accepted for API compatibility but has no effect on
         // random number generation in this emulator.
@@ -1120,7 +1116,7 @@ impl KmsService {
     }
 
     fn create_alias(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let alias_name = body["AliasName"]
             .as_str()
             .ok_or_else(|| {
@@ -1235,7 +1231,7 @@ impl KmsService {
     }
 
     fn delete_alias(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let alias_name = body["AliasName"].as_str().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -1269,7 +1265,7 @@ impl KmsService {
     }
 
     fn update_alias(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let alias_name = body["AliasName"].as_str().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -1308,7 +1304,7 @@ impl KmsService {
     }
 
     fn list_aliases(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
 
         validate_optional_json_range("limit", &body["Limit"], 1, 100)?;
         validate_optional_string_length("marker", body["Marker"].as_str(), 1, 320)?;
@@ -1358,7 +1354,7 @@ impl KmsService {
     }
 
     fn tag_resource(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let key_id = Self::require_key_id(&body)?;
 
         let resolved = self.resolve_key_id(&key_id).ok_or_else(|| {
@@ -1391,7 +1387,7 @@ impl KmsService {
     }
 
     fn untag_resource(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let key_id = Self::require_key_id(&body)?;
 
         let resolved = self.resolve_key_id(&key_id).ok_or_else(|| {
@@ -1424,7 +1420,7 @@ impl KmsService {
     }
 
     fn list_resource_tags(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let key_id = Self::require_key_id(&body)?;
 
         let resolved = self.resolve_key_id(&key_id).ok_or_else(|| {
@@ -1466,7 +1462,7 @@ impl KmsService {
     }
 
     fn update_key_description(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let resolved = self.resolve_required_key(&body)?;
         let description = body["Description"].as_str().unwrap_or("").to_string();
 
@@ -1484,7 +1480,7 @@ impl KmsService {
     }
 
     fn get_key_policy(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let key_id = Self::require_key_id(&body)?;
 
         // For key policy operations, aliases should not work
@@ -1523,7 +1519,7 @@ impl KmsService {
     }
 
     fn put_key_policy(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let key_id = Self::require_key_id(&body)?;
 
         // For key policy operations, aliases should not work
@@ -1559,7 +1555,7 @@ impl KmsService {
     }
 
     fn list_key_policies(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let _resolved = self.resolve_required_key(&body)?;
 
         Ok(AwsResponse::json(
@@ -1573,7 +1569,7 @@ impl KmsService {
     }
 
     fn get_key_rotation_status(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let key_id = Self::require_key_id(&body)?;
 
         // Aliases should fail for rotation operations
@@ -1612,7 +1608,7 @@ impl KmsService {
     }
 
     fn enable_key_rotation(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let key_id = Self::require_key_id(&body)?;
 
         if key_id.starts_with("alias/") {
@@ -1645,7 +1641,7 @@ impl KmsService {
     }
 
     fn disable_key_rotation(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let key_id = Self::require_key_id(&body)?;
 
         if key_id.starts_with("alias/") {
@@ -1678,7 +1674,7 @@ impl KmsService {
     }
 
     fn rotate_key_on_demand(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let resolved = self.resolve_required_key(&body)?;
 
         let mut state = self.state.write();
@@ -1707,7 +1703,7 @@ impl KmsService {
     }
 
     fn list_key_rotations(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let resolved = self.resolve_required_key(&body)?;
         validate_optional_json_range("limit", &body["Limit"], 1, 1000)?;
         let limit = body["Limit"].as_i64().unwrap_or(1000) as usize;
@@ -1761,7 +1757,7 @@ impl KmsService {
     }
 
     fn sign(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let key_id = Self::require_key_id(&body)?;
         let message_b64 = body["Message"].as_str().unwrap_or("");
         let signing_algorithm = body["SigningAlgorithm"].as_str().unwrap_or("");
@@ -1848,7 +1844,7 @@ impl KmsService {
     }
 
     fn verify(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let key_id = Self::require_key_id(&body)?;
         let message_b64 = body["Message"].as_str().unwrap_or("");
         let signature_b64 = body["Signature"].as_str().unwrap_or("");
@@ -1951,7 +1947,7 @@ impl KmsService {
     }
 
     fn get_public_key(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let key_id = Self::require_key_id(&body)?;
 
         let resolved = self.resolve_key_id(&key_id).ok_or_else(|| {
@@ -1997,7 +1993,7 @@ impl KmsService {
     }
 
     fn create_grant(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let key_id = Self::require_key_id(&body)?;
 
         let resolved = self.resolve_key_id(&key_id).ok_or_else(|| {
@@ -2052,7 +2048,7 @@ impl KmsService {
     }
 
     fn list_grants(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let key_id = Self::require_key_id(&body)?;
 
         let resolved = self.resolve_key_id(&key_id).ok_or_else(|| {
@@ -2091,7 +2087,7 @@ impl KmsService {
     }
 
     fn list_retirable_grants(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
 
         validate_required("RetiringPrincipal", &body["RetiringPrincipal"])?;
         let retiring_principal = body["RetiringPrincipal"].as_str().ok_or_else(|| {
@@ -2151,7 +2147,7 @@ impl KmsService {
     }
 
     fn revoke_grant(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let key_id = Self::require_key_id(&body)?;
         let grant_id = body["GrantId"].as_str().unwrap_or("");
 
@@ -2183,7 +2179,7 @@ impl KmsService {
     }
 
     fn retire_grant(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let grant_token = body["GrantToken"].as_str();
         let grant_id = body["GrantId"].as_str();
         let key_id = body["KeyId"].as_str();
@@ -2218,7 +2214,7 @@ impl KmsService {
     }
 
     fn generate_mac(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let key_id = Self::require_key_id(&body)?;
         let mac_algorithm = body["MacAlgorithm"].as_str().unwrap_or("").to_string();
         let message_b64 = body["Message"].as_str().unwrap_or("");
@@ -2277,7 +2273,7 @@ impl KmsService {
     }
 
     fn verify_mac(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let key_id = Self::require_key_id(&body)?;
         let mac_algorithm = body["MacAlgorithm"].as_str().unwrap_or("").to_string();
         let message_b64 = body["Message"].as_str().unwrap_or("");
@@ -2339,7 +2335,7 @@ impl KmsService {
     }
 
     fn replicate_key(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let key_id = Self::require_key_id(&body)?;
         let replica_region = body["ReplicaRegion"].as_str().unwrap_or("").to_string();
 
@@ -2449,7 +2445,7 @@ impl KmsService {
     }
 
     fn generate_data_key_pair(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let key_id = Self::require_key_id(&body)?;
         let key_pair_spec = body["KeyPairSpec"]
             .as_str()
@@ -2511,7 +2507,7 @@ impl KmsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let key_id = Self::require_key_id(&body)?;
         let key_pair_spec = body["KeyPairSpec"]
             .as_str()
@@ -2568,7 +2564,7 @@ impl KmsService {
     }
 
     fn derive_shared_secret(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let key_id = Self::require_key_id(&body)?;
         let _key_agreement_algorithm = body["KeyAgreementAlgorithm"]
             .as_str()
@@ -2646,7 +2642,7 @@ impl KmsService {
     }
 
     fn get_parameters_for_import(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let key_id = Self::require_key_id(&body)?;
 
         let resolved = self.resolve_key_id(&key_id).ok_or_else(|| {
@@ -2696,7 +2692,7 @@ impl KmsService {
     }
 
     fn import_key_material(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let key_id = Self::require_key_id(&body)?;
 
         let _import_token = body["ImportToken"].as_str().ok_or_else(|| {
@@ -2771,7 +2767,7 @@ impl KmsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let key_id = Self::require_key_id(&body)?;
 
         let resolved = self.resolve_key_id(&key_id).ok_or_else(|| {
@@ -2808,7 +2804,7 @@ impl KmsService {
     }
 
     fn update_primary_region(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let key_id = Self::require_key_id(&body)?;
         let primary_region = body["PrimaryRegion"]
             .as_str()
@@ -2857,7 +2853,7 @@ impl KmsService {
     }
 
     fn create_custom_key_store(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
 
         let name = body["CustomKeyStoreName"]
             .as_str()
@@ -2928,7 +2924,7 @@ impl KmsService {
     }
 
     fn delete_custom_key_store(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
 
         let store_id = body["CustomKeyStoreId"]
             .as_str()
@@ -2965,7 +2961,7 @@ impl KmsService {
     }
 
     fn describe_custom_key_stores(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         validate_optional_string_length(
             "customKeyStoreName",
             body["CustomKeyStoreName"].as_str(),
@@ -3037,7 +3033,7 @@ impl KmsService {
     }
 
     fn connect_custom_key_store(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
 
         let store_id = body["CustomKeyStoreId"]
             .as_str()
@@ -3069,7 +3065,7 @@ impl KmsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
 
         let store_id = body["CustomKeyStoreId"]
             .as_str()
@@ -3098,7 +3094,7 @@ impl KmsService {
     }
 
     fn update_custom_key_store(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
 
         let store_id = body["CustomKeyStoreId"]
             .as_str()

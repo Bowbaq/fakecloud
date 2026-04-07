@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 use fakecloud_core::validation::*;
 
-use super::{body_json, require_str, LogsService};
+use super::{require_str, LogsService};
 use chrono::Utc;
 
 use crate::state::{ImportTask, Integration, LookupTable, ScheduledQuery};
@@ -14,7 +14,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let import_source_arn = require_str(&body, "importSourceArn")?;
         let import_role_arn = require_str(&body, "importRoleArn")?;
         validate_string_length("importRoleArn", import_role_arn, 1, 2048)?;
@@ -45,7 +45,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         validate_optional_string_length("importId", body["importId"].as_str(), 1, 256)?;
         validate_optional_enum_value(
             "importStatus",
@@ -78,7 +78,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let import_id = require_str(&body, "importId")?;
         validate_string_length("importId", import_id, 1, 256)?;
         validate_optional_range_i64("limit", body["limit"].as_i64(), 1, 50)?;
@@ -94,7 +94,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let import_id = require_str(&body, "importId")?;
 
         let mut state = self.state.write();
@@ -114,7 +114,7 @@ impl LogsService {
     // -- Integrations --
 
     pub(crate) fn put_integration(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         validate_required("resourceConfig", &body["resourceConfig"])?;
         let integration_name = require_str(&body, "integrationName")?;
         validate_string_length("integrationName", integration_name, 1, 50)?;
@@ -147,7 +147,7 @@ impl LogsService {
     }
 
     pub(crate) fn get_integration(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let integration_name = require_str(&body, "integrationName")?;
 
         let state = self.state.read();
@@ -173,7 +173,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let integration_name = require_str(&body, "integrationName")?;
         validate_string_length("integrationName", integration_name, 1, 50)?;
 
@@ -186,7 +186,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         validate_optional_string_length(
             "integrationNamePrefix",
             body["integrationNamePrefix"].as_str(),
@@ -224,7 +224,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let lookup_table_name = require_str(&body, "lookupTableName")?;
         validate_string_length("lookupTableName", lookup_table_name, 1, 256)?;
         let table_body = require_str(&body, "tableBody")?;
@@ -261,7 +261,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let lookup_table_arn = require_str(&body, "lookupTableArn")?;
 
         let state = self.state.read();
@@ -289,7 +289,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         validate_optional_string_length(
             "lookupTableNamePrefix",
             body["lookupTableNamePrefix"].as_str(),
@@ -320,7 +320,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let lookup_table_arn = require_str(&body, "lookupTableArn")?;
 
         let mut state = self.state.write();
@@ -332,7 +332,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let lookup_table_arn = require_str(&body, "lookupTableArn")?;
         let table_body = require_str(&body, "tableBody")?;
 
@@ -357,7 +357,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let name = require_str(&body, "name")?;
         validate_string_length("name", name, 1, 255)?;
         validate_optional_string_length("description", body["description"].as_str(), 0, 1024)?;
@@ -417,7 +417,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let identifier = require_str(&body, "identifier")?;
 
         let state = self.state.read();
@@ -446,7 +446,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let _identifier = require_str(&body, "identifier")?;
         validate_required("startTime", &body["startTime"])?;
         validate_required("endTime", &body["endTime"])?;
@@ -465,7 +465,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         validate_optional_range_i64("maxResults", body["maxResults"].as_i64(), 1, 1000)?;
         validate_optional_string_length("nextToken", body["nextToken"].as_str(), 1, 4096)?;
         validate_optional_enum_value("state", &body["state"], &["ENABLED", "DISABLED"])?;
@@ -491,7 +491,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let identifier = require_str(&body, "identifier")?;
 
         let mut state = self.state.write();
@@ -503,7 +503,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let identifier = require_str(&body, "identifier")?;
         let query_string = require_str(&body, "queryString")?;
         let query_language = require_str(&body, "queryLanguage")?;
@@ -531,7 +531,7 @@ impl LogsService {
     // -- Misc stubs --
 
     pub(crate) fn start_live_tail(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         validate_required("logGroupIdentifiers", &body["logGroupIdentifiers"])?;
         validate_optional_string_length(
             "logEventFilterPattern",
@@ -558,7 +558,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         validate_required(
             "bearerTokenAuthenticationEnabled",
             &body["bearerTokenAuthenticationEnabled"],
@@ -577,7 +577,7 @@ impl LogsService {
     }
 
     pub(crate) fn get_log_object(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         validate_required("logObjectPointer", &body["logObjectPointer"])?;
         validate_optional_string_length(
             "logObjectPointer",
@@ -590,7 +590,7 @@ impl LogsService {
     }
 
     pub(crate) fn get_log_fields(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         validate_required("dataSourceName", &body["dataSourceName"])?;
         validate_required("dataSourceType", &body["dataSourceType"])?;
         // Stub: return empty log fields
@@ -604,7 +604,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         validate_required("dataSource", &body["dataSource"])?;
         let integration_arn = require_str(&body, "integrationArn")?;
         let data_source = body["dataSource"].clone();
@@ -628,7 +628,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let integration_arn = require_str(&body, "integrationArn")?;
         validate_optional_range_i64("maxResults", body["maxResults"].as_i64(), 1, 100)?;
         validate_optional_string_length("nextToken", body["nextToken"].as_str(), 1, 4096)?;
@@ -659,7 +659,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let identifier = require_str(&body, "identifier")?;
         validate_string_length("identifier", identifier, 1, 2048)?;
         // No-op stub (we don't track detailed enough to remove specific sources)

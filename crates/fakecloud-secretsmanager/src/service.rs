@@ -37,7 +37,7 @@ impl SecretsManagerService {
     }
 
     fn create_secret(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
+        let body = req.json_body();
         validate_required("Name", &body["Name"])?;
         let name = body["Name"]
             .as_str()
@@ -87,7 +87,7 @@ impl SecretsManagerService {
                         if !has_value {
                             response.as_object_mut().unwrap().remove("VersionId");
                         }
-                        return Ok(AwsResponse::json(StatusCode::OK, response.to_string()));
+                        return Ok(AwsResponse::ok_json(response));
                     } else {
                         return Err(AwsServiceError::aws_error(
                             StatusCode::BAD_REQUEST,
@@ -172,11 +172,11 @@ impl SecretsManagerService {
             response["VersionId"] = json!(vid);
         }
 
-        Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
+        Ok(AwsResponse::ok_json(response))
     }
 
     fn get_secret_value(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
+        let body = req.json_body();
         let secret_id = require_secret_id(&body)?;
         validate_optional_string_length("versionId", body["VersionId"].as_str(), 32, 64)?;
         validate_optional_string_length("versionStage", body["VersionStage"].as_str(), 1, 256)?;
@@ -261,11 +261,11 @@ impl SecretsManagerService {
             response["SecretBinary"] = json!(base64_encode(b));
         }
 
-        Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
+        Ok(AwsResponse::ok_json(response))
     }
 
     fn put_secret_value(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
+        let body = req.json_body();
         let secret_id = require_secret_id(&body)?;
         validate_optional_string_length(
             "clientRequestToken",
@@ -325,7 +325,7 @@ impl SecretsManagerService {
                     "VersionId": version_id,
                     "VersionStages": existing_version.stages,
                 });
-                return Ok(AwsResponse::json(StatusCode::OK, response.to_string()));
+                return Ok(AwsResponse::ok_json(response));
             } else {
                 return Err(AwsServiceError::aws_error(
                     StatusCode::BAD_REQUEST,
@@ -406,11 +406,11 @@ impl SecretsManagerService {
             "VersionStages": version_stages,
         });
 
-        Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
+        Ok(AwsResponse::ok_json(response))
     }
 
     fn update_secret(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
+        let body = req.json_body();
         let secret_id = require_secret_id(&body)?;
         validate_optional_string_length(
             "clientRequestToken",
@@ -470,7 +470,7 @@ impl SecretsManagerService {
                         "Name": secret.name,
                         "VersionId": vid,
                     });
-                    return Ok(AwsResponse::json(StatusCode::OK, response.to_string()));
+                    return Ok(AwsResponse::ok_json(response));
                 } else {
                     return Err(AwsServiceError::aws_error(
                         StatusCode::BAD_REQUEST,
@@ -519,11 +519,11 @@ impl SecretsManagerService {
             response["VersionId"] = json!(vid);
         }
 
-        Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
+        Ok(AwsResponse::ok_json(response))
     }
 
     fn delete_secret(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
+        let body = req.json_body();
         let secret_id = require_secret_id(&body)?;
 
         let force_delete = body["ForceDeleteWithoutRecovery"]
@@ -566,7 +566,7 @@ impl SecretsManagerService {
                         "Name": name,
                         "DeletionDate": deletion_date.timestamp_millis() as f64 / 1000.0,
                     });
-                    return Ok(AwsResponse::json(StatusCode::OK, response.to_string()));
+                    return Ok(AwsResponse::ok_json(response));
                 }
                 Err(_) => {
                     // For force delete of non-existent secret, AWS returns success
@@ -583,7 +583,7 @@ impl SecretsManagerService {
                         "Name": secret_id,
                         "DeletionDate": deletion_date.timestamp_millis() as f64 / 1000.0,
                     });
-                    return Ok(AwsResponse::json(StatusCode::OK, response.to_string()));
+                    return Ok(AwsResponse::ok_json(response));
                 }
             }
         }
@@ -610,11 +610,11 @@ impl SecretsManagerService {
             "DeletionDate": deletion_date.timestamp_millis() as f64 / 1000.0,
         });
 
-        Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
+        Ok(AwsResponse::ok_json(response))
     }
 
     fn restore_secret(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
+        let body = req.json_body();
         let secret_id = require_secret_id(&body)?;
 
         let mut state = self.state.write();
@@ -629,11 +629,11 @@ impl SecretsManagerService {
             "Name": secret.name,
         });
 
-        Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
+        Ok(AwsResponse::ok_json(response))
     }
 
     fn describe_secret(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
+        let body = req.json_body();
         let secret_id = require_secret_id(&body)?;
 
         let state = self.state.read();
@@ -699,11 +699,11 @@ impl SecretsManagerService {
             }
         }
 
-        Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
+        Ok(AwsResponse::ok_json(response))
     }
 
     fn list_secrets(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
+        let body = req.json_body();
         validate_optional_string_length("nextToken", body["NextToken"].as_str(), 1, 4096)?;
         validate_optional_range_i64("maxResults", body["MaxResults"].as_i64(), 1, 100)?;
         validate_optional_enum("sortBy", body["SortBy"].as_str(), &["name", "created-date"])?;
@@ -857,11 +857,11 @@ impl SecretsManagerService {
             }
         }
 
-        Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
+        Ok(AwsResponse::ok_json(response))
     }
 
     fn tag_resource(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
+        let body = req.json_body();
         let secret_id = require_secret_id(&body)?;
 
         let new_tags = parse_tags(&body["Tags"]);
@@ -885,7 +885,7 @@ impl SecretsManagerService {
     }
 
     fn untag_resource(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
+        let body = req.json_body();
         let secret_id = require_secret_id(&body)?;
 
         let tag_keys: Vec<String> = body["TagKeys"]
@@ -906,7 +906,7 @@ impl SecretsManagerService {
     }
 
     fn list_secret_version_ids(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
+        let body = req.json_body();
         let secret_id = require_secret_id(&body)?;
         validate_optional_string_length("nextToken", body["NextToken"].as_str(), 1, 4096)?;
 
@@ -931,11 +931,11 @@ impl SecretsManagerService {
             "Versions": versions,
         });
 
-        Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
+        Ok(AwsResponse::ok_json(response))
     }
 
     fn get_random_password(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
+        let body = req.json_body();
         let length = body["PasswordLength"].as_i64().unwrap_or(32) as usize;
 
         if length < 4 {
@@ -1061,14 +1061,14 @@ impl SecretsManagerService {
             "RandomPassword": password,
         });
 
-        Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
+        Ok(AwsResponse::ok_json(response))
     }
 
     fn rotate_secret(
         &self,
         req: &AwsRequest,
     ) -> Result<(AwsResponse, Option<RotationInvocation>), AwsServiceError> {
-        let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
+        let body = req.json_body();
         let secret_id = require_secret_id(&body)?;
 
         // Validate ClientRequestToken
@@ -1196,14 +1196,11 @@ impl SecretsManagerService {
             "VersionId": version_id,
         });
 
-        Ok((
-            AwsResponse::json(StatusCode::OK, response.to_string()),
-            invocation,
-        ))
+        Ok((AwsResponse::ok_json(response), invocation))
     }
 
     fn cancel_rotate_secret(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
+        let body = req.json_body();
         let secret_id = require_secret_id(&body)?;
 
         let mut state = self.state.write();
@@ -1232,14 +1229,14 @@ impl SecretsManagerService {
             "Name": secret.name,
         });
 
-        Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
+        Ok(AwsResponse::ok_json(response))
     }
 
     fn update_secret_version_stage(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
+        let body = req.json_body();
         let secret_id = require_secret_id(&body)?;
         let version_stage = body["VersionStage"]
             .as_str()
@@ -1331,11 +1328,11 @@ impl SecretsManagerService {
             "Name": secret.name,
         });
 
-        Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
+        Ok(AwsResponse::ok_json(response))
     }
 
     fn batch_get_secret_value(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
+        let body = req.json_body();
         validate_optional_string_length("nextToken", body["NextToken"].as_str(), 1, 4096)?;
         let secret_id_list = body["SecretIdList"].as_array();
         let filters = body["Filters"].as_array();
@@ -1494,11 +1491,11 @@ impl SecretsManagerService {
             response.as_object_mut().unwrap().remove("Errors");
         }
 
-        Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
+        Ok(AwsResponse::ok_json(response))
     }
 
     fn get_resource_policy(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
+        let body = req.json_body();
         let secret_id = require_secret_id(&body)?;
 
         let state = self.state.read();
@@ -1513,11 +1510,11 @@ impl SecretsManagerService {
             response["ResourcePolicy"] = json!(policy);
         }
 
-        Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
+        Ok(AwsResponse::ok_json(response))
     }
 
     fn validate_resource_policy(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
+        let body = req.json_body();
         validate_optional_string_length("secretId", body["SecretId"].as_str(), 1, 2048)?;
         validate_required("ResourcePolicy", &body["ResourcePolicy"])?;
         let policy_str = body["ResourcePolicy"].as_str().ok_or_else(|| {
@@ -1539,11 +1536,11 @@ impl SecretsManagerService {
             "PolicyValidationPassed": true,
             "ValidationErrors": [],
         });
-        Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
+        Ok(AwsResponse::ok_json(response))
     }
 
     fn put_resource_policy(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
+        let body = req.json_body();
         let secret_id = require_secret_id(&body)?;
         validate_required("ResourcePolicy", &body["ResourcePolicy"])?;
         validate_optional_string_length(
@@ -1563,11 +1560,11 @@ impl SecretsManagerService {
             "Name": secret.name,
         });
 
-        Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
+        Ok(AwsResponse::ok_json(response))
     }
 
     fn delete_resource_policy(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
+        let body = req.json_body();
         let secret_id = require_secret_id(&body)?;
 
         let mut state = self.state.write();
@@ -1579,14 +1576,14 @@ impl SecretsManagerService {
             "Name": secret.name,
         });
 
-        Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
+        Ok(AwsResponse::ok_json(response))
     }
 
     fn replicate_secret_to_regions(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
+        let body = req.json_body();
         let secret_id = require_secret_id(&body)?;
 
         let state = self.state.read();
@@ -1596,14 +1593,14 @@ impl SecretsManagerService {
             "ARN": secret.arn,
             "ReplicationStatus": [],
         });
-        Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
+        Ok(AwsResponse::ok_json(response))
     }
 
     fn remove_regions_from_replication(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
+        let body = req.json_body();
         let secret_id = require_secret_id(&body)?;
 
         let state = self.state.read();
@@ -1613,14 +1610,14 @@ impl SecretsManagerService {
             "ARN": secret.arn,
             "ReplicationStatus": [],
         });
-        Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
+        Ok(AwsResponse::ok_json(response))
     }
 
     fn stop_replication_to_replica(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
+        let body = req.json_body();
         let secret_id = require_secret_id(&body)?;
 
         let state = self.state.read();
@@ -1629,7 +1626,7 @@ impl SecretsManagerService {
         let response = json!({
             "ARN": secret.arn,
         });
-        Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
+        Ok(AwsResponse::ok_json(response))
     }
 
     /// Find a secret by name, full ARN, or partial ARN (mutable).

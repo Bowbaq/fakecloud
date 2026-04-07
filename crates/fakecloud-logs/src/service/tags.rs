@@ -4,13 +4,13 @@ use serde_json::json;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 use fakecloud_core::validation::*;
 
-use super::{body_json, LogsService};
+use super::LogsService;
 
 impl LogsService {
     // ---- Tags (legacy) ----
 
     pub(crate) fn tag_log_group(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let name = body["logGroupName"].as_str().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -48,7 +48,7 @@ impl LogsService {
     }
 
     pub(crate) fn untag_log_group(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let name = body["logGroupName"].as_str().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -89,7 +89,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let name = body["logGroupName"].as_str().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -118,7 +118,7 @@ impl LogsService {
     // ---- Tags (new API: TagResource/UntagResource/ListTagsForResource) ----
 
     pub(crate) fn tag_resource(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let arn = body["resourceArn"].as_str().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -172,7 +172,7 @@ impl LogsService {
     }
 
     pub(crate) fn untag_resource(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let arn = body["resourceArn"].as_str().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -229,7 +229,7 @@ impl LogsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = body_json(req);
+        let body = req.json_body();
         let arn = body["resourceArn"].as_str().ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,

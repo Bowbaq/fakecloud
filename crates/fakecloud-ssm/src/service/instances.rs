@@ -9,14 +9,14 @@ use fakecloud_core::validation::*;
 
 use crate::state::SsmActivation;
 
-use super::{json_resp, missing, parse_body, SsmService};
+use super::{missing, SsmService};
 
 impl SsmService {
     pub(super) fn create_activation(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("IamRole", body["IamRole"].as_str(), 0, 64)?;
         validate_optional_string_length("Description", body["Description"].as_str(), 0, 256)?;
         validate_optional_string_length(
@@ -74,7 +74,7 @@ impl SsmService {
         };
         state.activations.insert(activation_id.clone(), activation);
 
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "ActivationId": activation_id,
             "ActivationCode": activation_code,
         })))
@@ -84,7 +84,7 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let activation_id = body["ActivationId"]
             .as_str()
             .ok_or_else(|| missing("ActivationId"))?;
@@ -98,14 +98,14 @@ impl SsmService {
             ));
         }
 
-        Ok(json_resp(json!({})))
+        Ok(AwsResponse::ok_json(json!({})))
     }
 
     pub(super) fn describe_activations(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
         let state = self.state.read();
         let activations: Vec<Value> = state
@@ -140,14 +140,16 @@ impl SsmService {
             })
             .collect();
 
-        Ok(json_resp(json!({ "ActivationList": activations })))
+        Ok(AwsResponse::ok_json(
+            json!({ "ActivationList": activations }),
+        ))
     }
 
     pub(super) fn deregister_managed_instance(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("InstanceId", body["InstanceId"].as_str(), 20, 124)?;
         let instance_id = body["InstanceId"]
             .as_str()
@@ -157,14 +159,14 @@ impl SsmService {
         state.managed_instances.remove(instance_id);
         // AWS doesn't error on non-existent instances
 
-        Ok(json_resp(json!({})))
+        Ok(AwsResponse::ok_json(json!({})))
     }
 
     pub(super) fn describe_instance_information(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 5, 50)?;
         let state = self.state.read();
         let instances: Vec<Value> = state
@@ -189,14 +191,16 @@ impl SsmService {
             })
             .collect();
 
-        Ok(json_resp(json!({ "InstanceInformationList": instances })))
+        Ok(AwsResponse::ok_json(
+            json!({ "InstanceInformationList": instances }),
+        ))
     }
 
     pub(super) fn describe_instance_properties(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 5, 1000)?;
         let state = self.state.read();
         let instances: Vec<Value> = state
@@ -218,14 +222,16 @@ impl SsmService {
             })
             .collect();
 
-        Ok(json_resp(json!({ "InstanceProperties": instances })))
+        Ok(AwsResponse::ok_json(
+            json!({ "InstanceProperties": instances }),
+        ))
     }
 
     pub(super) fn update_managed_instance_role(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let instance_id = body["InstanceId"]
             .as_str()
             .ok_or_else(|| missing("InstanceId"))?;
@@ -247,28 +253,28 @@ impl SsmService {
             })?;
         instance.iam_role = iam_role;
 
-        Ok(json_resp(json!({})))
+        Ok(AwsResponse::ok_json(json!({})))
     }
 
     // ── Other ─────────────────────────────────────────────────────
 
     pub(super) fn list_nodes(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("SyncName", body["SyncName"].as_str(), 1, 64)?;
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
-        Ok(json_resp(json!({ "Nodes": [] })))
+        Ok(AwsResponse::ok_json(json!({ "Nodes": [] })))
     }
 
     pub(super) fn list_nodes_summary(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("SyncName", body["SyncName"].as_str(), 1, 64)?;
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
         let _aggregators = body["Aggregators"]
             .as_array()
             .ok_or_else(|| missing("Aggregators"))?;
-        Ok(json_resp(json!({ "Summary": [] })))
+        Ok(AwsResponse::ok_json(json!({ "Summary": [] })))
     }
 }

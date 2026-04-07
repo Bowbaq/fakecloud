@@ -8,11 +8,11 @@ use fakecloud_core::validation::*;
 
 use crate::state::SsmSession;
 
-use super::{json_resp, missing, parse_body, SsmService};
+use super::{missing, SsmService};
 
 impl SsmService {
     pub(super) fn start_session(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("Target", body["Target"].as_str(), 1, 400)?;
         validate_optional_string_length("Reason", body["Reason"].as_str(), 1, 256)?;
         let target = body["Target"]
@@ -38,7 +38,7 @@ impl SsmService {
         };
         state.sessions.insert(session_id.clone(), session);
 
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "SessionId": session_id,
             "TokenValue": format!("token-{session_id}"),
             "StreamUrl": format!("wss://ssm.us-east-1.amazonaws.com/session/{session_id}"),
@@ -46,7 +46,7 @@ impl SsmService {
     }
 
     pub(super) fn resume_session(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let session_id = body["SessionId"]
             .as_str()
             .ok_or_else(|| missing("SessionId"))?;
@@ -60,7 +60,7 @@ impl SsmService {
             )
         })?;
 
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "SessionId": session.session_id,
             "TokenValue": format!("token-{}", session.session_id),
             "StreamUrl": format!("wss://ssm.us-east-1.amazonaws.com/session/{}", session.session_id),
@@ -71,7 +71,7 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("SessionId", body["SessionId"].as_str(), 1, 96)?;
         let session_id = body["SessionId"]
             .as_str()
@@ -84,14 +84,14 @@ impl SsmService {
         }
         // AWS TerminateSession doesn't error on non-existent sessions
 
-        Ok(json_resp(json!({ "SessionId": session_id })))
+        Ok(AwsResponse::ok_json(json!({ "SessionId": session_id })))
     }
 
     pub(super) fn describe_sessions(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_enum("State", body["State"].as_str(), &["Active", "History"])?;
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 200)?;
         let state_filter = body["State"].as_str().ok_or_else(|| missing("State"))?;
@@ -123,14 +123,14 @@ impl SsmService {
             })
             .collect();
 
-        Ok(json_resp(json!({ "Sessions": sessions })))
+        Ok(AwsResponse::ok_json(json!({ "Sessions": sessions })))
     }
 
     pub(super) fn start_access_request(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("Reason", body["Reason"].as_str(), 1, 256)?;
         let _reason = body["Reason"].as_str().ok_or_else(|| missing("Reason"))?;
         let _targets = body["Targets"]
@@ -141,19 +141,21 @@ impl SsmService {
         state.session_counter += 1;
         let access_request_id = format!("ar-{:012x}", state.session_counter);
 
-        Ok(json_resp(json!({ "AccessRequestId": access_request_id })))
+        Ok(AwsResponse::ok_json(
+            json!({ "AccessRequestId": access_request_id }),
+        ))
     }
 
     pub(super) fn get_access_token(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let _access_request_id = body["AccessRequestId"]
             .as_str()
             .ok_or_else(|| missing("AccessRequestId"))?;
 
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "AccessRequestStatus": "Approved",
             "Credentials": {
                 "AccessKeyId": "AKIAIOSFODNN7EXAMPLE",

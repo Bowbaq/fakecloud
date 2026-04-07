@@ -5,14 +5,14 @@ use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 use fakecloud_core::validation::*;
 
 use super::parameters::{lookup_param, lookup_param_mut};
-use super::{json_resp, missing, parse_body, SsmService};
+use super::{missing, SsmService};
 
 impl SsmService {
     pub(super) fn add_tags_to_resource(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let resource_type = body["ResourceType"].as_str().unwrap_or("Parameter");
         let resource_id = body["ResourceId"]
             .as_str()
@@ -81,14 +81,14 @@ impl SsmService {
             }
         }
 
-        Ok(json_resp(json!({})))
+        Ok(AwsResponse::ok_json(json!({})))
     }
 
     pub(super) fn remove_tags_from_resource(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_required("ResourceType", &body["ResourceType"])?;
         let resource_type = body["ResourceType"].as_str().unwrap_or("Parameter");
         let resource_id = body["ResourceId"]
@@ -160,14 +160,14 @@ impl SsmService {
             }
         }
 
-        Ok(json_resp(json!({})))
+        Ok(AwsResponse::ok_json(json!({})))
     }
 
     pub(super) fn list_tags_for_resource(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let resource_type = body["ResourceType"].as_str().unwrap_or("Parameter");
         let resource_id = body["ResourceId"]
             .as_str()
@@ -235,7 +235,7 @@ impl SsmService {
             ka.cmp(kb)
         });
 
-        Ok(json_resp(json!({ "TagList": tags })))
+        Ok(AwsResponse::ok_json(json!({ "TagList": tags })))
     }
 }
 

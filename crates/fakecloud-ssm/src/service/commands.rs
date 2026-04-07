@@ -9,11 +9,11 @@ use fakecloud_core::validation::*;
 
 use crate::state::SsmCommand;
 
-use super::{json_resp, missing, parse_body, SsmService};
+use super::{missing, SsmService};
 
 impl SsmService {
     pub(super) fn send_command(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let document_name = body["DocumentName"]
             .as_str()
             .ok_or_else(|| missing("DocumentName"))?
@@ -152,11 +152,11 @@ impl SsmService {
             cmd_obj["TimeoutSeconds"] = json!(t);
         }
 
-        Ok(json_resp(json!({ "Command": cmd_obj })))
+        Ok(AwsResponse::ok_json(json!({ "Command": cmd_obj })))
     }
 
     pub(super) fn list_commands(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("CommandId", body["CommandId"].as_str(), 36, 36)?;
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
         let max_results = body["MaxResults"].as_i64().unwrap_or(50) as usize;
@@ -231,14 +231,14 @@ impl SsmService {
             resp["NextToken"] = json!((next_token_offset + max_results).to_string());
         }
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     pub(super) fn get_command_invocation(
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let command_id = body["CommandId"]
             .as_str()
             .ok_or_else(|| missing("CommandId"))?;
@@ -283,7 +283,7 @@ impl SsmService {
             }
         }
 
-        Ok(json_resp(json!({
+        Ok(AwsResponse::ok_json(json!({
             "CommandId": cmd.command_id,
             "InstanceId": instance_id,
             "DocumentName": cmd.document_name,
@@ -301,7 +301,7 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         validate_optional_string_length("CommandId", body["CommandId"].as_str(), 36, 36)?;
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
         let max_results = body["MaxResults"].as_i64().unwrap_or(50) as usize;
@@ -350,11 +350,11 @@ impl SsmService {
             resp["NextToken"] = json!((next_token_offset + max_results).to_string());
         }
 
-        Ok(json_resp(resp))
+        Ok(AwsResponse::ok_json(resp))
     }
 
     pub(super) fn cancel_command(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = parse_body(req);
+        let body = req.json_body();
         let command_id = body["CommandId"]
             .as_str()
             .ok_or_else(|| missing("CommandId"))?;
@@ -369,7 +369,7 @@ impl SsmService {
             cmd.status = "Cancelled".to_string();
         }
 
-        Ok(json_resp(json!({})))
+        Ok(AwsResponse::ok_json(json!({})))
     }
 
     // ===== Maintenance Window operations =====
