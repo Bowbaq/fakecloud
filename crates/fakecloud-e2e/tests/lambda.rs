@@ -94,15 +94,18 @@ async fn lambda_list_functions() {
 }
 
 async fn invoke_with_cli(cli: &str) {
-    if std::process::Command::new(cli)
+    let available = std::process::Command::new(cli)
         .arg("info")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
         .map(|s| s.success())
-        .unwrap_or(false)
-        == false
-    {
+        .unwrap_or(false);
+
+    if !available {
+        if std::env::var("CI").is_ok() {
+            panic!("{cli} is not available but is required in CI");
+        }
         eprintln!("skipping: {cli} is not available");
         return;
     }
