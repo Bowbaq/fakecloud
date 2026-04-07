@@ -655,34 +655,68 @@ impl S3Service {
             std::collections::HashMap::new()
         };
 
-        let mut state = self.state.write();
-        let b = state
-            .buckets
-            .get_mut(bucket)
-            .ok_or_else(|| no_such_bucket(bucket))?;
+        // --- Read lock phase: validate preconditions and read bucket config ---
+        let (
+            versioning_enabled,
+            acl_owner_id,
+            encryption_config,
+            object_lock_config,
+            notification_config,
+            region,
+        ) = {
+            let state = self.state.read();
+            let b = state
+                .buckets
+                .get(bucket)
+                .ok_or_else(|| no_such_bucket(bucket))?;
 
-        // Handle If-Match: check existing object etag
-        if let Some(ref if_match_val) = if_match {
-            match b.objects.get(key) {
-                Some(existing) => {
-                    let existing_etag = format!("\"{}\"", existing.etag);
-                    if !etag_matches(if_match_val, &existing_etag) {
-                        return Err(precondition_failed("If-Match"));
+            // Handle If-Match: check existing object etag
+            if let Some(ref if_match_val) = if_match {
+                match b.objects.get(key) {
+                    Some(existing) => {
+                        let existing_etag = format!("\"{}\"", existing.etag);
+                        if !etag_matches(if_match_val, &existing_etag) {
+                            return Err(precondition_failed("If-Match"));
+                        }
+                    }
+                    None => {
+                        return Err(no_such_key(key));
                     }
                 }
-                None => {
-                    return Err(no_such_key(key));
+            }
+
+            // Handle If-None-Match: if "*", fail if object already exists
+            if let Some(ref inm) = if_none_match {
+                if inm.trim() == "*" && b.objects.contains_key(key) {
+                    return Err(precondition_failed("If-None-Match"));
                 }
             }
-        }
 
-        // Handle If-None-Match: if "*", fail if object already exists
-        if let Some(ref inm) = if_none_match {
-            if inm.trim() == "*" && b.objects.contains_key(key) {
-                return Err(precondition_failed("If-None-Match"));
+            // Object lock: validate that bucket has object lock enabled if lock headers present
+            let has_lock_headers = req.headers.contains_key("x-amz-object-lock-mode")
+                || req
+                    .headers
+                    .contains_key("x-amz-object-lock-retain-until-date")
+                || req.headers.contains_key("x-amz-object-lock-legal-hold");
+            if has_lock_headers && b.object_lock_config.is_none() {
+                return Err(AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "InvalidRequest",
+                    "Bucket is missing ObjectLockConfiguration",
+                ));
             }
-        }
 
+            (
+                b.versioning.as_deref() == Some("Enabled"),
+                b.acl_owner_id.clone(),
+                b.encryption_config.clone(),
+                b.object_lock_config.clone(),
+                b.notification_config.clone(),
+                state.region.clone(),
+            )
+        }; // read lock dropped
+
+        // --- Preparation phase: compute object data outside any lock ---
         let data = req.body.clone();
         let data_size = data.len() as u64;
         let etag = compute_md5(&data);
@@ -692,7 +726,7 @@ impl S3Service {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("binary/octet-stream")
             .to_string();
-        let version_id = if b.versioning.as_deref() == Some("Enabled") {
+        let version_id = if versioning_enabled {
             Some(uuid::Uuid::new_v4().to_string())
         } else {
             None
@@ -742,13 +776,13 @@ impl S3Service {
         let acl_grants = if has_grant_headers {
             parse_grant_headers(&req.headers)
         } else if let Some(ref acl) = acl_header {
-            canned_acl_grants_for_object(acl, &b.acl_owner_id)
+            canned_acl_grants_for_object(acl, &acl_owner_id)
         } else {
             // Default: owner full control
             vec![AclGrant {
                 grantee_type: "CanonicalUser".to_string(),
-                grantee_id: Some(b.acl_owner_id.clone()),
-                grantee_display_name: Some(b.acl_owner_id.clone()),
+                grantee_id: Some(acl_owner_id.clone()),
+                grantee_display_name: Some(acl_owner_id.clone()),
                 grantee_uri: None,
                 permission: "FULL_CONTROL".to_string(),
             }]
@@ -773,7 +807,7 @@ impl S3Service {
 
         // Apply bucket default encryption if no explicit SSE headers
         if sse_algorithm.is_none() {
-            if let Some(ref enc_config) = b.encryption_config {
+            if let Some(ref enc_config) = encryption_config {
                 if let Some(algo) = extract_xml_value(enc_config, "SSEAlgorithm") {
                     if algo == "aws:kms" && sse_kms_key_id.is_none() {
                         sse_kms_key_id = extract_xml_value(enc_config, "KMSMasterKeyID");
@@ -846,20 +880,6 @@ impl S3Service {
             .as_deref()
             .map(|algo| compute_checksum(algo, &data));
 
-        // Object lock: validate that bucket has object lock enabled if lock headers present
-        let has_lock_headers = req.headers.contains_key("x-amz-object-lock-mode")
-            || req
-                .headers
-                .contains_key("x-amz-object-lock-retain-until-date")
-            || req.headers.contains_key("x-amz-object-lock-legal-hold");
-        if has_lock_headers && b.object_lock_config.is_none() {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "InvalidRequest",
-                "Bucket is missing ObjectLockConfiguration",
-            ));
-        }
-
         // Object lock - explicit headers or bucket default
         let mut lock_mode = req
             .headers
@@ -879,7 +899,7 @@ impl S3Service {
 
         // Apply bucket default lock if no explicit lock headers
         if lock_mode.is_none() && lock_retain_until.is_none() {
-            if let Some(ref config) = b.object_lock_config {
+            if let Some(ref config) = object_lock_config {
                 if let Some(mode) = extract_xml_value(config, "Mode") {
                     let days =
                         extract_xml_value(config, "Days").and_then(|d| d.parse::<i64>().ok());
@@ -909,7 +929,7 @@ impl S3Service {
             storage_class,
             tags,
             acl_grants,
-            acl_owner_id: Some(b.acl_owner_id.clone()),
+            acl_owner_id: Some(acl_owner_id),
             parts_count: None,
             part_sizes: None,
             sse_algorithm: sse_algorithm.clone(),
@@ -927,21 +947,55 @@ impl S3Service {
             lock_retain_until,
             lock_legal_hold,
         };
-        if b.versioning.as_deref() == Some("Enabled") {
-            let versions = b.object_versions.entry(key.to_string()).or_default();
-            // If the existing current object is a pre-versioning object (no version_id)
-            // and not yet tracked in object_versions, preserve it.
-            if versions.is_empty() {
-                if let Some(existing) = b.objects.get(key) {
-                    if existing.version_id.is_none() {
-                        versions.push(existing.clone());
+
+        // --- Write lock phase: insert object and handle versioning/replication ---
+        {
+            let mut state = self.state.write();
+            let b = state
+                .buckets
+                .get_mut(bucket)
+                .ok_or_else(|| no_such_bucket(bucket))?;
+
+            // Recheck conditional headers under write lock to prevent TOCTOU race
+            if let Some(ref if_match_val) = if_match {
+                match b.objects.get(key) {
+                    Some(existing) => {
+                        let existing_etag = format!("\"{}\"", existing.etag);
+                        if !etag_matches(if_match_val, &existing_etag) {
+                            return Err(precondition_failed("If-Match"));
+                        }
+                    }
+                    None => {
+                        return Err(no_such_key(key));
                     }
                 }
             }
-            versions.push(obj.clone());
-        }
-        b.objects.insert(key.to_string(), obj);
+            if let Some(ref inm) = if_none_match {
+                if inm.trim() == "*" && b.objects.contains_key(key) {
+                    return Err(precondition_failed("If-None-Match"));
+                }
+            }
 
+            if versioning_enabled {
+                let versions = b.object_versions.entry(key.to_string()).or_default();
+                // If the existing current object is a pre-versioning object (no version_id)
+                // and not yet tracked in object_versions, preserve it.
+                if versions.is_empty() {
+                    if let Some(existing) = b.objects.get(key) {
+                        if existing.version_id.is_none() {
+                            versions.push(existing.clone());
+                        }
+                    }
+                }
+                versions.push(obj.clone());
+            }
+            b.objects.insert(key.to_string(), obj);
+
+            // Replicate object if replication is configured on the source bucket
+            replicate_object(&mut state, bucket, key);
+        } // write lock dropped
+
+        // --- Response phase: build response headers ---
         let mut headers = HeaderMap::new();
         headers.insert("etag", format!("\"{etag}\"").parse().unwrap());
         if let Some(vid) = &version_id {
@@ -979,18 +1033,10 @@ impl S3Service {
             }
         }
 
-        // Capture notification config before dropping state lock
-        let notification_config = b.notification_config.clone();
         let obj_size = data_size;
         let obj_etag = etag.clone();
         let bucket_name = bucket.to_string();
         let obj_key = key.to_string();
-        let region = state.region.clone();
-
-        // Replicate object if replication is configured on the source bucket
-        replicate_object(&mut state, bucket, key);
-
-        drop(state);
 
         // Deliver S3 event notifications
         if let Some(ref config) = notification_config {
