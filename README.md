@@ -38,7 +38,6 @@ proprietary image that requires an account and auth token.
 | AWS services | 14 | 30+ |
 | SES v2 | 97 operations | [Paid only](https://docs.localstack.cloud/references/licensing/) |
 | SES inbound email | Real receipt rule action execution | [Stored but never executed](https://docs.localstack.cloud/user-guide/aws/ses/) |
-| Cognito | Planned | [Paid only](https://docs.localstack.cloud/references/licensing/) |
 
 ## Quick Start
 
