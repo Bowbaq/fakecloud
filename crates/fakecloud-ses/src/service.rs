@@ -7,9 +7,9 @@ use std::collections::HashMap;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 
 use crate::state::{
-    ConfigurationSet, Contact, ContactList, CustomVerificationEmailTemplate, EmailIdentity,
-    EmailTemplate, EventDestination, SentEmail, SharedSesState, SuppressedDestination, Topic,
-    TopicPreference,
+    AccountDetails, ConfigurationSet, Contact, ContactList, CustomVerificationEmailTemplate,
+    DedicatedIp, DedicatedIpPool, EmailIdentity, EmailTemplate, EventDestination,
+    MultiRegionEndpoint, SentEmail, SharedSesState, SuppressedDestination, Topic, TopicPreference,
 };
 
 pub struct SesV2Service {
@@ -361,6 +361,79 @@ impl SesV2Service {
                 Some(("TestRenderEmailTemplate", resource, None))
             }
 
+            // /v2/email/dedicated-ip-pools
+            (Method::POST, 3) if segs[2] == "dedicated-ip-pools" => {
+                Some(("CreateDedicatedIpPool", None, None))
+            }
+            (Method::GET, 3) if segs[2] == "dedicated-ip-pools" => {
+                Some(("ListDedicatedIpPools", None, None))
+            }
+            // /v2/email/dedicated-ip-pools/{name}
+            (Method::DELETE, 4) if segs[2] == "dedicated-ip-pools" => {
+                Some(("DeleteDedicatedIpPool", resource, None))
+            }
+            // Note: GetDedicatedIpPool is not in scope but the SDK may hit it via
+            // the dedicated-ip-pools/{name} GET path — we route to a pool-level getter.
+
+            // /v2/email/dedicated-ip-pools/{name}/scaling
+            (Method::PUT, 5) if segs[2] == "dedicated-ip-pools" && segs[4] == "scaling" => {
+                Some(("PutDedicatedIpPoolScalingAttributes", resource, None))
+            }
+
+            // /v2/email/dedicated-ips
+            (Method::GET, 3) if segs[2] == "dedicated-ips" => Some(("GetDedicatedIps", None, None)),
+            // /v2/email/dedicated-ips/{ip}/pool (5 segments, must come before 4-segment match)
+            (Method::PUT, 5) if segs[2] == "dedicated-ips" && segs[4] == "pool" => {
+                Some(("PutDedicatedIpInPool", resource, None))
+            }
+            // /v2/email/dedicated-ips/{ip}/warmup
+            (Method::PUT, 5) if segs[2] == "dedicated-ips" && segs[4] == "warmup" => {
+                Some(("PutDedicatedIpWarmupAttributes", resource, None))
+            }
+            // /v2/email/dedicated-ips/{ip}
+            (Method::GET, 4) if segs[2] == "dedicated-ips" => {
+                Some(("GetDedicatedIp", resource, None))
+            }
+
+            // /v2/email/account/dedicated-ips/warmup
+            (Method::PUT, 5)
+                if segs[2] == "account" && segs[3] == "dedicated-ips" && segs[4] == "warmup" =>
+            {
+                Some(("PutAccountDedicatedIpWarmupAttributes", None, None))
+            }
+
+            // /v2/email/account/details
+            (Method::POST, 4) if segs[2] == "account" && segs[3] == "details" => {
+                Some(("PutAccountDetails", None, None))
+            }
+            // /v2/email/account/sending
+            (Method::PUT, 4) if segs[2] == "account" && segs[3] == "sending" => {
+                Some(("PutAccountSendingAttributes", None, None))
+            }
+            // /v2/email/account/suppression
+            (Method::PUT, 4) if segs[2] == "account" && segs[3] == "suppression" => {
+                Some(("PutAccountSuppressionAttributes", None, None))
+            }
+            // /v2/email/account/vdm
+            (Method::PUT, 4) if segs[2] == "account" && segs[3] == "vdm" => {
+                Some(("PutAccountVdmAttributes", None, None))
+            }
+
+            // /v2/email/multi-region-endpoints
+            (Method::POST, 3) if segs[2] == "multi-region-endpoints" => {
+                Some(("CreateMultiRegionEndpoint", None, None))
+            }
+            (Method::GET, 3) if segs[2] == "multi-region-endpoints" => {
+                Some(("ListMultiRegionEndpoints", None, None))
+            }
+            // /v2/email/multi-region-endpoints/{name}
+            (Method::GET, 4) if segs[2] == "multi-region-endpoints" => {
+                Some(("GetMultiRegionEndpoint", resource, None))
+            }
+            (Method::DELETE, 4) if segs[2] == "multi-region-endpoints" => {
+                Some(("DeleteMultiRegionEndpoint", resource, None))
+            }
+
             _ => None,
         }
     }
@@ -385,10 +458,16 @@ impl SesV2Service {
 
     fn get_account(&self) -> Result<AwsResponse, AwsServiceError> {
         let state = self.state.read();
-        let response = json!({
-            "DedicatedIpAutoWarmupEnabled": false,
+        let acct = &state.account_settings;
+        let production_access = acct
+            .details
+            .as_ref()
+            .and_then(|d| d.production_access_enabled)
+            .unwrap_or(true);
+        let mut response = json!({
+            "DedicatedIpAutoWarmupEnabled": acct.dedicated_ip_auto_warmup_enabled,
             "EnforcementStatus": "HEALTHY",
-            "ProductionAccessEnabled": true,
+            "ProductionAccessEnabled": production_access,
             "SendQuota": {
                 "Max24HourSend": 50000.0,
                 "MaxSendRate": 14.0,
@@ -396,8 +475,38 @@ impl SesV2Service {
                     .filter(|e| e.timestamp > Utc::now() - chrono::Duration::hours(24))
                     .count() as f64,
             },
-            "SendingEnabled": true,
+            "SendingEnabled": acct.sending_enabled,
+            "SuppressionAttributes": {
+                "SuppressedReasons": acct.suppressed_reasons,
+            },
         });
+        if let Some(ref details) = acct.details {
+            let mut d = json!({});
+            if let Some(ref mt) = details.mail_type {
+                d["MailType"] = json!(mt);
+            }
+            if let Some(ref url) = details.website_url {
+                d["WebsiteURL"] = json!(url);
+            }
+            if let Some(ref lang) = details.contact_language {
+                d["ContactLanguage"] = json!(lang);
+            }
+            if let Some(ref desc) = details.use_case_description {
+                d["UseCaseDescription"] = json!(desc);
+            }
+            if !details.additional_contact_email_addresses.is_empty() {
+                d["AdditionalContactEmailAddresses"] =
+                    json!(details.additional_contact_email_addresses);
+            }
+            d["ReviewDetails"] = json!({
+                "Status": "GRANTED",
+                "CaseId": "fakecloud-case-001",
+            });
+            response["Details"] = d;
+        }
+        if let Some(ref vdm) = acct.vdm_attributes {
+            response["VdmAttributes"] = vdm.clone();
+        }
         Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
     }
 
@@ -2641,6 +2750,506 @@ impl SesV2Service {
 
         Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
     }
+
+    // ── Dedicated IP Pools ──────────────────────────────────────────────
+
+    fn create_dedicated_ip_pool(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body: Value = Self::parse_body(req)?;
+        let pool_name = match body["PoolName"].as_str() {
+            Some(n) => n.to_string(),
+            None => {
+                return Ok(Self::json_error(
+                    StatusCode::BAD_REQUEST,
+                    "BadRequestException",
+                    "PoolName is required",
+                ));
+            }
+        };
+        let scaling_mode = body["ScalingMode"]
+            .as_str()
+            .unwrap_or("STANDARD")
+            .to_string();
+
+        let mut state = self.state.write();
+
+        if state.dedicated_ip_pools.contains_key(&pool_name) {
+            return Ok(Self::json_error(
+                StatusCode::CONFLICT,
+                "AlreadyExistsException",
+                &format!("Pool {} already exists", pool_name),
+            ));
+        }
+
+        // For MANAGED pools, generate some fake IPs
+        if scaling_mode == "MANAGED" {
+            let pool_idx = state.dedicated_ip_pools.len() as u8;
+            for i in 1..=3 {
+                let ip_addr = format!("198.51.100.{}", pool_idx * 10 + i);
+                state.dedicated_ips.insert(
+                    ip_addr.clone(),
+                    DedicatedIp {
+                        ip: ip_addr,
+                        warmup_status: "NOT_APPLICABLE".to_string(),
+                        warmup_percentage: -1,
+                        pool_name: pool_name.clone(),
+                    },
+                );
+            }
+        }
+
+        state.dedicated_ip_pools.insert(
+            pool_name.clone(),
+            DedicatedIpPool {
+                pool_name,
+                scaling_mode,
+            },
+        );
+
+        Ok(AwsResponse::json(StatusCode::OK, "{}"))
+    }
+
+    fn list_dedicated_ip_pools(&self) -> Result<AwsResponse, AwsServiceError> {
+        let state = self.state.read();
+        let pools: Vec<&str> = state
+            .dedicated_ip_pools
+            .keys()
+            .map(|k| k.as_str())
+            .collect();
+        let response = json!({ "DedicatedIpPools": pools });
+        Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
+    }
+
+    fn delete_dedicated_ip_pool(&self, name: &str) -> Result<AwsResponse, AwsServiceError> {
+        let mut state = self.state.write();
+        if state.dedicated_ip_pools.remove(name).is_none() {
+            return Ok(Self::json_error(
+                StatusCode::NOT_FOUND,
+                "NotFoundException",
+                &format!("Pool {} does not exist", name),
+            ));
+        }
+        // Remove IPs associated with this pool
+        state.dedicated_ips.retain(|_, ip| ip.pool_name != name);
+        Ok(AwsResponse::json(StatusCode::OK, "{}"))
+    }
+
+    fn put_dedicated_ip_pool_scaling_attributes(
+        &self,
+        name: &str,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let body: Value = Self::parse_body(req)?;
+        let scaling_mode = match body["ScalingMode"].as_str() {
+            Some(m) => m.to_string(),
+            None => {
+                return Ok(Self::json_error(
+                    StatusCode::BAD_REQUEST,
+                    "BadRequestException",
+                    "ScalingMode is required",
+                ));
+            }
+        };
+
+        let mut state = self.state.write();
+        let pool = match state.dedicated_ip_pools.get_mut(name) {
+            Some(p) => p,
+            None => {
+                return Ok(Self::json_error(
+                    StatusCode::NOT_FOUND,
+                    "NotFoundException",
+                    &format!("Pool {} does not exist", name),
+                ));
+            }
+        };
+
+        if pool.scaling_mode == "MANAGED" && scaling_mode == "STANDARD" {
+            return Ok(Self::json_error(
+                StatusCode::BAD_REQUEST,
+                "BadRequestException",
+                "Cannot change scaling mode from MANAGED to STANDARD",
+            ));
+        }
+
+        let old_mode = pool.scaling_mode.clone();
+        pool.scaling_mode = scaling_mode.clone();
+
+        // If changing from STANDARD to MANAGED, generate IPs
+        if old_mode == "STANDARD" && scaling_mode == "MANAGED" {
+            let pool_idx = state.dedicated_ip_pools.len() as u8;
+            for i in 1..=3u8 {
+                let ip_addr = format!("198.51.100.{}", pool_idx * 10 + i);
+                state.dedicated_ips.insert(
+                    ip_addr.clone(),
+                    DedicatedIp {
+                        ip: ip_addr,
+                        warmup_status: "NOT_APPLICABLE".to_string(),
+                        warmup_percentage: -1,
+                        pool_name: name.to_string(),
+                    },
+                );
+            }
+        }
+
+        Ok(AwsResponse::json(StatusCode::OK, "{}"))
+    }
+
+    // ── Dedicated IPs ───────────────────────────────────────────────────
+
+    fn get_dedicated_ip(&self, ip: &str) -> Result<AwsResponse, AwsServiceError> {
+        let state = self.state.read();
+        let dip = match state.dedicated_ips.get(ip) {
+            Some(d) => d,
+            None => {
+                return Ok(Self::json_error(
+                    StatusCode::NOT_FOUND,
+                    "NotFoundException",
+                    &format!("Dedicated IP {} does not exist", ip),
+                ));
+            }
+        };
+        let response = json!({
+            "DedicatedIp": {
+                "Ip": dip.ip,
+                "WarmupStatus": dip.warmup_status,
+                "WarmupPercentage": dip.warmup_percentage,
+                "PoolName": dip.pool_name,
+            }
+        });
+        Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
+    }
+
+    fn get_dedicated_ips(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let state = self.state.read();
+        let pool_filter = req.query_params.get("PoolName").map(|s| s.as_str());
+        let ips: Vec<Value> = state
+            .dedicated_ips
+            .values()
+            .filter(|ip| match pool_filter {
+                Some(pool) => ip.pool_name == pool,
+                None => true,
+            })
+            .map(|ip| {
+                json!({
+                    "Ip": ip.ip,
+                    "WarmupStatus": ip.warmup_status,
+                    "WarmupPercentage": ip.warmup_percentage,
+                    "PoolName": ip.pool_name,
+                })
+            })
+            .collect();
+        let response = json!({ "DedicatedIps": ips });
+        Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
+    }
+
+    fn put_dedicated_ip_in_pool(
+        &self,
+        ip: &str,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let body: Value = Self::parse_body(req)?;
+        let dest_pool = match body["DestinationPoolName"].as_str() {
+            Some(p) => p.to_string(),
+            None => {
+                return Ok(Self::json_error(
+                    StatusCode::BAD_REQUEST,
+                    "BadRequestException",
+                    "DestinationPoolName is required",
+                ));
+            }
+        };
+
+        let mut state = self.state.write();
+
+        if !state.dedicated_ip_pools.contains_key(&dest_pool) {
+            return Ok(Self::json_error(
+                StatusCode::NOT_FOUND,
+                "NotFoundException",
+                &format!("Pool {} does not exist", dest_pool),
+            ));
+        }
+
+        let dip = match state.dedicated_ips.get_mut(ip) {
+            Some(d) => d,
+            None => {
+                return Ok(Self::json_error(
+                    StatusCode::NOT_FOUND,
+                    "NotFoundException",
+                    &format!("Dedicated IP {} does not exist", ip),
+                ));
+            }
+        };
+        dip.pool_name = dest_pool;
+        Ok(AwsResponse::json(StatusCode::OK, "{}"))
+    }
+
+    fn put_dedicated_ip_warmup_attributes(
+        &self,
+        ip: &str,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let body: Value = Self::parse_body(req)?;
+        let warmup_pct = match body["WarmupPercentage"].as_i64() {
+            Some(p) => p as i32,
+            None => {
+                return Ok(Self::json_error(
+                    StatusCode::BAD_REQUEST,
+                    "BadRequestException",
+                    "WarmupPercentage is required",
+                ));
+            }
+        };
+
+        let mut state = self.state.write();
+        let dip = match state.dedicated_ips.get_mut(ip) {
+            Some(d) => d,
+            None => {
+                return Ok(Self::json_error(
+                    StatusCode::NOT_FOUND,
+                    "NotFoundException",
+                    &format!("Dedicated IP {} does not exist", ip),
+                ));
+            }
+        };
+        dip.warmup_percentage = warmup_pct;
+        dip.warmup_status = if warmup_pct >= 100 {
+            "DONE".to_string()
+        } else {
+            "IN_PROGRESS".to_string()
+        };
+        Ok(AwsResponse::json(StatusCode::OK, "{}"))
+    }
+
+    fn put_account_dedicated_ip_warmup_attributes(
+        &self,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let body: Value = Self::parse_body(req)?;
+        let enabled = body["AutoWarmupEnabled"].as_bool().unwrap_or(false);
+        self.state
+            .write()
+            .account_settings
+            .dedicated_ip_auto_warmup_enabled = enabled;
+        Ok(AwsResponse::json(StatusCode::OK, "{}"))
+    }
+
+    // ── Multi-region Endpoints ──────────────────────────────────────────
+
+    fn create_multi_region_endpoint(
+        &self,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let body: Value = Self::parse_body(req)?;
+        let endpoint_name = match body["EndpointName"].as_str() {
+            Some(n) => n.to_string(),
+            None => {
+                return Ok(Self::json_error(
+                    StatusCode::BAD_REQUEST,
+                    "BadRequestException",
+                    "EndpointName is required",
+                ));
+            }
+        };
+
+        let mut state = self.state.write();
+        if state.multi_region_endpoints.contains_key(&endpoint_name) {
+            return Ok(Self::json_error(
+                StatusCode::CONFLICT,
+                "AlreadyExistsException",
+                &format!("Endpoint {} already exists", endpoint_name),
+            ));
+        }
+
+        // Extract regions from Details.RoutesDetails[].Region
+        let mut regions = Vec::new();
+        if let Some(details) = body.get("Details") {
+            if let Some(routes) = details["RoutesDetails"].as_array() {
+                for r in routes {
+                    if let Some(region) = r["Region"].as_str() {
+                        regions.push(region.to_string());
+                    }
+                }
+            }
+        }
+        // The primary region is always the current region
+        if !regions.contains(&state.region) {
+            regions.insert(0, state.region.clone());
+        }
+
+        let endpoint_id = format!(
+            "ses-{}-{}",
+            state.region,
+            uuid::Uuid::new_v4().to_string().split('-').next().unwrap()
+        );
+        let now = Utc::now();
+
+        state.multi_region_endpoints.insert(
+            endpoint_name.clone(),
+            MultiRegionEndpoint {
+                endpoint_name,
+                endpoint_id: endpoint_id.clone(),
+                status: "READY".to_string(),
+                regions,
+                created_at: now,
+                last_updated_at: now,
+            },
+        );
+
+        let response = json!({
+            "Status": "READY",
+            "EndpointId": endpoint_id,
+        });
+        Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
+    }
+
+    fn get_multi_region_endpoint(&self, name: &str) -> Result<AwsResponse, AwsServiceError> {
+        let state = self.state.read();
+        let ep = match state.multi_region_endpoints.get(name) {
+            Some(e) => e,
+            None => {
+                return Ok(Self::json_error(
+                    StatusCode::NOT_FOUND,
+                    "NotFoundException",
+                    &format!("Endpoint {} does not exist", name),
+                ));
+            }
+        };
+
+        let routes: Vec<Value> = ep.regions.iter().map(|r| json!({ "Region": r })).collect();
+
+        let response = json!({
+            "EndpointName": ep.endpoint_name,
+            "EndpointId": ep.endpoint_id,
+            "Status": ep.status,
+            "Routes": routes,
+            "CreatedTimestamp": ep.created_at.timestamp() as f64,
+            "LastUpdatedTimestamp": ep.last_updated_at.timestamp() as f64,
+        });
+        Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
+    }
+
+    fn list_multi_region_endpoints(&self) -> Result<AwsResponse, AwsServiceError> {
+        let state = self.state.read();
+        let endpoints: Vec<Value> = state
+            .multi_region_endpoints
+            .values()
+            .map(|ep| {
+                json!({
+                    "EndpointName": ep.endpoint_name,
+                    "EndpointId": ep.endpoint_id,
+                    "Status": ep.status,
+                    "Regions": ep.regions,
+                    "CreatedTimestamp": ep.created_at.timestamp() as f64,
+                    "LastUpdatedTimestamp": ep.last_updated_at.timestamp() as f64,
+                })
+            })
+            .collect();
+        let response = json!({ "MultiRegionEndpoints": endpoints });
+        Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
+    }
+
+    fn delete_multi_region_endpoint(&self, name: &str) -> Result<AwsResponse, AwsServiceError> {
+        let mut state = self.state.write();
+        if state.multi_region_endpoints.remove(name).is_none() {
+            return Ok(Self::json_error(
+                StatusCode::NOT_FOUND,
+                "NotFoundException",
+                &format!("Endpoint {} does not exist", name),
+            ));
+        }
+        let response = json!({ "Status": "DELETING" });
+        Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
+    }
+
+    // ── Account Settings ────────────────────────────────────────────────
+
+    fn put_account_details(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body: Value = Self::parse_body(req)?;
+        let mail_type = match body["MailType"].as_str() {
+            Some(m) => m.to_string(),
+            None => {
+                return Ok(Self::json_error(
+                    StatusCode::BAD_REQUEST,
+                    "BadRequestException",
+                    "MailType is required",
+                ));
+            }
+        };
+        let website_url = match body["WebsiteURL"].as_str() {
+            Some(u) => u.to_string(),
+            None => {
+                return Ok(Self::json_error(
+                    StatusCode::BAD_REQUEST,
+                    "BadRequestException",
+                    "WebsiteURL is required",
+                ));
+            }
+        };
+        let contact_language = body["ContactLanguage"].as_str().map(|s| s.to_string());
+        let use_case_description = body["UseCaseDescription"].as_str().map(|s| s.to_string());
+        let additional = body["AdditionalContactEmailAddresses"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let production_access = body["ProductionAccessEnabled"].as_bool();
+
+        let mut state = self.state.write();
+        state.account_settings.details = Some(AccountDetails {
+            mail_type: Some(mail_type),
+            website_url: Some(website_url),
+            contact_language,
+            use_case_description,
+            additional_contact_email_addresses: additional,
+            production_access_enabled: production_access,
+        });
+        Ok(AwsResponse::json(StatusCode::OK, "{}"))
+    }
+
+    fn put_account_sending_attributes(
+        &self,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let body: Value = Self::parse_body(req)?;
+        let enabled = body["SendingEnabled"].as_bool().unwrap_or(false);
+        self.state.write().account_settings.sending_enabled = enabled;
+        Ok(AwsResponse::json(StatusCode::OK, "{}"))
+    }
+
+    fn put_account_suppression_attributes(
+        &self,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let body: Value = Self::parse_body(req)?;
+        let reasons = body["SuppressedReasons"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.state.write().account_settings.suppressed_reasons = reasons;
+        Ok(AwsResponse::json(StatusCode::OK, "{}"))
+    }
+
+    fn put_account_vdm_attributes(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body: Value = Self::parse_body(req)?;
+        let vdm = match body.get("VdmAttributes") {
+            Some(v) => v.clone(),
+            None => {
+                return Ok(Self::json_error(
+                    StatusCode::BAD_REQUEST,
+                    "BadRequestException",
+                    "VdmAttributes is required",
+                ));
+            }
+        };
+        self.state.write().account_settings.vdm_attributes = Some(vdm);
+        Ok(AwsResponse::json(StatusCode::OK, "{}"))
+    }
 }
 
 fn parse_topics(value: &Value) -> Vec<Topic> {
@@ -2875,6 +3484,27 @@ impl fakecloud_core::service::AwsService for SesV2Service {
             }
             "SendCustomVerificationEmail" => self.send_custom_verification_email(&req),
             "TestRenderEmailTemplate" => self.test_render_email_template(res, &req),
+            "CreateDedicatedIpPool" => self.create_dedicated_ip_pool(&req),
+            "ListDedicatedIpPools" => self.list_dedicated_ip_pools(),
+            "DeleteDedicatedIpPool" => self.delete_dedicated_ip_pool(res),
+            "GetDedicatedIp" => self.get_dedicated_ip(res),
+            "GetDedicatedIps" => self.get_dedicated_ips(&req),
+            "PutDedicatedIpInPool" => self.put_dedicated_ip_in_pool(res, &req),
+            "PutDedicatedIpPoolScalingAttributes" => {
+                self.put_dedicated_ip_pool_scaling_attributes(res, &req)
+            }
+            "PutDedicatedIpWarmupAttributes" => self.put_dedicated_ip_warmup_attributes(res, &req),
+            "PutAccountDedicatedIpWarmupAttributes" => {
+                self.put_account_dedicated_ip_warmup_attributes(&req)
+            }
+            "CreateMultiRegionEndpoint" => self.create_multi_region_endpoint(&req),
+            "GetMultiRegionEndpoint" => self.get_multi_region_endpoint(res),
+            "ListMultiRegionEndpoints" => self.list_multi_region_endpoints(),
+            "DeleteMultiRegionEndpoint" => self.delete_multi_region_endpoint(res),
+            "PutAccountDetails" => self.put_account_details(&req),
+            "PutAccountSendingAttributes" => self.put_account_sending_attributes(&req),
+            "PutAccountSuppressionAttributes" => self.put_account_suppression_attributes(&req),
+            "PutAccountVdmAttributes" => self.put_account_vdm_attributes(&req),
             _ => Err(AwsServiceError::action_not_implemented("ses", action)),
         }
     }
@@ -2941,6 +3571,23 @@ impl fakecloud_core::service::AwsService for SesV2Service {
             "DeleteCustomVerificationEmailTemplate",
             "SendCustomVerificationEmail",
             "TestRenderEmailTemplate",
+            "CreateDedicatedIpPool",
+            "ListDedicatedIpPools",
+            "DeleteDedicatedIpPool",
+            "GetDedicatedIp",
+            "GetDedicatedIps",
+            "PutDedicatedIpInPool",
+            "PutDedicatedIpPoolScalingAttributes",
+            "PutDedicatedIpWarmupAttributes",
+            "PutAccountDedicatedIpWarmupAttributes",
+            "CreateMultiRegionEndpoint",
+            "GetMultiRegionEndpoint",
+            "ListMultiRegionEndpoints",
+            "DeleteMultiRegionEndpoint",
+            "PutAccountDetails",
+            "PutAccountSendingAttributes",
+            "PutAccountSuppressionAttributes",
+            "PutAccountVdmAttributes",
         ]
     }
 }
@@ -5197,5 +5844,360 @@ mod tests {
         let req = make_request(Method::POST, "/v2/email/templates/t1/render", r#"{}"#);
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::BAD_REQUEST);
+    }
+
+    // ── Dedicated IP Pool tests ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_dedicated_ip_pool_lifecycle() {
+        let state = make_state();
+        let svc = SesV2Service::new(state);
+
+        // Create pool
+        let req = make_request(
+            Method::POST,
+            "/v2/email/dedicated-ip-pools",
+            r#"{"PoolName": "my-pool", "ScalingMode": "STANDARD"}"#,
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+
+        // List pools
+        let req = make_request(Method::GET, "/v2/email/dedicated-ip-pools", "");
+        let resp = svc.handle(req).await.unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["DedicatedIpPools"].as_array().unwrap().len(), 1);
+
+        // Duplicate
+        let req = make_request(
+            Method::POST,
+            "/v2/email/dedicated-ip-pools",
+            r#"{"PoolName": "my-pool"}"#,
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::CONFLICT);
+
+        // Delete pool
+        let req = make_request(Method::DELETE, "/v2/email/dedicated-ip-pools/my-pool", "");
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+
+        // Delete non-existent
+        let req = make_request(Method::DELETE, "/v2/email/dedicated-ip-pools/my-pool", "");
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_managed_pool_generates_ips() {
+        let state = make_state();
+        let svc = SesV2Service::new(state);
+
+        // Create managed pool
+        let req = make_request(
+            Method::POST,
+            "/v2/email/dedicated-ip-pools",
+            r#"{"PoolName": "managed-pool", "ScalingMode": "MANAGED"}"#,
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+
+        // List dedicated IPs filtered by pool
+        let req = make_request_with_query(
+            Method::GET,
+            "/v2/email/dedicated-ips",
+            "",
+            "PoolName=managed-pool",
+            {
+                let mut m = HashMap::new();
+                m.insert("PoolName".to_string(), "managed-pool".to_string());
+                m
+            },
+        );
+        let resp = svc.handle(req).await.unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let ips = body["DedicatedIps"].as_array().unwrap();
+        assert_eq!(ips.len(), 3);
+        assert_eq!(ips[0]["WarmupStatus"], "NOT_APPLICABLE");
+        assert_eq!(ips[0]["WarmupPercentage"], -1);
+    }
+
+    #[tokio::test]
+    async fn test_dedicated_ip_operations() {
+        let state = make_state();
+        let svc = SesV2Service::new(state);
+
+        // Create two pools
+        let req = make_request(
+            Method::POST,
+            "/v2/email/dedicated-ip-pools",
+            r#"{"PoolName": "pool-a", "ScalingMode": "MANAGED"}"#,
+        );
+        svc.handle(req).await.unwrap();
+
+        let req = make_request(
+            Method::POST,
+            "/v2/email/dedicated-ip-pools",
+            r#"{"PoolName": "pool-b", "ScalingMode": "STANDARD"}"#,
+        );
+        svc.handle(req).await.unwrap();
+
+        // Get a specific IP
+        let req = make_request(Method::GET, "/v2/email/dedicated-ips/198.51.100.1", "");
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["DedicatedIp"]["PoolName"], "pool-a");
+
+        // Move IP to pool-b
+        let req = make_request(
+            Method::PUT,
+            "/v2/email/dedicated-ips/198.51.100.1/pool",
+            r#"{"DestinationPoolName": "pool-b"}"#,
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+
+        // Verify it moved
+        let req = make_request(Method::GET, "/v2/email/dedicated-ips/198.51.100.1", "");
+        let resp = svc.handle(req).await.unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["DedicatedIp"]["PoolName"], "pool-b");
+
+        // Set warmup
+        let req = make_request(
+            Method::PUT,
+            "/v2/email/dedicated-ips/198.51.100.1/warmup",
+            r#"{"WarmupPercentage": 50}"#,
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+
+        let req = make_request(Method::GET, "/v2/email/dedicated-ips/198.51.100.1", "");
+        let resp = svc.handle(req).await.unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["DedicatedIp"]["WarmupPercentage"], 50);
+        assert_eq!(body["DedicatedIp"]["WarmupStatus"], "IN_PROGRESS");
+
+        // Non-existent IP
+        let req = make_request(Method::GET, "/v2/email/dedicated-ips/1.2.3.4", "");
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_pool_scaling_attributes() {
+        let state = make_state();
+        let svc = SesV2Service::new(state);
+
+        let req = make_request(
+            Method::POST,
+            "/v2/email/dedicated-ip-pools",
+            r#"{"PoolName": "scalable", "ScalingMode": "STANDARD"}"#,
+        );
+        svc.handle(req).await.unwrap();
+
+        // Change to MANAGED
+        let req = make_request(
+            Method::PUT,
+            "/v2/email/dedicated-ip-pools/scalable/scaling",
+            r#"{"ScalingMode": "MANAGED"}"#,
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+
+        // Cannot change from MANAGED to STANDARD
+        let req = make_request(
+            Method::PUT,
+            "/v2/email/dedicated-ip-pools/scalable/scaling",
+            r#"{"ScalingMode": "STANDARD"}"#,
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_account_dedicated_ip_warmup() {
+        let state = make_state();
+        let svc = SesV2Service::new(state);
+
+        let req = make_request(
+            Method::PUT,
+            "/v2/email/account/dedicated-ips/warmup",
+            r#"{"AutoWarmupEnabled": true}"#,
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+
+        let req = make_request(Method::GET, "/v2/email/account", "");
+        let resp = svc.handle(req).await.unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["DedicatedIpAutoWarmupEnabled"], true);
+    }
+
+    // ── Multi-region Endpoint tests ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_multi_region_endpoint_lifecycle() {
+        let state = make_state();
+        let svc = SesV2Service::new(state);
+
+        // Create
+        let req = make_request(
+            Method::POST,
+            "/v2/email/multi-region-endpoints",
+            r#"{"EndpointName": "global-ep", "Details": {"RoutesDetails": [{"Region": "us-west-2"}]}}"#,
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["Status"], "READY");
+        assert!(body["EndpointId"].as_str().is_some());
+
+        // Get
+        let req = make_request(
+            Method::GET,
+            "/v2/email/multi-region-endpoints/global-ep",
+            "",
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["EndpointName"], "global-ep");
+        assert_eq!(body["Status"], "READY");
+        let routes = body["Routes"].as_array().unwrap();
+        assert!(!routes.is_empty());
+
+        // List
+        let req = make_request(Method::GET, "/v2/email/multi-region-endpoints", "");
+        let resp = svc.handle(req).await.unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["MultiRegionEndpoints"].as_array().unwrap().len(), 1);
+
+        // Duplicate
+        let req = make_request(
+            Method::POST,
+            "/v2/email/multi-region-endpoints",
+            r#"{"EndpointName": "global-ep", "Details": {"RoutesDetails": [{"Region": "eu-west-1"}]}}"#,
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::CONFLICT);
+
+        // Delete
+        let req = make_request(
+            Method::DELETE,
+            "/v2/email/multi-region-endpoints/global-ep",
+            "",
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["Status"], "DELETING");
+
+        // Get after delete
+        let req = make_request(
+            Method::GET,
+            "/v2/email/multi-region-endpoints/global-ep",
+            "",
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::NOT_FOUND);
+    }
+
+    // ── Account Settings tests ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_account_details() {
+        let state = make_state();
+        let svc = SesV2Service::new(state);
+
+        let req = make_request(
+            Method::POST,
+            "/v2/email/account/details",
+            r#"{"MailType": "TRANSACTIONAL", "WebsiteURL": "https://example.com", "UseCaseDescription": "Testing"}"#,
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+
+        let req = make_request(Method::GET, "/v2/email/account", "");
+        let resp = svc.handle(req).await.unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["Details"]["MailType"], "TRANSACTIONAL");
+        assert_eq!(body["Details"]["WebsiteURL"], "https://example.com");
+        assert_eq!(body["Details"]["UseCaseDescription"], "Testing");
+    }
+
+    #[tokio::test]
+    async fn test_account_sending_attributes() {
+        let state = make_state();
+        let svc = SesV2Service::new(state);
+
+        // Disable sending
+        let req = make_request(
+            Method::PUT,
+            "/v2/email/account/sending",
+            r#"{"SendingEnabled": false}"#,
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+
+        let req = make_request(Method::GET, "/v2/email/account", "");
+        let resp = svc.handle(req).await.unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["SendingEnabled"], false);
+
+        // Re-enable
+        let req = make_request(
+            Method::PUT,
+            "/v2/email/account/sending",
+            r#"{"SendingEnabled": true}"#,
+        );
+        svc.handle(req).await.unwrap();
+
+        let req = make_request(Method::GET, "/v2/email/account", "");
+        let resp = svc.handle(req).await.unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["SendingEnabled"], true);
+    }
+
+    #[tokio::test]
+    async fn test_account_suppression_attributes() {
+        let state = make_state();
+        let svc = SesV2Service::new(state);
+
+        let req = make_request(
+            Method::PUT,
+            "/v2/email/account/suppression",
+            r#"{"SuppressedReasons": ["BOUNCE", "COMPLAINT"]}"#,
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+
+        let req = make_request(Method::GET, "/v2/email/account", "");
+        let resp = svc.handle(req).await.unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let reasons = body["SuppressionAttributes"]["SuppressedReasons"]
+            .as_array()
+            .unwrap();
+        assert_eq!(reasons.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_account_vdm_attributes() {
+        let state = make_state();
+        let svc = SesV2Service::new(state);
+
+        let req = make_request(
+            Method::PUT,
+            "/v2/email/account/vdm",
+            r#"{"VdmAttributes": {"VdmEnabled": "ENABLED", "DashboardAttributes": {"EngagementMetrics": "ENABLED"}}}"#,
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+
+        let req = make_request(Method::GET, "/v2/email/account", "");
+        let resp = svc.handle(req).await.unwrap();
+        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(body["VdmAttributes"]["VdmEnabled"], "ENABLED");
     }
 }

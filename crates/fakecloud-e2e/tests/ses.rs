@@ -3,8 +3,9 @@ mod helpers;
 use aws_sdk_sesv2::types::{
     BehaviorOnMxFailure, Body, Content, Destination, DkimSigningAttributes,
     DkimSigningAttributesOrigin, EmailContent, EmailTemplateContent, EventDestinationDefinition,
-    EventType, HttpsPolicy, Message, RawMessage, SnsDestination, SubscriptionStatus,
-    SuppressionListReason, Tag, Template, TlsPolicy, Topic, TopicPreference,
+    EventType, FeatureStatus, HttpsPolicy, MailType, Message, RawMessage, RouteDetails,
+    ScalingMode, SnsDestination, SubscriptionStatus, SuppressionListReason, Tag, Template,
+    TlsPolicy, Topic, TopicPreference, VdmAttributes,
 };
 use helpers::TestServer;
 
@@ -1633,4 +1634,361 @@ async fn ses_test_render_email_template_not_found() {
         format!("{:?}", err).contains("NotFoundException"),
         "Expected NotFoundException"
     );
+}
+
+// ── Dedicated IP Pool lifecycle ─────────────────────────────────────
+
+#[tokio::test]
+async fn ses_dedicated_ip_pool_lifecycle() {
+    let server = TestServer::start().await;
+    let client = server.sesv2_client().await;
+
+    // Create standard pool
+    client
+        .create_dedicated_ip_pool()
+        .pool_name("standard-pool")
+        .scaling_mode(ScalingMode::Standard)
+        .send()
+        .await
+        .unwrap();
+
+    // Create managed pool
+    client
+        .create_dedicated_ip_pool()
+        .pool_name("managed-pool")
+        .scaling_mode(ScalingMode::Managed)
+        .send()
+        .await
+        .unwrap();
+
+    // List pools
+    let list = client.list_dedicated_ip_pools().send().await.unwrap();
+    let pools = list.dedicated_ip_pools();
+    assert_eq!(pools.len(), 2);
+
+    // Duplicate should fail
+    let err = client
+        .create_dedicated_ip_pool()
+        .pool_name("standard-pool")
+        .send()
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{:?}", err).contains("AlreadyExistsException"),
+        "Expected AlreadyExistsException"
+    );
+
+    // Delete pool
+    client
+        .delete_dedicated_ip_pool()
+        .pool_name("standard-pool")
+        .send()
+        .await
+        .unwrap();
+
+    // Delete non-existent
+    let err = client
+        .delete_dedicated_ip_pool()
+        .pool_name("standard-pool")
+        .send()
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{:?}", err).contains("NotFoundException"),
+        "Expected NotFoundException"
+    );
+
+    let list = client.list_dedicated_ip_pools().send().await.unwrap();
+    assert_eq!(list.dedicated_ip_pools().len(), 1);
+}
+
+#[tokio::test]
+async fn ses_dedicated_ip_operations() {
+    let server = TestServer::start().await;
+    let client = server.sesv2_client().await;
+
+    // Create managed pool (generates IPs)
+    client
+        .create_dedicated_ip_pool()
+        .pool_name("test-pool")
+        .scaling_mode(ScalingMode::Managed)
+        .send()
+        .await
+        .unwrap();
+
+    // List dedicated IPs by pool
+    let ips = client
+        .get_dedicated_ips()
+        .pool_name("test-pool")
+        .send()
+        .await
+        .unwrap();
+    let ip_list = ips.dedicated_ips();
+    assert_eq!(ip_list.len(), 3);
+
+    // Get a specific IP
+    let ip_addr = ip_list[0].ip();
+    let ip_detail = client.get_dedicated_ip().ip(ip_addr).send().await.unwrap();
+    let dip = ip_detail.dedicated_ip().unwrap();
+    assert_eq!(dip.pool_name().unwrap(), "test-pool");
+    assert_eq!(dip.warmup_status().as_str(), "NOT_APPLICABLE");
+    assert_eq!(dip.warmup_percentage(), -1);
+
+    // Create a second pool and move IP
+    client
+        .create_dedicated_ip_pool()
+        .pool_name("pool-2")
+        .scaling_mode(ScalingMode::Standard)
+        .send()
+        .await
+        .unwrap();
+
+    client
+        .put_dedicated_ip_in_pool()
+        .ip(ip_addr)
+        .destination_pool_name("pool-2")
+        .send()
+        .await
+        .unwrap();
+
+    let ip_detail = client.get_dedicated_ip().ip(ip_addr).send().await.unwrap();
+    assert_eq!(
+        ip_detail.dedicated_ip().unwrap().pool_name().unwrap(),
+        "pool-2"
+    );
+
+    // Set warmup percentage
+    client
+        .put_dedicated_ip_warmup_attributes()
+        .ip(ip_addr)
+        .warmup_percentage(75)
+        .send()
+        .await
+        .unwrap();
+
+    let ip_detail = client.get_dedicated_ip().ip(ip_addr).send().await.unwrap();
+    let dip = ip_detail.dedicated_ip().unwrap();
+    assert_eq!(dip.warmup_percentage(), 75);
+    assert_eq!(dip.warmup_status().as_str(), "IN_PROGRESS");
+}
+
+#[tokio::test]
+async fn ses_dedicated_ip_pool_scaling() {
+    let server = TestServer::start().await;
+    let client = server.sesv2_client().await;
+
+    client
+        .create_dedicated_ip_pool()
+        .pool_name("scale-pool")
+        .scaling_mode(ScalingMode::Standard)
+        .send()
+        .await
+        .unwrap();
+
+    // Change to MANAGED
+    client
+        .put_dedicated_ip_pool_scaling_attributes()
+        .pool_name("scale-pool")
+        .scaling_mode(ScalingMode::Managed)
+        .send()
+        .await
+        .unwrap();
+
+    // Cannot change from MANAGED to STANDARD
+    let err = client
+        .put_dedicated_ip_pool_scaling_attributes()
+        .pool_name("scale-pool")
+        .scaling_mode(ScalingMode::Standard)
+        .send()
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{:?}", err).contains("BadRequestException"),
+        "Expected BadRequestException"
+    );
+}
+
+#[tokio::test]
+async fn ses_account_dedicated_ip_warmup() {
+    let server = TestServer::start().await;
+    let client = server.sesv2_client().await;
+
+    client
+        .put_account_dedicated_ip_warmup_attributes()
+        .auto_warmup_enabled(true)
+        .send()
+        .await
+        .unwrap();
+
+    let acct = client.get_account().send().await.unwrap();
+    assert!(acct.dedicated_ip_auto_warmup_enabled());
+}
+
+// ── Multi-region Endpoints ──────────────────────────────────────────
+
+#[tokio::test]
+async fn ses_multi_region_endpoint_lifecycle() {
+    let server = TestServer::start().await;
+    let client = server.sesv2_client().await;
+
+    // Create
+    let resp = client
+        .create_multi_region_endpoint()
+        .endpoint_name("global-ep")
+        .details(
+            aws_sdk_sesv2::types::Details::builder()
+                .routes_details(RouteDetails::builder().region("us-west-2").build().unwrap())
+                .build()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().unwrap().as_str(), "READY");
+    assert!(resp.endpoint_id().is_some());
+
+    // Get
+    let get = client
+        .get_multi_region_endpoint()
+        .endpoint_name("global-ep")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(get.endpoint_name().unwrap(), "global-ep");
+    assert_eq!(get.status().unwrap().as_str(), "READY");
+    assert!(!get.routes().is_empty());
+
+    // List
+    let list = client.list_multi_region_endpoints().send().await.unwrap();
+    assert_eq!(list.multi_region_endpoints().len(), 1);
+
+    // Duplicate
+    let err = client
+        .create_multi_region_endpoint()
+        .endpoint_name("global-ep")
+        .details(
+            aws_sdk_sesv2::types::Details::builder()
+                .routes_details(RouteDetails::builder().region("eu-west-1").build().unwrap())
+                .build()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{:?}", err).contains("AlreadyExistsException"),
+        "Expected AlreadyExistsException"
+    );
+
+    // Delete
+    let del = client
+        .delete_multi_region_endpoint()
+        .endpoint_name("global-ep")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(del.status().unwrap().as_str(), "DELETING");
+
+    // Gone
+    let err = client
+        .get_multi_region_endpoint()
+        .endpoint_name("global-ep")
+        .send()
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{:?}", err).contains("NotFoundException"),
+        "Expected NotFoundException"
+    );
+}
+
+// ── Account Settings ────────────────────────────────────────────────
+
+#[tokio::test]
+async fn ses_account_details() {
+    let server = TestServer::start().await;
+    let client = server.sesv2_client().await;
+
+    client
+        .put_account_details()
+        .mail_type(MailType::Transactional)
+        .website_url("https://example.com")
+        .use_case_description("Testing email")
+        .send()
+        .await
+        .unwrap();
+
+    let acct = client.get_account().send().await.unwrap();
+    let details = acct.details().unwrap();
+    assert_eq!(details.mail_type().unwrap().as_str(), "TRANSACTIONAL");
+    assert_eq!(details.website_url().unwrap(), "https://example.com");
+    assert_eq!(details.use_case_description().unwrap(), "Testing email");
+}
+
+#[tokio::test]
+async fn ses_account_sending_attributes() {
+    let server = TestServer::start().await;
+    let client = server.sesv2_client().await;
+
+    // Disable sending
+    client
+        .put_account_sending_attributes()
+        .sending_enabled(false)
+        .send()
+        .await
+        .unwrap();
+
+    let acct = client.get_account().send().await.unwrap();
+    assert!(!acct.sending_enabled());
+
+    // Re-enable
+    client
+        .put_account_sending_attributes()
+        .sending_enabled(true)
+        .send()
+        .await
+        .unwrap();
+
+    let acct = client.get_account().send().await.unwrap();
+    assert!(acct.sending_enabled());
+}
+
+#[tokio::test]
+async fn ses_account_suppression_attributes() {
+    let server = TestServer::start().await;
+    let client = server.sesv2_client().await;
+
+    client
+        .put_account_suppression_attributes()
+        .suppressed_reasons(SuppressionListReason::Bounce)
+        .suppressed_reasons(SuppressionListReason::Complaint)
+        .send()
+        .await
+        .unwrap();
+
+    let acct = client.get_account().send().await.unwrap();
+    let reasons = acct.suppression_attributes().unwrap().suppressed_reasons();
+    assert_eq!(reasons.len(), 2);
+}
+
+#[tokio::test]
+async fn ses_account_vdm_attributes() {
+    let server = TestServer::start().await;
+    let client = server.sesv2_client().await;
+
+    client
+        .put_account_vdm_attributes()
+        .vdm_attributes(
+            VdmAttributes::builder()
+                .vdm_enabled(FeatureStatus::Enabled)
+                .build()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    let acct = client.get_account().send().await.unwrap();
+    let vdm = acct.vdm_attributes().unwrap();
+    assert_eq!(vdm.vdm_enabled().as_str(), "ENABLED");
 }
