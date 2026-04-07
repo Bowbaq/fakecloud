@@ -124,7 +124,9 @@ impl SesV2Service {
             "SendQuota": {
                 "Max24HourSend": 50000.0,
                 "MaxSendRate": 14.0,
-                "SentLast24Hours": state.sent_emails.len() as f64,
+                "SentLast24Hours": state.sent_emails.iter()
+                    .filter(|e| e.timestamp > Utc::now() - chrono::Duration::hours(24))
+                    .count() as f64,
             },
             "SendingEnabled": true,
         });
