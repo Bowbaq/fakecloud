@@ -18,7 +18,6 @@ percent-encoding = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
-tracing = { workspace = true }
 
 [dev-dependencies]
 bytes = { workspace = true }

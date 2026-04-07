@@ -5,7 +5,6 @@
 #[derive(Debug, Clone)]
 pub struct SigV4Info {
     pub access_key: String,
-    pub date: String,
     pub region: String,
     pub service: String,
 }
@@ -28,7 +27,6 @@ pub fn parse_sigv4(auth_header: &str) -> Option<SigV4Info> {
 
     Some(SigV4Info {
         access_key: parts[0].to_string(),
-        date: parts[1].to_string(),
         region: parts[2].to_string(),
         service: parts[3].to_string(),
     })
@@ -43,7 +41,6 @@ mod tests {
         let header = "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20260101/us-east-1/sqs/aws4_request, SignedHeaders=host;x-amz-date, Signature=abc123";
         let info = parse_sigv4(header).unwrap();
         assert_eq!(info.access_key, "AKIAIOSFODNN7EXAMPLE");
-        assert_eq!(info.date, "20260101");
         assert_eq!(info.region, "us-east-1");
         assert_eq!(info.service, "sqs");
     }

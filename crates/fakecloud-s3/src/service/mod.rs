@@ -1154,11 +1154,6 @@ pub(crate) fn compute_checksum(algorithm: &str, data: &[u8]) -> String {
     }
 }
 
-#[allow(dead_code)]
-pub(crate) fn url_encode_key(s: &str) -> String {
-    percent_encoding::utf8_percent_encode(s, percent_encoding::NON_ALPHANUMERIC).to_string()
-}
-
 pub(crate) fn url_encode_s3_key(s: &str) -> String {
     let mut out = String::with_capacity(s.len() * 2);
     for byte in s.bytes() {
@@ -1377,20 +1372,6 @@ pub(crate) fn make_delete_marker(key: &str, dm_id: &str) -> S3Object {
         lock_retain_until: None,
         lock_legal_hold: None,
     }
-}
-
-#[allow(dead_code)]
-pub(crate) fn acl_xml(owner_id: &str) -> String {
-    format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
-         <AccessControlPolicy xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">\
-         <Owner><ID>{owner_id}</ID><DisplayName>{owner_id}</DisplayName></Owner>\
-         <AccessControlList><Grant>\
-         <Grantee xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:type=\"CanonicalUser\">\
-         <ID>{owner_id}</ID><DisplayName>{owner_id}</DisplayName></Grantee>\
-         <Permission>FULL_CONTROL</Permission></Grant></AccessControlList>\
-         </AccessControlPolicy>"
-    )
 }
 
 /// Represents an object to delete in a batch delete request.
