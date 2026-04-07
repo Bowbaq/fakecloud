@@ -1365,8 +1365,6 @@ impl KmsService {
             )
         })?;
 
-        let tags = body["Tags"].as_array();
-
         let mut state = self.state.write();
         let key = state.keys.get_mut(&resolved).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -1375,13 +1373,8 @@ impl KmsService {
                 "Key state became inconsistent",
             )
         })?;
-        if let Some(tags) = tags {
-            for tag in tags {
-                if let (Some(k), Some(v)) = (tag["TagKey"].as_str(), tag["TagValue"].as_str()) {
-                    key.tags.insert(k.to_string(), v.to_string());
-                }
-            }
-        }
+
+        fakecloud_core::tags::apply_tags(&mut key.tags, &body, "Tags", "TagKey", "TagValue");
 
         Ok(AwsResponse::json(StatusCode::OK, "{}"))
     }
@@ -1398,8 +1391,6 @@ impl KmsService {
             )
         })?;
 
-        let tag_keys = body["TagKeys"].as_array();
-
         let mut state = self.state.write();
         let key = state.keys.get_mut(&resolved).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -1408,13 +1399,8 @@ impl KmsService {
                 "Key state became inconsistent",
             )
         })?;
-        if let Some(tag_keys) = tag_keys {
-            for tag_key in tag_keys {
-                if let Some(k) = tag_key.as_str() {
-                    key.tags.remove(k);
-                }
-            }
-        }
+
+        fakecloud_core::tags::remove_tags(&mut key.tags, &body, "TagKeys");
 
         Ok(AwsResponse::json(StatusCode::OK, "{}"))
     }
@@ -1439,17 +1425,7 @@ impl KmsService {
                 "Key state became inconsistent",
             )
         })?;
-        let mut sorted_tags: Vec<(&String, &String)> = key.tags.iter().collect();
-        sorted_tags.sort_by_key(|(k, _)| (*k).clone());
-        let tags: Vec<Value> = sorted_tags
-            .iter()
-            .map(|(k, v)| {
-                json!({
-                    "TagKey": k,
-                    "TagValue": v,
-                })
-            })
-            .collect();
+        let tags = fakecloud_core::tags::tags_to_json(&key.tags, "TagKey", "TagValue");
 
         Ok(AwsResponse::json(
             StatusCode::OK,
