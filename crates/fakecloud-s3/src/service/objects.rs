@@ -17,7 +17,6 @@ use super::{
 };
 
 impl S3Service {
-    #[allow(dead_code)]
     pub(super) fn list_objects_v1(
         &self,
         req: &AwsRequest,
