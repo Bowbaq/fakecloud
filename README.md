@@ -96,301 +96,37 @@ fakecloud is now listening at `http://localhost:4566`.
 
 ## Supported Services
 
-### SQS (20 actions)
-
-CreateQueue, DeleteQueue, ListQueues, GetQueueUrl, GetQueueAttributes,
-SetQueueAttributes, SendMessage, SendMessageBatch, ReceiveMessage,
-DeleteMessage, DeleteMessageBatch, PurgeQueue, ChangeMessageVisibility,
-ChangeMessageVisibilityBatch, ListQueueTags, TagQueue, UntagQueue,
-AddPermission, RemovePermission, ListDeadLetterSourceQueues
-
-Key features: real MD5 hashing, long polling (WaitTimeSeconds), FIFO queues
-with message group ordering and content-based deduplication, dead-letter queues,
-message attributes with MD5 computation, batch operations, system attribute
-filtering.
-
-### SNS (34 actions)
-
-**Topics:** CreateTopic, DeleteTopic, ListTopics, GetTopicAttributes,
-SetTopicAttributes
-
-**Subscriptions:** Subscribe, ConfirmSubscription, Unsubscribe,
-ListSubscriptions, ListSubscriptionsByTopic, GetSubscriptionAttributes,
-SetSubscriptionAttributes
-
-**Publishing:** Publish, PublishBatch
-
-**Tags & Permissions:** TagResource, UntagResource, ListTagsForResource,
-AddPermission, RemovePermission
-
-**Platform Applications:** CreatePlatformApplication, DeletePlatformApplication,
-GetPlatformApplicationAttributes, SetPlatformApplicationAttributes,
-ListPlatformApplications
-
-**Platform Endpoints:** CreatePlatformEndpoint, DeleteEndpoint,
-GetEndpointAttributes, SetEndpointAttributes, ListEndpointsByPlatformApplication
-
-**SMS:** SetSMSAttributes, GetSMSAttributes, CheckIfPhoneNumberIsOptedOut,
-ListPhoneNumbersOptedOut, OptInPhoneNumber
-
-Key features: SQS fan-out delivery, HTTP/HTTPS endpoint delivery, subscription
-filter policies (exact match, prefix, anything-but, numeric, exists), platform
-application and endpoint management, SMS attributes.
-
-### EventBridge (41 actions)
-
-**Event Buses:** CreateEventBus, DeleteEventBus, ListEventBuses,
-DescribeEventBus
-
-**Rules:** PutRule, DeleteRule, ListRules, DescribeRule, EnableRule, DisableRule,
-ListRuleNamesByTarget
-
-**Targets:** PutTargets, RemoveTargets, ListTargetsByRule
-
-**Events:** PutEvents
-
-**Permissions:** PutPermission, RemovePermission
-
-**Tags:** TagResource, UntagResource, ListTagsForResource
-
-**Archives:** CreateArchive, DescribeArchive, ListArchives, UpdateArchive,
-DeleteArchive
-
-**Connections:** CreateConnection, DescribeConnection, ListConnections,
-UpdateConnection, DeleteConnection
-
-**API Destinations:** CreateApiDestination, DescribeApiDestination,
-ListApiDestinations, UpdateApiDestination, DeleteApiDestination
-
-**Replays:** StartReplay, DescribeReplay, ListReplays, CancelReplay
-
-**Partner Event Sources:** CreatePartnerEventSource, DescribePartnerEventSource
-
-Key features: pattern-based rules (nested fields, numeric comparisons, prefix,
-exists, anything-but), scheduled rules (rate and cron expressions) that actually
-fire on a background timer, targets deliver to SNS topics and SQS queues,
-archives with event replay, connections and API destinations, partner event
-sources.
-
-### IAM / STS (135 actions)
-
-**IAM Users:** CreateUser, GetUser, DeleteUser, ListUsers, UpdateUser, TagUser,
-UntagUser, ListUserTags, CreateAccessKey, DeleteAccessKey, ListAccessKeys,
-UpdateAccessKey, GetAccessKeyLastUsed, CreateLoginProfile, GetLoginProfile,
-UpdateLoginProfile, DeleteLoginProfile, AttachUserPolicy, DetachUserPolicy,
-ListAttachedUserPolicies, PutUserPolicy, GetUserPolicy, DeleteUserPolicy,
-ListUserPolicies
-
-**IAM Roles:** CreateRole, GetRole, DeleteRole, ListRoles, UpdateRole,
-UpdateRoleDescription, UpdateAssumeRolePolicy, TagRole, UntagRole, ListRoleTags,
-PutRolePermissionsBoundary, DeleteRolePermissionsBoundary, AttachRolePolicy,
-DetachRolePolicy, ListAttachedRolePolicies, PutRolePolicy, GetRolePolicy,
-DeleteRolePolicy, ListRolePolicies, CreateServiceLinkedRole,
-DeleteServiceLinkedRole, GetServiceLinkedRoleDeletionStatus
-
-**IAM Groups:** CreateGroup, GetGroup, DeleteGroup, ListGroups, UpdateGroup,
-AddUserToGroup, RemoveUserFromGroup, ListGroupsForUser, PutGroupPolicy,
-GetGroupPolicy, DeleteGroupPolicy, ListGroupPolicies, AttachGroupPolicy,
-DetachGroupPolicy, ListAttachedGroupPolicies
-
-**IAM Policies:** CreatePolicy, GetPolicy, DeletePolicy, ListPolicies, TagPolicy,
-UntagPolicy, ListPolicyTags, CreatePolicyVersion, GetPolicyVersion,
-ListPolicyVersions, DeletePolicyVersion, SetDefaultPolicyVersion,
-ListEntitiesForPolicy
-
-**Instance Profiles:** CreateInstanceProfile, GetInstanceProfile,
-DeleteInstanceProfile, ListInstanceProfiles, AddRoleToInstanceProfile,
-RemoveRoleFromInstanceProfile, ListInstanceProfilesForRole, TagInstanceProfile,
-UntagInstanceProfile, ListInstanceProfileTags
-
-**Identity Providers:** CreateSAMLProvider, GetSAMLProvider, DeleteSAMLProvider,
-ListSAMLProviders, UpdateSAMLProvider, CreateOpenIDConnectProvider,
-GetOpenIDConnectProvider, DeleteOpenIDConnectProvider, ListOpenIDConnectProviders,
-UpdateOpenIDConnectProviderThumbprint, AddClientIDToOpenIDConnectProvider,
-RemoveClientIDFromOpenIDConnectProvider, TagOpenIDConnectProvider,
-UntagOpenIDConnectProvider, ListOpenIDConnectProviderTags
-
-**Certificates:** UploadServerCertificate, GetServerCertificate,
-DeleteServerCertificate, ListServerCertificates, UploadSigningCertificate,
-ListSigningCertificates, UpdateSigningCertificate, DeleteSigningCertificate
-
-**SSH Keys:** UploadSSHPublicKey, GetSSHPublicKey, ListSSHPublicKeys,
-UpdateSSHPublicKey, DeleteSSHPublicKey
-
-**MFA:** CreateVirtualMFADevice, DeleteVirtualMFADevice, ListVirtualMFADevices,
-EnableMFADevice, DeactivateMFADevice, ListMFADevices
-
-**Account:** GetAccountSummary, GetAccountAuthorizationDetails, CreateAccountAlias,
-DeleteAccountAlias, ListAccountAliases, UpdateAccountPasswordPolicy,
-GetAccountPasswordPolicy, DeleteAccountPasswordPolicy, GenerateCredentialReport,
-GetCredentialReport
-
-**STS:** GetCallerIdentity, AssumeRole, AssumeRoleWithWebIdentity,
-AssumeRoleWithSAML, GetSessionToken, GetFederationToken, GetAccessKeyInfo
-
-### SSM (46 actions)
-
-**Parameters:** PutParameter, GetParameter, GetParameters, GetParametersByPath,
-DeleteParameter, DeleteParameters, DescribeParameters, GetParameterHistory,
-LabelParameterVersion, UnlabelParameterVersion
-
-**Tags:** AddTagsToResource, RemoveTagsFromResource, ListTagsForResource
-
-**Documents:** CreateDocument, GetDocument, DeleteDocument, UpdateDocument,
-DescribeDocument, UpdateDocumentDefaultVersion, ListDocuments,
-DescribeDocumentPermission, ModifyDocumentPermission
-
-**Commands:** SendCommand, ListCommands, GetCommandInvocation,
-ListCommandInvocations, CancelCommand
-
-**Maintenance Windows:** CreateMaintenanceWindow, DescribeMaintenanceWindows,
-GetMaintenanceWindow, DeleteMaintenanceWindow, UpdateMaintenanceWindow,
-RegisterTargetWithMaintenanceWindow, DeregisterTargetFromMaintenanceWindow,
-DescribeMaintenanceWindowTargets, RegisterTaskWithMaintenanceWindow,
-DeregisterTaskFromMaintenanceWindow, DescribeMaintenanceWindowTasks
-
-**Patch Baselines:** CreatePatchBaseline, DeletePatchBaseline,
-DescribePatchBaselines, GetPatchBaseline, RegisterPatchBaselineForPatchGroup,
-DeregisterPatchBaselineForPatchGroup, GetPatchBaselineForPatchGroup,
-DescribePatchGroups
-
-Key features: String / StringList / SecureString types, automatic versioning,
-parameter history, hierarchical path queries with recursive option, pagination
-with NextToken, labels, version limits, parameter name normalization (leading
-slash optional), tag-based filtering, document management with permissions,
-maintenance windows with targets and tasks, patch baselines and patch groups.
-
-### S3 (74 actions)
-
-**Buckets:** ListBuckets, CreateBucket, DeleteBucket, HeadBucket,
-GetBucketLocation
-
-**Objects:** PutObject, GetObject, DeleteObject, HeadObject, CopyObject,
-DeleteObjects, ListObjectsV2, ListObjects, ListObjectVersions,
-GetObjectAttributes, RestoreObject
-
-**Object Properties:** PutObjectTagging, GetObjectTagging, DeleteObjectTagging,
-PutObjectAcl, GetObjectAcl, PutObjectRetention, GetObjectRetention,
-PutObjectLegalHold, GetObjectLegalHold
-
-**Bucket Configuration:** PutBucketTagging, GetBucketTagging, DeleteBucketTagging,
-PutBucketAcl, GetBucketAcl, PutBucketVersioning, GetBucketVersioning,
-PutBucketCors, GetBucketCors, DeleteBucketCors,
-PutBucketNotificationConfiguration, GetBucketNotificationConfiguration,
-PutBucketWebsite, GetBucketWebsite, DeleteBucketWebsite,
-PutBucketAccelerateConfiguration, GetBucketAccelerateConfiguration,
-PutPublicAccessBlock, GetPublicAccessBlock, DeletePublicAccessBlock,
-PutBucketEncryption, GetBucketEncryption, DeleteBucketEncryption,
-PutBucketLifecycleConfiguration, GetBucketLifecycleConfiguration,
-DeleteBucketLifecycleConfiguration,
-PutBucketLogging, GetBucketLogging,
-PutBucketPolicy, GetBucketPolicy, DeleteBucketPolicy,
-PutObjectLockConfiguration, GetObjectLockConfiguration,
-PutBucketReplication, GetBucketReplication, DeleteBucketReplication,
-PutBucketOwnershipControls, GetBucketOwnershipControls,
-DeleteBucketOwnershipControls,
-PutBucketInventoryConfiguration, GetBucketInventoryConfiguration,
-DeleteBucketInventoryConfiguration
-
-**Multipart Uploads:** CreateMultipartUpload, UploadPart, UploadPartCopy,
-CompleteMultipartUpload, AbortMultipartUpload, ListParts, ListMultipartUploads
-
-Key features: path-style addressing, nested key paths, prefix/delimiter listing
-with common prefixes, pagination with continuation tokens, user metadata,
-cross-bucket copy, batch delete, ETag (MD5) computation, multipart uploads with
-copy support, versioning, CORS, bucket notifications (SNS/SQS delivery),
-lifecycle rules with background expiration and storage class transitions, object
-lock (retention and legal hold), encryption, replication, and website
-configuration.
-
-### Lambda (10 actions)
-
-**Functions:** CreateFunction, GetFunction, DeleteFunction, ListFunctions,
-Invoke, PublishVersion
-
-**Event Source Mappings:** CreateEventSourceMapping, ListEventSourceMappings,
-GetEventSourceMapping, DeleteEventSourceMapping
-
-Key features: function CRUD with config storage (runtime, handler, role,
-memory, timeout, environment variables, tags, architectures), **real code
-execution** via Docker containers using official AWS Lambda base images,
-warm container reuse for fast repeated invocations, event source mapping
-management. Supported runtimes: Python 3.11–3.13, Node.js 18–22, Ruby 3.3–3.4,
-Java 17/21, .NET 8, and custom runtimes (provided.al2, provided.al2023).
-Requires Docker or Podman for Invoke; all other operations work without it.
-
-### Secrets Manager (11 actions)
-
-CreateSecret, GetSecretValue, PutSecretValue, UpdateSecret, DeleteSecret,
-RestoreSecret, DescribeSecret, ListSecrets, TagResource, UntagResource,
-ListSecretVersionIds
-
-Key features: secret versioning with AWSCURRENT/AWSPREVIOUS stage tracking,
-soft delete with configurable recovery window and force delete, secret
-restoration, lookup by name or ARN, pagination, tag management, description
-and KMS key metadata.
-
-### CloudWatch Logs (14 actions)
-
-**Log Groups:** CreateLogGroup, DeleteLogGroup, DescribeLogGroups
-
-**Log Streams:** CreateLogStream, DeleteLogStream, DescribeLogStreams
-
-**Log Events:** PutLogEvents, GetLogEvents, FilterLogEvents
-
-**Tags:** TagLogGroup, UntagLogGroup, ListTagsLogGroup
-
-**Retention:** PutRetentionPolicy, DeleteRetentionPolicy
-
-Key features: log groups with log streams, event storage and retrieval,
-simple substring filter pattern matching, retention policies, tagging.
-
-### KMS (16 actions)
-
-**Keys:** CreateKey, DescribeKey, ListKeys, EnableKey, DisableKey,
-ScheduleKeyDeletion
-
-**Encryption:** Encrypt, Decrypt, GenerateDataKey,
-GenerateDataKeyWithoutPlaintext
-
-**Aliases:** CreateAlias, DeleteAlias, ListAliases
-
-**Tags:** TagResource, UntagResource, ListResourceTags
-
-Key features: fake envelope encryption (base64-encoded with key ID prefix),
-key enable/disable/deletion scheduling, alias resolution for all operations,
-data key generation.
-
-### CloudFormation (8 actions)
-
-CreateStack, DeleteStack, DescribeStacks, ListStacks, ListStackResources,
-DescribeStackResources, UpdateStack, GetTemplate
-
-Key features: JSON and YAML template parsing, resource provisioning into
-existing services (SQS, SNS, SSM, IAM, S3, EventBridge, DynamoDB, CloudWatch
-Logs), stack update with diff-based resource create/delete, parameter and
-tag support, Ref/Fn::Sub/Fn::Join intrinsic function resolution.
-
-Supported resource types: AWS::SQS::Queue, AWS::SNS::Topic,
-AWS::SNS::Subscription, AWS::SSM::Parameter, AWS::IAM::Role,
-AWS::IAM::Policy, AWS::S3::Bucket, AWS::Events::Rule,
-AWS::DynamoDB::Table, AWS::Logs::LogGroup.
+13 AWS services, 731 API operations:
+
+| Service | Actions | Highlights |
+|---|---|---|
+| **S3** | 74 | Objects, multipart uploads, versioning, lifecycle, notifications, encryption, replication, website hosting |
+| **SQS** | 20 | FIFO queues, dead-letter queues, long polling, batch operations, MD5 hashing |
+| **SNS** | 34 | Fan-out to SQS/Lambda/HTTP, filter policies, platform applications |
+| **EventBridge** | 57 | Pattern matching, scheduled rules, archives, replay, connections, API destinations |
+| **IAM** | 128 | Users, roles, policies, groups, instance profiles, OIDC/SAML providers |
+| **STS** | 8 | AssumeRole, session tokens, federation |
+| **SSM** | 146 | Parameters, documents, commands, maintenance windows, associations, patch baselines |
+| **DynamoDB** | 57 | Tables, items, transactions, PartiQL, backups, global tables, exports/imports |
+| **Lambda** | 10 | Function CRUD, real code execution via Docker, event source mappings |
+| **Secrets Manager** | 23 | Versioning, soft delete, rotation with Lambda, replication |
+| **CloudWatch Logs** | 113 | Groups, streams, filtering, deliveries, transformers, query language, anomaly detection |
+| **KMS** | 53 | Encryption, key management, aliases, grants, real ECDH and key import |
+| **CloudFormation** | 8 | Template parsing, resource provisioning, custom resources via Lambda |
 
 ### Cross-Service Integration
 
-fakecloud implements real cross-service message delivery and background
-processing:
+Services talk to each other — this is the kind of behavior that matters in
+integration tests:
 
-- **S3 -> SNS/SQS**: Bucket event notification configurations deliver to SNS
-  topics and SQS queues when objects are created/deleted.
-- **SNS -> SQS**: Publishing to an SNS topic delivers to all SQS subscriptions.
-- **SNS -> HTTP/HTTPS**: Publishing to an SNS topic delivers to HTTP endpoints.
-- **EventBridge -> SNS/SQS**: PutEvents and scheduled rules deliver to SNS
-  topic and SQS queue targets.
-- **S3 Lifecycle**: Background processor runs every 60 seconds, expiring objects
-  and transitioning storage classes based on lifecycle rules.
-- **EventBridge Scheduler**: Cron and rate-based rules fire on schedule,
-  delivering events to configured targets.
+- **SNS -> SQS/Lambda/HTTP**: Fan-out delivery to all subscription types
+- **EventBridge -> SNS/SQS/Lambda/Logs**: Rules deliver to targets on schedule or event match
+- **S3 -> SNS/SQS/Lambda**: Bucket notifications on object create/delete
+- **SQS -> Lambda**: Event source mapping polls and invokes
+- **SecretsManager -> Lambda**: Rotation invokes Lambda for all 4 steps
+- **CloudFormation -> Lambda**: Custom resources invoke via ServiceToken
+- **S3 Lifecycle**: Background expiration and storage class transitions
+- **EventBridge Scheduler**: Cron and rate-based rules fire on schedule
 
 ## Configuration
 
@@ -419,7 +155,7 @@ curl http://localhost:4566/_fakecloud/health
 ```json
 {
   "status": "ok",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "services": ["cloudformation", "dynamodb", "sqs", "sns", "events", "iam", "sts", "ssm", "lambda", "secretsmanager", "logs", "kms", "s3"]
 }
 ```

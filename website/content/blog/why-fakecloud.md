@@ -1,7 +1,7 @@
 +++
 title = "Why I'm building a free, open-source AWS emulator"
 date = 2026-04-06
-description = "LocalStack went proprietary. Our builds broke. So I built a free, open-source replacement in Rust — 13 AWS services, 983 API operations, 100% conformance."
+description = "LocalStack went proprietary. Our builds broke. So I built a free, open-source replacement in Rust — 13 AWS services, 731 API operations, 100% conformance."
 
 [extra]
 author = "Lucas Vieira"
@@ -37,18 +37,18 @@ fakecloud doesn't try to be a scalable production cloud. It's not that. It's a t
 
 What does that mean in practice? If you call `CreateQueue`, then `SendMessage`, then `ReceiveMessage` on real AWS and get back your message with specific attributes — fakecloud should do exactly the same thing. If it doesn't, that's a fakecloud bug.
 
-We currently verify this with 280+ E2E tests that use the official `aws-sdk-rust` crate and 34,856 auto-generated conformance test variants validated against official AWS Smithy models — covering all 983 API operations across 13 services at 100% conformance. The plan for the near future: set up a real AWS account and run our test suite against both fakecloud and real AWS side by side, so we can verify behavioral parity automatically.
+We currently verify this with 280+ E2E tests that use the official `aws-sdk-rust` crate and 34,856 auto-generated conformance test variants validated against official AWS Smithy models — covering all 731 API operations across 13 services at 100% conformance. The plan for the near future: set up a real AWS account and run our test suite against both fakecloud and real AWS side by side, so we can verify behavioral parity automatically.
 
 ## What's here today
 
-13 services, 983 API operations, all open source, all free:
+13 services, 731 API operations, all open source, all free:
 
-- **S3** (107 actions) — objects, multipart uploads, versioning, lifecycle, notifications, encryption
-- **SQS** (23 actions) — FIFO queues, dead-letter queues, long polling, batch operations
+- **S3** (74 actions) — objects, multipart uploads, versioning, lifecycle, notifications, encryption
+- **SQS** (20 actions) — FIFO queues, dead-letter queues, long polling, batch operations
 - **SNS** (34 actions) — fan-out to SQS, HTTP delivery, filter policies, platform applications
 - **EventBridge** (57 actions) — pattern matching, scheduled rules, connections, API destinations, endpoints
 - **IAM** (128 actions) — users, roles, policies, groups, instance profiles, OIDC/SAML providers
-- **STS** (11 actions) — assume role, session tokens, federation, credential expiration
+- **STS** (8 actions) — assume role, session tokens, federation
 - **SSM** (146 actions) — parameters, documents, commands, maintenance windows, associations, automation, sessions
 - **DynamoDB** (57 actions) — tables, items, transactions, PartiQL, backups, global tables, streaming
 - **Lambda** (10 actions) — function CRUD, invoke, event source mappings
