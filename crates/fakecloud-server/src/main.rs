@@ -186,6 +186,7 @@ async fn main() {
     // Clone state refs for internal endpoints
     let lambda_invocations_state = lambda_state.clone();
     let ses_emails_state = ses_state.clone();
+    let ses_inbound_state = ses_state.clone();
 
     // Clone state for reset endpoint before moving into services
     let reset_state = ResetState {
@@ -395,6 +396,53 @@ async fn main() {
                         })
                         .collect();
                     axum::Json(serde_json::json!({ "emails": emails }))
+                }
+            }),
+        )
+        .route(
+            "/_fakecloud/ses/inbound",
+            axum::routing::post({
+                let ss = ses_inbound_state.clone();
+                move |axum::Json(body): axum::Json<serde_json::Value>| async move {
+                    let from = body["from"].as_str().unwrap_or("").to_string();
+                    let to: Vec<String> = body["to"]
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let subject = body["subject"].as_str().unwrap_or("").to_string();
+                    let email_body = body["body"].as_str().unwrap_or("").to_string();
+
+                    let (message_id, matched_rules, actions) =
+                        fakecloud_ses::v1::evaluate_inbound_email(
+                            &ss, &from, &to, &subject, &email_body,
+                        );
+
+                    let actions_executed: Vec<serde_json::Value> = actions
+                        .iter()
+                        .map(|(rule, action)| {
+                            serde_json::json!({
+                                "rule": rule,
+                                "actionType": match action {
+                                    fakecloud_ses::state::ReceiptAction::S3 { .. } => "S3",
+                                    fakecloud_ses::state::ReceiptAction::Sns { .. } => "SNS",
+                                    fakecloud_ses::state::ReceiptAction::Lambda { .. } => "Lambda",
+                                    fakecloud_ses::state::ReceiptAction::Bounce { .. } => "Bounce",
+                                    fakecloud_ses::state::ReceiptAction::AddHeader { .. } => "AddHeader",
+                                    fakecloud_ses::state::ReceiptAction::Stop { .. } => "Stop",
+                                },
+                            })
+                        })
+                        .collect();
+
+                    axum::Json(serde_json::json!({
+                        "messageId": message_id,
+                        "matchedRules": matched_rules,
+                        "actionsExecuted": actions_executed,
+                    }))
                 }
             }),
         )

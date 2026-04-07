@@ -144,6 +144,11 @@ impl TestServer {
         aws_sdk_cloudformation::Client::new(&self.aws_config().await)
     }
 
+    /// Create an SES v1 client.
+    pub async fn ses_client(&self) -> aws_sdk_ses::Client {
+        aws_sdk_ses::Client::new(&self.aws_config().await)
+    }
+
     /// Create an SES v2 client.
     pub async fn sesv2_client(&self) -> aws_sdk_sesv2::Client {
         aws_sdk_sesv2::Client::new(&self.aws_config().await)

@@ -4265,6 +4265,11 @@ impl fakecloud_core::service::AwsService for SesV2Service {
     }
 
     async fn handle(&self, req: AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        // Route v1 Query protocol requests to the v1 module.
+        if req.is_query_protocol {
+            return crate::v1::handle_v1_action(&self.state, &req);
+        }
+
         let (action, resource_name, sub_resource) =
             Self::resolve_action(&req).ok_or_else(|| {
                 AwsServiceError::aws_error(
@@ -4522,6 +4527,21 @@ impl fakecloud_core::service::AwsService for SesV2Service {
             "UpdateReputationEntityCustomerManagedStatus",
             "UpdateReputationEntityPolicy",
             "BatchGetMetricData",
+            // SES v1 receipt rules
+            "CreateReceiptRuleSet",
+            "DeleteReceiptRuleSet",
+            "DescribeReceiptRuleSet",
+            "ListReceiptRuleSets",
+            "CloneReceiptRuleSet",
+            "SetActiveReceiptRuleSet",
+            "ReorderReceiptRuleSet",
+            "CreateReceiptRule",
+            "DeleteReceiptRule",
+            "DescribeReceiptRule",
+            "UpdateReceiptRule",
+            "CreateReceiptFilter",
+            "DeleteReceiptFilter",
+            "ListReceiptFilters",
         ]
     }
 }
