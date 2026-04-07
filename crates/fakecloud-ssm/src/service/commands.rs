@@ -4,6 +4,7 @@ use chrono::Utc;
 use http::StatusCode;
 use serde_json::{json, Value};
 
+use fakecloud_core::pagination::paginate;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 use fakecloud_core::validation::*;
 
@@ -160,10 +161,6 @@ impl SsmService {
         validate_optional_string_length("CommandId", body["CommandId"].as_str(), 36, 36)?;
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
         let max_results = body["MaxResults"].as_i64().unwrap_or(50) as usize;
-        let next_token_offset: usize = body["NextToken"]
-            .as_str()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
         let command_id = body["CommandId"].as_str();
         let instance_id = body["InstanceId"].as_str();
 
@@ -218,17 +215,11 @@ impl SsmService {
             }
         }
 
-        let page = if next_token_offset < all_commands.len() {
-            &all_commands[next_token_offset..]
-        } else {
-            &[]
-        };
-        let has_more = page.len() > max_results;
-        let commands: Vec<Value> = page.iter().take(max_results).cloned().collect();
-
+        let (commands, next_token) =
+            paginate(&all_commands, body["NextToken"].as_str(), max_results);
         let mut resp = json!({ "Commands": commands });
-        if has_more {
-            resp["NextToken"] = json!((next_token_offset + max_results).to_string());
+        if let Some(token) = next_token {
+            resp["NextToken"] = json!(token);
         }
 
         Ok(AwsResponse::ok_json(resp))
@@ -305,10 +296,6 @@ impl SsmService {
         validate_optional_string_length("CommandId", body["CommandId"].as_str(), 36, 36)?;
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
         let max_results = body["MaxResults"].as_i64().unwrap_or(50) as usize;
-        let next_token_offset: usize = body["NextToken"]
-            .as_str()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
         let command_id = body["CommandId"].as_str();
 
         let state = self.state.read();
@@ -337,17 +324,11 @@ impl SsmService {
             })
             .collect();
 
-        let page = if next_token_offset < all_invocations.len() {
-            &all_invocations[next_token_offset..]
-        } else {
-            &[]
-        };
-        let has_more = page.len() > max_results;
-        let invocations: Vec<Value> = page.iter().take(max_results).cloned().collect();
-
+        let (invocations, next_token) =
+            paginate(&all_invocations, body["NextToken"].as_str(), max_results);
         let mut resp = json!({ "CommandInvocations": invocations });
-        if has_more {
-            resp["NextToken"] = json!((next_token_offset + max_results).to_string());
+        if let Some(token) = next_token {
+            resp["NextToken"] = json!(token);
         }
 
         Ok(AwsResponse::ok_json(resp))
