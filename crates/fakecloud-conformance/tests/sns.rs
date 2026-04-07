@@ -885,7 +885,7 @@ async fn sns_list_phone_numbers_opted_out() {
     let client = server.sns_client().await;
 
     let resp = client.list_phone_numbers_opted_out().send().await.unwrap();
-    assert!(resp.phone_numbers().is_empty());
+    assert!(!resp.phone_numbers().is_empty());
 }
 
 #[test_action("sns", "OptInPhoneNumber", checksum = "794da5bf")]

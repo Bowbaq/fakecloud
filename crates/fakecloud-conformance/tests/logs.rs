@@ -103,7 +103,12 @@ async fn logs_put_get_filter_events() {
         .log_stream_name("s1")
         .log_events(
             aws_sdk_cloudwatchlogs::types::InputLogEvent::builder()
-                .timestamp(1700000000000)
+                .timestamp(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis() as i64,
+                )
                 .message("hello conformance")
                 .build()
                 .unwrap(),

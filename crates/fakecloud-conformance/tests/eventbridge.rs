@@ -993,13 +993,14 @@ async fn eb_start_replay() {
     let client = server.eventbridge_client().await;
 
     // Need an archive first
-    client
+    let archive_resp = client
         .create_archive()
         .archive_name("replay-archive")
         .event_source_arn("arn:aws:events:us-east-1:123456789012:event-bus/default")
         .send()
         .await
         .unwrap();
+    let archive_arn = archive_resp.archive_arn().unwrap().to_string();
 
     let now = aws_sdk_eventbridge::primitives::DateTime::from_secs(1700000000);
     let earlier = aws_sdk_eventbridge::primitives::DateTime::from_secs(1699990000);
@@ -1007,7 +1008,7 @@ async fn eb_start_replay() {
     let resp = client
         .start_replay()
         .replay_name("conf-replay")
-        .event_source_arn("arn:aws:events:us-east-1:123456789012:event-bus/default")
+        .event_source_arn(&archive_arn)
         .destination(
             aws_sdk_eventbridge::types::ReplayDestination::builder()
                 .arn("arn:aws:events:us-east-1:123456789012:event-bus/default")
@@ -1028,13 +1029,14 @@ async fn eb_describe_replay() {
     let server = TestServer::start().await;
     let client = server.eventbridge_client().await;
 
-    client
+    let archive_resp = client
         .create_archive()
         .archive_name("descrep-archive")
         .event_source_arn("arn:aws:events:us-east-1:123456789012:event-bus/default")
         .send()
         .await
         .unwrap();
+    let archive_arn = archive_resp.archive_arn().unwrap().to_string();
 
     let now = aws_sdk_eventbridge::primitives::DateTime::from_secs(1700000000);
     let earlier = aws_sdk_eventbridge::primitives::DateTime::from_secs(1699990000);
@@ -1042,7 +1044,7 @@ async fn eb_describe_replay() {
     client
         .start_replay()
         .replay_name("desc-replay")
-        .event_source_arn("arn:aws:events:us-east-1:123456789012:event-bus/default")
+        .event_source_arn(&archive_arn)
         .destination(
             aws_sdk_eventbridge::types::ReplayDestination::builder()
                 .arn("arn:aws:events:us-east-1:123456789012:event-bus/default")
@@ -1080,13 +1082,14 @@ async fn eb_cancel_replay() {
     let server = TestServer::start().await;
     let client = server.eventbridge_client().await;
 
-    client
+    let archive_resp = client
         .create_archive()
         .archive_name("cancelrep-archive")
         .event_source_arn("arn:aws:events:us-east-1:123456789012:event-bus/default")
         .send()
         .await
         .unwrap();
+    let archive_arn = archive_resp.archive_arn().unwrap().to_string();
 
     let now = aws_sdk_eventbridge::primitives::DateTime::from_secs(1700000000);
     let earlier = aws_sdk_eventbridge::primitives::DateTime::from_secs(1699990000);
@@ -1094,7 +1097,7 @@ async fn eb_cancel_replay() {
     client
         .start_replay()
         .replay_name("cancel-replay")
-        .event_source_arn("arn:aws:events:us-east-1:123456789012:event-bus/default")
+        .event_source_arn(&archive_arn)
         .destination(
             aws_sdk_eventbridge::types::ReplayDestination::builder()
                 .arn("arn:aws:events:us-east-1:123456789012:event-bus/default")
