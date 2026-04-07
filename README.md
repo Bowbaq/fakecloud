@@ -29,12 +29,12 @@ proprietary image that requires an account and auth token.
 | Feature | fakecloud | LocalStack |
 |---|---|---|
 | License | AGPL-3.0 | Proprietary |
-| Language | Rust | Python |
 | Auth required | No | Yes (account + token) |
 | Commercial use | Free | Paid plans only |
+| Startup time | ~500ms | ~3s |
+| Idle memory | ~10 MiB | ~150 MiB |
+| Binary size | ~19 MB | ~1 GB image |
 | AWS services | 14 | 80+ |
-| Cross-service delivery | Yes | Yes |
-| Scheduled rules fire | Yes | Yes |
 
 ## Quick Start
 
