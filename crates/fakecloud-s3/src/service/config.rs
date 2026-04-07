@@ -573,25 +573,6 @@ impl S3Service {
         Ok(empty_response(StatusCode::OK))
     }
 
-    #[allow(dead_code)]
-    pub(super) fn get_object_lock_config(
-        &self,
-        bucket: &str,
-    ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
-        let b = state
-            .buckets
-            .get(bucket)
-            .ok_or_else(|| no_such_bucket(bucket))?;
-        match &b.object_lock_config {
-            Some(config) => Ok(s3_xml(StatusCode::OK, config.clone())),
-            None => Err(AwsServiceError::aws_error(
-                StatusCode::NOT_FOUND,
-                "ObjectLockConfigurationNotFoundError",
-                "Object Lock configuration does not exist for this bucket",
-            )),
-        }
-    }
     pub(super) fn get_bucket_tagging(
         &self,
         _req: &AwsRequest,

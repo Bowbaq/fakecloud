@@ -87,7 +87,7 @@ pub(crate) fn normalize_replication_xml(xml: &str) -> String {
             let dmr_block = rule_body.find("<DeleteMarkerReplication>").and_then(|ds| {
                 rule_body
                     .find("</DeleteMarkerReplication>")
-                    .map(|de| rule_body[ds..de + 25].to_string())
+                    .map(|de| rule_body[ds..de + "</DeleteMarkerReplication>".len()].to_string())
             });
 
             // Build normalized rule
