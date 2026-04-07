@@ -93,9 +93,21 @@ async fn lambda_list_functions() {
     assert_eq!(resp.functions().len(), 3);
 }
 
-#[tokio::test]
-async fn lambda_invoke() {
-    let server = TestServer::start().await;
+async fn invoke_with_cli(cli: &str) {
+    if std::process::Command::new(cli)
+        .arg("info")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+        == false
+    {
+        eprintln!("skipping: {cli} is not available");
+        return;
+    }
+
+    let server = TestServer::start_with_env(&[("FAKECLOUD_CONTAINER_CLI", cli)]).await;
     let client = server.lambda_client().await;
 
     client
@@ -124,6 +136,16 @@ async fn lambda_invoke() {
     assert_eq!(resp.status_code(), 200);
     let body: serde_json::Value = serde_json::from_slice(resp.payload().unwrap().as_ref()).unwrap();
     assert_eq!(body["statusCode"], 200);
+}
+
+#[tokio::test]
+async fn lambda_invoke_docker() {
+    invoke_with_cli("docker").await;
+}
+
+#[tokio::test]
+async fn lambda_invoke_podman() {
+    invoke_with_cli("podman").await;
 }
 
 #[tokio::test]

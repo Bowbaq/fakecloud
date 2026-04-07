@@ -12,26 +12,42 @@ pub struct TestServer {
     child: Option<Child>,
     port: u16,
     endpoint: String,
+    container_cli: String,
 }
 
 #[allow(dead_code)]
 impl TestServer {
     /// Start a new FakeCloud server on a random available port.
     pub async fn start() -> Self {
+        Self::start_with_env(&[]).await
+    }
+
+    /// Start with extra environment variables passed to the server process.
+    pub async fn start_with_env(env: &[(&str, &str)]) -> Self {
         let port = find_available_port();
         let endpoint = format!("http://127.0.0.1:{port}");
 
         let bin = find_binary();
 
-        let child = Command::new(bin)
-            .arg("--addr")
+        let mut cmd = Command::new(bin);
+        cmd.arg("--addr")
             .arg(format!("127.0.0.1:{port}"))
             .arg("--log-level")
             .arg("warn")
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("failed to start fakecloud");
+            .stderr(Stdio::piped());
+
+        for (key, value) in env {
+            cmd.env(key, value);
+        }
+
+        let container_cli = env
+            .iter()
+            .find(|(k, _)| *k == "FAKECLOUD_CONTAINER_CLI")
+            .map(|(_, v)| v.to_string())
+            .unwrap_or_else(|| "docker".to_string());
+
+        let child = cmd.spawn().expect("failed to start fakecloud");
 
         // Wait for server to be ready
         wait_for_port(port).await;
@@ -40,6 +56,7 @@ impl TestServer {
             child: Some(child),
             port,
             endpoint,
+            container_cli,
         }
     }
 
@@ -168,13 +185,14 @@ impl Drop for TestServer {
 
             // Clean up any Lambda containers spawned by this server instance
             let label = format!("fakecloud-instance=fakecloud-{}", pid);
-            let output = Command::new("docker")
+            let cli = &self.container_cli;
+            let output = Command::new(cli)
                 .args(["ps", "-aq", "--filter", &format!("label={}", label)])
                 .output();
             if let Ok(output) = output {
                 let ids = String::from_utf8_lossy(&output.stdout);
                 for id in ids.split_whitespace() {
-                    let _ = Command::new("docker")
+                    let _ = Command::new(cli)
                         .args(["rm", "-f", id])
                         .stdout(Stdio::null())
                         .stderr(Stdio::null())
