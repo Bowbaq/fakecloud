@@ -27,10 +27,11 @@ pub fn apply_tags(
     key_field: &str,
     value_field: &str,
 ) -> Result<(), String> {
-    let field = &body[tags_field];
-    if field.is_null() {
+    let obj = body.as_object();
+    let field = obj.and_then(|o| o.get(tags_field));
+    let Some(field) = field else {
         return Ok(());
-    }
+    };
     let tags = field.as_array().ok_or_else(|| tags_field.to_string())?;
     for tag in tags {
         if let (Some(k), Some(v)) = (tag[key_field].as_str(), tag[value_field].as_str()) {
@@ -52,10 +53,11 @@ pub fn remove_tags(
     body: &Value,
     keys_field: &str,
 ) -> Result<(), String> {
-    let field = &body[keys_field];
-    if field.is_null() {
+    let obj = body.as_object();
+    let field = obj.and_then(|o| o.get(keys_field));
+    let Some(field) = field else {
         return Ok(());
-    }
+    };
     let keys = field.as_array().ok_or_else(|| keys_field.to_string())?;
     for key in keys {
         if let Some(k) = key.as_str() {
@@ -137,6 +139,13 @@ mod tests {
     }
 
     #[test]
+    fn apply_tags_errors_on_explicit_null() {
+        let mut tags = HashMap::new();
+        let body = json!({ "Tags": null });
+        assert!(apply_tags(&mut tags, &body, "Tags", "Key", "Value").is_err());
+    }
+
+    #[test]
     fn remove_tags_removes_matching_keys() {
         let mut tags = HashMap::new();
         tags.insert("a".to_string(), "1".to_string());
@@ -163,6 +172,13 @@ mod tests {
     fn remove_tags_errors_on_non_array() {
         let mut tags = HashMap::new();
         let body = json!({ "TagKeys": 42 });
+        assert!(remove_tags(&mut tags, &body, "TagKeys").is_err());
+    }
+
+    #[test]
+    fn remove_tags_errors_on_explicit_null() {
+        let mut tags = HashMap::new();
+        let body = json!({ "TagKeys": null });
         assert!(remove_tags(&mut tags, &body, "TagKeys").is_err());
     }
 
