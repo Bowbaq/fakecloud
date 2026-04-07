@@ -1499,7 +1499,8 @@ pub(crate) fn parse_complete_multipart_xml(xml: &str) -> Vec<(u32, String)> {
             let part_body = &after[..part_end];
             let part_num =
                 extract_xml_value(part_body, "PartNumber").and_then(|s| s.parse::<u32>().ok());
-            let etag = extract_xml_value(part_body, "ETag").map(|s| s.replace('"', ""));
+            let etag = extract_xml_value(part_body, "ETag")
+                .map(|s| s.replace("&quot;", "").replace('"', ""));
             if let (Some(num), Some(e)) = (part_num, etag) {
                 parts.push((num, e));
             }

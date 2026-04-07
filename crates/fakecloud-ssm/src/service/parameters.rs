@@ -1041,13 +1041,13 @@ impl SsmService {
         let body = parse_body(req);
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
         let labels = body["Labels"].as_array().ok_or_else(|| missing("Labels"))?;
-        let version = body["ParameterVersion"]
-            .as_i64()
-            .ok_or_else(|| missing("ParameterVersion"))?;
+        let version_opt = body["ParameterVersion"].as_i64();
 
         let mut state = self.state.write();
         let param =
             lookup_param_mut(&mut state.parameters, name).ok_or_else(|| param_not_found(name))?;
+
+        let version = version_opt.unwrap_or(param.version);
 
         // Validate version exists
         let version_exists =
