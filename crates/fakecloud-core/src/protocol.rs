@@ -170,6 +170,21 @@ fn infer_service_from_action(action: &str) -> Option<String> {
         | "GetRole" | "ListRoles" | "CreatePolicy" | "DeletePolicy" | "GetPolicy"
         | "ListPolicies" | "AttachRolePolicy" | "DetachRolePolicy" | "CreateAccessKey"
         | "DeleteAccessKey" | "ListAccessKeys" | "ListRolePolicies" => Some("iam".to_string()),
+        // SES v1 receipt rules (Query protocol)
+        "CreateReceiptRuleSet"
+        | "DeleteReceiptRuleSet"
+        | "DescribeReceiptRuleSet"
+        | "ListReceiptRuleSets"
+        | "CloneReceiptRuleSet"
+        | "SetActiveReceiptRuleSet"
+        | "ReorderReceiptRuleSet"
+        | "CreateReceiptRule"
+        | "DeleteReceiptRule"
+        | "DescribeReceiptRule"
+        | "UpdateReceiptRule"
+        | "CreateReceiptFilter"
+        | "DeleteReceiptFilter"
+        | "ListReceiptFilters" => Some("ses".to_string()),
         _ => None,
     }
 }

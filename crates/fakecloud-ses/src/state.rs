@@ -230,6 +230,83 @@ pub struct ReputationEntityState {
     pub sending_status_aggregate: String,
 }
 
+// ── SES v1 Receipt Rule types ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReceiptRuleSet {
+    pub name: String,
+    pub rules: Vec<ReceiptRule>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReceiptRule {
+    pub name: String,
+    pub enabled: bool,
+    pub scan_enabled: bool,
+    pub tls_policy: String,
+    pub recipients: Vec<String>,
+    pub actions: Vec<ReceiptAction>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ReceiptAction {
+    S3 {
+        bucket_name: String,
+        object_key_prefix: Option<String>,
+        topic_arn: Option<String>,
+        kms_key_arn: Option<String>,
+    },
+    Sns {
+        topic_arn: String,
+        encoding: Option<String>,
+    },
+    Lambda {
+        function_arn: String,
+        invocation_type: Option<String>,
+        topic_arn: Option<String>,
+    },
+    Bounce {
+        smtp_reply_code: String,
+        message: String,
+        sender: String,
+        status_code: Option<String>,
+        topic_arn: Option<String>,
+    },
+    AddHeader {
+        header_name: String,
+        header_value: String,
+    },
+    Stop {
+        scope: String,
+        topic_arn: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReceiptFilter {
+    pub name: String,
+    pub ip_filter: IpFilter,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IpFilter {
+    pub cidr: String,
+    pub policy: String, // "Allow" or "Block"
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InboundEmail {
+    pub message_id: String,
+    pub from: String,
+    pub to: Vec<String>,
+    pub subject: String,
+    pub body: String,
+    pub matched_rules: Vec<String>,
+    pub actions_executed: Vec<String>,
+    pub timestamp: DateTime<Utc>,
+}
+
 pub struct SesState {
     pub account_id: String,
     pub region: String,
@@ -267,6 +344,15 @@ pub struct SesState {
     pub tenant_resource_associations: HashMap<String, Vec<TenantResourceAssociation>>,
     /// Reputation entities: "type/reference" → ReputationEntity.
     pub reputation_entities: HashMap<String, ReputationEntityState>,
+    // ── SES v1 Receipt Rule state ──
+    /// Receipt rule sets: name → rule set.
+    pub receipt_rule_sets: HashMap<String, ReceiptRuleSet>,
+    /// Which rule set is active (by name).
+    pub active_receipt_rule_set: Option<String>,
+    /// Receipt filters: name → filter.
+    pub receipt_filters: HashMap<String, ReceiptFilter>,
+    /// Inbound emails processed by the introspection endpoint.
+    pub inbound_emails: Vec<InboundEmail>,
 }
 
 impl SesState {
@@ -300,6 +386,10 @@ impl SesState {
             tenants: HashMap::new(),
             tenant_resource_associations: HashMap::new(),
             reputation_entities: HashMap::new(),
+            receipt_rule_sets: HashMap::new(),
+            active_receipt_rule_set: None,
+            receipt_filters: HashMap::new(),
+            inbound_emails: Vec::new(),
         }
     }
 
@@ -330,6 +420,10 @@ impl SesState {
         self.tenants.clear();
         self.tenant_resource_associations.clear();
         self.reputation_entities.clear();
+        self.receipt_rule_sets.clear();
+        self.active_receipt_rule_set = None;
+        self.receipt_filters.clear();
+        self.inbound_emails.clear();
     }
 }
 

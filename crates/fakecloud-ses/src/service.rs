@@ -4265,6 +4265,11 @@ impl fakecloud_core::service::AwsService for SesV2Service {
     }
 
     async fn handle(&self, req: AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        // Route v1 Query protocol requests to the v1 module.
+        if req.is_query_protocol {
+            return crate::v1::handle_v1_action(&self.state, &req);
+        }
+
         let (action, resource_name, sub_resource) =
             Self::resolve_action(&req).ok_or_else(|| {
                 AwsServiceError::aws_error(
@@ -4522,6 +4527,9 @@ impl fakecloud_core::service::AwsService for SesV2Service {
             "UpdateReputationEntityCustomerManagedStatus",
             "UpdateReputationEntityPolicy",
             "BatchGetMetricData",
+            // NOTE: SES v1 receipt rule/filter actions are implemented (see v1.rs)
+            // but excluded from the conformance audit because there is no SES v1
+            // Smithy model (only sesv2.json exists) to generate checksums from.
         ]
     }
 }
