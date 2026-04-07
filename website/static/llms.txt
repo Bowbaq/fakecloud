@@ -42,4 +42,4 @@
 - [Source code](https://github.com/faiscadev/fakecloud): GitHub repository
 - [Architecture](https://github.com/faiscadev/fakecloud#architecture): Cargo workspace structure and protocol details
 - [Contributing](https://github.com/faiscadev/fakecloud#contributing): Contribution guidelines
-- [Comparison](https://github.com/faiscadev/fakecloud#comparison): Feature comparison with LocalStack, Floci, and MiniStack
+- [Comparison](https://github.com/faiscadev/fakecloud#comparison): Feature comparison with LocalStack

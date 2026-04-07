@@ -22,20 +22,19 @@ Part of the [faisca project family](https://faisca.dev).
 ## Why fakecloud?
 
 In March 2026, LocalStack replaced its open-source Community Edition with a
-proprietary image that requires an account and auth token. Several open-source
-alternatives have emerged since then. Here's how they compare:
+proprietary image that requires an account and auth token.
 
 ### Comparison
 
-| Feature | fakecloud | LocalStack | [Floci](https://github.com/hectorvent/floci) | [MiniStack](https://github.com/Nahuel990/ministack) |
-|---|---|---|---|---|
-| License | AGPL-3.0 | Proprietary | MIT | MIT |
-| Language | Rust | Python | Java (Quarkus Native) | Python |
-| Auth required | No | Yes (account + token) | No | No |
-| Commercial use | Free | Paid plans only | Free | Free |
-| AWS services | 14 | 80+ | 25 | 38 |
-| Cross-service delivery | Yes | Yes | Yes | Yes |
-| Scheduled rules fire | Yes | Yes | -- | -- |
+| Feature | fakecloud | LocalStack |
+|---|---|---|
+| License | AGPL-3.0 | Proprietary |
+| Language | Rust | Python |
+| Auth required | No | Yes (account + token) |
+| Commercial use | Free | Paid plans only |
+| AWS services | 14 | 80+ |
+| Cross-service delivery | Yes | Yes |
+| Scheduled rules fire | Yes | Yes |
 
 ## Quick Start
 
