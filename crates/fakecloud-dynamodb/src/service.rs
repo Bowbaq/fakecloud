@@ -1031,22 +1031,20 @@ impl DynamoDbService {
     fn tag_resource(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = Self::parse_body(req)?;
         let resource_arn = require_str(&body, "ResourceArn")?;
-        let tags_arr = body["Tags"].as_array().ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ValidationException",
-                "Tags is required",
-            )
-        })?;
+        validate_required("Tags", &body["Tags"])?;
 
         let mut state = self.state.write();
         let table = find_table_by_arn_mut(&mut state.tables, resource_arn)?;
 
-        for tag in tags_arr {
-            if let (Some(k), Some(v)) = (tag["Key"].as_str(), tag["Value"].as_str()) {
-                table.tags.insert(k.to_string(), v.to_string());
-            }
-        }
+        fakecloud_core::tags::apply_tags(&mut table.tags, &body, "Tags", "Key", "Value").map_err(
+            |f| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "ValidationException",
+                    format!("{f} must be a list"),
+                )
+            },
+        )?;
 
         Self::ok_json(json!({}))
     }
@@ -1054,22 +1052,18 @@ impl DynamoDbService {
     fn untag_resource(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = Self::parse_body(req)?;
         let resource_arn = require_str(&body, "ResourceArn")?;
-        let tag_keys = body["TagKeys"].as_array().ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ValidationException",
-                "TagKeys is required",
-            )
-        })?;
+        validate_required("TagKeys", &body["TagKeys"])?;
 
         let mut state = self.state.write();
         let table = find_table_by_arn_mut(&mut state.tables, resource_arn)?;
 
-        for key in tag_keys {
-            if let Some(k) = key.as_str() {
-                table.tags.remove(k);
-            }
-        }
+        fakecloud_core::tags::remove_tags(&mut table.tags, &body, "TagKeys").map_err(|f| {
+            AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "ValidationException",
+                format!("{f} must be a list"),
+            )
+        })?;
 
         Self::ok_json(json!({}))
     }
@@ -1081,11 +1075,7 @@ impl DynamoDbService {
         let state = self.state.read();
         let table = find_table_by_arn(&state.tables, resource_arn)?;
 
-        let tags: Vec<Value> = table
-            .tags
-            .iter()
-            .map(|(k, v)| json!({"Key": k, "Value": v}))
-            .collect();
+        let tags = fakecloud_core::tags::tags_to_json(&table.tags, "Key", "Value");
 
         Self::ok_json(json!({ "Tags": tags }))
     }

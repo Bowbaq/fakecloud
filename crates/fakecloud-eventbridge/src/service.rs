@@ -2076,17 +2076,17 @@ impl EventBridgeService {
             .ok_or_else(|| missing("ResourceARN"))?;
         validate_string_length("resourceARN", arn, 1, 1600)?;
         validate_required("Tags", &body["Tags"])?;
-        let tags = body["Tags"].as_array().ok_or_else(|| missing("Tags"))?;
 
         let mut state = self.state.write();
-
         let tag_map = find_tags_mut(&mut state, arn)?;
 
-        for tag in tags {
-            if let (Some(key), Some(val)) = (tag["Key"].as_str(), tag["Value"].as_str()) {
-                tag_map.insert(key.to_string(), val.to_string());
-            }
-        }
+        fakecloud_core::tags::apply_tags(tag_map, &body, "Tags", "Key", "Value").map_err(|f| {
+            AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "ValidationException",
+                format!("{f} must be a list"),
+            )
+        })?;
 
         Ok(AwsResponse::ok_json(json!({})))
     }
@@ -2099,18 +2099,17 @@ impl EventBridgeService {
             .ok_or_else(|| missing("ResourceARN"))?;
         validate_string_length("resourceARN", arn, 1, 1600)?;
         validate_required("TagKeys", &body["TagKeys"])?;
-        let tag_keys = body["TagKeys"]
-            .as_array()
-            .ok_or_else(|| missing("TagKeys"))?;
 
         let mut state = self.state.write();
         let tag_map = find_tags_mut(&mut state, arn)?;
 
-        for key in tag_keys {
-            if let Some(k) = key.as_str() {
-                tag_map.remove(k);
-            }
-        }
+        fakecloud_core::tags::remove_tags(tag_map, &body, "TagKeys").map_err(|f| {
+            AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "ValidationException",
+                format!("{f} must be a list"),
+            )
+        })?;
 
         Ok(AwsResponse::ok_json(json!({})))
     }
@@ -2126,10 +2125,7 @@ impl EventBridgeService {
         let state = self.state.read();
         let tag_map = find_tags(&state, arn)?;
 
-        let tags: Vec<Value> = tag_map
-            .iter()
-            .map(|(k, v)| json!({"Key": k, "Value": v}))
-            .collect();
+        let tags = fakecloud_core::tags::tags_to_json(tag_map, "Key", "Value");
 
         Ok(AwsResponse::ok_json(json!({ "Tags": tags })))
     }

@@ -1,13 +1,102 @@
+use std::collections::HashMap;
+
 use http::StatusCode;
-use serde_json::{json, Value};
+use serde_json::json;
 
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
+use fakecloud_core::tags;
 use fakecloud_core::validation::*;
 
 use super::parameters::{lookup_param, lookup_param_mut};
 use super::{missing, SsmService};
 
+const INVALID_RESOURCE_TYPE_MSG: &str = " is not a valid resource type. \
+    Valid resource types are: ManagedInstance, MaintenanceWindow, \
+    Parameter, PatchBaseline, OpsItem, Document.";
+
 impl SsmService {
+    /// Resolve a mutable reference to the tag map for the given SSM resource.
+    fn resolve_tags_mut<'a>(
+        state: &'a mut crate::state::SsmState,
+        resource_type: &str,
+        resource_id: &str,
+    ) -> Result<&'a mut HashMap<String, String>, AwsServiceError> {
+        match resource_type {
+            "Parameter" => {
+                let param = lookup_param_mut(&mut state.parameters, resource_id)
+                    .ok_or_else(|| invalid_resource_id(resource_id))?;
+                Ok(&mut param.tags)
+            }
+            "Document" => {
+                let doc = state
+                    .documents
+                    .get_mut(resource_id)
+                    .ok_or_else(|| invalid_resource_id(resource_id))?;
+                Ok(&mut doc.tags)
+            }
+            "MaintenanceWindow" => {
+                let mw = state
+                    .maintenance_windows
+                    .get_mut(resource_id)
+                    .ok_or_else(|| invalid_resource_id(resource_id))?;
+                Ok(&mut mw.tags)
+            }
+            "PatchBaseline" => {
+                let pb = state
+                    .patch_baselines
+                    .get_mut(resource_id)
+                    .ok_or_else(|| invalid_resource_id(resource_id))?;
+                Ok(&mut pb.tags)
+            }
+            _ => Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidResourceType",
+                format!("{resource_type}{INVALID_RESOURCE_TYPE_MSG}"),
+            )),
+        }
+    }
+
+    /// Resolve an immutable reference to the tag map for the given SSM resource.
+    fn resolve_tags<'a>(
+        state: &'a crate::state::SsmState,
+        resource_type: &str,
+        resource_id: &str,
+    ) -> Result<&'a HashMap<String, String>, AwsServiceError> {
+        match resource_type {
+            "Parameter" => {
+                let param = lookup_param(&state.parameters, resource_id)
+                    .ok_or_else(|| invalid_resource_id(resource_id))?;
+                Ok(&param.tags)
+            }
+            "Document" => {
+                let doc = state
+                    .documents
+                    .get(resource_id)
+                    .ok_or_else(|| invalid_resource_id(resource_id))?;
+                Ok(&doc.tags)
+            }
+            "MaintenanceWindow" => {
+                let mw = state
+                    .maintenance_windows
+                    .get(resource_id)
+                    .ok_or_else(|| invalid_resource_id(resource_id))?;
+                Ok(&mw.tags)
+            }
+            "PatchBaseline" => {
+                let pb = state
+                    .patch_baselines
+                    .get(resource_id)
+                    .ok_or_else(|| invalid_resource_id(resource_id))?;
+                Ok(&pb.tags)
+            }
+            _ => Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidResourceType",
+                format!("{resource_type}{INVALID_RESOURCE_TYPE_MSG}"),
+            )),
+        }
+    }
+
     pub(super) fn add_tags_to_resource(
         &self,
         req: &AwsRequest,
@@ -17,69 +106,17 @@ impl SsmService {
         let resource_id = body["ResourceId"]
             .as_str()
             .ok_or_else(|| missing("ResourceId"))?;
-        let tags = body["Tags"].as_array().ok_or_else(|| missing("Tags"))?;
+        validate_required("Tags", &body["Tags"])?;
 
         let mut state = self.state.write();
-
-        match resource_type {
-            "Parameter" => {
-                let param = lookup_param_mut(&mut state.parameters, resource_id)
-                    .ok_or_else(|| invalid_resource_id(resource_id))?;
-
-                for tag in tags {
-                    if let (Some(key), Some(val)) = (tag["Key"].as_str(), tag["Value"].as_str()) {
-                        param.tags.insert(key.to_string(), val.to_string());
-                    }
-                }
-            }
-            "Document" => {
-                let doc = state
-                    .documents
-                    .get_mut(resource_id)
-                    .ok_or_else(|| invalid_resource_id(resource_id))?;
-
-                for tag in tags {
-                    if let (Some(key), Some(val)) = (tag["Key"].as_str(), tag["Value"].as_str()) {
-                        doc.tags.insert(key.to_string(), val.to_string());
-                    }
-                }
-            }
-            "MaintenanceWindow" => {
-                let mw = state
-                    .maintenance_windows
-                    .get_mut(resource_id)
-                    .ok_or_else(|| invalid_resource_id(resource_id))?;
-
-                for tag in tags {
-                    if let (Some(key), Some(val)) = (tag["Key"].as_str(), tag["Value"].as_str()) {
-                        mw.tags.insert(key.to_string(), val.to_string());
-                    }
-                }
-            }
-            "PatchBaseline" => {
-                let pb = state
-                    .patch_baselines
-                    .get_mut(resource_id)
-                    .ok_or_else(|| invalid_resource_id(resource_id))?;
-
-                for tag in tags {
-                    if let (Some(key), Some(val)) = (tag["Key"].as_str(), tag["Value"].as_str()) {
-                        pb.tags.insert(key.to_string(), val.to_string());
-                    }
-                }
-            }
-            _ => {
-                return Err(AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "InvalidResourceType",
-                    format!(
-                        "{resource_type} is not a valid resource type. \
-                         Valid resource types are: ManagedInstance, MaintenanceWindow, \
-                         Parameter, PatchBaseline, OpsItem, Document."
-                    ),
-                ));
-            }
-        }
+        let tag_map = Self::resolve_tags_mut(&mut state, resource_type, resource_id)?;
+        tags::apply_tags(tag_map, &body, "Tags", "Key", "Value").map_err(|f| {
+            AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "ValidationException",
+                format!("{f} must be a list"),
+            )
+        })?;
 
         Ok(AwsResponse::ok_json(json!({})))
     }
@@ -94,71 +131,17 @@ impl SsmService {
         let resource_id = body["ResourceId"]
             .as_str()
             .ok_or_else(|| missing("ResourceId"))?;
-        let tag_keys = body["TagKeys"]
-            .as_array()
-            .ok_or_else(|| missing("TagKeys"))?;
+        validate_required("TagKeys", &body["TagKeys"])?;
 
         let mut state = self.state.write();
-
-        match resource_type {
-            "Parameter" => {
-                let param = lookup_param_mut(&mut state.parameters, resource_id)
-                    .ok_or_else(|| invalid_resource_id(resource_id))?;
-
-                for key in tag_keys {
-                    if let Some(k) = key.as_str() {
-                        param.tags.remove(k);
-                    }
-                }
-            }
-            "Document" => {
-                let doc = state
-                    .documents
-                    .get_mut(resource_id)
-                    .ok_or_else(|| invalid_resource_id(resource_id))?;
-
-                for key in tag_keys {
-                    if let Some(k) = key.as_str() {
-                        doc.tags.remove(k);
-                    }
-                }
-            }
-            "MaintenanceWindow" => {
-                let mw = state
-                    .maintenance_windows
-                    .get_mut(resource_id)
-                    .ok_or_else(|| invalid_resource_id(resource_id))?;
-
-                for key in tag_keys {
-                    if let Some(k) = key.as_str() {
-                        mw.tags.remove(k);
-                    }
-                }
-            }
-            "PatchBaseline" => {
-                let pb = state
-                    .patch_baselines
-                    .get_mut(resource_id)
-                    .ok_or_else(|| invalid_resource_id(resource_id))?;
-
-                for key in tag_keys {
-                    if let Some(k) = key.as_str() {
-                        pb.tags.remove(k);
-                    }
-                }
-            }
-            _ => {
-                return Err(AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "InvalidResourceType",
-                    format!(
-                        "{resource_type} is not a valid resource type. \
-                         Valid resource types are: ManagedInstance, MaintenanceWindow, \
-                         Parameter, PatchBaseline, OpsItem, Document."
-                    ),
-                ));
-            }
-        }
+        let tag_map = Self::resolve_tags_mut(&mut state, resource_type, resource_id)?;
+        tags::remove_tags(tag_map, &body, "TagKeys").map_err(|f| {
+            AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "ValidationException",
+                format!("{f} must be a list"),
+            )
+        })?;
 
         Ok(AwsResponse::ok_json(json!({})))
     }
@@ -174,68 +157,10 @@ impl SsmService {
             .ok_or_else(|| missing("ResourceId"))?;
 
         let state = self.state.read();
+        let tag_map = Self::resolve_tags(&state, resource_type, resource_id)?;
+        let result = tags::tags_to_json(tag_map, "Key", "Value");
 
-        let tags: Vec<Value> = match resource_type {
-            "Parameter" => {
-                let param = lookup_param(&state.parameters, resource_id)
-                    .ok_or_else(|| invalid_resource_id(resource_id))?;
-                param
-                    .tags
-                    .iter()
-                    .map(|(k, v)| json!({"Key": k, "Value": v}))
-                    .collect()
-            }
-            "Document" => {
-                let doc = state
-                    .documents
-                    .get(resource_id)
-                    .ok_or_else(|| invalid_resource_id(resource_id))?;
-                doc.tags
-                    .iter()
-                    .map(|(k, v)| json!({"Key": k, "Value": v}))
-                    .collect()
-            }
-            "MaintenanceWindow" => {
-                let mw = state
-                    .maintenance_windows
-                    .get(resource_id)
-                    .ok_or_else(|| invalid_resource_id(resource_id))?;
-                mw.tags
-                    .iter()
-                    .map(|(k, v)| json!({"Key": k, "Value": v}))
-                    .collect()
-            }
-            "PatchBaseline" => {
-                let pb = state
-                    .patch_baselines
-                    .get(resource_id)
-                    .ok_or_else(|| invalid_resource_id(resource_id))?;
-                pb.tags
-                    .iter()
-                    .map(|(k, v)| json!({"Key": k, "Value": v}))
-                    .collect()
-            }
-            _ => {
-                return Err(AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "InvalidResourceType",
-                    format!(
-                        "{resource_type} is not a valid resource type. \
-                         Valid resource types are: ManagedInstance, MaintenanceWindow, \
-                         Parameter, PatchBaseline, OpsItem, Document."
-                    ),
-                ));
-            }
-        };
-
-        let mut tags = tags;
-        tags.sort_by(|a, b| {
-            let ka = a["Key"].as_str().unwrap_or("");
-            let kb = b["Key"].as_str().unwrap_or("");
-            ka.cmp(kb)
-        });
-
-        Ok(AwsResponse::ok_json(json!({ "TagList": tags })))
+        Ok(AwsResponse::ok_json(json!({ "TagList": result })))
     }
 }
 
