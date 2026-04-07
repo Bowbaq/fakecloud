@@ -1374,7 +1374,14 @@ impl KmsService {
             )
         })?;
 
-        fakecloud_core::tags::apply_tags(&mut key.tags, &body, "Tags", "TagKey", "TagValue");
+        fakecloud_core::tags::apply_tags(&mut key.tags, &body, "Tags", "TagKey", "TagValue")
+            .map_err(|f| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "ValidationException",
+                    format!("{f} must be a list"),
+                )
+            })?;
 
         Ok(AwsResponse::json(StatusCode::OK, "{}"))
     }
@@ -1400,7 +1407,13 @@ impl KmsService {
             )
         })?;
 
-        fakecloud_core::tags::remove_tags(&mut key.tags, &body, "TagKeys");
+        fakecloud_core::tags::remove_tags(&mut key.tags, &body, "TagKeys").map_err(|f| {
+            AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "ValidationException",
+                format!("{f} must be a list"),
+            )
+        })?;
 
         Ok(AwsResponse::json(StatusCode::OK, "{}"))
     }

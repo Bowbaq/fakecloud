@@ -110,7 +110,13 @@ impl SsmService {
 
         let mut state = self.state.write();
         let tag_map = Self::resolve_tags_mut(&mut state, resource_type, resource_id)?;
-        tags::apply_tags(tag_map, &body, "Tags", "Key", "Value");
+        tags::apply_tags(tag_map, &body, "Tags", "Key", "Value").map_err(|f| {
+            AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "ValidationException",
+                format!("{f} must be a list"),
+            )
+        })?;
 
         Ok(AwsResponse::ok_json(json!({})))
     }
@@ -129,7 +135,13 @@ impl SsmService {
 
         let mut state = self.state.write();
         let tag_map = Self::resolve_tags_mut(&mut state, resource_type, resource_id)?;
-        tags::remove_tags(tag_map, &body, "TagKeys");
+        tags::remove_tags(tag_map, &body, "TagKeys").map_err(|f| {
+            AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "ValidationException",
+                format!("{f} must be a list"),
+            )
+        })?;
 
         Ok(AwsResponse::ok_json(json!({})))
     }

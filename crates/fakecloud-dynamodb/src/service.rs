@@ -1036,7 +1036,15 @@ impl DynamoDbService {
         let mut state = self.state.write();
         let table = find_table_by_arn_mut(&mut state.tables, resource_arn)?;
 
-        fakecloud_core::tags::apply_tags(&mut table.tags, &body, "Tags", "Key", "Value");
+        fakecloud_core::tags::apply_tags(&mut table.tags, &body, "Tags", "Key", "Value").map_err(
+            |f| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "ValidationException",
+                    format!("{f} must be a list"),
+                )
+            },
+        )?;
 
         Self::ok_json(json!({}))
     }
@@ -1049,7 +1057,13 @@ impl DynamoDbService {
         let mut state = self.state.write();
         let table = find_table_by_arn_mut(&mut state.tables, resource_arn)?;
 
-        fakecloud_core::tags::remove_tags(&mut table.tags, &body, "TagKeys");
+        fakecloud_core::tags::remove_tags(&mut table.tags, &body, "TagKeys").map_err(|f| {
+            AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "ValidationException",
+                format!("{f} must be a list"),
+            )
+        })?;
 
         Self::ok_json(json!({}))
     }

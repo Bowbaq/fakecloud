@@ -18,20 +18,26 @@ use serde_json::{json, Value};
 /// `"Value"`, but KMS uses `"TagKey"` / `"TagValue"`).
 ///
 /// Tags with missing or non-string key/value pairs are silently skipped.
+///
+/// Returns `Err(field_name)` if the field is present but not an array.
 pub fn apply_tags(
     existing_tags: &mut HashMap<String, String>,
     body: &Value,
     tags_field: &str,
     key_field: &str,
     value_field: &str,
-) {
-    if let Some(tags) = body[tags_field].as_array() {
-        for tag in tags {
-            if let (Some(k), Some(v)) = (tag[key_field].as_str(), tag[value_field].as_str()) {
-                existing_tags.insert(k.to_string(), v.to_string());
-            }
+) -> Result<(), String> {
+    let field = &body[tags_field];
+    if field.is_null() {
+        return Ok(());
+    }
+    let tags = field.as_array().ok_or_else(|| tags_field.to_string())?;
+    for tag in tags {
+        if let (Some(k), Some(v)) = (tag[key_field].as_str(), tag[value_field].as_str()) {
+            existing_tags.insert(k.to_string(), v.to_string());
         }
     }
+    Ok(())
 }
 
 /// Parse a JSON tag-keys array and remove matching keys from `existing_tags`.
@@ -39,14 +45,24 @@ pub fn apply_tags(
 /// `keys_field` is the name of the JSON field inside `body` that holds
 /// the keys array (e.g. `"TagKeys"`).  Each element is expected to be a
 /// plain string.
-pub fn remove_tags(existing_tags: &mut HashMap<String, String>, body: &Value, keys_field: &str) {
-    if let Some(keys) = body[keys_field].as_array() {
-        for key in keys {
-            if let Some(k) = key.as_str() {
-                existing_tags.remove(k);
-            }
+///
+/// Returns `Err(field_name)` if the field is present but not an array.
+pub fn remove_tags(
+    existing_tags: &mut HashMap<String, String>,
+    body: &Value,
+    keys_field: &str,
+) -> Result<(), String> {
+    let field = &body[keys_field];
+    if field.is_null() {
+        return Ok(());
+    }
+    let keys = field.as_array().ok_or_else(|| keys_field.to_string())?;
+    for key in keys {
+        if let Some(k) = key.as_str() {
+            existing_tags.remove(k);
         }
     }
+    Ok(())
 }
 
 /// Convert a tag map into a sorted JSON array of `{key_field: k, value_field: v}` objects.
@@ -82,7 +98,7 @@ mod tests {
             ]
         });
 
-        apply_tags(&mut tags, &body, "Tags", "Key", "Value");
+        apply_tags(&mut tags, &body, "Tags", "Key", "Value").unwrap();
 
         assert_eq!(tags.get("existing").unwrap(), "new");
         assert_eq!(tags.get("added").unwrap(), "val");
@@ -99,7 +115,7 @@ mod tests {
             ]
         });
 
-        apply_tags(&mut tags, &body, "Tags", "Key", "Value");
+        apply_tags(&mut tags, &body, "Tags", "Key", "Value").unwrap();
 
         assert_eq!(tags.len(), 1);
         assert_eq!(tags.get("good").unwrap(), "val");
@@ -109,8 +125,15 @@ mod tests {
     fn apply_tags_noop_when_field_missing() {
         let mut tags = HashMap::new();
         let body = json!({});
-        apply_tags(&mut tags, &body, "Tags", "Key", "Value");
+        apply_tags(&mut tags, &body, "Tags", "Key", "Value").unwrap();
         assert!(tags.is_empty());
+    }
+
+    #[test]
+    fn apply_tags_errors_on_non_array() {
+        let mut tags = HashMap::new();
+        let body = json!({ "Tags": "not_an_array" });
+        assert!(apply_tags(&mut tags, &body, "Tags", "Key", "Value").is_err());
     }
 
     #[test]
@@ -121,7 +144,7 @@ mod tests {
         tags.insert("c".to_string(), "3".to_string());
 
         let body = json!({ "TagKeys": ["a", "c", "nonexistent"] });
-        remove_tags(&mut tags, &body, "TagKeys");
+        remove_tags(&mut tags, &body, "TagKeys").unwrap();
 
         assert_eq!(tags.len(), 1);
         assert!(tags.contains_key("b"));
@@ -132,8 +155,15 @@ mod tests {
         let mut tags = HashMap::new();
         tags.insert("a".to_string(), "1".to_string());
         let body = json!({});
-        remove_tags(&mut tags, &body, "TagKeys");
+        remove_tags(&mut tags, &body, "TagKeys").unwrap();
         assert_eq!(tags.len(), 1);
+    }
+
+    #[test]
+    fn remove_tags_errors_on_non_array() {
+        let mut tags = HashMap::new();
+        let body = json!({ "TagKeys": 42 });
+        assert!(remove_tags(&mut tags, &body, "TagKeys").is_err());
     }
 
     #[test]

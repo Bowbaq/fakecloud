@@ -2101,7 +2101,13 @@ impl EventBridgeService {
         let mut state = self.state.write();
         let tag_map = find_tags_mut(&mut state, arn)?;
 
-        fakecloud_core::tags::apply_tags(tag_map, &body, "Tags", "Key", "Value");
+        fakecloud_core::tags::apply_tags(tag_map, &body, "Tags", "Key", "Value").map_err(|f| {
+            AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "ValidationException",
+                format!("{f} must be a list"),
+            )
+        })?;
 
         Ok(AwsResponse::ok_json(json!({})))
     }
@@ -2118,7 +2124,13 @@ impl EventBridgeService {
         let mut state = self.state.write();
         let tag_map = find_tags_mut(&mut state, arn)?;
 
-        fakecloud_core::tags::remove_tags(tag_map, &body, "TagKeys");
+        fakecloud_core::tags::remove_tags(tag_map, &body, "TagKeys").map_err(|f| {
+            AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "ValidationException",
+                format!("{f} must be a list"),
+            )
+        })?;
 
         Ok(AwsResponse::ok_json(json!({})))
     }
