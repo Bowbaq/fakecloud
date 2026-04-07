@@ -208,6 +208,10 @@ cargo fmt --check                           # format check
 E2E tests use the official `aws-sdk-rust` crates and spawn a real fakecloud
 server per test.
 
+## Roadmap
+
+See [ROADMAP.md](ROADMAP.md) for what's coming next: Cognito, Kinesis, RDS, ECS, ElastiCache, and more.
+
 ## Contributing
 
 Contributions are welcome.
