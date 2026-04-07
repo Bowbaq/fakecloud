@@ -36,10 +36,9 @@ proprietary image that requires an account and auth token.
 | Idle memory | ~10 MiB | ~150 MiB |
 | Install size | ~19 MB binary | ~1 GB Docker image |
 | AWS services | 14 | 30+ |
-| S3 Object Lock (COMPLIANCE/GOVERNANCE) | Full | Partial |
-| STS (all 8 operations) | Full | Partial |
-| KMS (sign, verify, ECDH, key import) | Full | Partial (symmetric only) |
-| SES v2 (111 operations) | Full (v2 + v1 inbound) | [Paid only](https://docs.localstack.cloud/references/licensing/) |
+| SES v2 | 97 operations | [Paid only](https://docs.localstack.cloud/references/licensing/) |
+| SES inbound email | Real receipt rule action execution | [Stored but never executed](https://docs.localstack.cloud/user-guide/aws/ses/) |
+| Cognito | Planned | [Paid only](https://docs.localstack.cloud/references/licensing/) |
 
 ## Quick Start
 
