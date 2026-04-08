@@ -146,10 +146,23 @@ async fn sns_confirm_subscription() {
         .unwrap();
     let arn = topic.topic_arn().unwrap();
 
+    // Subscribe an SQS endpoint — SQS subscriptions auto-confirm in fakecloud,
+    // but we can still call ConfirmSubscription on any subscription.
+    // Use a fake token; fakecloud accepts the subscription ARN as a valid token.
+    let sub = client
+        .subscribe()
+        .topic_arn(arn)
+        .protocol("sqs")
+        .endpoint("arn:aws:sqs:us-east-1:000000000000:confirm-queue")
+        .send()
+        .await
+        .unwrap();
+    let sub_arn = sub.subscription_arn().unwrap();
+
     let resp = client
         .confirm_subscription()
         .topic_arn(arn)
-        .token("fake-token")
+        .token(sub_arn)
         .send()
         .await
         .unwrap();
