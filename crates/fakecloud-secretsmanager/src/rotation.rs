@@ -55,7 +55,7 @@ pub async fn check_and_rotate(
         let version_id = uuid::Uuid::new_v4().to_string();
 
         // Mutate state: create pending version, update timestamps
-        let invocation = {
+        let (invocation, version_created) = {
             let mut state = state.write();
             let secret = match state.secrets.get_mut(&due.name) {
                 Some(s) => s,
@@ -71,6 +71,8 @@ pub async fn check_and_rotate(
                 .as_ref()
                 .and_then(|vid| secret.versions.get(vid))
                 .cloned();
+
+            let mut version_created = false;
 
             if let Some(cv) = current_value {
                 if due.lambda_arn.is_some() {
@@ -103,13 +105,20 @@ pub async fn check_and_rotate(
                     secret.versions.insert(version_id.clone(), version);
                     secret.current_version_id = Some(version_id.clone());
                 }
+                version_created = true;
             }
 
-            due.lambda_arn.as_ref().map(|arn| RotationInvocation {
-                lambda_arn: arn.clone(),
-                secret_arn: due.arn.clone(),
-                client_request_token: version_id.clone(),
-            })
+            let invocation = if version_created {
+                due.lambda_arn.as_ref().map(|arn| RotationInvocation {
+                    lambda_arn: arn.clone(),
+                    secret_arn: due.arn.clone(),
+                    client_request_token: version_id.clone(),
+                })
+            } else {
+                None
+            };
+
+            (invocation, version_created)
         };
 
         // Invoke Lambda outside the lock
@@ -144,7 +153,9 @@ pub async fn check_and_rotate(
             }
         }
 
-        rotated.push(due.name);
+        if version_created {
+            rotated.push(due.name);
+        }
     }
 
     rotated
