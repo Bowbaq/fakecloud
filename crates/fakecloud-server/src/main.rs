@@ -25,6 +25,7 @@ use fakecloud_kinesis::service::KinesisService;
 use fakecloud_kms::service::KmsService;
 use fakecloud_lambda::service::LambdaService;
 use fakecloud_logs::service::LogsService;
+use fakecloud_rds::service::RdsService;
 use fakecloud_s3::service::S3Service;
 use fakecloud_secretsmanager::service::SecretsManagerService;
 use fakecloud_ses::service::SesV2Service;
@@ -141,6 +142,9 @@ async fn main() {
     let kinesis_state = Arc::new(parking_lot::RwLock::new(
         fakecloud_kinesis::state::KinesisState::new(&cli.account_id, &cli.region),
     ));
+    let rds_state = Arc::new(parking_lot::RwLock::new(
+        fakecloud_rds::state::RdsState::new(&cli.account_id, &cli.region),
+    ));
 
     // Cross-service delivery bus
     // Step 1: SQS delivery (SNS and EventBridge can push messages into SQS queues)
@@ -242,6 +246,7 @@ async fn main() {
         ses: ses_state.clone(),
         cognito: cognito_state.clone(),
         kinesis: kinesis_state.clone(),
+        rds: rds_state.clone(),
         container_runtime: container_runtime.clone(),
     };
 
@@ -350,6 +355,7 @@ async fn main() {
         CognitoService::new(cognito_state.clone()).with_delivery(cognito_delivery_ctx),
     ));
     registry.register(Arc::new(KinesisService::new(kinesis_state)));
+    registry.register(Arc::new(RdsService::new(rds_state)));
 
     // Spawn background tasks
     let lifecycle_processor = fakecloud_s3::lifecycle::LifecycleProcessor::new(s3_state);
@@ -1047,6 +1053,7 @@ struct ResetState {
     ses: fakecloud_ses::state::SharedSesState,
     cognito: fakecloud_cognito::state::SharedCognitoState,
     kinesis: fakecloud_kinesis::state::SharedKinesisState,
+    rds: fakecloud_rds::state::SharedRdsState,
     container_runtime: Option<Arc<fakecloud_lambda::runtime::ContainerRuntime>>,
 }
 
@@ -1116,6 +1123,9 @@ impl ResetState {
             "kinesis" => {
                 self.kinesis.write().reset();
             }
+            "rds" => {
+                self.rds.write().reset();
+            }
             _ => {
                 return Err(format!("Unknown service: {service}"));
             }
@@ -1162,6 +1172,7 @@ impl ResetState {
         self.ses.write().reset();
         self.cognito.write().reset();
         self.kinesis.write().reset();
+        self.rds.write().reset();
         tracing::info!("state reset via reset API");
         axum::Json(types::ResetResponse {
             status: "ok".to_string(),
@@ -1174,4 +1185,93 @@ async fn shutdown_signal() {
         .await
         .expect("failed to install Ctrl+C handler");
     tracing::info!("shutting down");
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use fakecloud_rds::state::{DbInstance, RdsState};
+
+    use super::ResetState;
+
+    #[test]
+    fn reset_service_clears_rds_state() {
+        let mut rds = RdsState::new("123456789012", "us-east-1");
+        rds.instances.insert(
+            "db-1".to_string(),
+            DbInstance {
+                db_instance_identifier: "db-1".to_string(),
+            },
+        );
+
+        let state = ResetState {
+            iam: Arc::new(parking_lot::RwLock::new(
+                fakecloud_iam::state::IamState::new("123456789012"),
+            )),
+            sqs: Arc::new(parking_lot::RwLock::new(
+                fakecloud_sqs::state::SqsState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "http://localhost:4566",
+                ),
+            )),
+            sns: Arc::new(parking_lot::RwLock::new(
+                fakecloud_sns::state::SnsState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "http://localhost:4566",
+                ),
+            )),
+            eb: Arc::new(parking_lot::RwLock::new(
+                fakecloud_eventbridge::state::EventBridgeState::new("123456789012", "us-east-1"),
+            )),
+            ssm: Arc::new(parking_lot::RwLock::new(
+                fakecloud_ssm::state::SsmState::new("123456789012", "us-east-1"),
+            )),
+            dynamodb: Arc::new(parking_lot::RwLock::new(
+                fakecloud_dynamodb::state::DynamoDbState::new("123456789012", "us-east-1"),
+            )),
+            lambda: Arc::new(parking_lot::RwLock::new(
+                fakecloud_lambda::state::LambdaState::new("123456789012", "us-east-1"),
+            )),
+            secretsmanager: Arc::new(parking_lot::RwLock::new(
+                fakecloud_secretsmanager::state::SecretsManagerState::new(
+                    "123456789012",
+                    "us-east-1",
+                ),
+            )),
+            s3: Arc::new(parking_lot::RwLock::new(fakecloud_s3::state::S3State::new(
+                "123456789012",
+                "us-east-1",
+            ))),
+            logs: Arc::new(parking_lot::RwLock::new(
+                fakecloud_logs::state::LogsState::new("123456789012", "us-east-1"),
+            )),
+            kms: Arc::new(parking_lot::RwLock::new(
+                fakecloud_kms::state::KmsState::new("123456789012", "us-east-1"),
+            )),
+            cloudformation: Arc::new(parking_lot::RwLock::new(
+                fakecloud_cloudformation::state::CloudFormationState::new(
+                    "123456789012",
+                    "us-east-1",
+                ),
+            )),
+            ses: Arc::new(parking_lot::RwLock::new(
+                fakecloud_ses::state::SesState::new("123456789012", "us-east-1"),
+            )),
+            cognito: Arc::new(parking_lot::RwLock::new(
+                fakecloud_cognito::state::CognitoState::new("123456789012", "us-east-1"),
+            )),
+            kinesis: Arc::new(parking_lot::RwLock::new(
+                fakecloud_kinesis::state::KinesisState::new("123456789012", "us-east-1"),
+            )),
+            rds: Arc::new(parking_lot::RwLock::new(rds)),
+            container_runtime: None,
+        };
+
+        state.reset_service("rds").expect("reset rds");
+
+        assert!(state.rds.read().instances.is_empty());
+    }
 }
