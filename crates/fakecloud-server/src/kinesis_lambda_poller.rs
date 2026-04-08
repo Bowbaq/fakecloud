@@ -113,6 +113,7 @@ impl KinesisLambdaPoller {
                 })
                 .to_string();
 
+                let used_real_delivery = self.lambda_delivery.is_some();
                 let delivered = if let Some(ref delivery) = self.lambda_delivery {
                     match delivery.invoke_lambda(&function_arn, &payload).await {
                         Ok(_) => true,
@@ -140,13 +141,15 @@ impl KinesisLambdaPoller {
                     kinesis.set_lambda_checkpoint(&mapping_uuid, &shard_id, end);
                 }
 
-                let mut lambda = self.lambda_state.write();
-                lambda.invocations.push(LambdaInvocation {
-                    function_arn: function_arn.clone(),
-                    payload,
-                    timestamp: Utc::now(),
-                    source: "aws:kinesis".to_string(),
-                });
+                if !used_real_delivery {
+                    let mut lambda = self.lambda_state.write();
+                    lambda.invocations.push(LambdaInvocation {
+                        function_arn: function_arn.clone(),
+                        payload,
+                        timestamp: Utc::now(),
+                        source: "aws:kinesis".to_string(),
+                    });
+                }
             }
         }
     }

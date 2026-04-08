@@ -693,6 +693,10 @@ async fn kinesis_lambda_event_source_mapping() {
         })
         .count();
     assert_eq!(
+        kinesis_invocation_count, 1,
+        "one Kinesis record should produce exactly one Lambda invocation"
+    );
+    assert_eq!(
         kinesis_invocation_count_again, kinesis_invocation_count,
         "checkpointed Kinesis records should not be redelivered"
     );
