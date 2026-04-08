@@ -46,6 +46,41 @@ Amazon States Language interpreter with full execution semantics. Task, Choice, 
 
 Metric storage, alarms, dashboards, and math expressions. Completes the CloudWatch story alongside our existing CloudWatch Logs implementation (113 operations).
 
+## Testing APIs
+
+fakecloud is built for testing. Beyond emulating the AWS API, fakecloud exposes its own `/_fakecloud/*` endpoints that give you capabilities AWS doesn't — inspecting internal state, simulating events, and setting up test scenarios.
+
+### Introspection
+
+Read internal state that AWS doesn't expose. Useful for test assertions.
+
+- **`GET /_fakecloud/ses/emails`** — Every email sent through SES, with full headers and body. *(shipped)*
+- **`GET /_fakecloud/lambda/invocations`** — Every Lambda invocation with request payload and response.  *(shipped)*
+- **SNS**: Messages published to each topic and what was delivered to each subscription.
+- **SQS**: Message delivery history, dead-letter queue activity, delivery counts.
+- **EventBridge**: Events that matched rules and which targets were invoked.
+- **S3**: Notification events that fired on object operations.
+
+### Simulation
+
+Trigger things that normally come from AWS infrastructure or external systems.
+
+- **`POST /_fakecloud/ses/inbound`** — Simulate receiving an email. Evaluates receipt rules and executes S3/SNS/Lambda actions. *(shipped)*
+- **EventBridge**: Advance time to trigger scheduled rules without waiting.
+- **SQS**: Force dead-letter queue delivery without waiting for visibility timeouts.
+
+### State setup
+
+Set up test scenarios faster than calling multiple AWS APIs.
+
+- **`POST /_fakecloud/reset`** — Reset all state across all services. *(shipped)*
+- **Bulk seed**: Load data into DynamoDB tables, S3 buckets, or SQS queues in a single call.
+- **Pre-configure**: Set up IAM roles with policies, verify SES identities, or create full CloudFormation-style resource graphs without running templates.
+
+### SDKs
+
+Once the APIs are stable, client libraries for TypeScript, Python, Go, Rust, and Java will wrap the `/_fakecloud/*` endpoints for cleaner test code.
+
 ## Design principles
 
 **Smart proxy pattern** — For services that wrap stateful software (RDS, ElastiCache, ECS), fakecloud implements the full AWS API and delegates execution to real software via Docker. This gives you API compatibility and real behavior in one package.
