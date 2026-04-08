@@ -17,6 +17,27 @@ pub struct RdsState {
     pub instances: HashMap<String, DbInstance>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EngineVersionInfo {
+    pub engine: String,
+    pub engine_version: String,
+    pub db_parameter_group_family: String,
+    pub db_engine_description: String,
+    pub db_engine_version_description: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrderableDbInstanceOption {
+    pub engine: String,
+    pub engine_version: String,
+    pub db_instance_class: String,
+    pub license_model: String,
+    pub storage_type: String,
+    pub min_storage_size: i32,
+    pub max_storage_size: i32,
+}
+
 impl RdsState {
     pub fn new(account_id: &str, region: &str) -> Self {
         Self {
@@ -31,9 +52,32 @@ impl RdsState {
     }
 }
 
+pub fn default_engine_versions() -> Vec<EngineVersionInfo> {
+    vec![EngineVersionInfo {
+        engine: "postgres".to_string(),
+        engine_version: "16.3".to_string(),
+        db_parameter_group_family: "postgres16".to_string(),
+        db_engine_description: "PostgreSQL".to_string(),
+        db_engine_version_description: "PostgreSQL 16.3".to_string(),
+        status: "available".to_string(),
+    }]
+}
+
+pub fn default_orderable_options() -> Vec<OrderableDbInstanceOption> {
+    vec![OrderableDbInstanceOption {
+        engine: "postgres".to_string(),
+        engine_version: "16.3".to_string(),
+        db_instance_class: "db.t3.micro".to_string(),
+        license_model: "postgresql-license".to_string(),
+        storage_type: "gp2".to_string(),
+        min_storage_size: 20,
+        max_storage_size: 16384,
+    }]
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{DbInstance, RdsState};
+    use super::{default_engine_versions, default_orderable_options, DbInstance, RdsState};
 
     #[test]
     fn new_initializes_account_and_region() {
@@ -57,5 +101,26 @@ mod tests {
         state.reset();
 
         assert!(state.instances.is_empty());
+    }
+
+    #[test]
+    fn default_engine_versions_are_postgres_metadata() {
+        let versions = default_engine_versions();
+
+        assert_eq!(versions.len(), 1);
+        assert_eq!(versions[0].engine, "postgres");
+        assert_eq!(versions[0].engine_version, "16.3");
+        assert_eq!(versions[0].db_parameter_group_family, "postgres16");
+    }
+
+    #[test]
+    fn default_orderable_options_match_engine_versions() {
+        let versions = default_engine_versions();
+        let options = default_orderable_options();
+
+        assert_eq!(options.len(), 1);
+        assert_eq!(options[0].engine, versions[0].engine);
+        assert_eq!(options[0].engine_version, versions[0].engine_version);
+        assert_eq!(options[0].db_instance_class, "db.t3.micro");
     }
 }

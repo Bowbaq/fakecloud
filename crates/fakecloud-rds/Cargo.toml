@@ -8,8 +8,12 @@ homepage.workspace = true
 version.workspace = true
 
 [dependencies]
+fakecloud-aws = { workspace = true }
 fakecloud-core = { workspace = true }
 async-trait = { workspace = true }
+http = { workspace = true }
 parking_lot = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+bytes = { workspace = true }
+tokio = { workspace = true }
