@@ -24,7 +24,7 @@ Part of the [faisca project family](https://faisca.dev).
 
 - Run your app against normal AWS SDKs, CLI tools, and IaC
 - Stay fully local with no AWS account, no auth token, and no paid tier
-- Assert what happened with first-party fakecloud SDKs for TypeScript, Python, and Go
+- Assert what happened with first-party fakecloud SDKs for TypeScript, Python, Go, and Rust
 - Test cross-service behavior like SES -> SNS/EventBridge, S3 -> SQS/SNS/Lambda, and SQS -> Lambda
 - Use a fast single binary or Docker image, depending on your setup
 
@@ -67,6 +67,7 @@ an account-gated platform in the middle.
 | TypeScript | `npm install fakecloud` | [`sdks/typescript/README.md`](sdks/typescript/README.md) |
 | Python | `pip install fakecloud` | [`sdks/python/README.md`](sdks/python/README.md) |
 | Go | `go get github.com/faiscadev/fakecloud/sdks/go` | [`sdks/go/README.md`](sdks/go/README.md) |
+| Rust | `cargo add fakecloud-sdk` | [`crates/fakecloud-sdk`](crates/fakecloud-sdk) |
 
 Example test flow:
 
