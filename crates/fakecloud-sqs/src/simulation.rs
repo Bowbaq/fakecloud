@@ -39,7 +39,7 @@ pub fn tick_expiration(state: &SharedSqsState) -> u64 {
 /// Force-move messages that have exceeded `maxReceiveCount` to the DLQ.
 ///
 /// Looks up the queue by name, checks its redrive policy, then moves any
-/// messages (pending or in-flight) whose `receive_count` is >=
+/// messages (pending or in-flight) whose `receive_count` exceeds
 /// `maxReceiveCount` to the configured dead-letter queue. Returns the
 /// number of messages moved.
 ///
@@ -77,7 +77,7 @@ pub fn force_dlq(state: &SharedSqsState, queue_name: &str) -> u64 {
 
     let mut remaining = std::collections::VecDeque::new();
     while let Some(msg) = queue.messages.pop_front() {
-        if msg.receive_count >= max_receive_count {
+        if msg.receive_count > max_receive_count {
             to_move.push(msg);
         } else {
             remaining.push_back(msg);
@@ -88,7 +88,7 @@ pub fn force_dlq(state: &SharedSqsState, queue_name: &str) -> u64 {
     // Also check in-flight messages
     let mut remaining_inflight = Vec::new();
     for msg in queue.inflight.drain(..) {
-        if msg.receive_count >= max_receive_count {
+        if msg.receive_count > max_receive_count {
             to_move.push(msg);
         } else {
             remaining_inflight.push(msg);

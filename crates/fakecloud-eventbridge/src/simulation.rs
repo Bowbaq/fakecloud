@@ -96,7 +96,24 @@ pub fn fire_rule(
         let body_str = resolve_target_body(target, &event_json, &event_str);
 
         if arn.contains(":sqs:") {
-            delivery.send_to_sqs(arn, &body_str, &HashMap::new());
+            // Extract MessageGroupId from SqsParameters if present (required for FIFO queues)
+            let message_group_id = target
+                .sqs_parameters
+                .as_ref()
+                .and_then(|sp| sp["MessageGroupId"].as_str())
+                .map(|s| s.to_string());
+
+            if message_group_id.is_some() {
+                delivery.send_to_sqs_with_attrs(
+                    arn,
+                    &body_str,
+                    &HashMap::new(),
+                    message_group_id.as_deref(),
+                    None,
+                );
+            } else {
+                delivery.send_to_sqs(arn, &body_str, &HashMap::new());
+            }
             fired.push(FiredTarget {
                 target_type: "sqs".to_string(),
                 arn: arn.clone(),
@@ -149,21 +166,38 @@ pub fn fire_rule(
     Ok(fired)
 }
 
-/// Compute the message body for a target, applying InputTransformer / Input /
-/// InputPath if present.
+/// Compute the message body for a target, applying Input / InputPath if
+/// present.
+///
+/// **Limitations**: `InputTransformer` is not yet implemented — if a target
+/// has one configured, we fall through to the full event envelope. Real AWS
+/// evaluates the `InputPathsMap` + `InputTemplate` to build the payload;
+/// implementing that requires a JSONPath evaluator. `InputPath` supports
+/// only the simple `$.field` case (single top-level key); deeper paths
+/// fall back to the full event.
 fn resolve_target_body(
     target: &EventTarget,
-    _event_json: &serde_json::Value,
+    event_json: &serde_json::Value,
     event_str: &str,
 ) -> String {
     if let Some(ref input) = target.input {
-        input.clone()
-    } else if let Some(ref _input_path) = target.input_path {
-        // Simplified: just use event_str for now
-        event_str.to_string()
-    } else {
-        event_str.to_string()
+        return input.clone();
     }
+
+    if let Some(ref input_path) = target.input_path {
+        // Support simple top-level JSONPath like "$.detail"
+        if let Some(key) = input_path.strip_prefix("$.") {
+            if !key.contains('.') && !key.contains('[') {
+                if let Some(val) = event_json.get(key) {
+                    return val.to_string();
+                }
+            }
+        }
+    }
+
+    // InputTransformer is not yet supported — fall through to full event.
+
+    event_str.to_string()
 }
 
 #[cfg(test)]

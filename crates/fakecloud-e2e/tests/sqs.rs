@@ -1289,13 +1289,15 @@ async fn sqs_simulation_force_dlq() {
         .unwrap()
         .clone();
 
-    // Create source queue with redrive policy (maxReceiveCount=1)
+    // Create source queue with redrive policy (maxReceiveCount=1) and a 0s
+    // visibility timeout so messages return to the queue immediately after receive.
     let redrive_policy =
         serde_json::json!({"deadLetterTargetArn": dlq_arn, "maxReceiveCount": 1}).to_string();
     let src_resp = client
         .create_queue()
         .queue_name("src-queue")
         .attributes(QueueAttributeName::RedrivePolicy, &redrive_policy)
+        .attributes(QueueAttributeName::VisibilityTimeout, "0")
         .send()
         .await
         .unwrap();
@@ -1310,18 +1312,17 @@ async fn sqs_simulation_force_dlq() {
         .await
         .unwrap();
 
-    // Receive the message once (increments receive count to 1)
-    let recv = client
-        .receive_message()
-        .queue_url(&src_url)
-        .max_number_of_messages(1)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(recv.messages().len(), 1);
-
-    // Wait for visibility timeout to expire so message returns to queue
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    // Receive the message twice to exceed maxReceiveCount (count goes to 2 > 1)
+    for _ in 0..2 {
+        let recv = client
+            .receive_message()
+            .queue_url(&src_url)
+            .max_number_of_messages(1)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(recv.messages().len(), 1);
+    }
 
     // Call force-dlq endpoint
     let url = format!("{}/_fakecloud/sqs/src-queue/force-dlq", server.endpoint());
