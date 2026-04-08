@@ -107,6 +107,10 @@ impl TestServer {
         aws_sdk_kinesis::Client::new(&self.aws_config().await)
     }
 
+    pub async fn rds_client(&self) -> aws_sdk_rds::Client {
+        aws_sdk_rds::Client::new(&self.aws_config().await)
+    }
+
     pub async fn cloudformation_client(&self) -> aws_sdk_cloudformation::Client {
         aws_sdk_cloudformation::Client::new(&self.aws_config().await)
     }
