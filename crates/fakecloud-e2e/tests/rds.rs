@@ -103,7 +103,7 @@ async fn rds_tag_roundtrip() {
     let server = TestServer::start().await;
     let client = server.rds_client().await;
 
-    let create = create_instance(&client).await;
+    let create = create_instance(&client, "orders-tags-db").await;
     let arn = create
         .db_instance()
         .and_then(|instance| instance.db_instance_arn())
@@ -156,10 +156,11 @@ async fn rds_tag_roundtrip() {
 
 async fn create_instance(
     client: &aws_sdk_rds::Client,
+    db_instance_identifier: &str,
 ) -> aws_sdk_rds::operation::create_db_instance::CreateDbInstanceOutput {
     client
         .create_db_instance()
-        .db_instance_identifier("orders-db")
+        .db_instance_identifier(db_instance_identifier)
         .allocated_storage(20)
         .db_instance_class("db.t3.micro")
         .engine("postgres")
