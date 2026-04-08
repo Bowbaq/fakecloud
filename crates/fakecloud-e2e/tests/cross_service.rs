@@ -575,6 +575,129 @@ async fn sqs_lambda_event_source_mapping() {
     );
 }
 
+/// Kinesis -> Lambda: event source mapping triggers Lambda invocation.
+#[tokio::test]
+async fn kinesis_lambda_event_source_mapping() {
+    let server = TestServer::start().await;
+    let kinesis = server.kinesis_client().await;
+    let lambda = server.lambda_client().await;
+
+    kinesis
+        .create_stream()
+        .stream_name("lambda-trigger-stream")
+        .shard_count(1)
+        .send()
+        .await
+        .unwrap();
+
+    let stream = kinesis
+        .describe_stream_summary()
+        .stream_name("lambda-trigger-stream")
+        .send()
+        .await
+        .unwrap();
+    let stream_arn = stream
+        .stream_description_summary()
+        .unwrap()
+        .stream_arn()
+        .to_string();
+
+    lambda
+        .create_function()
+        .function_name("kinesis-processor")
+        .runtime(aws_sdk_lambda::types::Runtime::Python312)
+        .role("arn:aws:iam::123456789012:role/lambda-role")
+        .handler("index.handler")
+        .code(
+            aws_sdk_lambda::types::FunctionCode::builder()
+                .zip_file(aws_sdk_lambda::primitives::Blob::new(make_zip(&[(
+                    "index.py",
+                    br#"def handler(event, context):
+    return {"statusCode": 200}
+"#,
+                )])))
+                .build(),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    lambda
+        .create_event_source_mapping()
+        .event_source_arn(&stream_arn)
+        .function_name("kinesis-processor")
+        .batch_size(10)
+        .enabled(true)
+        .send()
+        .await
+        .unwrap();
+
+    kinesis
+        .put_record()
+        .stream_name("lambda-trigger-stream")
+        .partition_key("key-1")
+        .data(aws_sdk_kinesis::primitives::Blob::new(
+            br#"{"order_id":"kinesis-123"}"#,
+        ))
+        .send()
+        .await
+        .unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    let invocations = get_lambda_invocations(server.endpoint()).await;
+    let inv_list = invocations["invocations"].as_array().unwrap();
+    assert!(
+        !inv_list.is_empty(),
+        "expected at least one Lambda invocation"
+    );
+
+    let inv = inv_list
+        .iter()
+        .rev()
+        .find(|inv| {
+            inv["payload"]
+                .as_str()
+                .unwrap_or("")
+                .contains("\"eventSource\":\"aws:kinesis\"")
+        })
+        .expect("expected a Kinesis-shaped Lambda invocation payload");
+    assert!(inv["functionArn"]
+        .as_str()
+        .unwrap()
+        .contains("kinesis-processor"));
+    let payload: serde_json::Value =
+        serde_json::from_str(inv["payload"].as_str().unwrap()).unwrap();
+    assert_eq!(payload["Records"][0]["eventSource"], "aws:kinesis");
+    assert_eq!(payload["Records"][0]["kinesis"]["partitionKey"], "key-1");
+
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    let invocations_again = get_lambda_invocations(server.endpoint()).await;
+    let inv_list_again = invocations_again["invocations"].as_array().unwrap();
+    let kinesis_invocation_count = inv_list
+        .iter()
+        .filter(|inv| {
+            inv["payload"]
+                .as_str()
+                .unwrap_or("")
+                .contains("\"eventSource\":\"aws:kinesis\"")
+        })
+        .count();
+    let kinesis_invocation_count_again = inv_list_again
+        .iter()
+        .filter(|inv| {
+            inv["payload"]
+                .as_str()
+                .unwrap_or("")
+                .contains("\"eventSource\":\"aws:kinesis\"")
+        })
+        .count();
+    assert_eq!(
+        kinesis_invocation_count_again, kinesis_invocation_count,
+        "checkpointed Kinesis records should not be redelivered"
+    );
+}
+
 /// EventBridge -> Lambda: put_events with a Lambda target records invocation.
 #[tokio::test]
 async fn eventbridge_lambda_delivery() {

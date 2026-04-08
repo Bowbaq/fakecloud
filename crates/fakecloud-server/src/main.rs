@@ -11,8 +11,10 @@ use fakecloud_core::dispatch::{self, DispatchConfig};
 use fakecloud_core::registry::ServiceRegistry;
 use fakecloud_sdk::types;
 
+mod kinesis_lambda_poller;
 mod lambda_delivery;
 mod sqs_lambda_poller;
+use kinesis_lambda_poller::KinesisLambdaPoller;
 use sqs_lambda_poller::SqsLambdaPoller;
 
 use fakecloud_cloudformation::service::CloudFormationService;
@@ -354,7 +356,7 @@ async fn main() {
     registry.register(Arc::new(
         CognitoService::new(cognito_state.clone()).with_delivery(cognito_delivery_ctx),
     ));
-    registry.register(Arc::new(KinesisService::new(kinesis_state)));
+    registry.register(Arc::new(KinesisService::new(kinesis_state.clone())));
     registry.register(Arc::new(RdsService::new(rds_state)));
 
     // Spawn background tasks
@@ -366,6 +368,13 @@ async fn main() {
         sqs_lambda_poller = sqs_lambda_poller.with_lambda_delivery(ld.clone());
     }
     tokio::spawn(sqs_lambda_poller.run());
+
+    let mut kinesis_lambda_poller =
+        KinesisLambdaPoller::new(kinesis_state, lambda_invocations_state.clone());
+    if let Some(ref ld) = lambda_delivery {
+        kinesis_lambda_poller = kinesis_lambda_poller.with_lambda_delivery(ld.clone());
+    }
+    tokio::spawn(kinesis_lambda_poller.run());
 
     if let Some(ref rt) = container_runtime {
         let rt = rt.clone();

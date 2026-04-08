@@ -1525,6 +1525,7 @@ name = "fakecloud"
 version = "0.5.1"
 dependencies = [
  "axum",
+ "base64",
  "chrono",
  "clap",
  "fakecloud-aws",
