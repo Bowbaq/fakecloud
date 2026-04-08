@@ -4455,7 +4455,7 @@ async fn cognito_simulation_tokens_and_expire() {
     for t in tokens {
         assert_eq!(t["username"], "tokenuser");
         assert_eq!(t["poolId"], pool_id);
-        assert!(t["issuedAt"].as_i64().unwrap() > 0);
+        assert!(t["issuedAt"].as_f64().unwrap() > 0.0);
     }
 
     // Expire tokens for this user
@@ -4613,7 +4613,7 @@ async fn cognito_simulation_auth_events() {
     assert_eq!(signup["username"], "evuser");
     assert_eq!(signup["userPoolId"], pool_id);
     assert_eq!(signup["success"], true);
-    assert!(signup["timestamp"].as_i64().unwrap() > 0);
+    assert!(signup["timestamp"].as_f64().unwrap() > 0.0);
 
     let failure = events
         .iter()
