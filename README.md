@@ -1,6 +1,6 @@
 <p align="center">
   <strong>fakecloud</strong><br>
-  <em>Local AWS cloud emulator. Free forever.</em>
+  <em>Local AWS emulator for integration tests. Free forever.</em>
 </p>
 
 <p align="center">
@@ -13,11 +13,20 @@
 
 ---
 
-fakecloud is a free, open-source local AWS cloud emulator. It runs on a single port
-(`4566`), requires no account or auth token, and aims to faithfully replicate
-AWS service behavior for local development and testing.
+fakecloud is a free, open-source local AWS emulator for integration testing and
+local development. It runs on a single port (`4566`), requires no account or
+auth token, and aims to faithfully replicate AWS behavior where it matters:
+real API compatibility, cross-service wiring, and test-friendly introspection.
 
 Part of the [faisca project family](https://faisca.dev).
+
+## Why teams use fakecloud
+
+- Run your app against normal AWS SDKs, CLI tools, and IaC
+- Assert what happened with first-party fakecloud SDKs for TypeScript, Python, and Go
+- Test cross-service behavior like SES -> SNS/EventBridge, S3 -> SQS/SNS/Lambda, and SQS -> Lambda
+- Stay fully local with no AWS account, no auth token, and no paid tier
+- Use a fast single binary or Docker image, depending on your setup
 
 ## Why fakecloud?
 
@@ -40,7 +49,36 @@ proprietary image that requires an account and auth token.
 | SES v2 | 97 operations | [Paid only](https://docs.localstack.cloud/references/licensing/) |
 | SES inbound email | Real receipt rule action execution | [Stored but never executed](https://docs.localstack.cloud/user-guide/aws/ses/) |
 
+## First-party SDKs
+
+fakecloud now ships SDKs for the introspection and simulation API, so your tests
+can use normal AWS clients for application behavior and a fakecloud client for
+assertions and time control.
+
+| Language | Install | Docs |
+|---|---|---|
+| TypeScript | `npm install fakecloud` | [`sdks/typescript/README.md`](sdks/typescript/README.md) |
+| Python | `pip install fakecloud` | [`sdks/python/README.md`](sdks/python/README.md) |
+| Go | `go get github.com/faiscadev/fakecloud/sdks/go` | [`sdks/go/README.md`](sdks/go/README.md) |
+
+Example test flow:
+
+```ts
+import { FakeCloud } from "fakecloud";
+
+const fc = new FakeCloud("http://localhost:4566");
+
+// Your app talks to fakecloud through the normal AWS SDK.
+// Then your test can assert the side effects directly.
+const { emails } = await fc.ses.getEmails();
+expect(emails).toHaveLength(1);
+
+await fc.reset();
+```
+
 ## Quick Start
+
+Start fakecloud locally:
 
 ### Install script (recommended)
 
@@ -96,6 +134,14 @@ docker compose up
 ```
 
 fakecloud is now listening at `http://localhost:4566`.
+
+Point your usual AWS SDK or CLI at `http://localhost:4566` with any dummy
+credentials, then use a fakecloud SDK when you want to inspect state or trigger
+background processors:
+
+```sh
+aws --endpoint-url http://localhost:4566 sqs create-queue --queue-name my-queue
+```
 
 ## Supported Services
 
@@ -162,7 +208,7 @@ curl http://localhost:4566/_fakecloud/health
 ```json
 {
   "status": "ok",
-  "version": "0.3.0",
+  "version": "0.5.1",
   "services": ["cloudformation", "cognito-idp", "dynamodb", "sqs", "sns", "events", "iam", "sts", "ssm", "lambda", "secretsmanager", "logs", "kms", "s3", "ses"]
 }
 ```
@@ -232,6 +278,14 @@ Protocol handling:
 - SigV4 signatures are parsed for service routing but never validated
 
 ## Testing
+
+fakecloud is verified two ways:
+
+- **Conformance** checks AWS request/response shape and validation behavior
+- **E2E** checks real behavior across services using the official AWS SDKs
+
+For test code in your own app, the fakecloud SDKs provide a cleaner wrapper over
+the `/_fakecloud/*` endpoints for assertions, resets, and time-based processors.
 
 ```sh
 cargo test --workspace              # unit tests
