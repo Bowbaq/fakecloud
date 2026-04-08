@@ -709,13 +709,15 @@ impl SnsService {
         let token = required(req, "Token")?;
 
         let mut state = self.state.write();
+        // AWS accepts both the confirmation token and the subscription ARN as the Token parameter
         let sub_arn = state
             .subscriptions
             .values()
             .find(|s| {
                 s.topic_arn == topic_arn
                     && !s.confirmed
-                    && s.confirmation_token.as_deref() == Some(&token)
+                    && (s.confirmation_token.as_deref() == Some(&token)
+                        || s.subscription_arn == token)
             })
             .map(|s| s.subscription_arn.clone())
             .ok_or_else(|| {
@@ -4558,6 +4560,52 @@ mod tests {
                 assert!(!sub.confirmed, "first subscription should still be pending");
             }
         }
+    }
+
+    #[test]
+    fn confirm_subscription_accepts_sub_arn_as_token() {
+        let (svc, state) = make_sns();
+        assert_ok(&svc.create_topic(&sns_request("CreateTopic", vec![("Name", "arn-token")])));
+
+        let topic_arn = "arn:aws:sns:us-east-1:123456789012:arn-token";
+
+        // Subscribe an HTTP endpoint (starts as pending)
+        assert_ok(&svc.subscribe(&sns_request(
+            "Subscribe",
+            vec![
+                ("TopicArn", topic_arn),
+                ("Protocol", "http"),
+                ("Endpoint", "http://example.com/hook"),
+            ],
+        )));
+
+        // Get the subscription ARN
+        let sub_arn = {
+            let s = state.read();
+            s.subscriptions
+                .values()
+                .find(|sub| sub.topic_arn == topic_arn)
+                .expect("should have a subscription")
+                .subscription_arn
+                .clone()
+        };
+
+        // Confirm using the subscription ARN as the token (AWS-compatible behavior)
+        let req = sns_request(
+            "ConfirmSubscription",
+            vec![("TopicArn", topic_arn), ("Token", &sub_arn)],
+        );
+        let result = svc.confirm_subscription(&req);
+        assert_ok(&result);
+
+        // Verify the subscription is now confirmed
+        let s = state.read();
+        let sub = s
+            .subscriptions
+            .values()
+            .find(|sub| sub.topic_arn == topic_arn)
+            .expect("subscription should exist");
+        assert!(sub.confirmed, "subscription should be confirmed");
     }
 
     // --- CreateTopic / DeleteTopic / ListTopics ---

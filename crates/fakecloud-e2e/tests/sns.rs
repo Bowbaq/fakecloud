@@ -630,10 +630,7 @@ async fn sns_confirm_subscription() {
 
     // Get the token from the pending-confirmations simulation endpoint
     let http = reqwest::Client::new();
-    let pending_url = format!(
-        "{}/_fakecloud/sns/pending-confirmations",
-        server.endpoint()
-    );
+    let pending_url = format!("{}/_fakecloud/sns/pending-confirmations", server.endpoint());
     let pending: serde_json::Value = http
         .get(&pending_url)
         .send()

@@ -146,10 +146,25 @@ async fn sns_confirm_subscription() {
         .unwrap();
     let arn = topic.topic_arn().unwrap();
 
+    // Subscribe an HTTP endpoint to create a pending subscription
+    client
+        .subscribe()
+        .topic_arn(arn)
+        .protocol("http")
+        .endpoint("http://example.com/hook")
+        .send()
+        .await
+        .unwrap();
+    // HTTP subscriptions return "pending confirmation" instead of a real ARN,
+    // so we list subscriptions to get the actual ARN
+    let subs = client.list_subscriptions().send().await.unwrap();
+    let sub_arn = subs.subscriptions()[0].subscription_arn().unwrap();
+
+    // AWS accepts the subscription ARN as a valid confirmation token
     let resp = client
         .confirm_subscription()
         .topic_arn(arn)
-        .token("fake-token")
+        .token(sub_arn)
         .send()
         .await
         .unwrap();
