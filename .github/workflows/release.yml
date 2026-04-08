@@ -116,15 +116,25 @@ jobs:
           TAG="${GITHUB_REF#refs/tags/v}"
 
           wait_for_crate() {
-            echo "Waiting for $1@$TAG on crates.io..."
+            # Check the sparse index (what cargo actually uses to resolve deps)
+            local name="$1"
+            local prefix
+            case ${#name} in
+              1) prefix="1" ;;
+              2) prefix="2" ;;
+              3) prefix="3/${name:0:1}" ;;
+              *) prefix="${name:0:2}/${name:2:2}" ;;
+            esac
+            local url="https://index.crates.io/${prefix}/${name}"
+            echo "Waiting for $name@$TAG in sparse index..."
             for i in $(seq 1 60); do
-              if curl -sf "https://crates.io/api/v1/crates/$1/$TAG" > /dev/null 2>&1; then
-                echo "$1@$TAG available after $((i * 5))s"
+              if curl -sf "$url" 2>/dev/null | grep -q "\"vers\":\"$TAG\""; then
+                echo "$name@$TAG indexed after $((i * 5))s"
                 return 0
               fi
               sleep 5
             done
-            echo "WARNING: timed out waiting for $1@$TAG, continuing anyway"
+            echo "WARNING: timed out waiting for $name@$TAG, continuing anyway"
           }
 
           publish() {
