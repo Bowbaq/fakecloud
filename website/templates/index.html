@@ -1,17 +1,17 @@
 {% extends "base.html" %}
 
-{% block title %}fakecloud - Local AWS Emulator For Integration Tests{% endblock %}
-{% block description %}fakecloud is a free, open-source local AWS emulator for integration tests. Single binary, no auth required, plus first-party SDKs for test assertions.{% endblock %}
+{% block title %}fakecloud - Local AWS Cloud Emulator{% endblock %}
+{% block description %}fakecloud is a free, open-source local AWS cloud emulator. Single binary, no auth required, no paid tier, plus first-party SDKs for test assertions.{% endblock %}
 
 {% block content %}
 <section class="hero">
   <div class="container">
     <h1>fake<span>cloud</span></h1>
-    <p class="tagline">Local AWS emulator for integration tests. Run your app with normal AWS clients, then assert behavior with fakecloud SDKs.</p>
+    <p class="tagline">Local AWS cloud emulator for integration tests. Run your app with normal AWS clients, stay fully local, and use fakecloud SDKs when your tests need deeper visibility.</p>
     <p class="hero-proof">15 services. 922 operations. 100% conformance across implemented APIs.</p>
     <div class="btn-group">
       <a href="#quickstart" class="btn">Get Started</a>
-      <a href="#sdks" class="btn btn-outline">Explore SDKs</a>
+      <a href="#compare" class="btn btn-outline">Why fakecloud</a>
     </div>
   </div>
 </section>
@@ -21,10 +21,10 @@
     <h2 class="section-title">Why fakecloud?</h2>
     <div class="why-box">
       <p>
-        fakecloud gives you a local AWS environment that behaves like infrastructure, not a mock. Your app uses the regular AWS SDK, CLI, and IaC tools. Your tests get extra superpowers through fakecloud's introspection and simulation API.
+        fakecloud gives you a local AWS environment that behaves like infrastructure, not a mock. Your app uses the regular AWS SDK, CLI, and IaC tools. Unlike today's LocalStack Community setup, you do not need an account, auth token, or paid plan just to keep core development flows local.
       </p>
       <p style="margin-top: 16px;">
-        <strong>That means less guessing in tests.</strong> Start fakecloud, run the code you actually ship, inspect emails/messages/invocations after the fact, and force async AWS-style behavior to happen on demand.
+        <strong>The SDKs make that workflow nicer, not narrower.</strong> Start fakecloud, run the code you actually ship, inspect emails/messages/invocations after the fact, and force async AWS-style behavior to happen on demand.
       </p>
     </div>
   </div>
@@ -43,7 +43,7 @@
       <div class="feature">
         <div class="label">SDKs</div>
         <h3>First-party test clients</h3>
-        <p>TypeScript, Python, and Go SDKs wrap the <code>/_fakecloud/*</code> endpoints for resets, assertions, and manual control of async processors.</p>
+        <p>TypeScript, Python, and Go SDKs wrap the <code>/_fakecloud/*</code> endpoints for resets, assertions, and manual control of async processors after your app has already used the normal AWS APIs.</p>
       </div>
       <div class="feature">
         <div class="label">Coverage</div>
@@ -72,7 +72,7 @@
 <section id="sdks">
   <div class="container">
     <h2 class="section-title">SDKs for test assertions</h2>
-    <p class="section-sub">Keep using the AWS SDK in your app. Use fakecloud SDKs when your tests need visibility and control.</p>
+    <p class="section-sub">Keep using the AWS SDK in your app. Use fakecloud SDKs when your tests need visibility and control on top of the emulator itself.</p>
     <div class="sdk-grid">
       <div class="sdk-card">
         <div class="label">TypeScript</div>
@@ -118,7 +118,7 @@
 <section id="compare">
   <div class="container">
     <h2 class="section-title">How it compares</h2>
-    <p class="section-sub">If you want a fully local workflow with real AWS APIs and no account requirement, fakecloud is built for that path.</p>
+    <p class="section-sub">If you want a fully local workflow with real AWS APIs and no account requirement, fakecloud is built for that path. The SDKs are an extra testing advantage, not a replacement for that positioning.</p>
     <div class="table-wrap">
       <table>
         <thead>
@@ -133,6 +133,9 @@
           <tr><td>Auth required</td><td class="check">No</td><td class="cross">Yes (account + token)</td></tr>
           <tr><td>Commercial use</td><td class="check">Free</td><td class="cross">Paid plans only</td></tr>
           <tr><td>Docker required</td><td class="check">No (standalone binary)</td><td class="cross">Yes</td></tr>
+          <tr><td>Startup time</td><td class="check">~500ms</td><td class="cross">~3s</td></tr>
+          <tr><td>Idle memory</td><td class="check">~10 MiB</td><td class="cross">~150 MiB</td></tr>
+          <tr><td>Install size</td><td class="check">~19 MB binary</td><td class="cross">~1 GB Docker image</td></tr>
           <tr><td>AWS services</td><td>15</td><td>30+</td></tr>
           <tr><td>Test assertion SDKs</td><td class="check">TypeScript, Python, Go</td><td class="cross">No equivalent first-party SDK layer</td></tr>
           <tr><td>Cognito User Pools</td><td class="check">80 operations</td><td class="cross">Paid only</td></tr>

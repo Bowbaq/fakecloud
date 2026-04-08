@@ -1,6 +1,6 @@
 <p align="center">
   <strong>fakecloud</strong><br>
-  <em>Local AWS emulator for integration tests. Free forever.</em>
+  <em>Local AWS cloud emulator. Free forever.</em>
 </p>
 
 <p align="center">
@@ -23,15 +23,20 @@ Part of the [faisca project family](https://faisca.dev).
 ## Why teams use fakecloud
 
 - Run your app against normal AWS SDKs, CLI tools, and IaC
+- Stay fully local with no AWS account, no auth token, and no paid tier
 - Assert what happened with first-party fakecloud SDKs for TypeScript, Python, and Go
 - Test cross-service behavior like SES -> SNS/EventBridge, S3 -> SQS/SNS/Lambda, and SQS -> Lambda
-- Stay fully local with no AWS account, no auth token, and no paid tier
 - Use a fast single binary or Docker image, depending on your setup
 
 ## Why fakecloud?
 
 In March 2026, LocalStack replaced its open-source Community Edition with a
 proprietary image that requires an account and auth token.
+
+fakecloud exists for teams that want a fully local workflow with real AWS APIs,
+no sign-in step, and no paid wall around core development services. The SDKs
+build on top of that by making the `/_fakecloud/*` endpoints easier to use in
+tests; they are an extra layer, not the whole story.
 
 ### Comparison
 
@@ -53,7 +58,9 @@ proprietary image that requires an account and auth token.
 
 fakecloud now ships SDKs for the introspection and simulation API, so your tests
 can use normal AWS clients for application behavior and a fakecloud client for
-assertions and time control.
+assertions and time control. They complement the main value proposition: a local
+AWS emulator you can run directly, compare against AWS behavior, and use without
+an account-gated platform in the middle.
 
 | Language | Install | Docs |
 |---|---|---|
