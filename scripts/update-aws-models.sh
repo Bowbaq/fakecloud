@@ -36,6 +36,7 @@ SERVICES=(
     "cloudformation:cloudformation"
     "sesv2:sesv2"
     "cognito-identity-provider:cognito-identity-provider"
+    "rds:rds"
 )
 
 # Sparse checkout only the models we need
