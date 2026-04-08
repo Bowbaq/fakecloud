@@ -709,13 +709,13 @@ impl SnsService {
         let token = required(req, "Token")?;
 
         let mut state = self.state.write();
-        // AWS accepts both the confirmation token and the subscription ARN as the Token parameter
+        // AWS accepts both the confirmation token and the subscription ARN as the Token parameter.
+        // Confirming an already-confirmed subscription is a no-op (idempotent).
         let sub_arn = state
             .subscriptions
             .values()
             .find(|s| {
                 s.topic_arn == topic_arn
-                    && !s.confirmed
                     && (s.confirmation_token.as_deref() == Some(&token)
                         || s.subscription_arn == token)
             })
