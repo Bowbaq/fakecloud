@@ -24,22 +24,7 @@ impl TestServer {
 
     /// Start with extra environment variables passed to the server process.
     pub async fn start_with_env(env: &[(&str, &str)]) -> Self {
-        let port = find_available_port();
-        let endpoint = format!("http://127.0.0.1:{port}");
-
         let bin = find_binary();
-
-        let mut cmd = Command::new(bin);
-        cmd.arg("--addr")
-            .arg(format!("127.0.0.1:{port}"))
-            .arg("--log-level")
-            .arg("warn")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        for (key, value) in env {
-            cmd.env(key, value);
-        }
 
         let container_cli = env
             .iter()
@@ -47,17 +32,38 @@ impl TestServer {
             .map(|(_, v)| v.to_string())
             .unwrap_or_else(detect_container_cli);
 
-        let child = cmd.spawn().expect("failed to start fakecloud");
+        for _ in 0..3 {
+            let port = find_available_port();
+            let endpoint = format!("http://127.0.0.1:{port}");
 
-        // Wait for server to be ready
-        wait_for_port(port).await;
+            let mut cmd = Command::new(&bin);
+            cmd.arg("--addr")
+                .arg(format!("127.0.0.1:{port}"))
+                .arg("--log-level")
+                .arg("warn")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
 
-        Self {
-            child: Some(child),
-            port,
-            endpoint,
-            container_cli,
+            for (key, value) in env {
+                cmd.env(key, value);
+            }
+
+            let mut child = cmd.spawn().expect("failed to start fakecloud");
+
+            if wait_for_port(&mut child, port).await {
+                return Self {
+                    child: Some(child),
+                    port,
+                    endpoint,
+                    container_cli,
+                };
+            }
+
+            let _ = child.kill();
+            let _ = child.wait();
         }
+
+        panic!("fakecloud failed to start after 3 attempts");
     }
 
     pub fn endpoint(&self) -> &str {
@@ -288,13 +294,16 @@ fn cli_available(cli: &str) -> bool {
         .unwrap_or(false)
 }
 
-async fn wait_for_port(port: u16) {
+async fn wait_for_port(child: &mut Child, port: u16) -> bool {
     let addr = format!("127.0.0.1:{port}");
-    for _ in 0..150 {
+    for _ in 0..300 {
         if std::net::TcpStream::connect(&addr).is_ok() {
-            return;
+            return true;
+        }
+        if child.try_wait().ok().flatten().is_some() {
+            return false;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    panic!("fakecloud did not start within 15 seconds on port {port}");
+    false
 }

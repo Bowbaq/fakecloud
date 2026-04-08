@@ -12,6 +12,7 @@ pub struct KinesisState {
     pub region: String,
     pub streams: HashMap<String, KinesisStream>,
     pub iterators: HashMap<String, ShardIteratorLease>,
+    pub lambda_checkpoints: HashMap<String, usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,12 +61,14 @@ impl KinesisState {
             region: region.to_string(),
             streams: HashMap::new(),
             iterators: HashMap::new(),
+            lambda_checkpoints: HashMap::new(),
         }
     }
 
     pub fn reset(&mut self) {
         self.streams.clear();
         self.iterators.clear();
+        self.lambda_checkpoints.clear();
     }
 
     pub fn stream_arn(&self, stream_name: &str) -> String {
@@ -102,5 +105,17 @@ impl KinesisState {
             },
         );
         token
+    }
+
+    pub fn lambda_checkpoint(&self, mapping_uuid: &str, shard_id: &str) -> usize {
+        self.lambda_checkpoints
+            .get(&format!("{mapping_uuid}:{shard_id}"))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    pub fn set_lambda_checkpoint(&mut self, mapping_uuid: &str, shard_id: &str, offset: usize) {
+        self.lambda_checkpoints
+            .insert(format!("{mapping_uuid}:{shard_id}"), offset);
     }
 }

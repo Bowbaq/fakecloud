@@ -16,28 +16,35 @@ pub struct TestServer {
 #[allow(dead_code)]
 impl TestServer {
     pub async fn start() -> Self {
-        let port = find_available_port();
-        let endpoint = format!("http://127.0.0.1:{port}");
-
         let bin = find_binary();
 
-        let child = Command::new(bin)
-            .arg("--addr")
-            .arg(format!("127.0.0.1:{port}"))
-            .arg("--log-level")
-            .arg("error")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("failed to start fakecloud");
+        for _ in 0..3 {
+            let port = find_available_port();
+            let endpoint = format!("http://127.0.0.1:{port}");
 
-        wait_for_port(port).await;
+            let mut child = Command::new(&bin)
+                .arg("--addr")
+                .arg(format!("127.0.0.1:{port}"))
+                .arg("--log-level")
+                .arg("error")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("failed to start fakecloud");
 
-        Self {
-            child: Some(child),
-            port,
-            endpoint,
+            if wait_for_port(&mut child, port).await {
+                return Self {
+                    child: Some(child),
+                    port,
+                    endpoint,
+                };
+            }
+
+            let _ = child.kill();
+            let _ = child.wait();
         }
+
+        panic!("fakecloud failed to start after 3 attempts");
     }
 
     pub fn endpoint(&self) -> &str {
@@ -169,13 +176,16 @@ fn find_binary() -> String {
     );
 }
 
-async fn wait_for_port(port: u16) {
+async fn wait_for_port(child: &mut Child, port: u16) -> bool {
     let addr = format!("127.0.0.1:{port}");
-    for _ in 0..150 {
+    for _ in 0..300 {
         if std::net::TcpStream::connect(&addr).is_ok() {
-            return;
+            return true;
+        }
+        if child.try_wait().ok().flatten().is_some() {
+            return false;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    panic!("fakecloud did not start within 15 seconds on port {port}");
+    false
 }
