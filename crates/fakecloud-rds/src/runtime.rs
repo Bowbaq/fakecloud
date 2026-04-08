@@ -101,9 +101,20 @@ impl RdsRuntime {
             )));
         }
 
-        let host_port = self.lookup_port(&container_id).await?;
-        self.wait_for_postgres(&container_id, username, db_name, host_port)
-            .await?;
+        let host_port = match self.lookup_port(&container_id).await {
+            Ok(host_port) => host_port,
+            Err(error) => {
+                self.remove_container(&container_id).await;
+                return Err(error);
+            }
+        };
+        if let Err(error) = self
+            .wait_for_postgres(&container_id, username, db_name, host_port)
+            .await
+        {
+            self.remove_container(&container_id).await;
+            return Err(error);
+        }
 
         let running = RunningDbContainer {
             container_id,
@@ -191,7 +202,6 @@ impl RdsRuntime {
             }
         }
 
-        self.remove_container(container_id).await;
         Err(RuntimeError::ContainerStartFailed(
             "postgres container did not become ready within 20 seconds".to_string(),
         ))

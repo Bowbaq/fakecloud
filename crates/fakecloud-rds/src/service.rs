@@ -86,9 +86,7 @@ impl RdsService {
         let deletion_protection =
             parse_optional_bool(optional_param(request, "DeletionProtection").as_deref())?
                 .unwrap_or(false);
-        let port = optional_param(request, "Port")
-            .and_then(|value| value.parse::<i32>().ok())
-            .unwrap_or(5432);
+        let port = optional_i32_param(request, "Port")?.unwrap_or(5432);
 
         validate_create_request(
             &db_instance_identifier,
@@ -100,8 +98,8 @@ impl RdsService {
         )?;
 
         {
-            let state = self.state.read();
-            if state.instances.contains_key(&db_instance_identifier) {
+            let mut state = self.state.write();
+            if !state.begin_instance_creation(&db_instance_identifier) {
                 return Err(AwsServiceError::aws_error(
                     StatusCode::BAD_REQUEST,
                     "DBInstanceAlreadyExists",
@@ -127,7 +125,12 @@ impl RdsService {
                 &logical_db_name,
             )
             .await
-            .map_err(runtime_error_to_service_error)?;
+            .map_err(|error| {
+                self.state
+                    .write()
+                    .cancel_instance_creation(&db_instance_identifier);
+                runtime_error_to_service_error(error)
+            })?;
 
         let mut state = self.state.write();
         let instance = DbInstance {
@@ -150,9 +153,7 @@ impl RdsService {
             container_id: running.container_id,
             host_port: running.host_port,
         };
-        state
-            .instances
-            .insert(db_instance_identifier.clone(), instance.clone());
+        state.finish_instance_creation(instance.clone());
 
         Ok(AwsResponse::xml(
             StatusCode::OK,
@@ -307,6 +308,20 @@ fn required_i32_param(req: &AwsRequest, name: &str) -> Result<i32, AwsServiceErr
             format!("Parameter {name} must be a valid integer."),
         )
     })
+}
+
+fn optional_i32_param(req: &AwsRequest, name: &str) -> Result<Option<i32>, AwsServiceError> {
+    optional_param(req, name)
+        .map(|value| {
+            value.parse::<i32>().map_err(|_| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "InvalidParameterValue",
+                    format!("Parameter {name} must be a valid integer."),
+                )
+            })
+        })
+        .transpose()
 }
 
 fn parse_optional_bool(value: Option<&str>) -> Result<Option<bool>, AwsServiceError> {
@@ -597,8 +612,8 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        db_instance_xml, filter_engine_versions, filter_orderable_options, validate_create_request,
-        RdsService,
+        db_instance_xml, filter_engine_versions, filter_orderable_options, optional_i32_param,
+        validate_create_request, RdsService,
     };
     use crate::state::{default_engine_versions, default_orderable_options, DbInstance, RdsState};
     use fakecloud_core::service::{AwsRequest, AwsService};
@@ -635,6 +650,15 @@ mod tests {
     fn validate_create_request_rejects_unsupported_engine() {
         let error = validate_create_request("test-db", 20, "db.t3.micro", "mysql", "16.3", 5432)
             .expect_err("unsupported engine");
+
+        assert_eq!(error.code(), "InvalidParameterValue");
+    }
+
+    #[test]
+    fn optional_i32_param_rejects_invalid_integer() {
+        let request = request("CreateDBInstance", &[("Port", "not-a-number")]);
+
+        let error = optional_i32_param(&request, "Port").expect_err("invalid port");
 
         assert_eq!(error.code(), "InvalidParameterValue");
     }

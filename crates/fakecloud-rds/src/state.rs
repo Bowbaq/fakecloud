@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
@@ -8,7 +9,7 @@ use uuid::Uuid;
 
 pub type SharedRdsState = Arc<RwLock<RdsState>>;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DbInstance {
     pub db_instance_identifier: String,
     pub db_instance_arn: String,
@@ -30,11 +31,37 @@ pub struct DbInstance {
     pub host_port: u16,
 }
 
+impl fmt::Debug for DbInstance {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DbInstance")
+            .field("db_instance_identifier", &self.db_instance_identifier)
+            .field("db_instance_arn", &self.db_instance_arn)
+            .field("db_instance_class", &self.db_instance_class)
+            .field("engine", &self.engine)
+            .field("engine_version", &self.engine_version)
+            .field("db_instance_status", &self.db_instance_status)
+            .field("master_username", &self.master_username)
+            .field("db_name", &self.db_name)
+            .field("endpoint_address", &self.endpoint_address)
+            .field("port", &self.port)
+            .field("allocated_storage", &self.allocated_storage)
+            .field("publicly_accessible", &self.publicly_accessible)
+            .field("deletion_protection", &self.deletion_protection)
+            .field("created_at", &self.created_at)
+            .field("dbi_resource_id", &self.dbi_resource_id)
+            .field("master_user_password", &"<redacted>")
+            .field("container_id", &self.container_id)
+            .field("host_port", &self.host_port)
+            .finish()
+    }
+}
+
 #[derive(Debug)]
 pub struct RdsState {
     pub account_id: String,
     pub region: String,
     pub instances: HashMap<String, DbInstance>,
+    pub in_progress_instance_ids: HashSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,11 +91,13 @@ impl RdsState {
             account_id: account_id.to_string(),
             region: region.to_string(),
             instances: HashMap::new(),
+            in_progress_instance_ids: HashSet::new(),
         }
     }
 
     pub fn reset(&mut self) {
         self.instances.clear();
+        self.in_progress_instance_ids.clear();
     }
 
     pub fn db_instance_arn(&self, db_instance_identifier: &str) -> String {
@@ -83,6 +112,31 @@ impl RdsState {
 
     pub fn next_dbi_resource_id(&self) -> String {
         format!("db-{}", Uuid::new_v4().simple())
+    }
+
+    pub fn begin_instance_creation(&mut self, db_instance_identifier: &str) -> bool {
+        if self.instances.contains_key(db_instance_identifier)
+            || self
+                .in_progress_instance_ids
+                .contains(db_instance_identifier)
+        {
+            return false;
+        }
+
+        self.in_progress_instance_ids
+            .insert(db_instance_identifier.to_string());
+        true
+    }
+
+    pub fn finish_instance_creation(&mut self, instance: DbInstance) {
+        self.in_progress_instance_ids
+            .remove(&instance.db_instance_identifier);
+        self.instances
+            .insert(instance.db_instance_identifier.clone(), instance);
+    }
+
+    pub fn cancel_instance_creation(&mut self, db_instance_identifier: &str) {
+        self.in_progress_instance_ids.remove(db_instance_identifier);
     }
 }
 
@@ -122,6 +176,7 @@ mod tests {
         assert_eq!(state.account_id, "123456789012");
         assert_eq!(state.region, "us-east-1");
         assert!(state.instances.is_empty());
+        assert!(state.in_progress_instance_ids.is_empty());
     }
 
     #[test]
@@ -154,6 +209,7 @@ mod tests {
         state.reset();
 
         assert!(state.instances.is_empty());
+        assert!(state.in_progress_instance_ids.is_empty());
     }
 
     #[test]
@@ -175,5 +231,16 @@ mod tests {
         assert_eq!(options[0].engine, versions[0].engine);
         assert_eq!(options[0].engine_version, versions[0].engine_version);
         assert_eq!(options[0].db_instance_class, "db.t3.micro");
+    }
+
+    #[test]
+    fn begin_instance_creation_rejects_duplicate_identifiers() {
+        let mut state = RdsState::new("123456789012", "us-east-1");
+
+        assert!(state.begin_instance_creation("db-1"));
+        assert!(!state.begin_instance_creation("db-1"));
+
+        state.cancel_instance_creation("db-1");
+        assert!(state.begin_instance_creation("db-1"));
     }
 }
