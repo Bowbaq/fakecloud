@@ -1,0 +1,15 @@
+[package]
+name = "fakecloud-elasticache"
+description = "Amazon ElastiCache implementation for FakeCloud"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+version.workspace = true
+
+[dependencies]
+fakecloud-aws = { workspace = true }
+fakecloud-core = { workspace = true }
+async-trait = { workspace = true }
+http = { workspace = true }
+parking_lot = { workspace = true }
