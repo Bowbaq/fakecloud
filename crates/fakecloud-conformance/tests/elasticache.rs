@@ -157,6 +157,25 @@ async fn elasticache_create_replication_group() {
     assert_eq!(group.status(), Some("available"));
 }
 
+#[test_action("elasticache", "CreateCacheCluster", checksum = "d1b7b330")]
+#[tokio::test]
+async fn elasticache_create_cache_cluster() {
+    let server = TestServer::start().await;
+    let client = server.elasticache_client().await;
+
+    let response = client
+        .create_cache_cluster()
+        .cache_cluster_id("test-cache-cluster")
+        .send()
+        .await
+        .unwrap();
+
+    let cluster = response.cache_cluster().expect("cache cluster");
+    assert_eq!(cluster.cache_cluster_id(), Some("test-cache-cluster"));
+    assert_eq!(cluster.cache_cluster_status(), Some("available"));
+    assert_eq!(cluster.engine(), Some("redis"));
+}
+
 #[test_action("elasticache", "DescribeReplicationGroups", checksum = "70aa64c5")]
 #[tokio::test]
 async fn elasticache_describe_replication_groups() {
@@ -183,6 +202,33 @@ async fn elasticache_describe_replication_groups() {
     assert_eq!(groups[0].replication_group_id(), Some("desc-repl-group"));
 }
 
+#[test_action("elasticache", "DescribeCacheClusters", checksum = "7488fca6")]
+#[tokio::test]
+async fn elasticache_describe_cache_clusters() {
+    let server = TestServer::start().await;
+    let client = server.elasticache_client().await;
+
+    client
+        .create_cache_cluster()
+        .cache_cluster_id("desc-cache-cluster")
+        .send()
+        .await
+        .unwrap();
+
+    let response = client
+        .describe_cache_clusters()
+        .cache_cluster_id("desc-cache-cluster")
+        .show_cache_node_info(true)
+        .send()
+        .await
+        .unwrap();
+
+    let clusters = response.cache_clusters();
+    assert_eq!(clusters.len(), 1);
+    assert_eq!(clusters[0].cache_cluster_id(), Some("desc-cache-cluster"));
+    assert_eq!(clusters[0].cache_nodes().len(), 1);
+}
+
 #[test_action("elasticache", "DeleteReplicationGroup", checksum = "e3cec3b6")]
 #[tokio::test]
 async fn elasticache_delete_replication_group() {
@@ -206,6 +252,31 @@ async fn elasticache_delete_replication_group() {
 
     let group = response.replication_group().expect("replication group");
     assert_eq!(group.replication_group_id(), Some("del-repl-group"));
+}
+
+#[test_action("elasticache", "DeleteCacheCluster", checksum = "72e1dd2c")]
+#[tokio::test]
+async fn elasticache_delete_cache_cluster() {
+    let server = TestServer::start().await;
+    let client = server.elasticache_client().await;
+
+    client
+        .create_cache_cluster()
+        .cache_cluster_id("del-cache-cluster")
+        .send()
+        .await
+        .unwrap();
+
+    let response = client
+        .delete_cache_cluster()
+        .cache_cluster_id("del-cache-cluster")
+        .send()
+        .await
+        .unwrap();
+
+    let cluster = response.cache_cluster().expect("cache cluster");
+    assert_eq!(cluster.cache_cluster_id(), Some("del-cache-cluster"));
+    assert_eq!(cluster.cache_cluster_status(), Some("deleting"));
 }
 
 #[test_action("elasticache", "AddTagsToResource", checksum = "cf656420")]

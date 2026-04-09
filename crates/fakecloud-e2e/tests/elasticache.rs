@@ -3,6 +3,120 @@ mod helpers;
 use helpers::TestServer;
 
 // ---------------------------------------------------------------------------
+// CacheCluster tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn elasticache_create_cache_cluster_and_describe() {
+    let server = TestServer::start().await;
+    let client = server.elasticache_client().await;
+
+    let create_resp = client
+        .create_cache_cluster()
+        .cache_cluster_id("classic-cluster")
+        .cache_node_type("cache.t3.micro")
+        .preferred_availability_zone("us-east-1a")
+        .send()
+        .await
+        .unwrap();
+
+    let cluster = create_resp.cache_cluster().expect("cache cluster");
+    assert_eq!(cluster.cache_cluster_id(), Some("classic-cluster"));
+    assert_eq!(cluster.cache_cluster_status(), Some("available"));
+    assert_eq!(cluster.engine(), Some("redis"));
+    let arn = cluster.arn().expect("cluster arn");
+
+    let describe_resp = client
+        .describe_cache_clusters()
+        .cache_cluster_id("classic-cluster")
+        .show_cache_node_info(true)
+        .send()
+        .await
+        .unwrap();
+
+    let clusters = describe_resp.cache_clusters();
+    assert_eq!(clusters.len(), 1);
+    assert_eq!(clusters[0].cache_cluster_id(), Some("classic-cluster"));
+    assert_eq!(clusters[0].cache_nodes().len(), 1);
+    let endpoint = clusters[0].cache_nodes()[0]
+        .endpoint()
+        .expect("cache node endpoint");
+    let port = endpoint.port().expect("endpoint port");
+    let addr = format!("127.0.0.1:{port}");
+    assert!(tokio::net::TcpStream::connect(&addr).await.is_ok());
+
+    let tag_resp = client
+        .add_tags_to_resource()
+        .resource_name(arn)
+        .tags(
+            aws_sdk_elasticache::types::Tag::builder()
+                .key("env")
+                .value("test")
+                .build(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(tag_resp.tag_list().len(), 1);
+}
+
+#[tokio::test]
+async fn elasticache_describe_cache_clusters_paginates() {
+    let server = TestServer::start().await;
+    let client = server.elasticache_client().await;
+
+    for cluster_id in ["page-a", "page-b"] {
+        client
+            .create_cache_cluster()
+            .cache_cluster_id(cluster_id)
+            .send()
+            .await
+            .unwrap();
+    }
+
+    let first_page = client
+        .describe_cache_clusters()
+        .max_records(20)
+        .send()
+        .await
+        .unwrap();
+    assert!(!first_page.cache_clusters().is_empty());
+}
+
+#[tokio::test]
+async fn elasticache_delete_cache_cluster_and_verify_gone() {
+    let server = TestServer::start().await;
+    let client = server.elasticache_client().await;
+
+    client
+        .create_cache_cluster()
+        .cache_cluster_id("delete-cluster")
+        .send()
+        .await
+        .unwrap();
+
+    let delete_resp = client
+        .delete_cache_cluster()
+        .cache_cluster_id("delete-cluster")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        delete_resp
+            .cache_cluster()
+            .and_then(|cluster| cluster.cache_cluster_status()),
+        Some("deleting")
+    );
+
+    let result = client
+        .describe_cache_clusters()
+        .cache_cluster_id("delete-cluster")
+        .send()
+        .await;
+    assert!(result.is_err());
+}
+
+// ---------------------------------------------------------------------------
 // CacheSubnetGroup tests
 // ---------------------------------------------------------------------------
 

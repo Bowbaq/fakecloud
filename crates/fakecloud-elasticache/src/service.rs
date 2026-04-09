@@ -1,3 +1,4 @@
+use std::convert::TryFrom;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -8,7 +9,7 @@ use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceErr
 
 use crate::runtime::{ElastiCacheRuntime, RuntimeError};
 use crate::state::{
-    default_engine_versions, default_parameters_for_family, CacheEngineVersion,
+    default_engine_versions, default_parameters_for_family, CacheCluster, CacheEngineVersion,
     CacheParameterGroup, CacheSnapshot, CacheSubnetGroup, ElastiCacheUser, ElastiCacheUserGroup,
     EngineDefaultParameter, ReplicationGroup, SharedElastiCacheState,
 };
@@ -16,17 +17,20 @@ use crate::state::{
 const ELASTICACHE_NS: &str = "http://elasticache.amazonaws.com/doc/2015-02-02/";
 const SUPPORTED_ACTIONS: &[&str] = &[
     "AddTagsToResource",
+    "CreateCacheCluster",
     "CreateCacheSubnetGroup",
     "CreateReplicationGroup",
     "CreateSnapshot",
     "CreateUser",
     "CreateUserGroup",
     "DecreaseReplicaCount",
+    "DeleteCacheCluster",
     "DeleteCacheSubnetGroup",
     "DeleteReplicationGroup",
     "DeleteSnapshot",
     "DeleteUser",
     "DeleteUserGroup",
+    "DescribeCacheClusters",
     "DescribeCacheEngineVersions",
     "DescribeCacheParameterGroups",
     "DescribeCacheSubnetGroups",
@@ -71,17 +75,20 @@ impl AwsService for ElastiCacheService {
     async fn handle(&self, request: AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         match request.action.as_str() {
             "AddTagsToResource" => self.add_tags_to_resource(&request),
+            "CreateCacheCluster" => self.create_cache_cluster(&request).await,
             "CreateCacheSubnetGroup" => self.create_cache_subnet_group(&request),
             "CreateReplicationGroup" => self.create_replication_group(&request).await,
             "CreateSnapshot" => self.create_snapshot(&request),
             "CreateUser" => self.create_user(&request),
             "CreateUserGroup" => self.create_user_group(&request),
             "DecreaseReplicaCount" => self.decrease_replica_count(&request),
+            "DeleteCacheCluster" => self.delete_cache_cluster(&request).await,
             "DeleteCacheSubnetGroup" => self.delete_cache_subnet_group(&request),
             "DeleteReplicationGroup" => self.delete_replication_group(&request).await,
             "DeleteSnapshot" => self.delete_snapshot(&request),
             "DeleteUser" => self.delete_user(&request),
             "DeleteUserGroup" => self.delete_user_group(&request),
+            "DescribeCacheClusters" => self.describe_cache_clusters(&request),
             "DescribeCacheEngineVersions" => self.describe_cache_engine_versions(&request),
             "DescribeCacheParameterGroups" => self.describe_cache_parameter_groups(&request),
             "DescribeCacheSubnetGroups" => self.describe_cache_subnet_groups(&request),
@@ -411,6 +418,240 @@ impl ElastiCacheService {
         ))
     }
 
+    async fn create_cache_cluster(
+        &self,
+        request: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let cache_cluster_id = required_param(request, "CacheClusterId")?;
+        let engine = optional_param(request, "Engine").unwrap_or_else(|| "redis".to_string());
+        if engine != "redis" && engine != "valkey" {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidParameterValue",
+                format!("Invalid value for Engine: {engine}. Supported engines: redis, valkey"),
+            ));
+        }
+
+        let default_version = if engine == "valkey" { "8.0" } else { "7.1" };
+        let engine_version =
+            optional_param(request, "EngineVersion").unwrap_or_else(|| default_version.to_string());
+        let cache_node_type = optional_param(request, "CacheNodeType")
+            .unwrap_or_else(|| "cache.t3.micro".to_string());
+        let num_cache_nodes = match optional_param(request, "NumCacheNodes") {
+            Some(v) => {
+                let n = v.parse::<i32>().map_err(|_| {
+                    AwsServiceError::aws_error(
+                        StatusCode::BAD_REQUEST,
+                        "InvalidParameterValue",
+                        format!("Invalid value for NumCacheNodes: '{v}'"),
+                    )
+                })?;
+                if n < 1 {
+                    return Err(AwsServiceError::aws_error(
+                        StatusCode::BAD_REQUEST,
+                        "InvalidParameterValue",
+                        format!("NumCacheNodes must be a positive integer, got {n}"),
+                    ));
+                }
+                n
+            }
+            None => 1,
+        };
+        let cache_subnet_group_name =
+            optional_param(request, "CacheSubnetGroupName").or_else(|| Some("default".to_string()));
+        let replication_group_id = optional_param(request, "ReplicationGroupId");
+        let auto_minor_version_upgrade =
+            parse_optional_bool(optional_param(request, "AutoMinorVersionUpgrade").as_deref())?
+                .unwrap_or(true);
+
+        let (preferred_availability_zone, arn) = {
+            let mut state = self.state.write();
+            if !state.begin_cache_cluster_creation(&cache_cluster_id) {
+                return Err(AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "CacheClusterAlreadyExists",
+                    format!("CacheCluster {cache_cluster_id} already exists."),
+                ));
+            }
+
+            if let Some(ref subnet_group_name) = cache_subnet_group_name {
+                if !state.subnet_groups.contains_key(subnet_group_name) {
+                    state.cancel_cache_cluster_creation(&cache_cluster_id);
+                    return Err(AwsServiceError::aws_error(
+                        StatusCode::NOT_FOUND,
+                        "CacheSubnetGroupNotFoundFault",
+                        format!("Cache subnet group {subnet_group_name} not found."),
+                    ));
+                }
+            }
+
+            if let Some(ref group_id) = replication_group_id {
+                if !state.replication_groups.contains_key(group_id) {
+                    state.cancel_cache_cluster_creation(&cache_cluster_id);
+                    return Err(AwsServiceError::aws_error(
+                        StatusCode::NOT_FOUND,
+                        "ReplicationGroupNotFoundFault",
+                        format!("ReplicationGroup {group_id} not found."),
+                    ));
+                }
+            }
+
+            let preferred_availability_zone = optional_param(request, "PreferredAvailabilityZone")
+                .unwrap_or_else(|| format!("{}a", state.region));
+            let arn = format!(
+                "arn:aws:elasticache:{}:{}:cluster:{}",
+                state.region, state.account_id, cache_cluster_id
+            );
+            (preferred_availability_zone, arn)
+        };
+
+        let runtime = self.runtime.as_ref().ok_or_else(|| {
+            self.state
+                .write()
+                .cancel_cache_cluster_creation(&cache_cluster_id);
+            AwsServiceError::aws_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "InvalidParameterValue",
+                "Docker/Podman is required for ElastiCache cache clusters but is not available"
+                    .to_string(),
+            )
+        })?;
+
+        let running = match runtime.ensure_redis(&cache_cluster_id).await {
+            Ok(r) => r,
+            Err(e) => {
+                self.state
+                    .write()
+                    .cancel_cache_cluster_creation(&cache_cluster_id);
+                return Err(runtime_error_to_service_error(e));
+            }
+        };
+
+        let cluster = CacheCluster {
+            cache_cluster_id: cache_cluster_id.clone(),
+            cache_node_type,
+            engine,
+            engine_version,
+            cache_cluster_status: "available".to_string(),
+            num_cache_nodes,
+            preferred_availability_zone,
+            cache_subnet_group_name,
+            auto_minor_version_upgrade,
+            arn,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            endpoint_address: "127.0.0.1".to_string(),
+            endpoint_port: running.host_port,
+            container_id: running.container_id,
+            host_port: running.host_port,
+            replication_group_id,
+        };
+
+        let xml = cache_cluster_xml(&cluster, true);
+        self.state.write().finish_cache_cluster_creation(cluster);
+
+        Ok(AwsResponse::xml(
+            StatusCode::OK,
+            xml_wrap(
+                "CreateCacheCluster",
+                &format!("<CacheCluster>{xml}</CacheCluster>"),
+                &request.request_id,
+            ),
+        ))
+    }
+
+    fn describe_cache_clusters(
+        &self,
+        request: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let cache_cluster_id = optional_param(request, "CacheClusterId");
+        let show_cache_node_info =
+            parse_optional_bool(optional_param(request, "ShowCacheNodeInfo").as_deref())?
+                .unwrap_or(false);
+        let max_records = optional_usize_param(request, "MaxRecords")?;
+        let marker = optional_param(request, "Marker");
+
+        let state = self.state.read();
+        let clusters: Vec<&CacheCluster> = if let Some(ref cluster_id) = cache_cluster_id {
+            match state.cache_clusters.get(cluster_id) {
+                Some(cluster) => vec![cluster],
+                None => {
+                    return Err(AwsServiceError::aws_error(
+                        StatusCode::NOT_FOUND,
+                        "CacheClusterNotFound",
+                        format!("CacheCluster {cluster_id} not found."),
+                    ));
+                }
+            }
+        } else {
+            let mut clusters: Vec<&CacheCluster> = state.cache_clusters.values().collect();
+            clusters.sort_by(|a, b| a.cache_cluster_id.cmp(&b.cache_cluster_id));
+            clusters
+        };
+
+        let (page, next_marker) = paginate(&clusters, marker.as_deref(), max_records);
+        let members_xml: String = page
+            .iter()
+            .map(|cluster| {
+                format!(
+                    "<CacheCluster>{}</CacheCluster>",
+                    cache_cluster_xml(cluster, show_cache_node_info)
+                )
+            })
+            .collect();
+        let marker_xml = next_marker
+            .map(|m| format!("<Marker>{}</Marker>", xml_escape(&m)))
+            .unwrap_or_default();
+
+        Ok(AwsResponse::xml(
+            StatusCode::OK,
+            xml_wrap(
+                "DescribeCacheClusters",
+                &format!("<CacheClusters>{members_xml}</CacheClusters>{marker_xml}"),
+                &request.request_id,
+            ),
+        ))
+    }
+
+    async fn delete_cache_cluster(
+        &self,
+        request: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let cache_cluster_id = required_param(request, "CacheClusterId")?;
+
+        let cluster = {
+            let mut state = self.state.write();
+            let cluster = state
+                .cache_clusters
+                .remove(&cache_cluster_id)
+                .ok_or_else(|| {
+                    AwsServiceError::aws_error(
+                        StatusCode::NOT_FOUND,
+                        "CacheClusterNotFound",
+                        format!("CacheCluster {cache_cluster_id} not found."),
+                    )
+                })?;
+            state.tags.remove(&cluster.arn);
+            cluster
+        };
+
+        if let Some(ref runtime) = self.runtime {
+            runtime.stop_container(&cache_cluster_id).await;
+        }
+
+        let mut deleted_cluster = cluster;
+        deleted_cluster.cache_cluster_status = "deleting".to_string();
+        let xml = cache_cluster_xml(&deleted_cluster, true);
+
+        Ok(AwsResponse::xml(
+            StatusCode::OK,
+            xml_wrap(
+                "DeleteCacheCluster",
+                &format!("<CacheCluster>{xml}</CacheCluster>"),
+                &request.request_id,
+            ),
+        ))
+    }
+
     async fn create_replication_group(
         &self,
         request: &AwsRequest,
@@ -656,19 +897,33 @@ impl ElastiCacheService {
             rg_id.clone()
         } else {
             let cluster_id = cache_cluster_id.as_ref().unwrap();
-            // CacheClusterId maps to a member cluster like "rg-001", find parent group
-            state
-                .replication_groups
-                .values()
-                .find(|g| g.member_clusters.contains(cluster_id))
-                .map(|g| g.replication_group_id.clone())
-                .ok_or_else(|| {
-                    AwsServiceError::aws_error(
-                        StatusCode::NOT_FOUND,
-                        "CacheClusterNotFound",
-                        format!("CacheCluster {cluster_id} not found."),
-                    )
-                })?
+            if let Some(cluster) = state.cache_clusters.get(cluster_id) {
+                if let Some(group_id) = cluster.replication_group_id.clone() {
+                    group_id
+                } else {
+                    return Err(AwsServiceError::aws_error(
+                        StatusCode::BAD_REQUEST,
+                        "InvalidParameterCombination",
+                        format!(
+                            "CacheCluster {cluster_id} is not associated with a replication group."
+                        ),
+                    ));
+                }
+            } else {
+                // CacheClusterId may also map to a member cluster like "rg-001", find parent group
+                state
+                    .replication_groups
+                    .values()
+                    .find(|g| g.member_clusters.contains(cluster_id))
+                    .map(|g| g.replication_group_id.clone())
+                    .ok_or_else(|| {
+                        AwsServiceError::aws_error(
+                            StatusCode::NOT_FOUND,
+                            "CacheClusterNotFound",
+                            format!("CacheCluster {cluster_id} not found."),
+                        )
+                    })?
+            }
         };
 
         let group = state.replication_groups.get(&group_id).ok_or_else(|| {
@@ -743,7 +998,9 @@ impl ElastiCacheService {
                 })
                 .filter(|s| {
                     cache_cluster_id.as_ref().is_none_or(|cluster_id| {
-                        state
+                        state.cache_clusters.get(cluster_id).is_some_and(|cluster| {
+                            cluster.replication_group_id.as_deref() == Some(&s.replication_group_id)
+                        }) || state
                             .replication_groups
                             .get(&s.replication_group_id)
                             .is_some_and(|g| g.member_clusters.contains(cluster_id))
@@ -1641,7 +1898,7 @@ fn paginate<T: Clone>(
         return (Vec::new(), None);
     }
 
-    let end = (start + limit).min(items.len());
+    let end = start.saturating_add(limit).min(items.len());
     let page = items[start..end].to_vec();
     let next_marker = if end < items.len() {
         Some(end.to_string())
@@ -1809,6 +2066,89 @@ fn cache_subnet_group_xml(g: &CacheSubnetGroup, region: &str) -> String {
         xml_escape(&g.cache_subnet_group_description),
         xml_escape(&g.vpc_id),
         xml_escape(&g.arn),
+    )
+}
+
+fn cache_cluster_xml(cluster: &CacheCluster, show_cache_node_info: bool) -> String {
+    let cache_subnet_group_name_xml = cluster
+        .cache_subnet_group_name
+        .as_ref()
+        .map(|name| {
+            format!(
+                "<CacheSubnetGroupName>{}</CacheSubnetGroupName>",
+                xml_escape(name)
+            )
+        })
+        .unwrap_or_default();
+    let replication_group_id_xml = cluster
+        .replication_group_id
+        .as_ref()
+        .map(|group_id| {
+            format!(
+                "<ReplicationGroupId>{}</ReplicationGroupId>",
+                xml_escape(group_id)
+            )
+        })
+        .unwrap_or_default();
+    let cache_nodes_xml = if show_cache_node_info {
+        match usize::try_from(cluster.num_cache_nodes) {
+            Ok(node_count) => {
+                let members: String = (0..node_count)
+                    .filter_map(|index| {
+                        let node_id = index.checked_add(1)?;
+                        Some(cache_node_xml(cluster, node_id))
+                    })
+                    .collect();
+                format!("<CacheNodes>{members}</CacheNodes>")
+            }
+            Err(_) => String::new(),
+        }
+    } else {
+        String::new()
+    };
+
+    format!(
+        "<CacheClusterId>{}</CacheClusterId>\
+         <CacheNodeType>{}</CacheNodeType>\
+         <Engine>{}</Engine>\
+         <EngineVersion>{}</EngineVersion>\
+         <CacheClusterStatus>{}</CacheClusterStatus>\
+         <NumCacheNodes>{}</NumCacheNodes>\
+         <PreferredAvailabilityZone>{}</PreferredAvailabilityZone>\
+         <CacheClusterCreateTime>{}</CacheClusterCreateTime>\
+         {cache_subnet_group_name_xml}\
+         {cache_nodes_xml}\
+         <AutoMinorVersionUpgrade>{}</AutoMinorVersionUpgrade>\
+         {replication_group_id_xml}\
+         <ARN>{}</ARN>",
+        xml_escape(&cluster.cache_cluster_id),
+        xml_escape(&cluster.cache_node_type),
+        xml_escape(&cluster.engine),
+        xml_escape(&cluster.engine_version),
+        xml_escape(&cluster.cache_cluster_status),
+        cluster.num_cache_nodes,
+        xml_escape(&cluster.preferred_availability_zone),
+        xml_escape(&cluster.created_at),
+        cluster.auto_minor_version_upgrade,
+        xml_escape(&cluster.arn),
+    )
+}
+
+fn cache_node_xml(cluster: &CacheCluster, node_id: usize) -> String {
+    format!(
+        "<CacheNode>\
+         <CacheNodeId>{node_id:04}</CacheNodeId>\
+         <CacheNodeStatus>{}</CacheNodeStatus>\
+         <CacheNodeCreateTime>{}</CacheNodeCreateTime>\
+         <Endpoint><Address>{}</Address><Port>{}</Port></Endpoint>\
+         <ParameterGroupStatus>in-sync</ParameterGroupStatus>\
+         <CustomerAvailabilityZone>{}</CustomerAvailabilityZone>\
+         </CacheNode>",
+        xml_escape(&cluster.cache_cluster_status),
+        xml_escape(&cluster.created_at),
+        xml_escape(&cluster.endpoint_address),
+        cluster.endpoint_port,
+        xml_escape(&cluster.preferred_availability_zone),
     )
 }
 
@@ -2118,6 +2458,40 @@ mod tests {
     }
 
     #[test]
+    fn cache_cluster_xml_contains_expected_fields() {
+        let cluster = CacheCluster {
+            cache_cluster_id: "classic-1".to_string(),
+            cache_node_type: "cache.t3.micro".to_string(),
+            engine: "redis".to_string(),
+            engine_version: "7.1".to_string(),
+            cache_cluster_status: "available".to_string(),
+            num_cache_nodes: 2,
+            preferred_availability_zone: "us-east-1a".to_string(),
+            cache_subnet_group_name: Some("default".to_string()),
+            auto_minor_version_upgrade: true,
+            arn: "arn:aws:elasticache:us-east-1:123:cluster:classic-1".to_string(),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            endpoint_address: "127.0.0.1".to_string(),
+            endpoint_port: 6379,
+            container_id: "abc123".to_string(),
+            host_port: 6379,
+            replication_group_id: Some("rg-1".to_string()),
+        };
+
+        let xml = cache_cluster_xml(&cluster, true);
+        assert!(xml.contains("<CacheClusterId>classic-1</CacheClusterId>"));
+        assert!(xml.contains("<CacheNodeType>cache.t3.micro</CacheNodeType>"));
+        assert!(xml.contains("<Engine>redis</Engine>"));
+        assert!(xml.contains("<NumCacheNodes>2</NumCacheNodes>"));
+        assert!(xml.contains("<PreferredAvailabilityZone>us-east-1a</PreferredAvailabilityZone>"));
+        assert!(xml.contains("<CacheSubnetGroupName>default</CacheSubnetGroupName>"));
+        assert!(xml.contains("<CacheNodes>"));
+        assert!(xml.contains("<CacheNodeId>0001</CacheNodeId>"));
+        assert!(xml.contains("<ReplicationGroupId>rg-1</ReplicationGroupId>"));
+        assert!(xml.contains("<ARN>arn:aws:elasticache:us-east-1:123:cluster:classic-1</ARN>"));
+    }
+
+    #[test]
     fn filter_engine_versions_by_engine() {
         let versions = default_engine_versions();
         let filtered = filter_engine_versions(&versions, &Some("redis".to_string()), &None, &None);
@@ -2412,6 +2786,158 @@ mod tests {
 
         let req = request("DescribeUserGroups", &[("UserGroupId", "delgroup")]);
         assert!(service.describe_user_groups(&req).is_err());
+    }
+
+    fn service_with_cache_cluster(cluster_id: &str) -> ElastiCacheService {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        {
+            let mut s = shared.write();
+            let arn = format!("arn:aws:elasticache:us-east-1:123456789012:cluster:{cluster_id}");
+            s.tags.insert(arn.clone(), Vec::new());
+            s.cache_clusters.insert(
+                cluster_id.to_string(),
+                CacheCluster {
+                    cache_cluster_id: cluster_id.to_string(),
+                    cache_node_type: "cache.t3.micro".to_string(),
+                    engine: "redis".to_string(),
+                    engine_version: "7.1".to_string(),
+                    cache_cluster_status: "available".to_string(),
+                    num_cache_nodes: 1,
+                    preferred_availability_zone: "us-east-1a".to_string(),
+                    cache_subnet_group_name: Some("default".to_string()),
+                    auto_minor_version_upgrade: true,
+                    arn,
+                    created_at: "2024-01-01T00:00:00Z".to_string(),
+                    endpoint_address: "127.0.0.1".to_string(),
+                    endpoint_port: 6379,
+                    container_id: "abc123".to_string(),
+                    host_port: 6379,
+                    replication_group_id: None,
+                },
+            );
+        }
+        ElastiCacheService::new(shared)
+    }
+
+    #[test]
+    fn describe_cache_clusters_returns_all() {
+        let service = service_with_cache_cluster("cluster-a");
+        {
+            let mut state = service.state.write();
+            let arn = "arn:aws:elasticache:us-east-1:123456789012:cluster:cluster-b".to_string();
+            state.tags.insert(arn.clone(), Vec::new());
+            state.cache_clusters.insert(
+                "cluster-b".to_string(),
+                CacheCluster {
+                    cache_cluster_id: "cluster-b".to_string(),
+                    cache_node_type: "cache.t3.micro".to_string(),
+                    engine: "valkey".to_string(),
+                    engine_version: "8.0".to_string(),
+                    cache_cluster_status: "available".to_string(),
+                    num_cache_nodes: 2,
+                    preferred_availability_zone: "us-east-1b".to_string(),
+                    cache_subnet_group_name: Some("default".to_string()),
+                    auto_minor_version_upgrade: false,
+                    arn,
+                    created_at: "2024-01-02T00:00:00Z".to_string(),
+                    endpoint_address: "127.0.0.1".to_string(),
+                    endpoint_port: 6380,
+                    container_id: "def456".to_string(),
+                    host_port: 6380,
+                    replication_group_id: None,
+                },
+            );
+        }
+
+        let req = request("DescribeCacheClusters", &[]);
+        let resp = service.describe_cache_clusters(&req).unwrap();
+        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        assert!(body.contains("<CacheClusterId>cluster-a</CacheClusterId>"));
+        assert!(body.contains("<CacheClusterId>cluster-b</CacheClusterId>"));
+        assert!(body.contains("<DescribeCacheClustersResponse"));
+    }
+
+    #[tokio::test]
+    async fn create_cache_cluster_validates_engine_before_runtime() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let service = ElastiCacheService::new(shared);
+
+        let req = request(
+            "CreateCacheCluster",
+            &[("CacheClusterId", "bad-engine"), ("Engine", "memcached")],
+        );
+        assert!(service.create_cache_cluster(&req).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn create_cache_cluster_without_runtime_cancels_reservation() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let service = ElastiCacheService::new(shared.clone());
+
+        let req = request("CreateCacheCluster", &[("CacheClusterId", "no-runtime")]);
+        assert!(service.create_cache_cluster(&req).await.is_err());
+
+        let mut state = shared.write();
+        assert!(state.begin_cache_cluster_creation("no-runtime"));
+    }
+
+    #[test]
+    fn describe_cache_clusters_filters_by_id_and_shows_node_info() {
+        let service = service_with_cache_cluster("nodeful-cluster");
+        let req = request(
+            "DescribeCacheClusters",
+            &[
+                ("CacheClusterId", "nodeful-cluster"),
+                ("ShowCacheNodeInfo", "true"),
+            ],
+        );
+        let resp = service.describe_cache_clusters(&req).unwrap();
+        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        assert!(body.contains("<CacheClusterId>nodeful-cluster</CacheClusterId>"));
+        assert!(body.contains("<CacheNodes>"));
+        assert!(body.contains("<CacheNodeId>0001</CacheNodeId>"));
+        assert!(body.contains("<ParameterGroupStatus>in-sync</ParameterGroupStatus>"));
+    }
+
+    #[test]
+    fn describe_cache_clusters_not_found() {
+        let service = service_with_cache_cluster("cluster-a");
+        let req = request("DescribeCacheClusters", &[("CacheClusterId", "missing")]);
+        assert!(service.describe_cache_clusters(&req).is_err());
+    }
+
+    #[tokio::test]
+    async fn delete_cache_cluster_removes_state_and_tags() {
+        let service = service_with_cache_cluster("delete-me");
+        let arn = "arn:aws:elasticache:us-east-1:123456789012:cluster:delete-me".to_string();
+
+        let req = request("DeleteCacheCluster", &[("CacheClusterId", "delete-me")]);
+        let resp = service.delete_cache_cluster(&req).await.unwrap();
+        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        assert!(body.contains("<CacheClusterStatus>deleting</CacheClusterStatus>"));
+        assert!(body.contains("<DeleteCacheClusterResponse"));
+        assert!(!service
+            .state
+            .read()
+            .cache_clusters
+            .contains_key("delete-me"));
+        assert!(!service.state.read().tags.contains_key(&arn));
+    }
+
+    #[test]
+    fn create_snapshot_rejects_standalone_cache_cluster_id() {
+        let service = service_with_cache_cluster("standalone");
+        let req = request(
+            "CreateSnapshot",
+            &[
+                ("SnapshotName", "standalone-snap"),
+                ("CacheClusterId", "standalone"),
+            ],
+        );
+        assert!(service.create_snapshot(&req).is_err());
     }
 
     fn service_with_replication_group(group_id: &str, num_clusters: i32) -> ElastiCacheService {

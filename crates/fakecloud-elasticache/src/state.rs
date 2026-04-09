@@ -45,6 +45,26 @@ pub struct CacheSubnetGroup {
 }
 
 #[derive(Debug, Clone)]
+pub struct CacheCluster {
+    pub cache_cluster_id: String,
+    pub cache_node_type: String,
+    pub engine: String,
+    pub engine_version: String,
+    pub cache_cluster_status: String,
+    pub num_cache_nodes: i32,
+    pub preferred_availability_zone: String,
+    pub cache_subnet_group_name: Option<String>,
+    pub auto_minor_version_upgrade: bool,
+    pub arn: String,
+    pub created_at: String,
+    pub endpoint_address: String,
+    pub endpoint_port: u16,
+    pub container_id: String,
+    pub host_port: u16,
+    pub replication_group_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct ReplicationGroup {
     pub replication_group_id: String,
     pub description: String,
@@ -118,11 +138,13 @@ pub struct ElastiCacheState {
     pub region: String,
     pub parameter_groups: Vec<CacheParameterGroup>,
     pub subnet_groups: HashMap<String, CacheSubnetGroup>,
+    pub cache_clusters: HashMap<String, CacheCluster>,
     pub replication_groups: HashMap<String, ReplicationGroup>,
     pub users: HashMap<String, ElastiCacheUser>,
     pub user_groups: HashMap<String, ElastiCacheUserGroup>,
     pub snapshots: HashMap<String, CacheSnapshot>,
     pub tags: HashMap<String, Vec<(String, String)>>,
+    in_progress_cache_cluster_ids: HashSet<String>,
     in_progress_replication_group_ids: HashSet<String>,
 }
 
@@ -143,11 +165,13 @@ impl ElastiCacheState {
             region: region.to_string(),
             parameter_groups,
             subnet_groups,
+            cache_clusters: HashMap::new(),
             replication_groups: HashMap::new(),
             users,
             user_groups: HashMap::new(),
             snapshots: HashMap::new(),
             tags,
+            in_progress_cache_cluster_ids: HashSet::new(),
             in_progress_replication_group_ids: HashSet::new(),
         }
     }
@@ -155,6 +179,7 @@ impl ElastiCacheState {
     pub fn reset(&mut self) {
         self.parameter_groups = default_parameter_groups(&self.account_id, &self.region);
         self.subnet_groups = default_subnet_groups(&self.account_id, &self.region);
+        self.cache_clusters.clear();
         self.replication_groups.clear();
         self.users = default_users(&self.account_id, &self.region);
         self.user_groups.clear();
@@ -166,7 +191,33 @@ impl ElastiCacheState {
         for user in self.users.values() {
             self.tags.insert(user.arn.clone(), Vec::new());
         }
+        self.in_progress_cache_cluster_ids.clear();
         self.in_progress_replication_group_ids.clear();
+    }
+
+    pub fn begin_cache_cluster_creation(&mut self, cache_cluster_id: &str) -> bool {
+        if self.cache_clusters.contains_key(cache_cluster_id)
+            || self
+                .in_progress_cache_cluster_ids
+                .contains(cache_cluster_id)
+        {
+            return false;
+        }
+        self.in_progress_cache_cluster_ids
+            .insert(cache_cluster_id.to_string());
+        true
+    }
+
+    pub fn finish_cache_cluster_creation(&mut self, cluster: CacheCluster) {
+        self.in_progress_cache_cluster_ids
+            .remove(&cluster.cache_cluster_id);
+        self.tags.insert(cluster.arn.clone(), Vec::new());
+        self.cache_clusters
+            .insert(cluster.cache_cluster_id.clone(), cluster);
+    }
+
+    pub fn cancel_cache_cluster_creation(&mut self, cache_cluster_id: &str) {
+        self.in_progress_cache_cluster_ids.remove(cache_cluster_id);
     }
 
     pub fn begin_replication_group_creation(&mut self, replication_group_id: &str) -> bool {
@@ -429,6 +480,23 @@ mod tests {
     }
 
     #[test]
+    fn state_new_has_empty_cache_clusters() {
+        let state = ElastiCacheState::new("123456789012", "us-east-1");
+        assert!(state.cache_clusters.is_empty());
+    }
+
+    #[test]
+    fn begin_cache_cluster_creation_rejects_duplicate_ids() {
+        let mut state = ElastiCacheState::new("123456789012", "us-east-1");
+
+        assert!(state.begin_cache_cluster_creation("cluster-1"));
+        assert!(!state.begin_cache_cluster_creation("cluster-1"));
+
+        state.cancel_cache_cluster_creation("cluster-1");
+        assert!(state.begin_cache_cluster_creation("cluster-1"));
+    }
+
+    #[test]
     fn begin_replication_group_creation_rejects_duplicate_ids() {
         let mut state = ElastiCacheState::new("123456789012", "us-east-1");
 
@@ -550,5 +618,35 @@ mod tests {
         assert_eq!(state.replication_groups.len(), 1);
         state.reset();
         assert!(state.replication_groups.is_empty());
+    }
+
+    #[test]
+    fn reset_clears_cache_clusters() {
+        let mut state = ElastiCacheState::new("123456789012", "us-east-1");
+        state.cache_clusters.insert(
+            "classic-cluster".to_string(),
+            CacheCluster {
+                cache_cluster_id: "classic-cluster".to_string(),
+                cache_node_type: "cache.t3.micro".to_string(),
+                engine: "redis".to_string(),
+                engine_version: "7.1".to_string(),
+                cache_cluster_status: "available".to_string(),
+                num_cache_nodes: 1,
+                preferred_availability_zone: "us-east-1a".to_string(),
+                cache_subnet_group_name: Some("default".to_string()),
+                auto_minor_version_upgrade: true,
+                arn: "arn:aws:elasticache:us-east-1:123456789012:cluster:classic-cluster"
+                    .to_string(),
+                created_at: "2024-01-01T00:00:00Z".to_string(),
+                endpoint_address: "127.0.0.1".to_string(),
+                endpoint_port: 6379,
+                container_id: "abc123".to_string(),
+                host_port: 12345,
+                replication_group_id: None,
+            },
+        );
+        assert_eq!(state.cache_clusters.len(), 1);
+        state.reset();
+        assert!(state.cache_clusters.is_empty());
     }
 }
