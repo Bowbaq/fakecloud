@@ -2730,7 +2730,7 @@ mod tests {
         service.create_snapshot(&req).unwrap();
 
         let state = service.state.read();
-        let arn = format!("arn:aws:elasticache:us-east-1:123456789012:snapshot:tag-snap");
+        let arn = "arn:aws:elasticache:us-east-1:123456789012:snapshot:tag-snap".to_string();
         assert!(state.tags.contains_key(&arn));
     }
 
