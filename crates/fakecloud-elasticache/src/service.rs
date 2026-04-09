@@ -410,17 +410,6 @@ impl ElastiCacheService {
         let automatic_failover =
             parse_optional_bool(optional_param(request, "AutomaticFailoverEnabled").as_deref())?
                 .unwrap_or(false);
-        let port = match optional_param(request, "Port") {
-            Some(v) => v.parse::<u16>().map_err(|_| {
-                AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "InvalidParameterValue",
-                    format!("Invalid value for Port: {v}"),
-                )
-            })?,
-            None => 6379,
-        };
-
         // Reserve the ID under a write lock before starting the container.
         {
             let mut state = self.state.write();
@@ -445,7 +434,7 @@ impl ElastiCacheService {
             )
         })?;
 
-        let running = match runtime.ensure_redis(&replication_group_id, port).await {
+        let running = match runtime.ensure_redis(&replication_group_id).await {
             Ok(r) => r,
             Err(e) => {
                 self.state

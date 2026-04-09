@@ -53,16 +53,14 @@ impl ElastiCacheRuntime {
     pub async fn ensure_redis(
         &self,
         replication_group_id: &str,
-        port: u16,
     ) -> Result<RunningCacheContainer, RuntimeError> {
         self.stop_container(replication_group_id).await;
 
-        let container_port_mapping = format!(":{port}");
         let output = tokio::process::Command::new(&self.cli)
             .args([
                 "create",
                 "-p",
-                &container_port_mapping,
+                ":6379",
                 "--label",
                 &format!("fakecloud-elasticache={replication_group_id}"),
                 "--label",
@@ -94,7 +92,7 @@ impl ElastiCacheRuntime {
             )));
         }
 
-        let host_port = match self.lookup_port(&container_id, port).await {
+        let host_port = match self.lookup_port(&container_id, 6379).await {
             Ok(host_port) => host_port,
             Err(error) => {
                 self.remove_container(&container_id).await;
