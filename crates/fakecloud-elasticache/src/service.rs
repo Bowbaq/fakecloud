@@ -634,13 +634,21 @@ impl ElastiCacheService {
             parse_optional_bool(optional_param(request, "AutomaticFailoverEnabled").as_deref())?;
         let new_snapshot_retention_limit = optional_param(request, "SnapshotRetentionLimit")
             .map(|v| {
-                v.parse::<i32>().map_err(|_| {
+                let val = v.parse::<i32>().map_err(|_| {
                     AwsServiceError::aws_error(
                         StatusCode::BAD_REQUEST,
                         "InvalidParameterValue",
                         format!("Invalid value for SnapshotRetentionLimit: '{v}'"),
                     )
-                })
+                })?;
+                if val < 0 {
+                    return Err(AwsServiceError::aws_error(
+                        StatusCode::BAD_REQUEST,
+                        "InvalidParameterValue",
+                        format!("SnapshotRetentionLimit must be non-negative, got {val}"),
+                    ));
+                }
+                Ok(val)
             })
             .transpose()?;
         let new_snapshot_window = optional_param(request, "SnapshotWindow");
