@@ -6,14 +6,18 @@ use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceErr
 
 use crate::state::{
     default_engine_versions, default_parameters_for_family, CacheEngineVersion,
-    CacheParameterGroup, EngineDefaultParameter, SharedElastiCacheState,
+    CacheParameterGroup, CacheSubnetGroup, EngineDefaultParameter, SharedElastiCacheState,
 };
 
 const ELASTICACHE_NS: &str = "http://elasticache.amazonaws.com/doc/2015-02-02/";
 const SUPPORTED_ACTIONS: &[&str] = &[
+    "CreateCacheSubnetGroup",
+    "DeleteCacheSubnetGroup",
     "DescribeCacheEngineVersions",
     "DescribeCacheParameterGroups",
+    "DescribeCacheSubnetGroups",
     "DescribeEngineDefaultParameters",
+    "ModifyCacheSubnetGroup",
 ];
 
 pub struct ElastiCacheService {
@@ -34,9 +38,13 @@ impl AwsService for ElastiCacheService {
 
     async fn handle(&self, request: AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         match request.action.as_str() {
+            "CreateCacheSubnetGroup" => self.create_cache_subnet_group(&request),
+            "DeleteCacheSubnetGroup" => self.delete_cache_subnet_group(&request),
             "DescribeCacheEngineVersions" => self.describe_cache_engine_versions(&request),
             "DescribeCacheParameterGroups" => self.describe_cache_parameter_groups(&request),
+            "DescribeCacheSubnetGroups" => self.describe_cache_subnet_groups(&request),
             "DescribeEngineDefaultParameters" => self.describe_engine_default_parameters(&request),
+            "ModifyCacheSubnetGroup" => self.modify_cache_subnet_group(&request),
             _ => Err(AwsServiceError::action_not_implemented(
                 self.service_name(),
                 &request.action,
@@ -170,6 +178,184 @@ impl ElastiCacheService {
             ),
         ))
     }
+
+    fn create_cache_subnet_group(
+        &self,
+        request: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let name = required_param(request, "CacheSubnetGroupName")?;
+        let description = required_param(request, "CacheSubnetGroupDescription")?;
+        let subnet_ids = parse_member_list(&request.query_params, "SubnetIds", "SubnetIdentifier");
+
+        if subnet_ids.is_empty() {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidParameterValue",
+                "At least one subnet ID must be specified.".to_string(),
+            ));
+        }
+
+        let mut state = self.state.write();
+
+        if state.subnet_groups.contains_key(&name) {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "CacheSubnetGroupAlreadyExists",
+                format!("Cache subnet group {name} already exists."),
+            ));
+        }
+
+        let arn = format!(
+            "arn:aws:elasticache:{}:{}:subnetgroup:{}",
+            state.region, state.account_id, name
+        );
+        let vpc_id = format!(
+            "vpc-{:08x}",
+            name.as_bytes()
+                .iter()
+                .fold(0u32, |acc, &b| acc.wrapping_add(b as u32))
+        );
+
+        let group = CacheSubnetGroup {
+            cache_subnet_group_name: name.clone(),
+            cache_subnet_group_description: description,
+            vpc_id,
+            subnet_ids,
+            arn,
+        };
+
+        let xml = cache_subnet_group_xml(&group, &state.region);
+        state.subnet_groups.insert(name, group);
+
+        Ok(AwsResponse::xml(
+            StatusCode::OK,
+            xml_wrap(
+                "CreateCacheSubnetGroup",
+                &format!("<CacheSubnetGroup>{xml}</CacheSubnetGroup>"),
+                &request.request_id,
+            ),
+        ))
+    }
+
+    fn describe_cache_subnet_groups(
+        &self,
+        request: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let group_name = optional_param(request, "CacheSubnetGroupName");
+        let max_records = optional_usize_param(request, "MaxRecords")?;
+        let marker = optional_param(request, "Marker");
+
+        let state = self.state.read();
+
+        let groups: Vec<&CacheSubnetGroup> = if let Some(ref name) = group_name {
+            match state.subnet_groups.get(name) {
+                Some(g) => vec![g],
+                None => {
+                    return Err(AwsServiceError::aws_error(
+                        StatusCode::NOT_FOUND,
+                        "CacheSubnetGroupNotFoundFault",
+                        format!("Cache subnet group {name} not found."),
+                    ));
+                }
+            }
+        } else {
+            let mut groups: Vec<&CacheSubnetGroup> = state.subnet_groups.values().collect();
+            groups.sort_by(|a, b| a.cache_subnet_group_name.cmp(&b.cache_subnet_group_name));
+            groups
+        };
+
+        let (page, next_marker) = paginate(&groups, marker.as_deref(), max_records);
+
+        let members_xml: String = page
+            .iter()
+            .map(|g| {
+                format!(
+                    "<CacheSubnetGroup>{}</CacheSubnetGroup>",
+                    cache_subnet_group_xml(g, &state.region)
+                )
+            })
+            .collect();
+        let marker_xml = next_marker
+            .map(|m| format!("<Marker>{}</Marker>", xml_escape(&m)))
+            .unwrap_or_default();
+
+        Ok(AwsResponse::xml(
+            StatusCode::OK,
+            xml_wrap(
+                "DescribeCacheSubnetGroups",
+                &format!("<CacheSubnetGroups>{members_xml}</CacheSubnetGroups>{marker_xml}"),
+                &request.request_id,
+            ),
+        ))
+    }
+
+    fn delete_cache_subnet_group(
+        &self,
+        request: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let name = required_param(request, "CacheSubnetGroupName")?;
+
+        let mut state = self.state.write();
+
+        if name == "default" {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "CacheSubnetGroupInUse",
+                "Cannot delete default cache subnet group.".to_string(),
+            ));
+        }
+
+        if state.subnet_groups.remove(&name).is_none() {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::NOT_FOUND,
+                "CacheSubnetGroupNotFoundFault",
+                format!("Cache subnet group {name} not found."),
+            ));
+        }
+
+        Ok(AwsResponse::xml(
+            StatusCode::OK,
+            xml_wrap("DeleteCacheSubnetGroup", "", &request.request_id),
+        ))
+    }
+
+    fn modify_cache_subnet_group(
+        &self,
+        request: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let name = required_param(request, "CacheSubnetGroupName")?;
+        let description = optional_param(request, "CacheSubnetGroupDescription");
+        let subnet_ids = parse_member_list(&request.query_params, "SubnetIds", "SubnetIdentifier");
+
+        let mut state = self.state.write();
+        let region = state.region.clone();
+
+        let group = state.subnet_groups.get_mut(&name).ok_or_else(|| {
+            AwsServiceError::aws_error(
+                StatusCode::NOT_FOUND,
+                "CacheSubnetGroupNotFoundFault",
+                format!("Cache subnet group {name} not found."),
+            )
+        })?;
+
+        if let Some(desc) = description {
+            group.cache_subnet_group_description = desc;
+        }
+        if !subnet_ids.is_empty() {
+            group.subnet_ids = subnet_ids;
+        }
+
+        let xml = cache_subnet_group_xml(group, &region);
+
+        Ok(AwsResponse::xml(
+            StatusCode::OK,
+            xml_wrap(
+                "ModifyCacheSubnetGroup",
+                &format!("<CacheSubnetGroup>{xml}</CacheSubnetGroup>"),
+                &request.request_id,
+            ),
+        ))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -205,6 +391,30 @@ fn parse_optional_bool(value: Option<&str>) -> Result<Option<bool>, AwsServiceEr
             )),
         })
         .transpose()
+}
+
+/// Parse an AWS Query protocol member list.
+///
+/// AWS encodes lists in the query string as:
+///   `{param}.{member_name}.1=val1&{param}.{member_name}.2=val2`
+///
+/// Returns the values sorted by index.
+fn parse_member_list(
+    params: &std::collections::HashMap<String, String>,
+    param: &str,
+    member_name: &str,
+) -> Vec<String> {
+    let prefix = format!("{param}.{member_name}.");
+    let mut indexed: Vec<(usize, String)> = params
+        .iter()
+        .filter_map(|(k, v)| {
+            k.strip_prefix(&prefix)
+                .and_then(|idx| idx.parse::<usize>().ok())
+                .map(|idx| (idx, v.clone()))
+        })
+        .collect();
+    indexed.sort_by_key(|(idx, _)| *idx);
+    indexed.into_iter().map(|(_, v)| v).collect()
 }
 
 fn optional_usize_param(req: &AwsRequest, name: &str) -> Result<Option<usize>, AwsServiceError> {
@@ -319,6 +529,36 @@ fn cache_parameter_group_xml(g: &CacheParameterGroup) -> String {
     )
 }
 
+fn cache_subnet_group_xml(g: &CacheSubnetGroup, region: &str) -> String {
+    let subnets_xml: String = g
+        .subnet_ids
+        .iter()
+        .enumerate()
+        .map(|(i, id)| {
+            let az = format!("{}{}", region, (b'a' + (i % 6) as u8) as char);
+            format!(
+                "<Subnet>\
+                 <SubnetIdentifier>{}</SubnetIdentifier>\
+                 <SubnetAvailabilityZone><Name>{}</Name></SubnetAvailabilityZone>\
+                 </Subnet>",
+                xml_escape(id),
+                xml_escape(&az),
+            )
+        })
+        .collect();
+    format!(
+        "<CacheSubnetGroupName>{}</CacheSubnetGroupName>\
+         <CacheSubnetGroupDescription>{}</CacheSubnetGroupDescription>\
+         <VpcId>{}</VpcId>\
+         <Subnets>{subnets_xml}</Subnets>\
+         <ARN>{}</ARN>",
+        xml_escape(&g.cache_subnet_group_name),
+        xml_escape(&g.cache_subnet_group_description),
+        xml_escape(&g.vpc_id),
+        xml_escape(&g.arn),
+    )
+}
+
 fn parameter_xml(p: &EngineDefaultParameter) -> String {
     format!(
         "<Parameter>\
@@ -346,6 +586,72 @@ fn parameter_xml(p: &EngineDefaultParameter) -> String {
 mod tests {
     use super::*;
     use crate::state::default_engine_versions;
+    use std::collections::HashMap;
+
+    #[test]
+    fn parse_member_list_extracts_indexed_values() {
+        let mut params = HashMap::new();
+        params.insert(
+            "SubnetIds.SubnetIdentifier.1".to_string(),
+            "subnet-aaa".to_string(),
+        );
+        params.insert(
+            "SubnetIds.SubnetIdentifier.2".to_string(),
+            "subnet-bbb".to_string(),
+        );
+        params.insert(
+            "SubnetIds.SubnetIdentifier.3".to_string(),
+            "subnet-ccc".to_string(),
+        );
+        params.insert("OtherParam".to_string(), "ignored".to_string());
+
+        let result = parse_member_list(&params, "SubnetIds", "SubnetIdentifier");
+        assert_eq!(result, vec!["subnet-aaa", "subnet-bbb", "subnet-ccc"]);
+    }
+
+    #[test]
+    fn parse_member_list_returns_sorted_by_index() {
+        let mut params = HashMap::new();
+        params.insert(
+            "SubnetIds.SubnetIdentifier.3".to_string(),
+            "subnet-ccc".to_string(),
+        );
+        params.insert(
+            "SubnetIds.SubnetIdentifier.1".to_string(),
+            "subnet-aaa".to_string(),
+        );
+
+        let result = parse_member_list(&params, "SubnetIds", "SubnetIdentifier");
+        assert_eq!(result, vec!["subnet-aaa", "subnet-ccc"]);
+    }
+
+    #[test]
+    fn parse_member_list_returns_empty_for_no_matches() {
+        let params = HashMap::new();
+        let result = parse_member_list(&params, "SubnetIds", "SubnetIdentifier");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn cache_subnet_group_xml_contains_all_fields() {
+        let group = CacheSubnetGroup {
+            cache_subnet_group_name: "my-group".to_string(),
+            cache_subnet_group_description: "My description".to_string(),
+            vpc_id: "vpc-123".to_string(),
+            subnet_ids: vec!["subnet-aaa".to_string(), "subnet-bbb".to_string()],
+            arn: "arn:aws:elasticache:us-east-1:123:subnetgroup:my-group".to_string(),
+        };
+        let xml = cache_subnet_group_xml(&group, "us-east-1");
+        assert!(xml.contains("<CacheSubnetGroupName>my-group</CacheSubnetGroupName>"));
+        assert!(xml
+            .contains("<CacheSubnetGroupDescription>My description</CacheSubnetGroupDescription>"));
+        assert!(xml.contains("<VpcId>vpc-123</VpcId>"));
+        assert!(xml.contains("<SubnetIdentifier>subnet-aaa</SubnetIdentifier>"));
+        assert!(xml.contains("<SubnetIdentifier>subnet-bbb</SubnetIdentifier>"));
+        assert!(xml.contains("<Name>us-east-1a</Name>"));
+        assert!(xml.contains("<Name>us-east-1b</Name>"));
+        assert!(xml.contains("<ARN>arn:aws:elasticache:us-east-1:123:subnetgroup:my-group</ARN>"));
+    }
 
     #[test]
     fn filter_engine_versions_by_engine() {
