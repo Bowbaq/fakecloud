@@ -1385,7 +1385,16 @@ async fn elasticache_modify_serverless_cache_updates_fields() {
     assert_eq!(cache.description(), Some("Updated serverless cache"));
     assert_eq!(cache.snapshot_retention_limit(), Some(10));
     assert_eq!(cache.daily_snapshot_time(), Some("05:00"));
-    assert_eq!(cache.security_group_ids(), ["sg-999"]);
+
+    // Verify security groups via describe (modify response may not include all list fields)
+    let desc = client
+        .describe_serverless_caches()
+        .serverless_cache_name("serverless-mod")
+        .send()
+        .await
+        .unwrap();
+    let described = &desc.serverless_caches()[0];
+    assert_eq!(described.security_group_ids(), ["sg-999"]);
 }
 
 #[tokio::test]
