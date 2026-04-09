@@ -10,8 +10,8 @@ use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceErr
 use crate::runtime::{ElastiCacheRuntime, RuntimeError};
 use crate::state::{
     default_engine_versions, default_parameters_for_family, CacheCluster, CacheEngineVersion,
-    CacheParameterGroup, CacheSnapshot, CacheSubnetGroup, ElastiCacheUser, ElastiCacheUserGroup,
-    EngineDefaultParameter, ReplicationGroup, SharedElastiCacheState,
+    CacheParameterGroup, CacheSnapshot, CacheSubnetGroup, ElastiCacheState, ElastiCacheUser,
+    ElastiCacheUserGroup, EngineDefaultParameter, ReplicationGroup, SharedElastiCacheState,
 };
 
 const ELASTICACHE_NS: &str = "http://elasticache.amazonaws.com/doc/2015-02-02/";
@@ -547,7 +547,13 @@ impl ElastiCacheService {
         };
 
         let xml = cache_cluster_xml(&cluster, true);
-        self.state.write().finish_cache_cluster_creation(cluster);
+        {
+            let mut state = self.state.write();
+            state.finish_cache_cluster_creation(cluster.clone());
+            if let Some(ref group_id) = cluster.replication_group_id {
+                add_cluster_to_replication_group(&mut state, group_id, &cluster.cache_cluster_id);
+            }
+        }
 
         Ok(AwsResponse::xml(
             StatusCode::OK,
@@ -630,6 +636,13 @@ impl ElastiCacheService {
                         format!("CacheCluster {cache_cluster_id} not found."),
                     )
                 })?;
+            if let Some(ref group_id) = cluster.replication_group_id {
+                remove_cluster_from_replication_group(
+                    &mut state,
+                    group_id,
+                    &cluster.cache_cluster_id,
+                );
+            }
             state.tags.remove(&cluster.arn);
             cluster
         };
@@ -2312,6 +2325,37 @@ fn runtime_error_to_service_error(error: RuntimeError) -> AwsServiceError {
     }
 }
 
+fn add_cluster_to_replication_group(
+    state: &mut ElastiCacheState,
+    replication_group_id: &str,
+    cache_cluster_id: &str,
+) {
+    if let Some(group) = state.replication_groups.get_mut(replication_group_id) {
+        if !group
+            .member_clusters
+            .iter()
+            .any(|id| id == cache_cluster_id)
+        {
+            group.member_clusters.push(cache_cluster_id.to_string());
+            group.num_cache_clusters = group.member_clusters.len() as i32;
+        }
+    }
+}
+
+fn remove_cluster_from_replication_group(
+    state: &mut ElastiCacheState,
+    replication_group_id: &str,
+    cache_cluster_id: &str,
+) {
+    if let Some(group) = state.replication_groups.get_mut(replication_group_id) {
+        let original_len = group.member_clusters.len();
+        group.member_clusters.retain(|id| id != cache_cluster_id);
+        if group.member_clusters.len() != original_len {
+            group.num_cache_clusters = group.member_clusters.len() as i32;
+        }
+    }
+}
+
 fn snapshot_xml(s: &CacheSnapshot) -> String {
     format!(
         "<SnapshotName>{}</SnapshotName>\
@@ -2925,6 +2969,94 @@ mod tests {
             .cache_clusters
             .contains_key("delete-me"));
         assert!(!service.state.read().tags.contains_key(&arn));
+    }
+
+    #[test]
+    fn add_cluster_to_replication_group_updates_members_and_count() {
+        let mut state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        state.replication_groups.insert(
+            "rg-1".to_string(),
+            ReplicationGroup {
+                replication_group_id: "rg-1".to_string(),
+                description: "test group".to_string(),
+                status: "available".to_string(),
+                cache_node_type: "cache.t3.micro".to_string(),
+                engine: "redis".to_string(),
+                engine_version: "7.1".to_string(),
+                num_cache_clusters: 1,
+                automatic_failover_enabled: false,
+                endpoint_address: "127.0.0.1".to_string(),
+                endpoint_port: 6379,
+                arn: "arn:aws:elasticache:us-east-1:123456789012:replicationgroup:rg-1".to_string(),
+                created_at: "2024-01-01T00:00:00Z".to_string(),
+                container_id: "abc123".to_string(),
+                host_port: 6379,
+                member_clusters: vec!["rg-1-001".to_string()],
+                snapshot_retention_limit: 0,
+                snapshot_window: "05:00-09:00".to_string(),
+            },
+        );
+
+        add_cluster_to_replication_group(&mut state, "rg-1", "manual-cluster");
+
+        let group = state.replication_groups.get("rg-1").unwrap();
+        assert_eq!(group.member_clusters, vec!["rg-1-001", "manual-cluster"]);
+        assert_eq!(group.num_cache_clusters, 2);
+    }
+
+    #[tokio::test]
+    async fn delete_cache_cluster_removes_cluster_from_replication_group() {
+        let service = service_with_cache_cluster("delete-rg-cluster");
+        {
+            let mut state = service.state.write();
+            state
+                .cache_clusters
+                .get_mut("delete-rg-cluster")
+                .unwrap()
+                .replication_group_id = Some("delete-rg".to_string());
+            state.replication_groups.insert(
+                "delete-rg".to_string(),
+                ReplicationGroup {
+                    replication_group_id: "delete-rg".to_string(),
+                    description: "test group".to_string(),
+                    status: "available".to_string(),
+                    cache_node_type: "cache.t3.micro".to_string(),
+                    engine: "redis".to_string(),
+                    engine_version: "7.1".to_string(),
+                    num_cache_clusters: 2,
+                    automatic_failover_enabled: false,
+                    endpoint_address: "127.0.0.1".to_string(),
+                    endpoint_port: 6379,
+                    arn: "arn:aws:elasticache:us-east-1:123456789012:replicationgroup:delete-rg"
+                        .to_string(),
+                    created_at: "2024-01-01T00:00:00Z".to_string(),
+                    container_id: "abc123".to_string(),
+                    host_port: 6379,
+                    member_clusters: vec![
+                        "delete-rg-001".to_string(),
+                        "delete-rg-cluster".to_string(),
+                    ],
+                    snapshot_retention_limit: 0,
+                    snapshot_window: "05:00-09:00".to_string(),
+                },
+            );
+        }
+
+        let req = request(
+            "DeleteCacheCluster",
+            &[("CacheClusterId", "delete-rg-cluster")],
+        );
+        service.delete_cache_cluster(&req).await.unwrap();
+
+        let group = service
+            .state
+            .read()
+            .replication_groups
+            .get("delete-rg")
+            .unwrap()
+            .clone();
+        assert_eq!(group.member_clusters, vec!["delete-rg-001"]);
+        assert_eq!(group.num_cache_clusters, 1);
     }
 
     #[test]

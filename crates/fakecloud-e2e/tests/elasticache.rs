@@ -65,22 +65,66 @@ async fn elasticache_describe_cache_clusters_paginates() {
     let server = TestServer::start().await;
     let client = server.elasticache_client().await;
 
-    for cluster_id in ["page-a", "page-b"] {
+    for group_name in ["page-subnet-a", "page-subnet-b", "page-subnet-c"] {
         client
-            .create_cache_cluster()
-            .cache_cluster_id(cluster_id)
+            .create_cache_subnet_group()
+            .cache_subnet_group_name(group_name)
+            .cache_subnet_group_description("Pagination test subnet group")
+            .subnet_ids("subnet-aaa111")
             .send()
             .await
             .unwrap();
     }
 
     let first_page = client
-        .describe_cache_clusters()
-        .max_records(20)
+        .describe_cache_subnet_groups()
+        .max_records(1)
         .send()
         .await
         .unwrap();
-    assert!(!first_page.cache_clusters().is_empty());
+    assert_eq!(first_page.cache_subnet_groups().len(), 1);
+    let first_marker = first_page.marker().expect("first page marker").to_string();
+
+    let second_page = client
+        .describe_cache_subnet_groups()
+        .max_records(1)
+        .marker(&first_marker)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(second_page.cache_subnet_groups().len(), 1);
+    assert_ne!(
+        first_page.cache_subnet_groups()[0].cache_subnet_group_name(),
+        second_page.cache_subnet_groups()[0].cache_subnet_group_name()
+    );
+
+    let mut seen_names: Vec<String> = first_page
+        .cache_subnet_groups()
+        .iter()
+        .chain(second_page.cache_subnet_groups().iter())
+        .filter_map(|group| group.cache_subnet_group_name().map(ToOwned::to_owned))
+        .collect();
+    let mut marker = second_page.marker().map(ToOwned::to_owned);
+
+    while let Some(next_marker) = marker {
+        let page = client
+            .describe_cache_subnet_groups()
+            .max_records(1)
+            .marker(next_marker)
+            .send()
+            .await
+            .unwrap();
+        seen_names.extend(
+            page.cache_subnet_groups()
+                .iter()
+                .filter_map(|group| group.cache_subnet_group_name().map(ToOwned::to_owned)),
+        );
+        marker = page.marker().map(ToOwned::to_owned);
+    }
+
+    for expected in ["page-subnet-a", "page-subnet-b", "page-subnet-c"] {
+        assert!(seen_names.iter().any(|name| name == expected));
+    }
 }
 
 #[tokio::test]
