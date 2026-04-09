@@ -912,8 +912,14 @@ impl ElastiCacheService {
             .unwrap_or_else(|| default_major_engine_version(&engine).to_string());
         let full_engine_version = default_full_engine_version(&engine, &major_engine_version)?;
         let cache_usage_limits = parse_cache_usage_limits(request)?;
-        let security_group_ids =
-            parse_member_list(&request.query_params, "SecurityGroupIds", "SecurityGroupId");
+        let security_group_ids = {
+            let mut ids =
+                parse_member_list(&request.query_params, "SecurityGroupIds", "SecurityGroupId");
+            if ids.is_empty() {
+                ids = parse_member_list(&request.query_params, "SecurityGroupIds", "member");
+            }
+            ids
+        };
         let subnet_ids = parse_member_list(&request.query_params, "SubnetIds", "SubnetId");
         let kms_key_id = optional_param(request, "KmsKeyId");
         let user_group_id = optional_param(request, "UserGroupId");
@@ -1124,8 +1130,14 @@ impl ElastiCacheService {
         let serverless_cache_name = required_param(request, "ServerlessCacheName")?;
         let description = optional_param(request, "Description");
         let cache_usage_limits = parse_cache_usage_limits(request)?;
-        let security_group_ids =
-            parse_member_list(&request.query_params, "SecurityGroupIds", "SecurityGroupId");
+        let security_group_ids = {
+            let mut ids =
+                parse_member_list(&request.query_params, "SecurityGroupIds", "SecurityGroupId");
+            if ids.is_empty() {
+                ids = parse_member_list(&request.query_params, "SecurityGroupIds", "member");
+            }
+            ids
+        };
         let user_group_id = optional_param(request, "UserGroupId");
         let snapshot_retention_limit =
             optional_non_negative_i32_param(request, "SnapshotRetentionLimit")?;
