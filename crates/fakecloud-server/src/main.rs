@@ -20,6 +20,7 @@ use sqs_lambda_poller::SqsLambdaPoller;
 use fakecloud_cloudformation::service::CloudFormationService;
 use fakecloud_cognito::service::CognitoService;
 use fakecloud_dynamodb::service::DynamoDbService;
+use fakecloud_elasticache::service::ElastiCacheService;
 use fakecloud_eventbridge::service::EventBridgeService;
 use fakecloud_iam::iam_service::IamService;
 use fakecloud_iam::sts_service::StsService;
@@ -147,6 +148,10 @@ async fn main() {
     let rds_state = Arc::new(parking_lot::RwLock::new(
         fakecloud_rds::state::RdsState::new(&cli.account_id, &cli.region),
     ));
+    let elasticache_state = Arc::new(parking_lot::RwLock::new(
+        fakecloud_elasticache::state::ElastiCacheState::new(&cli.account_id, &cli.region),
+    ));
+
     let rds_runtime = fakecloud_rds::runtime::RdsRuntime::new().map(Arc::new);
     if let Some(ref rt) = rds_runtime {
         tracing::info!(
@@ -258,6 +263,7 @@ async fn main() {
         cognito: cognito_state.clone(),
         kinesis: kinesis_state.clone(),
         rds: rds_state.clone(),
+        elasticache: elasticache_state.clone(),
         container_runtime: container_runtime.clone(),
         rds_runtime: rds_runtime.clone(),
     };
@@ -373,6 +379,7 @@ async fn main() {
         rds_service = rds_service.with_runtime(rt.clone());
     }
     registry.register(Arc::new(rds_service));
+    registry.register(Arc::new(ElastiCacheService::new(elasticache_state)));
 
     // Spawn background tasks
     let lifecycle_processor = fakecloud_s3::lifecycle::LifecycleProcessor::new(s3_state);
@@ -1081,6 +1088,7 @@ struct ResetState {
     cognito: fakecloud_cognito::state::SharedCognitoState,
     kinesis: fakecloud_kinesis::state::SharedKinesisState,
     rds: fakecloud_rds::state::SharedRdsState,
+    elasticache: fakecloud_elasticache::state::SharedElastiCacheState,
     container_runtime: Option<Arc<fakecloud_lambda::runtime::ContainerRuntime>>,
     rds_runtime: Option<Arc<fakecloud_rds::runtime::RdsRuntime>>,
 }
@@ -1158,6 +1166,9 @@ impl ResetState {
                     tokio::spawn(async move { rt.stop_all().await });
                 }
             }
+            "elasticache" => {
+                self.elasticache.write().reset();
+            }
             _ => {
                 return Err(format!("Unknown service: {service}"));
             }
@@ -1209,6 +1220,7 @@ impl ResetState {
             let rt = rt.clone();
             tokio::spawn(async move { rt.stop_all().await });
         }
+        self.elasticache.write().reset();
         tracing::info!("state reset via reset API");
         axum::Json(types::ResetResponse {
             status: "ok".to_string(),
@@ -1322,6 +1334,9 @@ mod tests {
                 fakecloud_kinesis::state::KinesisState::new("123456789012", "us-east-1"),
             )),
             rds: Arc::new(parking_lot::RwLock::new(rds)),
+            elasticache: Arc::new(parking_lot::RwLock::new(
+                fakecloud_elasticache::state::ElastiCacheState::new("123456789012", "us-east-1"),
+            )),
             container_runtime: None,
             rds_runtime: None,
         };

@@ -1585,6 +1585,7 @@ dependencies = [
  "fakecloud-cognito",
  "fakecloud-core",
  "fakecloud-dynamodb",
+ "fakecloud-elasticache",
  "fakecloud-eventbridge",
  "fakecloud-iam",
  "fakecloud-kinesis",
@@ -1786,6 +1787,17 @@ dependencies = [
  "tokio",
  "tokio-postgres",
  "zip",
+]
+
+[[package]]
+name = "fakecloud-elasticache"
+version = "0.5.1"
+dependencies = [
+ "async-trait",
+ "fakecloud-aws",
+ "fakecloud-core",
+ "http 1.4.0",
+ "parking_lot",
 ]
 
 [[package]]
