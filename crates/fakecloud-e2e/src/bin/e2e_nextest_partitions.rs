@@ -245,16 +245,16 @@ fn collect_matching_tests(payload: &Value) -> Result<BTreeSet<String>, DynError>
 mod tests {
     use super::*;
 
+    type PartitionKey = (Option<&'static str>, Option<&'static str>);
+    type PartitionCase = (PartitionKey, &'static [&'static str]);
+
     struct FakeLister {
         expected: BTreeSet<String>,
-        responses: HashMap<(Option<&'static str>, Option<&'static str>), BTreeSet<String>>,
+        responses: HashMap<PartitionKey, BTreeSet<String>>,
     }
 
     impl FakeLister {
-        fn with_partitions(
-            expected: &[&str],
-            partitions: &[((Option<&'static str>, Option<&'static str>), &[&str])],
-        ) -> Self {
+        fn with_partitions(expected: &[&str], partitions: &[PartitionCase]) -> Self {
             let responses = partitions
                 .iter()
                 .map(|(key, tests)| {
