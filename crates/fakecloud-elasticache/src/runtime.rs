@@ -52,9 +52,9 @@ impl ElastiCacheRuntime {
 
     pub async fn ensure_redis(
         &self,
-        replication_group_id: &str,
+        resource_id: &str,
     ) -> Result<RunningCacheContainer, RuntimeError> {
-        self.stop_container(replication_group_id).await;
+        self.stop_container(resource_id).await;
 
         let output = tokio::process::Command::new(&self.cli)
             .args([
@@ -62,7 +62,7 @@ impl ElastiCacheRuntime {
                 "-p",
                 ":6379",
                 "--label",
-                &format!("fakecloud-elasticache={replication_group_id}"),
+                &format!("fakecloud-elasticache={resource_id}"),
                 "--label",
                 &format!("fakecloud-instance={}", self.instance_id),
                 "redis:7-alpine",
@@ -111,12 +111,12 @@ impl ElastiCacheRuntime {
         };
         self.containers
             .write()
-            .insert(replication_group_id.to_string(), running.clone());
+            .insert(resource_id.to_string(), running.clone());
         Ok(running)
     }
 
-    pub async fn stop_container(&self, replication_group_id: &str) {
-        let container = self.containers.write().remove(replication_group_id);
+    pub async fn stop_container(&self, resource_id: &str) {
+        let container = self.containers.write().remove(resource_id);
         if let Some(container) = container {
             self.remove_container(&container.container_id).await;
         }
