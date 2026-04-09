@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use parking_lot::RwLock;
@@ -70,6 +70,7 @@ pub struct ElastiCacheState {
     pub parameter_groups: Vec<CacheParameterGroup>,
     pub subnet_groups: HashMap<String, CacheSubnetGroup>,
     pub replication_groups: HashMap<String, ReplicationGroup>,
+    in_progress_replication_group_ids: HashSet<String>,
 }
 
 impl ElastiCacheState {
@@ -82,6 +83,7 @@ impl ElastiCacheState {
             parameter_groups,
             subnet_groups,
             replication_groups: HashMap::new(),
+            in_progress_replication_group_ids: HashSet::new(),
         }
     }
 
@@ -89,6 +91,32 @@ impl ElastiCacheState {
         self.parameter_groups = default_parameter_groups(&self.account_id, &self.region);
         self.subnet_groups = default_subnet_groups(&self.account_id, &self.region);
         self.replication_groups.clear();
+        self.in_progress_replication_group_ids.clear();
+    }
+
+    pub fn begin_replication_group_creation(&mut self, replication_group_id: &str) -> bool {
+        if self.replication_groups.contains_key(replication_group_id)
+            || self
+                .in_progress_replication_group_ids
+                .contains(replication_group_id)
+        {
+            return false;
+        }
+        self.in_progress_replication_group_ids
+            .insert(replication_group_id.to_string());
+        true
+    }
+
+    pub fn finish_replication_group_creation(&mut self, group: ReplicationGroup) {
+        self.in_progress_replication_group_ids
+            .remove(&group.replication_group_id);
+        self.replication_groups
+            .insert(group.replication_group_id.clone(), group);
+    }
+
+    pub fn cancel_replication_group_creation(&mut self, replication_group_id: &str) {
+        self.in_progress_replication_group_ids
+            .remove(replication_group_id);
     }
 }
 
@@ -294,6 +322,17 @@ mod tests {
     fn state_new_has_empty_replication_groups() {
         let state = ElastiCacheState::new("123456789012", "us-east-1");
         assert!(state.replication_groups.is_empty());
+    }
+
+    #[test]
+    fn begin_replication_group_creation_rejects_duplicate_ids() {
+        let mut state = ElastiCacheState::new("123456789012", "us-east-1");
+
+        assert!(state.begin_replication_group_creation("rg-1"));
+        assert!(!state.begin_replication_group_creation("rg-1"));
+
+        state.cancel_replication_group_creation("rg-1");
+        assert!(state.begin_replication_group_creation("rg-1"));
     }
 
     #[test]

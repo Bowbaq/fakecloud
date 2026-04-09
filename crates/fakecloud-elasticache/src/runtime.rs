@@ -148,6 +148,13 @@ impl ElastiCacheRuntime {
             .await
             .map_err(|e| RuntimeError::ContainerStartFailed(e.to_string()))?;
 
+        if !port_output.status.success() {
+            let stderr = String::from_utf8_lossy(&port_output.stderr);
+            return Err(RuntimeError::ContainerStartFailed(format!(
+                "port lookup failed: {stderr}"
+            )));
+        }
+
         let port_str = String::from_utf8_lossy(&port_output.stdout);
         port_str
             .trim()

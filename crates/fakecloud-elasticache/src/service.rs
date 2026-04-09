@@ -387,9 +387,26 @@ impl ElastiCacheService {
             optional_param(request, "EngineVersion").unwrap_or_else(|| "7.1".to_string());
         let cache_node_type = optional_param(request, "CacheNodeType")
             .unwrap_or_else(|| "cache.t3.micro".to_string());
-        let num_cache_clusters = optional_param(request, "NumCacheClusters")
-            .and_then(|v| v.parse::<i32>().ok())
-            .unwrap_or(1);
+        let num_cache_clusters = match optional_param(request, "NumCacheClusters") {
+            Some(v) => {
+                let n = v.parse::<i32>().map_err(|_| {
+                    AwsServiceError::aws_error(
+                        StatusCode::BAD_REQUEST,
+                        "InvalidParameterValue",
+                        format!("Invalid value for NumCacheClusters: '{v}'"),
+                    )
+                })?;
+                if n < 1 {
+                    return Err(AwsServiceError::aws_error(
+                        StatusCode::BAD_REQUEST,
+                        "InvalidParameterValue",
+                        format!("NumCacheClusters must be a positive integer, got {n}"),
+                    ));
+                }
+                n
+            }
+            None => 1,
+        };
         let automatic_failover =
             parse_optional_bool(optional_param(request, "AutomaticFailoverEnabled").as_deref())?
                 .unwrap_or(false);
@@ -397,10 +414,10 @@ impl ElastiCacheService {
             .and_then(|v| v.parse::<u16>().ok())
             .unwrap_or(6379);
 
-        // Check for duplicates
+        // Reserve the ID under a write lock before starting the container.
         {
-            let state = self.state.read();
-            if state.replication_groups.contains_key(&replication_group_id) {
+            let mut state = self.state.write();
+            if !state.begin_replication_group_creation(&replication_group_id) {
                 return Err(AwsServiceError::aws_error(
                     StatusCode::BAD_REQUEST,
                     "ReplicationGroupAlreadyExistsFault",
@@ -410,6 +427,9 @@ impl ElastiCacheService {
         }
 
         let runtime = self.runtime.as_ref().ok_or_else(|| {
+            self.state
+                .write()
+                .cancel_replication_group_creation(&replication_group_id);
             AwsServiceError::aws_error(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "InvalidParameterValue",
@@ -418,10 +438,15 @@ impl ElastiCacheService {
             )
         })?;
 
-        let running = runtime
-            .ensure_redis(&replication_group_id, port)
-            .await
-            .map_err(runtime_error_to_service_error)?;
+        let running = match runtime.ensure_redis(&replication_group_id, port).await {
+            Ok(r) => r,
+            Err(e) => {
+                self.state
+                    .write()
+                    .cancel_replication_group_creation(&replication_group_id);
+                return Err(runtime_error_to_service_error(e));
+            }
+        };
 
         let member_clusters: Vec<String> = (1..=num_cache_clusters)
             .map(|i| format!("{replication_group_id}-{i:03}"))
@@ -455,10 +480,7 @@ impl ElastiCacheService {
         };
 
         let xml = replication_group_xml(&group, &region);
-        self.state
-            .write()
-            .replication_groups
-            .insert(replication_group_id, group);
+        self.state.write().finish_replication_group_creation(group);
 
         Ok(AwsResponse::xml(
             StatusCode::OK,
