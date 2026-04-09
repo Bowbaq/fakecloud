@@ -2,6 +2,7 @@ use std::convert::TryFrom;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use form_urlencoded;
 use http::StatusCode;
 
 use fakecloud_aws::xml::xml_escape;
@@ -912,14 +913,8 @@ impl ElastiCacheService {
             .unwrap_or_else(|| default_major_engine_version(&engine).to_string());
         let full_engine_version = default_full_engine_version(&engine, &major_engine_version)?;
         let cache_usage_limits = parse_cache_usage_limits(request)?;
-        let security_group_ids = {
-            let mut ids =
-                parse_member_list(&request.query_params, "SecurityGroupIds", "SecurityGroupId");
-            if ids.is_empty() {
-                ids = parse_member_list(&request.query_params, "SecurityGroupIds", "member");
-            }
-            ids
-        };
+        let security_group_ids =
+            parse_query_list_param(request, "SecurityGroupIds", "SecurityGroupId");
         let subnet_ids = parse_member_list(&request.query_params, "SubnetIds", "SubnetId");
         let kms_key_id = optional_param(request, "KmsKeyId");
         let user_group_id = optional_param(request, "UserGroupId");
@@ -1130,14 +1125,8 @@ impl ElastiCacheService {
         let serverless_cache_name = required_param(request, "ServerlessCacheName")?;
         let description = optional_param(request, "Description");
         let cache_usage_limits = parse_cache_usage_limits(request)?;
-        let security_group_ids = {
-            let mut ids =
-                parse_member_list(&request.query_params, "SecurityGroupIds", "SecurityGroupId");
-            if ids.is_empty() {
-                ids = parse_member_list(&request.query_params, "SecurityGroupIds", "member");
-            }
-            ids
-        };
+        let security_group_ids =
+            parse_query_list_param(request, "SecurityGroupIds", "SecurityGroupId");
         let user_group_id = optional_param(request, "UserGroupId");
         let snapshot_retention_limit =
             optional_non_negative_i32_param(request, "SnapshotRetentionLimit")?;
@@ -2529,6 +2518,50 @@ fn parse_member_list(
     indexed.into_iter().map(|(_, v)| v).collect()
 }
 
+fn parse_query_list_param(req: &AwsRequest, param: &str, member_name: &str) -> Vec<String> {
+    let mut indexed: Vec<(usize, String)> = Vec::new();
+
+    for (key, value) in &req.query_params {
+        if let Some(idx) = key
+            .strip_prefix(&format!("{param}.{member_name}."))
+            .and_then(|idx| idx.parse::<usize>().ok())
+        {
+            indexed.push((idx, value.clone()));
+            continue;
+        }
+        if let Some(idx) = key
+            .strip_prefix(&format!("{param}.member."))
+            .and_then(|idx| idx.parse::<usize>().ok())
+        {
+            indexed.push((idx, value.clone()));
+        }
+    }
+
+    for (key, value) in form_urlencoded::parse(req.body.as_ref()) {
+        let key = key.as_ref();
+        if let Some(idx) = key
+            .strip_prefix(&format!("{param}.{member_name}."))
+            .and_then(|idx| idx.parse::<usize>().ok())
+        {
+            indexed.push((idx, value.into_owned()));
+            continue;
+        }
+        if let Some(idx) = key
+            .strip_prefix(&format!("{param}.member."))
+            .and_then(|idx| idx.parse::<usize>().ok())
+        {
+            indexed.push((idx, value.into_owned()));
+            continue;
+        }
+        if key == param {
+            indexed.push((indexed.len() + 1, value.into_owned()));
+        }
+    }
+
+    indexed.sort_by_key(|(idx, _)| *idx);
+    indexed.into_iter().map(|(_, v)| v).collect()
+}
+
 fn optional_usize_param(req: &AwsRequest, name: &str) -> Result<Option<usize>, AwsServiceError> {
     optional_param(req, name)
         .map(|v| {
@@ -3231,7 +3264,7 @@ mod tests {
     use super::*;
     use crate::state::default_engine_versions;
     use bytes::Bytes;
-    use http::HeaderMap;
+    use http::{HeaderMap, Method};
     use std::collections::HashMap;
 
     fn request(action: &str, params: &[(&str, &str)]) -> AwsRequest {
@@ -4167,6 +4200,39 @@ mod tests {
         assert!(body.contains("<SecurityGroupIds><member>sg-999</member></SecurityGroupIds>"));
         assert!(body.contains("<SnapshotRetentionLimit>7</SnapshotRetentionLimit>"));
         assert!(body.contains("<DailySnapshotTime>05:00</DailySnapshotTime>"));
+    }
+
+    #[test]
+    fn parse_query_list_param_reads_flat_and_indexed_body_values() {
+        let req = AwsRequest {
+            service: "elasticache".to_string(),
+            action: "ModifyServerlessCache".to_string(),
+            region: "us-east-1".to_string(),
+            account_id: "000000000000".to_string(),
+            request_id: "req-1".to_string(),
+            headers: HeaderMap::new(),
+            query_params: HashMap::new(),
+            body: Bytes::from("SecurityGroupIds.member.1=sg-a&SecurityGroupIds.member.2=sg-b"),
+            path_segments: vec![],
+            raw_path: "/".to_string(),
+            raw_query: String::new(),
+            method: Method::POST,
+            is_query_protocol: true,
+            access_key_id: None,
+        };
+        assert_eq!(
+            parse_query_list_param(&req, "SecurityGroupIds", "SecurityGroupId"),
+            vec!["sg-a".to_string(), "sg-b".to_string()]
+        );
+
+        let req = AwsRequest {
+            body: Bytes::from("SecurityGroupIds=sg-flat"),
+            ..req
+        };
+        assert_eq!(
+            parse_query_list_param(&req, "SecurityGroupIds", "SecurityGroupId"),
+            vec!["sg-flat".to_string()]
+        );
     }
 
     #[test]

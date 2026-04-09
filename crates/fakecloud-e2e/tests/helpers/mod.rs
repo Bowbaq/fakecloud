@@ -40,7 +40,10 @@ impl TestServer {
             cmd.arg("--addr")
                 .arg(format!("127.0.0.1:{port}"))
                 .arg("--log-level")
-                .arg("warn")
+                .arg(
+                    std::env::var("FAKECLOUD_TEST_LOG_LEVEL")
+                        .unwrap_or_else(|_| "warn".to_string()),
+                )
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
 
