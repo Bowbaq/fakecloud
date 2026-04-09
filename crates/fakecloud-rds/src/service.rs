@@ -304,8 +304,15 @@ impl RdsService {
         request: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let db_instance_identifier = required_param(request, "DBInstanceIdentifier")?;
-        let _force_failover =
+        let force_failover =
             parse_optional_bool(optional_param(request, "ForceFailover").as_deref())?;
+        if force_failover == Some(true) {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidParameterCombination",
+                "ForceFailover is not supported for single-instance PostgreSQL DB instances.",
+            ));
+        }
 
         let instance = {
             let state = self.state.read();

@@ -226,8 +226,9 @@ impl RdsRuntime {
                 tokio::spawn(async move {
                     let _ = connection.await;
                 });
-                let _ = client.simple_query("SELECT 1").await;
-                return Ok(());
+                if client.simple_query("SELECT 1").await.is_ok() {
+                    return Ok(());
+                }
             }
         }
 

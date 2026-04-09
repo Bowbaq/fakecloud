@@ -276,12 +276,12 @@ async fn rds_reboot_db_instance() {
     let endpoint = describe_after.db_instances()[0]
         .endpoint()
         .expect("endpoint after reboot");
+    let address = endpoint.address().expect("address after reboot");
     let port = endpoint.port().expect("port after reboot");
 
-    let (db_client, connection) =
-        connect_with_retry("127.0.0.1", port, "admin", "secret123", "appdb")
-            .await
-            .expect("reconnect after reboot");
+    let (db_client, connection) = connect_with_retry(address, port, "admin", "secret123", "appdb")
+        .await
+        .expect("reconnect after reboot");
     tokio::spawn(connection);
     let row = db_client
         .query_one("SELECT 1", &[])
@@ -289,6 +289,26 @@ async fn rds_reboot_db_instance() {
         .expect("select 1");
     let value: i32 = row.get(0);
     assert_eq!(value, 1);
+}
+
+#[tokio::test]
+async fn rds_reboot_db_instance_rejects_force_failover() {
+    let server = TestServer::start().await;
+    let client = server.rds_client().await;
+
+    create_instance(&client, "orders-force-failover-db").await;
+
+    let error = client
+        .reboot_db_instance()
+        .db_instance_identifier("orders-force-failover-db")
+        .force_failover(true)
+        .send()
+        .await
+        .expect_err("force failover should be rejected");
+    assert_eq!(
+        error.into_service_error().meta().code(),
+        Some("InvalidParameterCombination")
+    );
 }
 
 async fn create_instance(
