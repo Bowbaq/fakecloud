@@ -11,7 +11,9 @@ use crate::runtime::{ElastiCacheRuntime, RuntimeError};
 use crate::state::{
     default_engine_versions, default_parameters_for_family, CacheCluster, CacheEngineVersion,
     CacheParameterGroup, CacheSnapshot, CacheSubnetGroup, ElastiCacheState, ElastiCacheUser,
-    ElastiCacheUserGroup, EngineDefaultParameter, ReplicationGroup, SharedElastiCacheState,
+    ElastiCacheUserGroup, EngineDefaultParameter, ReplicationGroup, ServerlessCache,
+    ServerlessCacheDataStorage, ServerlessCacheEcpuPerSecond, ServerlessCacheEndpoint,
+    ServerlessCacheSnapshot, ServerlessCacheUsageLimits, SharedElastiCacheState,
 };
 
 const ELASTICACHE_NS: &str = "http://elasticache.amazonaws.com/doc/2015-02-02/";
@@ -20,6 +22,8 @@ const SUPPORTED_ACTIONS: &[&str] = &[
     "CreateCacheCluster",
     "CreateCacheSubnetGroup",
     "CreateReplicationGroup",
+    "CreateServerlessCache",
+    "CreateServerlessCacheSnapshot",
     "CreateSnapshot",
     "CreateUser",
     "CreateUserGroup",
@@ -27,6 +31,8 @@ const SUPPORTED_ACTIONS: &[&str] = &[
     "DeleteCacheCluster",
     "DeleteCacheSubnetGroup",
     "DeleteReplicationGroup",
+    "DeleteServerlessCache",
+    "DeleteServerlessCacheSnapshot",
     "DeleteSnapshot",
     "DeleteUser",
     "DeleteUserGroup",
@@ -36,6 +42,8 @@ const SUPPORTED_ACTIONS: &[&str] = &[
     "DescribeCacheSubnetGroups",
     "DescribeEngineDefaultParameters",
     "DescribeReplicationGroups",
+    "DescribeServerlessCaches",
+    "DescribeServerlessCacheSnapshots",
     "DescribeSnapshots",
     "DescribeUserGroups",
     "DescribeUsers",
@@ -43,6 +51,7 @@ const SUPPORTED_ACTIONS: &[&str] = &[
     "ListTagsForResource",
     "ModifyCacheSubnetGroup",
     "ModifyReplicationGroup",
+    "ModifyServerlessCache",
     "RemoveTagsFromResource",
     "TestFailover",
 ];
@@ -78,6 +87,8 @@ impl AwsService for ElastiCacheService {
             "CreateCacheCluster" => self.create_cache_cluster(&request).await,
             "CreateCacheSubnetGroup" => self.create_cache_subnet_group(&request),
             "CreateReplicationGroup" => self.create_replication_group(&request).await,
+            "CreateServerlessCache" => self.create_serverless_cache(&request).await,
+            "CreateServerlessCacheSnapshot" => self.create_serverless_cache_snapshot(&request),
             "CreateSnapshot" => self.create_snapshot(&request),
             "CreateUser" => self.create_user(&request),
             "CreateUserGroup" => self.create_user_group(&request),
@@ -85,6 +96,8 @@ impl AwsService for ElastiCacheService {
             "DeleteCacheCluster" => self.delete_cache_cluster(&request).await,
             "DeleteCacheSubnetGroup" => self.delete_cache_subnet_group(&request),
             "DeleteReplicationGroup" => self.delete_replication_group(&request).await,
+            "DeleteServerlessCache" => self.delete_serverless_cache(&request).await,
+            "DeleteServerlessCacheSnapshot" => self.delete_serverless_cache_snapshot(&request),
             "DeleteSnapshot" => self.delete_snapshot(&request),
             "DeleteUser" => self.delete_user(&request),
             "DeleteUserGroup" => self.delete_user_group(&request),
@@ -94,6 +107,10 @@ impl AwsService for ElastiCacheService {
             "DescribeCacheSubnetGroups" => self.describe_cache_subnet_groups(&request),
             "DescribeEngineDefaultParameters" => self.describe_engine_default_parameters(&request),
             "DescribeReplicationGroups" => self.describe_replication_groups(&request),
+            "DescribeServerlessCaches" => self.describe_serverless_caches(&request),
+            "DescribeServerlessCacheSnapshots" => {
+                self.describe_serverless_cache_snapshots(&request)
+            }
             "DescribeSnapshots" => self.describe_snapshots(&request),
             "DescribeUserGroups" => self.describe_user_groups(&request),
             "DescribeUsers" => self.describe_users(&request),
@@ -101,6 +118,7 @@ impl AwsService for ElastiCacheService {
             "ListTagsForResource" => self.list_tags_for_resource(&request),
             "ModifyCacheSubnetGroup" => self.modify_cache_subnet_group(&request),
             "ModifyReplicationGroup" => self.modify_replication_group(&request),
+            "ModifyServerlessCache" => self.modify_serverless_cache(&request),
             "RemoveTagsFromResource" => self.remove_tags_from_resource(&request),
             "TestFailover" => self.test_failover(&request),
             _ => Err(AwsServiceError::action_not_implemented(
@@ -876,6 +894,482 @@ impl ElastiCacheService {
             xml_wrap(
                 "DeleteReplicationGroup",
                 &format!("<ReplicationGroup>{xml}</ReplicationGroup>"),
+                &request.request_id,
+            ),
+        ))
+    }
+
+    async fn create_serverless_cache(
+        &self,
+        request: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let serverless_cache_name = required_param(request, "ServerlessCacheName")?;
+        let engine = required_param(request, "Engine")?;
+        validate_serverless_engine(&engine)?;
+
+        let description = optional_param(request, "Description").unwrap_or_default();
+        let major_engine_version = optional_param(request, "MajorEngineVersion")
+            .unwrap_or_else(|| default_major_engine_version(&engine).to_string());
+        let full_engine_version = default_full_engine_version(&engine, &major_engine_version)?;
+        let cache_usage_limits = parse_cache_usage_limits(request)?;
+        let security_group_ids =
+            parse_query_list_param(request, "SecurityGroupIds", "SecurityGroupId");
+        let subnet_ids = parse_member_list(&request.query_params, "SubnetIds", "SubnetId");
+        let kms_key_id = optional_param(request, "KmsKeyId");
+        let user_group_id = optional_param(request, "UserGroupId");
+        let snapshot_retention_limit =
+            optional_non_negative_i32_param(request, "SnapshotRetentionLimit")?;
+        let daily_snapshot_time = optional_param(request, "DailySnapshotTime");
+        let tags = parse_tags(request)?;
+
+        let (arn, endpoint_address) = {
+            let mut state = self.state.write();
+            if !state.begin_serverless_cache_creation(&serverless_cache_name) {
+                return Err(AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "ServerlessCacheAlreadyExistsFault",
+                    format!("ServerlessCache {serverless_cache_name} already exists."),
+                ));
+            }
+
+            if let Some(ref group_id) = user_group_id {
+                let user_group_status = match state.user_groups.get(group_id) {
+                    Some(user_group) => user_group.status.clone(),
+                    None => {
+                        state.cancel_serverless_cache_creation(&serverless_cache_name);
+                        return Err(AwsServiceError::aws_error(
+                            StatusCode::NOT_FOUND,
+                            "UserGroupNotFound",
+                            format!("User group {group_id} not found."),
+                        ));
+                    }
+                };
+                if user_group_status != "active" {
+                    state.cancel_serverless_cache_creation(&serverless_cache_name);
+                    return Err(AwsServiceError::aws_error(
+                        StatusCode::BAD_REQUEST,
+                        "InvalidUserGroupState",
+                        format!("User group {group_id} is not in active state."),
+                    ));
+                }
+            }
+
+            let arn = format!(
+                "arn:aws:elasticache:{}:{}:serverlesscache:{}",
+                state.region, state.account_id, serverless_cache_name
+            );
+            (arn, "127.0.0.1".to_string())
+        };
+
+        let runtime = self.runtime.as_ref().ok_or_else(|| {
+            self.state
+                .write()
+                .cancel_serverless_cache_creation(&serverless_cache_name);
+            AwsServiceError::aws_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "InvalidParameterValue",
+                "Docker/Podman is required for ElastiCache serverless caches but is not available"
+                    .to_string(),
+            )
+        })?;
+
+        let running = match runtime.ensure_redis(&serverless_cache_name).await {
+            Ok(r) => r,
+            Err(e) => {
+                self.state
+                    .write()
+                    .cancel_serverless_cache_creation(&serverless_cache_name);
+                return Err(runtime_error_to_service_error(e));
+            }
+        };
+
+        let endpoint = ServerlessCacheEndpoint {
+            address: endpoint_address.clone(),
+            port: running.host_port,
+        };
+        let reader_endpoint = ServerlessCacheEndpoint {
+            address: endpoint_address,
+            port: running.host_port,
+        };
+        let cache = ServerlessCache {
+            serverless_cache_name: serverless_cache_name.clone(),
+            description,
+            engine,
+            major_engine_version,
+            full_engine_version,
+            status: "available".to_string(),
+            endpoint,
+            reader_endpoint,
+            arn: arn.clone(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            cache_usage_limits,
+            security_group_ids,
+            subnet_ids,
+            kms_key_id,
+            user_group_id,
+            snapshot_retention_limit,
+            daily_snapshot_time,
+            container_id: running.container_id,
+            host_port: running.host_port,
+        };
+
+        let xml = serverless_cache_xml(&cache);
+        {
+            let mut state = self.state.write();
+            state.finish_serverless_cache_creation(cache.clone());
+            if !tags.is_empty() {
+                merge_tags(state.tags.entry(arn).or_default(), &tags);
+            }
+        }
+
+        Ok(AwsResponse::xml(
+            StatusCode::OK,
+            xml_wrap(
+                "CreateServerlessCache",
+                &format!("<ServerlessCache>{xml}</ServerlessCache>"),
+                &request.request_id,
+            ),
+        ))
+    }
+
+    fn describe_serverless_caches(
+        &self,
+        request: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let serverless_cache_name = optional_param(request, "ServerlessCacheName");
+        let max_results = optional_usize_param(request, "MaxResults")?;
+        let next_token = optional_param(request, "NextToken");
+
+        let state = self.state.read();
+        let caches: Vec<&ServerlessCache> = if let Some(ref name) = serverless_cache_name {
+            match state.serverless_caches.get(name) {
+                Some(cache) => vec![cache],
+                None => {
+                    return Err(AwsServiceError::aws_error(
+                        StatusCode::NOT_FOUND,
+                        "ServerlessCacheNotFoundFault",
+                        format!("ServerlessCache {name} not found."),
+                    ));
+                }
+            }
+        } else {
+            let mut caches: Vec<&ServerlessCache> = state.serverless_caches.values().collect();
+            caches.sort_by(|a, b| a.serverless_cache_name.cmp(&b.serverless_cache_name));
+            caches
+        };
+
+        let (page, next_token) = paginate(&caches, next_token.as_deref(), max_results);
+        let members_xml: String = page
+            .iter()
+            .map(|cache| format!("<member>{}</member>", serverless_cache_xml(cache)))
+            .collect();
+        let next_token_xml = next_token
+            .map(|token| format!("<NextToken>{}</NextToken>", xml_escape(&token)))
+            .unwrap_or_default();
+
+        Ok(AwsResponse::xml(
+            StatusCode::OK,
+            xml_wrap(
+                "DescribeServerlessCaches",
+                &format!("<ServerlessCaches>{members_xml}</ServerlessCaches>{next_token_xml}"),
+                &request.request_id,
+            ),
+        ))
+    }
+
+    async fn delete_serverless_cache(
+        &self,
+        request: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let serverless_cache_name = required_param(request, "ServerlessCacheName")?;
+
+        let cache = {
+            let mut state = self.state.write();
+            let cache = state
+                .serverless_caches
+                .remove(&serverless_cache_name)
+                .ok_or_else(|| {
+                    AwsServiceError::aws_error(
+                        StatusCode::NOT_FOUND,
+                        "ServerlessCacheNotFoundFault",
+                        format!("ServerlessCache {serverless_cache_name} not found."),
+                    )
+                })?;
+            state.tags.remove(&cache.arn);
+            cache
+        };
+
+        if let Some(ref runtime) = self.runtime {
+            runtime.stop_container(&serverless_cache_name).await;
+        }
+
+        let mut deleted = cache;
+        deleted.status = "deleting".to_string();
+        let xml = serverless_cache_xml(&deleted);
+
+        Ok(AwsResponse::xml(
+            StatusCode::OK,
+            xml_wrap(
+                "DeleteServerlessCache",
+                &format!("<ServerlessCache>{xml}</ServerlessCache>"),
+                &request.request_id,
+            ),
+        ))
+    }
+
+    fn modify_serverless_cache(
+        &self,
+        request: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let serverless_cache_name = required_param(request, "ServerlessCacheName")?;
+        let description = optional_param(request, "Description");
+        let cache_usage_limits = parse_cache_usage_limits(request)?;
+        let security_group_ids =
+            parse_query_list_param(request, "SecurityGroupIds", "SecurityGroupId");
+        let user_group_id = optional_param(request, "UserGroupId");
+        let snapshot_retention_limit =
+            optional_non_negative_i32_param(request, "SnapshotRetentionLimit")?;
+        let daily_snapshot_time = optional_param(request, "DailySnapshotTime");
+
+        let mut state = self.state.write();
+
+        if let Some(ref group_id) = user_group_id {
+            let user_group = state.user_groups.get(group_id).ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::NOT_FOUND,
+                    "UserGroupNotFound",
+                    format!("User group {group_id} not found."),
+                )
+            })?;
+            if user_group.status != "active" {
+                return Err(AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "InvalidUserGroupState",
+                    format!("User group {group_id} is not in active state."),
+                ));
+            }
+        }
+
+        let cache = state
+            .serverless_caches
+            .get_mut(&serverless_cache_name)
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::NOT_FOUND,
+                    "ServerlessCacheNotFoundFault",
+                    format!("ServerlessCache {serverless_cache_name} not found."),
+                )
+            })?;
+
+        if let Some(description) = description {
+            cache.description = description;
+        }
+        if cache_usage_limits.is_some() {
+            cache.cache_usage_limits = cache_usage_limits;
+        }
+        if !security_group_ids.is_empty() {
+            cache.security_group_ids = security_group_ids;
+        }
+        if let Some(user_group_id) = user_group_id {
+            cache.user_group_id = Some(user_group_id);
+        }
+        if let Some(snapshot_retention_limit) = snapshot_retention_limit {
+            cache.snapshot_retention_limit = Some(snapshot_retention_limit);
+        }
+        if let Some(daily_snapshot_time) = daily_snapshot_time {
+            cache.daily_snapshot_time = Some(daily_snapshot_time);
+        }
+
+        let xml = serverless_cache_xml(cache);
+        Ok(AwsResponse::xml(
+            StatusCode::OK,
+            xml_wrap(
+                "ModifyServerlessCache",
+                &format!("<ServerlessCache>{xml}</ServerlessCache>"),
+                &request.request_id,
+            ),
+        ))
+    }
+
+    fn create_serverless_cache_snapshot(
+        &self,
+        request: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let serverless_cache_name = required_param(request, "ServerlessCacheName")?;
+        let serverless_cache_snapshot_name =
+            required_param(request, "ServerlessCacheSnapshotName")?;
+        let kms_key_id = optional_param(request, "KmsKeyId");
+        let tags = parse_tags(request)?;
+
+        let mut state = self.state.write();
+        if state
+            .serverless_cache_snapshots
+            .contains_key(&serverless_cache_snapshot_name)
+        {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "ServerlessCacheSnapshotAlreadyExistsFault",
+                format!("ServerlessCacheSnapshot {serverless_cache_snapshot_name} already exists."),
+            ));
+        }
+
+        let cache = state
+            .serverless_caches
+            .get(&serverless_cache_name)
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::NOT_FOUND,
+                    "ServerlessCacheNotFoundFault",
+                    format!("ServerlessCache {serverless_cache_name} not found."),
+                )
+            })?;
+
+        let arn = format!(
+            "arn:aws:elasticache:{}:{}:serverlesssnapshot:{}",
+            state.region, state.account_id, serverless_cache_snapshot_name
+        );
+        let snapshot = ServerlessCacheSnapshot {
+            serverless_cache_snapshot_name: serverless_cache_snapshot_name.clone(),
+            arn: arn.clone(),
+            kms_key_id: kms_key_id.or_else(|| cache.kms_key_id.clone()),
+            snapshot_type: "manual".to_string(),
+            status: "available".to_string(),
+            create_time: chrono::Utc::now().to_rfc3339(),
+            expiry_time: None,
+            bytes_used_for_cache: None,
+            serverless_cache_name: cache.serverless_cache_name.clone(),
+            engine: cache.engine.clone(),
+            major_engine_version: cache.major_engine_version.clone(),
+        };
+
+        let xml = serverless_cache_snapshot_xml(&snapshot);
+        state.tags.insert(arn.clone(), Vec::new());
+        if !tags.is_empty() {
+            merge_tags(state.tags.entry(arn).or_default(), &tags);
+        }
+        state
+            .serverless_cache_snapshots
+            .insert(serverless_cache_snapshot_name, snapshot);
+
+        Ok(AwsResponse::xml(
+            StatusCode::OK,
+            xml_wrap(
+                "CreateServerlessCacheSnapshot",
+                &format!("<ServerlessCacheSnapshot>{xml}</ServerlessCacheSnapshot>"),
+                &request.request_id,
+            ),
+        ))
+    }
+
+    fn describe_serverless_cache_snapshots(
+        &self,
+        request: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let serverless_cache_name = optional_param(request, "ServerlessCacheName");
+        let serverless_cache_snapshot_name = optional_param(request, "ServerlessCacheSnapshotName");
+        let snapshot_type = optional_param(request, "SnapshotType");
+        let max_results = optional_usize_param(request, "MaxResults")?;
+        let next_token = optional_param(request, "NextToken");
+
+        let state = self.state.read();
+        let snapshots: Vec<&ServerlessCacheSnapshot> =
+            if let Some(ref snapshot_name) = serverless_cache_snapshot_name {
+                match state.serverless_cache_snapshots.get(snapshot_name) {
+                    Some(snapshot) => vec![snapshot],
+                    None => {
+                        return Err(AwsServiceError::aws_error(
+                            StatusCode::NOT_FOUND,
+                            "ServerlessCacheSnapshotNotFoundFault",
+                            format!("ServerlessCacheSnapshot {snapshot_name} not found."),
+                        ));
+                    }
+                }
+            } else {
+                if let Some(ref cache_name) = serverless_cache_name {
+                    if !state.serverless_caches.contains_key(cache_name) {
+                        return Err(AwsServiceError::aws_error(
+                            StatusCode::NOT_FOUND,
+                            "ServerlessCacheNotFoundFault",
+                            format!("ServerlessCache {cache_name} not found."),
+                        ));
+                    }
+                }
+
+                let mut snapshots: Vec<&ServerlessCacheSnapshot> = state
+                    .serverless_cache_snapshots
+                    .values()
+                    .filter(|snapshot| {
+                        serverless_cache_name
+                            .as_ref()
+                            .is_none_or(|name| snapshot.serverless_cache_name == *name)
+                    })
+                    .filter(|snapshot| {
+                        snapshot_type
+                            .as_ref()
+                            .is_none_or(|value| snapshot.snapshot_type == *value)
+                    })
+                    .collect();
+                snapshots.sort_by(|a, b| {
+                    a.serverless_cache_snapshot_name
+                        .cmp(&b.serverless_cache_snapshot_name)
+                });
+                snapshots
+            };
+
+        let (page, next_token) = paginate(&snapshots, next_token.as_deref(), max_results);
+        let members_xml: String = page
+            .iter()
+            .map(|snapshot| {
+                format!(
+                    "<ServerlessCacheSnapshot>{}</ServerlessCacheSnapshot>",
+                    serverless_cache_snapshot_xml(snapshot)
+                )
+            })
+            .collect();
+        let next_token_xml = next_token
+            .map(|token| format!("<NextToken>{}</NextToken>", xml_escape(&token)))
+            .unwrap_or_default();
+
+        Ok(AwsResponse::xml(
+            StatusCode::OK,
+            xml_wrap(
+                "DescribeServerlessCacheSnapshots",
+                &format!(
+                    "<ServerlessCacheSnapshots>{members_xml}</ServerlessCacheSnapshots>{next_token_xml}"
+                ),
+                &request.request_id,
+            ),
+        ))
+    }
+
+    fn delete_serverless_cache_snapshot(
+        &self,
+        request: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let serverless_cache_snapshot_name =
+            required_param(request, "ServerlessCacheSnapshotName")?;
+
+        let mut state = self.state.write();
+        let mut snapshot = state
+            .serverless_cache_snapshots
+            .remove(&serverless_cache_snapshot_name)
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::NOT_FOUND,
+                    "ServerlessCacheSnapshotNotFoundFault",
+                    format!("ServerlessCacheSnapshot {serverless_cache_snapshot_name} not found."),
+                )
+            })?;
+        state.tags.remove(&snapshot.arn);
+
+        snapshot.status = "deleting".to_string();
+        let xml = serverless_cache_snapshot_xml(&snapshot);
+
+        Ok(AwsResponse::xml(
+            StatusCode::OK,
+            xml_wrap(
+                "DeleteServerlessCacheSnapshot",
+                &format!("<ServerlessCacheSnapshot>{xml}</ServerlessCacheSnapshot>"),
                 &request.request_id,
             ),
         ))
@@ -1846,6 +2340,53 @@ fn required_param(req: &AwsRequest, name: &str) -> Result<String, AwsServiceErro
     })
 }
 
+fn validate_serverless_engine(engine: &str) -> Result<(), AwsServiceError> {
+    if engine == "redis" || engine == "valkey" {
+        Ok(())
+    } else {
+        Err(AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "InvalidParameterValue",
+            format!("Invalid value for Engine: {engine}. Supported engines: redis, valkey"),
+        ))
+    }
+}
+
+fn default_major_engine_version(engine: &str) -> &'static str {
+    if engine == "valkey" {
+        "8.0"
+    } else {
+        "7.1"
+    }
+}
+
+fn default_full_engine_version(
+    engine: &str,
+    major_engine_version: &str,
+) -> Result<String, AwsServiceError> {
+    if major_engine_version.is_empty() {
+        return Err(AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "InvalidParameterValue",
+            "MajorEngineVersion must not be empty.".to_string(),
+        ));
+    }
+
+    if (engine == "redis" && !major_engine_version.starts_with('7'))
+        || (engine == "valkey" && !major_engine_version.starts_with('8'))
+    {
+        return Err(AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "InvalidParameterValue",
+            format!(
+                "MajorEngineVersion {major_engine_version} is not supported for engine {engine}."
+            ),
+        ));
+    }
+
+    Ok(major_engine_version.to_string())
+}
+
 fn parse_optional_bool(value: Option<&str>) -> Result<Option<bool>, AwsServiceError> {
     value
         .map(|raw| match raw {
@@ -1858,6 +2399,98 @@ fn parse_optional_bool(value: Option<&str>) -> Result<Option<bool>, AwsServiceEr
             )),
         })
         .transpose()
+}
+
+fn optional_non_negative_i32_param(
+    req: &AwsRequest,
+    name: &str,
+) -> Result<Option<i32>, AwsServiceError> {
+    optional_param(req, name)
+        .map(|v| {
+            let parsed = v.parse::<i32>().map_err(|_| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "InvalidParameterValue",
+                    format!("Invalid value for {name}: '{v}'"),
+                )
+            })?;
+            if parsed < 0 {
+                return Err(AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "InvalidParameterValue",
+                    format!("{name} must be non-negative, got {parsed}"),
+                ));
+            }
+            Ok(parsed)
+        })
+        .transpose()
+}
+
+fn parse_cache_usage_limits(
+    req: &AwsRequest,
+) -> Result<Option<ServerlessCacheUsageLimits>, AwsServiceError> {
+    let data_storage_maximum =
+        optional_non_negative_i32_param(req, "CacheUsageLimits.DataStorage.Maximum")?;
+    let data_storage_minimum =
+        optional_non_negative_i32_param(req, "CacheUsageLimits.DataStorage.Minimum")?;
+    let data_storage_unit = optional_param(req, "CacheUsageLimits.DataStorage.Unit");
+    let ecpu_maximum =
+        optional_non_negative_i32_param(req, "CacheUsageLimits.ECPUPerSecond.Maximum")?;
+    let ecpu_minimum =
+        optional_non_negative_i32_param(req, "CacheUsageLimits.ECPUPerSecond.Minimum")?;
+
+    if let (Some(minimum), Some(maximum)) = (data_storage_minimum, data_storage_maximum) {
+        if minimum > maximum {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidParameterValue",
+                format!(
+                    "CacheUsageLimits.DataStorage.Minimum ({minimum}) must be less than or equal to Maximum ({maximum})."
+                ),
+            ));
+        }
+    }
+    if let (Some(minimum), Some(maximum)) = (ecpu_minimum, ecpu_maximum) {
+        if minimum > maximum {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidParameterValue",
+                format!(
+                    "CacheUsageLimits.ECPUPerSecond.Minimum ({minimum}) must be less than or equal to Maximum ({maximum})."
+                ),
+            ));
+        }
+    }
+
+    let data_storage = if data_storage_maximum.is_some()
+        || data_storage_minimum.is_some()
+        || data_storage_unit.is_some()
+    {
+        Some(ServerlessCacheDataStorage {
+            maximum: data_storage_maximum,
+            minimum: data_storage_minimum,
+            unit: data_storage_unit,
+        })
+    } else {
+        None
+    };
+    let ecpu_per_second = if ecpu_maximum.is_some() || ecpu_minimum.is_some() {
+        Some(ServerlessCacheEcpuPerSecond {
+            maximum: ecpu_maximum,
+            minimum: ecpu_minimum,
+        })
+    } else {
+        None
+    };
+
+    if data_storage.is_none() && ecpu_per_second.is_none() {
+        Ok(None)
+    } else {
+        Ok(Some(ServerlessCacheUsageLimits {
+            data_storage,
+            ecpu_per_second,
+        }))
+    }
 }
 
 /// Parse an AWS Query protocol member list.
@@ -1882,6 +2515,17 @@ fn parse_member_list(
         .collect();
     indexed.sort_by_key(|(idx, _)| *idx);
     indexed.into_iter().map(|(_, v)| v).collect()
+}
+
+fn parse_query_list_param(req: &AwsRequest, param: &str, member_name: &str) -> Vec<String> {
+    let mut indexed = parse_member_list(&req.query_params, param, member_name);
+    if indexed.is_empty() {
+        indexed = parse_member_list(&req.query_params, param, "member");
+    }
+    if indexed.is_empty() {
+        indexed = req.query_params.get(param).into_iter().cloned().collect();
+    }
+    indexed
 }
 
 fn optional_usize_param(req: &AwsRequest, name: &str) -> Result<Option<usize>, AwsServiceError> {
@@ -2381,6 +3025,183 @@ fn snapshot_xml(s: &CacheSnapshot) -> String {
     )
 }
 
+fn serverless_cache_xml(cache: &ServerlessCache) -> String {
+    let cache_usage_limits_xml = cache
+        .cache_usage_limits
+        .as_ref()
+        .map(serverless_cache_usage_limits_xml)
+        .unwrap_or_default();
+    let kms_key_id_xml = cache
+        .kms_key_id
+        .as_ref()
+        .map(|value| format!("<KmsKeyId>{}</KmsKeyId>", xml_escape(value)))
+        .unwrap_or_default();
+    let security_group_ids_xml = if cache.security_group_ids.is_empty() {
+        String::new()
+    } else {
+        let members: String = cache
+            .security_group_ids
+            .iter()
+            .map(|id| format!("<SecurityGroupId>{}</SecurityGroupId>", xml_escape(id)))
+            .collect();
+        format!("<SecurityGroupIds>{members}</SecurityGroupIds>")
+    };
+    let subnet_ids_xml = if cache.subnet_ids.is_empty() {
+        String::new()
+    } else {
+        let members: String = cache
+            .subnet_ids
+            .iter()
+            .map(|id| format!("<member>{}</member>", xml_escape(id)))
+            .collect();
+        format!("<SubnetIds>{members}</SubnetIds>")
+    };
+    let user_group_id_xml = cache
+        .user_group_id
+        .as_ref()
+        .map(|value| format!("<UserGroupId>{}</UserGroupId>", xml_escape(value)))
+        .unwrap_or_default();
+    let snapshot_retention_limit_xml = cache
+        .snapshot_retention_limit
+        .map(|value| format!("<SnapshotRetentionLimit>{value}</SnapshotRetentionLimit>"))
+        .unwrap_or_default();
+    let daily_snapshot_time_xml = cache
+        .daily_snapshot_time
+        .as_ref()
+        .map(|value| {
+            format!(
+                "<DailySnapshotTime>{}</DailySnapshotTime>",
+                xml_escape(value)
+            )
+        })
+        .unwrap_or_default();
+
+    format!(
+        "<ServerlessCacheName>{}</ServerlessCacheName>\
+         <Description>{}</Description>\
+         <CreateTime>{}</CreateTime>\
+         <Status>{}</Status>\
+         <Engine>{}</Engine>\
+         <MajorEngineVersion>{}</MajorEngineVersion>\
+         <FullEngineVersion>{}</FullEngineVersion>\
+         {cache_usage_limits_xml}\
+         {kms_key_id_xml}\
+         {security_group_ids_xml}\
+         <Endpoint>{}</Endpoint>\
+         <ReaderEndpoint>{}</ReaderEndpoint>\
+         <ARN>{}</ARN>\
+         {user_group_id_xml}\
+         {subnet_ids_xml}\
+         {snapshot_retention_limit_xml}\
+         {daily_snapshot_time_xml}",
+        xml_escape(&cache.serverless_cache_name),
+        xml_escape(&cache.description),
+        xml_escape(&cache.created_at),
+        xml_escape(&cache.status),
+        xml_escape(&cache.engine),
+        xml_escape(&cache.major_engine_version),
+        xml_escape(&cache.full_engine_version),
+        serverless_cache_endpoint_xml(&cache.endpoint),
+        serverless_cache_endpoint_xml(&cache.reader_endpoint),
+        xml_escape(&cache.arn),
+    )
+}
+
+fn serverless_cache_usage_limits_xml(limits: &ServerlessCacheUsageLimits) -> String {
+    let data_storage_xml = limits
+        .data_storage
+        .as_ref()
+        .map(|data_storage| {
+            let maximum_xml = data_storage
+                .maximum
+                .map(|value| format!("<Maximum>{value}</Maximum>"))
+                .unwrap_or_default();
+            let minimum_xml = data_storage
+                .minimum
+                .map(|value| format!("<Minimum>{value}</Minimum>"))
+                .unwrap_or_default();
+            let unit_xml = data_storage
+                .unit
+                .as_ref()
+                .map(|value| format!("<Unit>{}</Unit>", xml_escape(value)))
+                .unwrap_or_default();
+            format!("<DataStorage>{maximum_xml}{minimum_xml}{unit_xml}</DataStorage>")
+        })
+        .unwrap_or_default();
+    let ecpu_per_second_xml = limits
+        .ecpu_per_second
+        .as_ref()
+        .map(|ecpu| {
+            let maximum_xml = ecpu
+                .maximum
+                .map(|value| format!("<Maximum>{value}</Maximum>"))
+                .unwrap_or_default();
+            let minimum_xml = ecpu
+                .minimum
+                .map(|value| format!("<Minimum>{value}</Minimum>"))
+                .unwrap_or_default();
+            format!("<ECPUPerSecond>{maximum_xml}{minimum_xml}</ECPUPerSecond>")
+        })
+        .unwrap_or_default();
+
+    format!("<CacheUsageLimits>{data_storage_xml}{ecpu_per_second_xml}</CacheUsageLimits>")
+}
+
+fn serverless_cache_endpoint_xml(endpoint: &ServerlessCacheEndpoint) -> String {
+    format!(
+        "<Address>{}</Address><Port>{}</Port>",
+        xml_escape(&endpoint.address),
+        endpoint.port,
+    )
+}
+
+fn serverless_cache_snapshot_xml(snapshot: &ServerlessCacheSnapshot) -> String {
+    let kms_key_id_xml = snapshot
+        .kms_key_id
+        .as_ref()
+        .map(|value| format!("<KmsKeyId>{}</KmsKeyId>", xml_escape(value)))
+        .unwrap_or_default();
+    let expiry_time_xml = snapshot
+        .expiry_time
+        .as_ref()
+        .map(|value| format!("<ExpiryTime>{}</ExpiryTime>", xml_escape(value)))
+        .unwrap_or_default();
+    let bytes_used_for_cache_xml = snapshot
+        .bytes_used_for_cache
+        .as_ref()
+        .map(|value| {
+            format!(
+                "<BytesUsedForCache>{}</BytesUsedForCache>",
+                xml_escape(value)
+            )
+        })
+        .unwrap_or_default();
+
+    format!(
+        "<ServerlessCacheSnapshotName>{}</ServerlessCacheSnapshotName>\
+         <ARN>{}</ARN>\
+         {kms_key_id_xml}\
+         <SnapshotType>{}</SnapshotType>\
+         <Status>{}</Status>\
+         <CreateTime>{}</CreateTime>\
+         {expiry_time_xml}\
+         {bytes_used_for_cache_xml}\
+         <ServerlessCacheConfiguration>\
+         <ServerlessCacheName>{}</ServerlessCacheName>\
+         <Engine>{}</Engine>\
+         <MajorEngineVersion>{}</MajorEngineVersion>\
+         </ServerlessCacheConfiguration>",
+        xml_escape(&snapshot.serverless_cache_snapshot_name),
+        xml_escape(&snapshot.arn),
+        xml_escape(&snapshot.snapshot_type),
+        xml_escape(&snapshot.status),
+        xml_escape(&snapshot.create_time),
+        xml_escape(&snapshot.serverless_cache_name),
+        xml_escape(&snapshot.engine),
+        xml_escape(&snapshot.major_engine_version),
+    )
+}
+
 fn parameter_xml(p: &EngineDefaultParameter) -> String {
     format!(
         "<Parameter>\
@@ -2409,7 +3230,7 @@ mod tests {
     use super::*;
     use crate::state::default_engine_versions;
     use bytes::Bytes;
-    use http::HeaderMap;
+    use http::{HeaderMap, Method};
     use std::collections::HashMap;
 
     fn request(action: &str, params: &[(&str, &str)]) -> AwsRequest {
@@ -3109,6 +3930,58 @@ mod tests {
         ElastiCacheService::new(shared)
     }
 
+    fn service_with_serverless_cache(cache_name: &str) -> ElastiCacheService {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        {
+            let mut s = shared.write();
+            let arn =
+                format!("arn:aws:elasticache:us-east-1:123456789012:serverlesscache:{cache_name}");
+            s.tags.insert(arn.clone(), Vec::new());
+            s.serverless_caches.insert(
+                cache_name.to_string(),
+                ServerlessCache {
+                    serverless_cache_name: cache_name.to_string(),
+                    description: "serverless cache".to_string(),
+                    engine: "redis".to_string(),
+                    major_engine_version: "7.1".to_string(),
+                    full_engine_version: "7.1".to_string(),
+                    status: "available".to_string(),
+                    endpoint: ServerlessCacheEndpoint {
+                        address: "127.0.0.1".to_string(),
+                        port: 6379,
+                    },
+                    reader_endpoint: ServerlessCacheEndpoint {
+                        address: "127.0.0.1".to_string(),
+                        port: 6379,
+                    },
+                    arn,
+                    created_at: "2024-01-01T00:00:00Z".to_string(),
+                    cache_usage_limits: Some(ServerlessCacheUsageLimits {
+                        data_storage: Some(ServerlessCacheDataStorage {
+                            maximum: Some(10),
+                            minimum: Some(1),
+                            unit: Some("GB".to_string()),
+                        }),
+                        ecpu_per_second: Some(ServerlessCacheEcpuPerSecond {
+                            maximum: Some(5000),
+                            minimum: Some(1000),
+                        }),
+                    }),
+                    security_group_ids: vec!["sg-123".to_string()],
+                    subnet_ids: vec!["subnet-123".to_string()],
+                    kms_key_id: Some("kms-123".to_string()),
+                    user_group_id: None,
+                    snapshot_retention_limit: Some(1),
+                    daily_snapshot_time: Some("03:00".to_string()),
+                    container_id: "cid".to_string(),
+                    host_port: 6379,
+                },
+            );
+        }
+        ElastiCacheService::new(shared)
+    }
+
     #[test]
     fn modify_replication_group_updates_description() {
         let service = service_with_replication_group("my-rg", 1);
@@ -3156,6 +4029,258 @@ mod tests {
             &[("ReplicationGroupId", "nonexistent")],
         );
         assert!(service.modify_replication_group(&req).is_err());
+    }
+
+    #[test]
+    fn parse_cache_usage_limits_reads_nested_query_shape() {
+        let req = request(
+            "CreateServerlessCache",
+            &[
+                ("CacheUsageLimits.DataStorage.Maximum", "10"),
+                ("CacheUsageLimits.DataStorage.Minimum", "2"),
+                ("CacheUsageLimits.DataStorage.Unit", "GB"),
+                ("CacheUsageLimits.ECPUPerSecond.Maximum", "5000"),
+                ("CacheUsageLimits.ECPUPerSecond.Minimum", "1000"),
+            ],
+        );
+
+        let limits = parse_cache_usage_limits(&req).unwrap().unwrap();
+        let data_storage = limits.data_storage.unwrap();
+        assert_eq!(data_storage.maximum, Some(10));
+        assert_eq!(data_storage.minimum, Some(2));
+        assert_eq!(data_storage.unit.as_deref(), Some("GB"));
+
+        let ecpu = limits.ecpu_per_second.unwrap();
+        assert_eq!(ecpu.maximum, Some(5000));
+        assert_eq!(ecpu.minimum, Some(1000));
+    }
+
+    #[test]
+    fn serverless_cache_xml_contains_expected_fields() {
+        let cache = service_with_serverless_cache("cache-a")
+            .state
+            .read()
+            .serverless_caches["cache-a"]
+            .clone();
+
+        let xml = serverless_cache_xml(&cache);
+        assert!(xml.contains("<ServerlessCacheName>cache-a</ServerlessCacheName>"));
+        assert!(xml.contains("<Engine>redis</Engine>"));
+        assert!(xml.contains("<MajorEngineVersion>7.1</MajorEngineVersion>"));
+        assert!(xml.contains("<Endpoint><Address>127.0.0.1</Address><Port>6379</Port></Endpoint>"));
+        assert!(xml.contains(
+            "<ReaderEndpoint><Address>127.0.0.1</Address><Port>6379</Port></ReaderEndpoint>"
+        ));
+        assert!(xml.contains(
+            "<SecurityGroupIds><SecurityGroupId>sg-123</SecurityGroupId></SecurityGroupIds>"
+        ));
+        assert!(xml.contains("<SubnetIds><member>subnet-123</member></SubnetIds>"));
+        assert!(xml.contains("<CacheUsageLimits>"));
+    }
+
+    #[test]
+    fn serverless_cache_snapshot_xml_contains_expected_fields() {
+        let snapshot = ServerlessCacheSnapshot {
+            serverless_cache_snapshot_name: "snap-a".to_string(),
+            arn: "arn:aws:elasticache:us-east-1:123456789012:serverlesssnapshot:snap-a".to_string(),
+            kms_key_id: Some("kms-123".to_string()),
+            snapshot_type: "manual".to_string(),
+            status: "available".to_string(),
+            create_time: "2024-01-01T00:00:00Z".to_string(),
+            expiry_time: None,
+            bytes_used_for_cache: Some("0".to_string()),
+            serverless_cache_name: "cache-a".to_string(),
+            engine: "redis".to_string(),
+            major_engine_version: "7.1".to_string(),
+        };
+
+        let xml = serverless_cache_snapshot_xml(&snapshot);
+        assert!(xml.contains("<ServerlessCacheSnapshotName>snap-a</ServerlessCacheSnapshotName>"));
+        assert!(xml.contains("<KmsKeyId>kms-123</KmsKeyId>"));
+        assert!(xml.contains("<SnapshotType>manual</SnapshotType>"));
+        assert!(xml.contains("<ServerlessCacheConfiguration>"));
+        assert!(xml.contains("<ServerlessCacheName>cache-a</ServerlessCacheName>"));
+    }
+
+    #[test]
+    fn describe_serverless_caches_returns_all() {
+        let service = service_with_serverless_cache("cache-a");
+        {
+            let mut state = service.state.write();
+            state.serverless_caches.insert(
+                "cache-b".to_string(),
+                ServerlessCache {
+                    serverless_cache_name: "cache-b".to_string(),
+                    description: "serverless cache".to_string(),
+                    engine: "valkey".to_string(),
+                    major_engine_version: "8.0".to_string(),
+                    full_engine_version: "8.0".to_string(),
+                    status: "available".to_string(),
+                    endpoint: ServerlessCacheEndpoint {
+                        address: "127.0.0.1".to_string(),
+                        port: 6380,
+                    },
+                    reader_endpoint: ServerlessCacheEndpoint {
+                        address: "127.0.0.1".to_string(),
+                        port: 6380,
+                    },
+                    arn: "arn:aws:elasticache:us-east-1:123456789012:serverlesscache:cache-b"
+                        .to_string(),
+                    created_at: "2024-01-02T00:00:00Z".to_string(),
+                    cache_usage_limits: None,
+                    security_group_ids: Vec::new(),
+                    subnet_ids: Vec::new(),
+                    kms_key_id: None,
+                    user_group_id: None,
+                    snapshot_retention_limit: None,
+                    daily_snapshot_time: None,
+                    container_id: "cid".to_string(),
+                    host_port: 6380,
+                },
+            );
+        }
+
+        let resp = service
+            .describe_serverless_caches(&request("DescribeServerlessCaches", &[]))
+            .unwrap();
+        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        assert!(body.contains("<ServerlessCacheName>cache-a</ServerlessCacheName>"));
+        assert!(body.contains("<ServerlessCacheName>cache-b</ServerlessCacheName>"));
+    }
+
+    #[test]
+    fn modify_serverless_cache_updates_fields() {
+        let service = service_with_serverless_cache("cache-a");
+        let req = request(
+            "ModifyServerlessCache",
+            &[
+                ("ServerlessCacheName", "cache-a"),
+                ("Description", "updated"),
+                ("SecurityGroupIds.SecurityGroupId.1", "sg-999"),
+                ("SnapshotRetentionLimit", "7"),
+                ("DailySnapshotTime", "05:00"),
+            ],
+        );
+
+        let resp = service.modify_serverless_cache(&req).unwrap();
+        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        assert!(body.contains("<Description>updated</Description>"));
+        assert!(body.contains(
+            "<SecurityGroupIds><SecurityGroupId>sg-999</SecurityGroupId></SecurityGroupIds>"
+        ));
+        assert!(body.contains("<SnapshotRetentionLimit>7</SnapshotRetentionLimit>"));
+        assert!(body.contains("<DailySnapshotTime>05:00</DailySnapshotTime>"));
+    }
+
+    #[test]
+    fn parse_query_list_param_reads_indexed_and_flat_query_values() {
+        let req = AwsRequest {
+            service: "elasticache".to_string(),
+            action: "ModifyServerlessCache".to_string(),
+            region: "us-east-1".to_string(),
+            account_id: "000000000000".to_string(),
+            request_id: "req-1".to_string(),
+            headers: HeaderMap::new(),
+            query_params: HashMap::from([
+                ("SecurityGroupIds.member.1".to_string(), "sg-a".to_string()),
+                ("SecurityGroupIds.member.2".to_string(), "sg-b".to_string()),
+            ]),
+            body: Bytes::new(),
+            path_segments: vec![],
+            raw_path: "/".to_string(),
+            raw_query: String::new(),
+            method: Method::POST,
+            is_query_protocol: true,
+            access_key_id: None,
+        };
+        assert_eq!(
+            parse_query_list_param(&req, "SecurityGroupIds", "SecurityGroupId"),
+            vec!["sg-a".to_string(), "sg-b".to_string()]
+        );
+
+        let req = AwsRequest {
+            query_params: HashMap::from([("SecurityGroupIds".to_string(), "sg-flat".to_string())]),
+            ..req
+        };
+        assert_eq!(
+            parse_query_list_param(&req, "SecurityGroupIds", "SecurityGroupId"),
+            vec!["sg-flat".to_string()]
+        );
+    }
+
+    #[test]
+    fn describe_serverless_cache_snapshots_filters_by_cache_name() {
+        let service = service_with_serverless_cache("cache-a");
+        {
+            let mut state = service.state.write();
+            state.serverless_cache_snapshots.insert(
+                "snap-a".to_string(),
+                ServerlessCacheSnapshot {
+                    serverless_cache_snapshot_name: "snap-a".to_string(),
+                    arn: "arn:aws:elasticache:us-east-1:123456789012:serverlesssnapshot:snap-a"
+                        .to_string(),
+                    kms_key_id: None,
+                    snapshot_type: "manual".to_string(),
+                    status: "available".to_string(),
+                    create_time: "2024-01-01T00:00:00Z".to_string(),
+                    expiry_time: None,
+                    bytes_used_for_cache: None,
+                    serverless_cache_name: "cache-a".to_string(),
+                    engine: "redis".to_string(),
+                    major_engine_version: "7.1".to_string(),
+                },
+            );
+        }
+
+        let resp = service
+            .describe_serverless_cache_snapshots(&request(
+                "DescribeServerlessCacheSnapshots",
+                &[("ServerlessCacheName", "cache-a")],
+            ))
+            .unwrap();
+        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        assert!(body.contains("<ServerlessCacheSnapshotName>snap-a</ServerlessCacheSnapshotName>"));
+    }
+
+    #[test]
+    fn delete_serverless_cache_snapshot_removes_tags() {
+        let service = service_with_serverless_cache("cache-a");
+        {
+            let mut state = service.state.write();
+            let arn =
+                "arn:aws:elasticache:us-east-1:123456789012:serverlesssnapshot:snap-a".to_string();
+            state.tags.insert(arn.clone(), Vec::new());
+            state.serverless_cache_snapshots.insert(
+                "snap-a".to_string(),
+                ServerlessCacheSnapshot {
+                    serverless_cache_snapshot_name: "snap-a".to_string(),
+                    arn,
+                    kms_key_id: None,
+                    snapshot_type: "manual".to_string(),
+                    status: "available".to_string(),
+                    create_time: "2024-01-01T00:00:00Z".to_string(),
+                    expiry_time: None,
+                    bytes_used_for_cache: None,
+                    serverless_cache_name: "cache-a".to_string(),
+                    engine: "redis".to_string(),
+                    major_engine_version: "7.1".to_string(),
+                },
+            );
+        }
+
+        let resp = service
+            .delete_serverless_cache_snapshot(&request(
+                "DeleteServerlessCacheSnapshot",
+                &[("ServerlessCacheSnapshotName", "snap-a")],
+            ))
+            .unwrap();
+        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        assert!(body.contains("<Status>deleting</Status>"));
+        assert!(!service
+            .state
+            .read()
+            .tags
+            .contains_key("arn:aws:elasticache:us-east-1:123456789012:serverlesssnapshot:snap-a"));
     }
 
     #[test]

@@ -788,3 +788,214 @@ async fn elasticache_test_failover() {
     assert_eq!(group.replication_group_id(), Some("fo-repl-group"));
     assert_eq!(group.status(), Some("available"));
 }
+
+#[test_action("elasticache", "CreateServerlessCache", checksum = "f551fb86")]
+#[tokio::test]
+async fn elasticache_create_serverless_cache() {
+    let server = TestServer::start().await;
+    let client = server.elasticache_client().await;
+
+    let response = client
+        .create_serverless_cache()
+        .serverless_cache_name("test-serverless")
+        .engine("redis")
+        .description("Serverless cache")
+        .security_group_ids("sg-123")
+        .subnet_ids("subnet-123")
+        .snapshot_retention_limit(7)
+        .daily_snapshot_time("04:00")
+        .send()
+        .await
+        .unwrap();
+
+    let cache = response.serverless_cache().expect("serverless cache");
+    assert_eq!(cache.serverless_cache_name(), Some("test-serverless"));
+    assert_eq!(cache.engine(), Some("redis"));
+    assert_eq!(cache.status(), Some("available"));
+}
+
+#[test_action("elasticache", "DescribeServerlessCaches", checksum = "130bb42b")]
+#[tokio::test]
+async fn elasticache_describe_serverless_caches() {
+    let server = TestServer::start().await;
+    let client = server.elasticache_client().await;
+
+    client
+        .create_serverless_cache()
+        .serverless_cache_name("desc-serverless")
+        .engine("redis")
+        .send()
+        .await
+        .unwrap();
+
+    let response = client
+        .describe_serverless_caches()
+        .serverless_cache_name("desc-serverless")
+        .send()
+        .await
+        .unwrap();
+
+    let caches = response.serverless_caches();
+    assert_eq!(caches.len(), 1);
+    assert_eq!(caches[0].serverless_cache_name(), Some("desc-serverless"));
+}
+
+#[test_action("elasticache", "ModifyServerlessCache", checksum = "309e3779")]
+#[tokio::test]
+async fn elasticache_modify_serverless_cache() {
+    let server = TestServer::start().await;
+    let client = server.elasticache_client().await;
+
+    client
+        .create_serverless_cache()
+        .serverless_cache_name("mod-serverless")
+        .engine("redis")
+        .send()
+        .await
+        .unwrap();
+
+    let response = client
+        .modify_serverless_cache()
+        .serverless_cache_name("mod-serverless")
+        .description("Updated description")
+        .security_group_ids("sg-999")
+        .snapshot_retention_limit(9)
+        .daily_snapshot_time("05:00")
+        .send()
+        .await
+        .unwrap();
+
+    let cache = response.serverless_cache().expect("serverless cache");
+    assert_eq!(cache.description(), Some("Updated description"));
+    assert_eq!(cache.snapshot_retention_limit(), Some(9));
+}
+
+#[test_action("elasticache", "DeleteServerlessCache", checksum = "5a8a697e")]
+#[tokio::test]
+async fn elasticache_delete_serverless_cache() {
+    let server = TestServer::start().await;
+    let client = server.elasticache_client().await;
+
+    client
+        .create_serverless_cache()
+        .serverless_cache_name("del-serverless")
+        .engine("redis")
+        .send()
+        .await
+        .unwrap();
+
+    let response = client
+        .delete_serverless_cache()
+        .serverless_cache_name("del-serverless")
+        .send()
+        .await
+        .unwrap();
+
+    let cache = response.serverless_cache().expect("serverless cache");
+    assert_eq!(cache.serverless_cache_name(), Some("del-serverless"));
+    assert_eq!(cache.status(), Some("deleting"));
+}
+
+#[test_action("elasticache", "CreateServerlessCacheSnapshot", checksum = "04326152")]
+#[tokio::test]
+async fn elasticache_create_serverless_cache_snapshot() {
+    let server = TestServer::start().await;
+    let client = server.elasticache_client().await;
+
+    client
+        .create_serverless_cache()
+        .serverless_cache_name("snap-serverless")
+        .engine("redis")
+        .send()
+        .await
+        .unwrap();
+
+    let response = client
+        .create_serverless_cache_snapshot()
+        .serverless_cache_name("snap-serverless")
+        .serverless_cache_snapshot_name("snap-1")
+        .send()
+        .await
+        .unwrap();
+
+    let snapshot = response
+        .serverless_cache_snapshot()
+        .expect("serverless cache snapshot");
+    assert_eq!(snapshot.serverless_cache_snapshot_name(), Some("snap-1"));
+    assert_eq!(snapshot.status(), Some("available"));
+}
+
+#[test_action(
+    "elasticache",
+    "DescribeServerlessCacheSnapshots",
+    checksum = "132b4ec8"
+)]
+#[tokio::test]
+async fn elasticache_describe_serverless_cache_snapshots() {
+    let server = TestServer::start().await;
+    let client = server.elasticache_client().await;
+
+    client
+        .create_serverless_cache()
+        .serverless_cache_name("desc-snap-serverless")
+        .engine("redis")
+        .send()
+        .await
+        .unwrap();
+    client
+        .create_serverless_cache_snapshot()
+        .serverless_cache_name("desc-snap-serverless")
+        .serverless_cache_snapshot_name("snap-2")
+        .send()
+        .await
+        .unwrap();
+
+    let response = client
+        .describe_serverless_cache_snapshots()
+        .serverless_cache_name("desc-snap-serverless")
+        .send()
+        .await
+        .unwrap();
+
+    let snapshots = response.serverless_cache_snapshots();
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(
+        snapshots[0].serverless_cache_snapshot_name(),
+        Some("snap-2")
+    );
+}
+
+#[test_action("elasticache", "DeleteServerlessCacheSnapshot", checksum = "f2cf7742")]
+#[tokio::test]
+async fn elasticache_delete_serverless_cache_snapshot() {
+    let server = TestServer::start().await;
+    let client = server.elasticache_client().await;
+
+    client
+        .create_serverless_cache()
+        .serverless_cache_name("del-snap-serverless")
+        .engine("redis")
+        .send()
+        .await
+        .unwrap();
+    client
+        .create_serverless_cache_snapshot()
+        .serverless_cache_name("del-snap-serverless")
+        .serverless_cache_snapshot_name("snap-3")
+        .send()
+        .await
+        .unwrap();
+
+    let response = client
+        .delete_serverless_cache_snapshot()
+        .serverless_cache_snapshot_name("snap-3")
+        .send()
+        .await
+        .unwrap();
+
+    let snapshot = response
+        .serverless_cache_snapshot()
+        .expect("serverless cache snapshot");
+    assert_eq!(snapshot.serverless_cache_snapshot_name(), Some("snap-3"));
+    assert_eq!(snapshot.status(), Some("deleting"));
+}

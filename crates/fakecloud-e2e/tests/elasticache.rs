@@ -1274,3 +1274,315 @@ async fn elasticache_delete_nonexistent_snapshot_errors() {
 
     assert!(result.is_err());
 }
+
+// ---------------------------------------------------------------------------
+// ServerlessCache tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn elasticache_create_serverless_cache_and_describe() {
+    let server = TestServer::start().await;
+    let client = server.elasticache_client().await;
+
+    let create_resp = client
+        .create_serverless_cache()
+        .serverless_cache_name("serverless-main")
+        .engine("redis")
+        .description("Main serverless cache")
+        .security_group_ids("sg-123")
+        .subnet_ids("subnet-123")
+        .snapshot_retention_limit(7)
+        .daily_snapshot_time("04:00")
+        .send()
+        .await
+        .unwrap();
+
+    let cache = create_resp.serverless_cache().expect("serverless cache");
+    assert_eq!(cache.serverless_cache_name(), Some("serverless-main"));
+    assert_eq!(cache.status(), Some("available"));
+    let endpoint = cache.endpoint().expect("endpoint");
+    let addr = endpoint.address().expect("endpoint address");
+    let port = endpoint.port().expect("endpoint port");
+    assert_eq!(addr, "127.0.0.1");
+    assert!(tokio::net::TcpStream::connect(format!("{addr}:{port}"))
+        .await
+        .is_ok());
+
+    let describe_resp = client
+        .describe_serverless_caches()
+        .serverless_cache_name("serverless-main")
+        .send()
+        .await
+        .unwrap();
+    let caches = describe_resp.serverless_caches();
+    assert_eq!(caches.len(), 1);
+    assert_eq!(caches[0].serverless_cache_name(), Some("serverless-main"));
+}
+
+#[tokio::test]
+async fn elasticache_describe_serverless_caches_paginates() {
+    let server = TestServer::start().await;
+    let client = server.elasticache_client().await;
+
+    for name in [
+        "page-serverless-a",
+        "page-serverless-b",
+        "page-serverless-c",
+    ] {
+        client
+            .create_serverless_cache()
+            .serverless_cache_name(name)
+            .engine("redis")
+            .send()
+            .await
+            .unwrap();
+    }
+
+    let first = client
+        .describe_serverless_caches()
+        .max_results(1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first.serverless_caches().len(), 1);
+    let next_token = first.next_token().expect("next token").to_string();
+
+    let second = client
+        .describe_serverless_caches()
+        .max_results(1)
+        .next_token(next_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(second.serverless_caches().len(), 1);
+}
+
+#[tokio::test]
+async fn elasticache_modify_serverless_cache_updates_fields() {
+    let server = TestServer::start().await;
+    let client = server.elasticache_client().await;
+
+    client
+        .create_serverless_cache()
+        .serverless_cache_name("serverless-mod")
+        .engine("redis")
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .modify_serverless_cache()
+        .serverless_cache_name("serverless-mod")
+        .description("Updated serverless cache")
+        .security_group_ids("sg-999")
+        .snapshot_retention_limit(10)
+        .daily_snapshot_time("05:00")
+        .send()
+        .await
+        .unwrap();
+
+    let cache = resp.serverless_cache().expect("serverless cache");
+    assert_eq!(cache.description(), Some("Updated serverless cache"));
+    assert_eq!(cache.snapshot_retention_limit(), Some(10));
+    assert_eq!(cache.daily_snapshot_time(), Some("05:00"));
+
+    // Verify security groups via describe (modify response may not include all list fields)
+    let desc = client
+        .describe_serverless_caches()
+        .serverless_cache_name("serverless-mod")
+        .send()
+        .await
+        .unwrap();
+    let described = &desc.serverless_caches()[0];
+    assert_eq!(described.security_group_ids(), ["sg-999"]);
+}
+
+#[tokio::test]
+async fn elasticache_delete_serverless_cache_and_verify_gone() {
+    let server = TestServer::start().await;
+    let client = server.elasticache_client().await;
+
+    client
+        .create_serverless_cache()
+        .serverless_cache_name("serverless-del")
+        .engine("redis")
+        .send()
+        .await
+        .unwrap();
+
+    let delete_resp = client
+        .delete_serverless_cache()
+        .serverless_cache_name("serverless-del")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        delete_resp
+            .serverless_cache()
+            .and_then(|cache| cache.status()),
+        Some("deleting")
+    );
+
+    let result = client
+        .describe_serverless_caches()
+        .serverless_cache_name("serverless-del")
+        .send()
+        .await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn elasticache_create_serverless_cache_rejects_invalid_engine() {
+    let server = TestServer::start().await;
+    let client = server.elasticache_client().await;
+
+    let result = client
+        .create_serverless_cache()
+        .serverless_cache_name("bad-serverless")
+        .engine("memcached")
+        .send()
+        .await;
+
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn elasticache_create_serverless_cache_snapshot_and_describe() {
+    let server = TestServer::start().await;
+    let client = server.elasticache_client().await;
+
+    client
+        .create_serverless_cache()
+        .serverless_cache_name("serverless-snap")
+        .engine("redis")
+        .send()
+        .await
+        .unwrap();
+
+    let create_resp = client
+        .create_serverless_cache_snapshot()
+        .serverless_cache_name("serverless-snap")
+        .serverless_cache_snapshot_name("serverless-snapshot-1")
+        .send()
+        .await
+        .unwrap();
+
+    let snapshot = create_resp
+        .serverless_cache_snapshot()
+        .expect("serverless cache snapshot");
+    assert_eq!(
+        snapshot.serverless_cache_snapshot_name(),
+        Some("serverless-snapshot-1")
+    );
+
+    let describe_resp = client
+        .describe_serverless_cache_snapshots()
+        .serverless_cache_name("serverless-snap")
+        .send()
+        .await
+        .unwrap();
+    let snapshots = describe_resp.serverless_cache_snapshots();
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(
+        snapshots[0].serverless_cache_snapshot_name(),
+        Some("serverless-snapshot-1")
+    );
+}
+
+#[tokio::test]
+async fn elasticache_describe_serverless_cache_snapshots_paginates() {
+    let server = TestServer::start().await;
+    let client = server.elasticache_client().await;
+
+    client
+        .create_serverless_cache()
+        .serverless_cache_name("serverless-snap-pages")
+        .engine("redis")
+        .send()
+        .await
+        .unwrap();
+    for name in ["serverless-page-snap-a", "serverless-page-snap-b"] {
+        client
+            .create_serverless_cache_snapshot()
+            .serverless_cache_name("serverless-snap-pages")
+            .serverless_cache_snapshot_name(name)
+            .send()
+            .await
+            .unwrap();
+    }
+
+    let first = client
+        .describe_serverless_cache_snapshots()
+        .serverless_cache_name("serverless-snap-pages")
+        .max_results(1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first.serverless_cache_snapshots().len(), 1);
+    let next_token = first.next_token().expect("next token").to_string();
+
+    let second = client
+        .describe_serverless_cache_snapshots()
+        .serverless_cache_name("serverless-snap-pages")
+        .max_results(1)
+        .next_token(next_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(second.serverless_cache_snapshots().len(), 1);
+}
+
+#[tokio::test]
+async fn elasticache_delete_serverless_cache_snapshot_and_verify_gone() {
+    let server = TestServer::start().await;
+    let client = server.elasticache_client().await;
+
+    client
+        .create_serverless_cache()
+        .serverless_cache_name("serverless-snap-del")
+        .engine("redis")
+        .send()
+        .await
+        .unwrap();
+    client
+        .create_serverless_cache_snapshot()
+        .serverless_cache_name("serverless-snap-del")
+        .serverless_cache_snapshot_name("serverless-snapshot-del")
+        .send()
+        .await
+        .unwrap();
+
+    let delete_resp = client
+        .delete_serverless_cache_snapshot()
+        .serverless_cache_snapshot_name("serverless-snapshot-del")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        delete_resp
+            .serverless_cache_snapshot()
+            .and_then(|snapshot| snapshot.status()),
+        Some("deleting")
+    );
+
+    let result = client
+        .describe_serverless_cache_snapshots()
+        .serverless_cache_snapshot_name("serverless-snapshot-del")
+        .send()
+        .await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn elasticache_delete_nonexistent_serverless_cache_snapshot_errors() {
+    let server = TestServer::start().await;
+    let client = server.elasticache_client().await;
+
+    let result = client
+        .delete_serverless_cache_snapshot()
+        .serverless_cache_snapshot_name("missing-serverless-snapshot")
+        .send()
+        .await;
+
+    assert!(result.is_err());
+}
