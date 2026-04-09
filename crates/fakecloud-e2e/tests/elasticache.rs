@@ -2,6 +2,189 @@ mod helpers;
 
 use helpers::TestServer;
 
+// ---------------------------------------------------------------------------
+// CacheSubnetGroup tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn elasticache_create_subnet_group_and_describe() {
+    let server = TestServer::start().await;
+    let client = server.elasticache_client().await;
+
+    let create_resp = client
+        .create_cache_subnet_group()
+        .cache_subnet_group_name("my-subnet-group")
+        .cache_subnet_group_description("My test subnet group")
+        .subnet_ids("subnet-aaa111")
+        .subnet_ids("subnet-bbb222")
+        .send()
+        .await
+        .unwrap();
+
+    let group = create_resp
+        .cache_subnet_group()
+        .expect("cache subnet group");
+    assert_eq!(group.cache_subnet_group_name(), Some("my-subnet-group"));
+    assert_eq!(
+        group.cache_subnet_group_description(),
+        Some("My test subnet group")
+    );
+    assert!(group.vpc_id().is_some());
+    assert_eq!(group.subnets().len(), 2);
+
+    // Verify it appears in describe
+    let describe_resp = client.describe_cache_subnet_groups().send().await.unwrap();
+
+    let groups = describe_resp.cache_subnet_groups();
+    assert!(groups
+        .iter()
+        .any(|g| g.cache_subnet_group_name() == Some("my-subnet-group")));
+}
+
+#[tokio::test]
+async fn elasticache_describe_subnet_groups_with_name_filter() {
+    let server = TestServer::start().await;
+    let client = server.elasticache_client().await;
+
+    client
+        .create_cache_subnet_group()
+        .cache_subnet_group_name("filtered-group")
+        .cache_subnet_group_description("For filtering test")
+        .subnet_ids("subnet-aaa111")
+        .send()
+        .await
+        .unwrap();
+
+    let response = client
+        .describe_cache_subnet_groups()
+        .cache_subnet_group_name("filtered-group")
+        .send()
+        .await
+        .unwrap();
+
+    let groups = response.cache_subnet_groups();
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].cache_subnet_group_name(), Some("filtered-group"));
+}
+
+#[tokio::test]
+async fn elasticache_modify_subnet_group_description() {
+    let server = TestServer::start().await;
+    let client = server.elasticache_client().await;
+
+    client
+        .create_cache_subnet_group()
+        .cache_subnet_group_name("mod-group")
+        .cache_subnet_group_description("Original")
+        .subnet_ids("subnet-aaa111")
+        .send()
+        .await
+        .unwrap();
+
+    let modify_resp = client
+        .modify_cache_subnet_group()
+        .cache_subnet_group_name("mod-group")
+        .cache_subnet_group_description("Updated description")
+        .send()
+        .await
+        .unwrap();
+
+    let group = modify_resp
+        .cache_subnet_group()
+        .expect("cache subnet group");
+    assert_eq!(
+        group.cache_subnet_group_description(),
+        Some("Updated description")
+    );
+
+    // Verify via describe
+    let describe_resp = client
+        .describe_cache_subnet_groups()
+        .cache_subnet_group_name("mod-group")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        describe_resp.cache_subnet_groups()[0].cache_subnet_group_description(),
+        Some("Updated description")
+    );
+}
+
+#[tokio::test]
+async fn elasticache_delete_subnet_group_and_verify_gone() {
+    let server = TestServer::start().await;
+    let client = server.elasticache_client().await;
+
+    client
+        .create_cache_subnet_group()
+        .cache_subnet_group_name("del-group")
+        .cache_subnet_group_description("Will be deleted")
+        .subnet_ids("subnet-aaa111")
+        .send()
+        .await
+        .unwrap();
+
+    client
+        .delete_cache_subnet_group()
+        .cache_subnet_group_name("del-group")
+        .send()
+        .await
+        .unwrap();
+
+    // Verify it's gone
+    let result = client
+        .describe_cache_subnet_groups()
+        .cache_subnet_group_name("del-group")
+        .send()
+        .await;
+
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn elasticache_create_duplicate_subnet_group_errors() {
+    let server = TestServer::start().await;
+    let client = server.elasticache_client().await;
+
+    client
+        .create_cache_subnet_group()
+        .cache_subnet_group_name("dup-group")
+        .cache_subnet_group_description("First")
+        .subnet_ids("subnet-aaa111")
+        .send()
+        .await
+        .unwrap();
+
+    let result = client
+        .create_cache_subnet_group()
+        .cache_subnet_group_name("dup-group")
+        .cache_subnet_group_description("Second")
+        .subnet_ids("subnet-bbb222")
+        .send()
+        .await;
+
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn elasticache_delete_nonexistent_subnet_group_errors() {
+    let server = TestServer::start().await;
+    let client = server.elasticache_client().await;
+
+    let result = client
+        .delete_cache_subnet_group()
+        .cache_subnet_group_name("nonexistent-group")
+        .send()
+        .await;
+
+    assert!(result.is_err());
+}
+
+// ---------------------------------------------------------------------------
+// Existing tests
+// ---------------------------------------------------------------------------
+
 #[tokio::test]
 async fn elasticache_describe_cache_engine_versions_all() {
     let server = TestServer::start().await;

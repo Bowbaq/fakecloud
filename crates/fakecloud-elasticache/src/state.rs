@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use parking_lot::RwLock;
@@ -34,25 +35,38 @@ pub struct EngineDefaultParameter {
     pub minimum_engine_version: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct CacheSubnetGroup {
+    pub cache_subnet_group_name: String,
+    pub cache_subnet_group_description: String,
+    pub vpc_id: String,
+    pub subnet_ids: Vec<String>,
+    pub arn: String,
+}
+
 #[derive(Debug)]
 pub struct ElastiCacheState {
     pub account_id: String,
     pub region: String,
     pub parameter_groups: Vec<CacheParameterGroup>,
+    pub subnet_groups: HashMap<String, CacheSubnetGroup>,
 }
 
 impl ElastiCacheState {
     pub fn new(account_id: &str, region: &str) -> Self {
         let parameter_groups = default_parameter_groups(account_id, region);
+        let subnet_groups = default_subnet_groups(account_id, region);
         Self {
             account_id: account_id.to_string(),
             region: region.to_string(),
             parameter_groups,
+            subnet_groups,
         }
     }
 
     pub fn reset(&mut self) {
         self.parameter_groups = default_parameter_groups(&self.account_id, &self.region);
+        self.subnet_groups = default_subnet_groups(&self.account_id, &self.region);
     }
 }
 
@@ -94,6 +108,19 @@ fn default_parameter_groups(account_id: &str, region: &str) -> Vec<CacheParamete
             ),
         },
     ]
+}
+
+fn default_subnet_groups(account_id: &str, region: &str) -> HashMap<String, CacheSubnetGroup> {
+    let default_group = CacheSubnetGroup {
+        cache_subnet_group_name: "default".to_string(),
+        cache_subnet_group_description: "Default CacheSubnetGroup".to_string(),
+        vpc_id: "vpc-00000000".to_string(),
+        subnet_ids: vec!["subnet-00000000".to_string()],
+        arn: format!("arn:aws:elasticache:{region}:{account_id}:subnetgroup:default"),
+    };
+    let mut map = HashMap::new();
+    map.insert("default".to_string(), default_group);
+    map
 }
 
 pub fn default_parameters_for_family(family: &str) -> Vec<EngineDefaultParameter> {
@@ -195,12 +222,37 @@ mod tests {
     }
 
     #[test]
+    fn state_new_creates_default_subnet_group() {
+        let state = ElastiCacheState::new("123456789012", "us-east-1");
+        assert_eq!(state.subnet_groups.len(), 1);
+        let default = state.subnet_groups.get("default").unwrap();
+        assert_eq!(default.cache_subnet_group_name, "default");
+        assert_eq!(
+            default.cache_subnet_group_description,
+            "Default CacheSubnetGroup"
+        );
+        assert_eq!(default.vpc_id, "vpc-00000000");
+        assert!(!default.subnet_ids.is_empty());
+        assert!(default.arn.contains("subnetgroup:default"));
+    }
+
+    #[test]
     fn reset_restores_default_parameter_groups() {
         let mut state = ElastiCacheState::new("123456789012", "us-east-1");
         state.parameter_groups.clear();
         assert!(state.parameter_groups.is_empty());
         state.reset();
         assert_eq!(state.parameter_groups.len(), 2);
+    }
+
+    #[test]
+    fn reset_restores_default_subnet_groups() {
+        let mut state = ElastiCacheState::new("123456789012", "us-east-1");
+        state.subnet_groups.clear();
+        assert!(state.subnet_groups.is_empty());
+        state.reset();
+        assert_eq!(state.subnet_groups.len(), 1);
+        assert!(state.subnet_groups.contains_key("default"));
     }
 
     #[test]

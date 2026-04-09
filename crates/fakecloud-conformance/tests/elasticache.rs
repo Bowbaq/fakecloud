@@ -3,6 +3,97 @@ mod helpers;
 use fakecloud_conformance_macros::test_action;
 use helpers::TestServer;
 
+#[test_action("elasticache", "CreateCacheSubnetGroup", checksum = "84cb3eb4")]
+#[tokio::test]
+async fn elasticache_create_cache_subnet_group() {
+    let server = TestServer::start().await;
+    let client = server.elasticache_client().await;
+
+    let response = client
+        .create_cache_subnet_group()
+        .cache_subnet_group_name("test-subnet-group")
+        .cache_subnet_group_description("Test subnet group")
+        .subnet_ids("subnet-abc123")
+        .send()
+        .await
+        .unwrap();
+
+    let group = response.cache_subnet_group().expect("cache subnet group");
+    assert_eq!(group.cache_subnet_group_name(), Some("test-subnet-group"));
+    assert_eq!(
+        group.cache_subnet_group_description(),
+        Some("Test subnet group")
+    );
+}
+
+#[test_action("elasticache", "DeleteCacheSubnetGroup", checksum = "9ffab4c4")]
+#[tokio::test]
+async fn elasticache_delete_cache_subnet_group() {
+    let server = TestServer::start().await;
+    let client = server.elasticache_client().await;
+
+    client
+        .create_cache_subnet_group()
+        .cache_subnet_group_name("to-delete")
+        .cache_subnet_group_description("Will be deleted")
+        .subnet_ids("subnet-abc123")
+        .send()
+        .await
+        .unwrap();
+
+    client
+        .delete_cache_subnet_group()
+        .cache_subnet_group_name("to-delete")
+        .send()
+        .await
+        .unwrap();
+}
+
+#[test_action("elasticache", "DescribeCacheSubnetGroups", checksum = "0f6a2b15")]
+#[tokio::test]
+async fn elasticache_describe_cache_subnet_groups() {
+    let server = TestServer::start().await;
+    let client = server.elasticache_client().await;
+
+    let response = client.describe_cache_subnet_groups().send().await.unwrap();
+
+    let groups = response.cache_subnet_groups();
+    assert!(!groups.is_empty());
+    assert!(groups
+        .iter()
+        .any(|g| g.cache_subnet_group_name() == Some("default")));
+}
+
+#[test_action("elasticache", "ModifyCacheSubnetGroup", checksum = "ebab21f4")]
+#[tokio::test]
+async fn elasticache_modify_cache_subnet_group() {
+    let server = TestServer::start().await;
+    let client = server.elasticache_client().await;
+
+    client
+        .create_cache_subnet_group()
+        .cache_subnet_group_name("to-modify")
+        .cache_subnet_group_description("Original description")
+        .subnet_ids("subnet-abc123")
+        .send()
+        .await
+        .unwrap();
+
+    let response = client
+        .modify_cache_subnet_group()
+        .cache_subnet_group_name("to-modify")
+        .cache_subnet_group_description("Updated description")
+        .send()
+        .await
+        .unwrap();
+
+    let group = response.cache_subnet_group().expect("cache subnet group");
+    assert_eq!(
+        group.cache_subnet_group_description(),
+        Some("Updated description")
+    );
+}
+
 #[test_action("elasticache", "DescribeCacheEngineVersions", checksum = "a71c9f1a")]
 #[tokio::test]
 async fn elasticache_describe_cache_engine_versions() {
