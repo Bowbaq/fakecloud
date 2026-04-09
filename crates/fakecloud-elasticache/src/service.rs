@@ -632,6 +632,13 @@ impl ElastiCacheService {
         let auth_mode_type = optional_param(request, "AuthenticationMode.Type");
 
         let (authentication_type, password_count) = if no_password_required {
+            if !passwords.is_empty() {
+                return Err(AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "InvalidParameterCombination",
+                    "Passwords cannot be provided when NoPasswordRequired is true.".to_string(),
+                ));
+            }
             ("no-password".to_string(), 0)
         } else if let Some(ref mode) = auth_mode_type {
             let mode_passwords = parse_member_list(
