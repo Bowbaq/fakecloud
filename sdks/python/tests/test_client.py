@@ -122,7 +122,9 @@ def test_rds_instances(fc: FakeCloudSync, fakecloud_url: str) -> None:
 
     result = fc.rds.get_instances()
     instance = next(
-        item for item in result.instances if item.db_instance_identifier == "py-sdk-rds-db"
+        item
+        for item in result.instances
+        if item.db_instance_identifier == "py-sdk-rds-db"
     )
     assert instance.engine == "postgres"
     assert instance.db_name == "appdb"

@@ -112,7 +112,9 @@ class RdsInstancesResponse:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> RdsInstancesResponse:
         return cls(
-            instances=[RdsInstance.from_dict(item) for item in data.get("instances", [])],
+            instances=[
+                RdsInstance.from_dict(item) for item in data.get("instances", [])
+            ],
         )
 
 
