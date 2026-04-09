@@ -773,7 +773,13 @@ impl ElastiCacheService {
             })?;
 
         // new_replica_count is number of replicas (excluding primary), so total clusters = replicas + 1
-        let new_total = new_replica_count + 1;
+        let new_total = new_replica_count.checked_add(1).ok_or_else(|| {
+            AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidParameterValue",
+                format!("NewReplicaCount value {new_replica_count} is too large"),
+            )
+        })?;
         if new_total <= group.num_cache_clusters {
             return Err(AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -859,7 +865,13 @@ impl ElastiCacheService {
             })?;
 
         // new_replica_count is number of replicas (excluding primary), so total clusters = replicas + 1
-        let new_total = new_replica_count + 1;
+        let new_total = new_replica_count.checked_add(1).ok_or_else(|| {
+            AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidParameterValue",
+                format!("NewReplicaCount value {new_replica_count} is too large"),
+            )
+        })?;
         if new_total >= group.num_cache_clusters {
             return Err(AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
