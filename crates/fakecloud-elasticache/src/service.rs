@@ -224,7 +224,7 @@ impl ElastiCacheService {
             arn,
         };
 
-        let xml = cache_subnet_group_xml(&group);
+        let xml = cache_subnet_group_xml(&group, &state.region);
         state.subnet_groups.insert(name, group);
 
         Ok(AwsResponse::xml(
@@ -271,7 +271,7 @@ impl ElastiCacheService {
             .map(|g| {
                 format!(
                     "<CacheSubnetGroup>{}</CacheSubnetGroup>",
-                    cache_subnet_group_xml(g)
+                    cache_subnet_group_xml(g, &state.region)
                 )
             })
             .collect();
@@ -328,6 +328,7 @@ impl ElastiCacheService {
         let subnet_ids = parse_member_list(&request.query_params, "SubnetIds", "SubnetIdentifier");
 
         let mut state = self.state.write();
+        let region = state.region.clone();
 
         let group = state.subnet_groups.get_mut(&name).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -344,7 +345,7 @@ impl ElastiCacheService {
             group.subnet_ids = subnet_ids;
         }
 
-        let xml = cache_subnet_group_xml(group);
+        let xml = cache_subnet_group_xml(group, &region);
 
         Ok(AwsResponse::xml(
             StatusCode::OK,
@@ -528,17 +529,20 @@ fn cache_parameter_group_xml(g: &CacheParameterGroup) -> String {
     )
 }
 
-fn cache_subnet_group_xml(g: &CacheSubnetGroup) -> String {
+fn cache_subnet_group_xml(g: &CacheSubnetGroup, region: &str) -> String {
     let subnets_xml: String = g
         .subnet_ids
         .iter()
-        .map(|id| {
+        .enumerate()
+        .map(|(i, id)| {
+            let az = format!("{}{}", region, (b'a' + (i as u8 % 6)) as char);
             format!(
                 "<Subnet>\
                  <SubnetIdentifier>{}</SubnetIdentifier>\
-                 <SubnetAvailabilityZone><Name>us-east-1a</Name></SubnetAvailabilityZone>\
+                 <SubnetAvailabilityZone><Name>{}</Name></SubnetAvailabilityZone>\
                  </Subnet>",
                 xml_escape(id),
+                xml_escape(&az),
             )
         })
         .collect();
@@ -637,13 +641,15 @@ mod tests {
             subnet_ids: vec!["subnet-aaa".to_string(), "subnet-bbb".to_string()],
             arn: "arn:aws:elasticache:us-east-1:123:subnetgroup:my-group".to_string(),
         };
-        let xml = cache_subnet_group_xml(&group);
+        let xml = cache_subnet_group_xml(&group, "us-east-1");
         assert!(xml.contains("<CacheSubnetGroupName>my-group</CacheSubnetGroupName>"));
         assert!(xml
             .contains("<CacheSubnetGroupDescription>My description</CacheSubnetGroupDescription>"));
         assert!(xml.contains("<VpcId>vpc-123</VpcId>"));
         assert!(xml.contains("<SubnetIdentifier>subnet-aaa</SubnetIdentifier>"));
         assert!(xml.contains("<SubnetIdentifier>subnet-bbb</SubnetIdentifier>"));
+        assert!(xml.contains("<Name>us-east-1a</Name>"));
+        assert!(xml.contains("<Name>us-east-1b</Name>"));
         assert!(xml.contains("<ARN>arn:aws:elasticache:us-east-1:123:subnetgroup:my-group</ARN>"));
     }
 
