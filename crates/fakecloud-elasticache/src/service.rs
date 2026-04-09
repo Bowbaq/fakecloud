@@ -2,7 +2,6 @@ use std::convert::TryFrom;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use form_urlencoded;
 use http::StatusCode;
 
 use fakecloud_aws::xml::xml_escape;
@@ -2519,47 +2518,14 @@ fn parse_member_list(
 }
 
 fn parse_query_list_param(req: &AwsRequest, param: &str, member_name: &str) -> Vec<String> {
-    let mut indexed: Vec<(usize, String)> = Vec::new();
-
-    for (key, value) in &req.query_params {
-        if let Some(idx) = key
-            .strip_prefix(&format!("{param}.{member_name}."))
-            .and_then(|idx| idx.parse::<usize>().ok())
-        {
-            indexed.push((idx, value.clone()));
-            continue;
-        }
-        if let Some(idx) = key
-            .strip_prefix(&format!("{param}.member."))
-            .and_then(|idx| idx.parse::<usize>().ok())
-        {
-            indexed.push((idx, value.clone()));
-        }
+    let mut indexed = parse_member_list(&req.query_params, param, member_name);
+    if indexed.is_empty() {
+        indexed = parse_member_list(&req.query_params, param, "member");
     }
-
-    for (key, value) in form_urlencoded::parse(req.body.as_ref()) {
-        let key = key.as_ref();
-        if let Some(idx) = key
-            .strip_prefix(&format!("{param}.{member_name}."))
-            .and_then(|idx| idx.parse::<usize>().ok())
-        {
-            indexed.push((idx, value.into_owned()));
-            continue;
-        }
-        if let Some(idx) = key
-            .strip_prefix(&format!("{param}.member."))
-            .and_then(|idx| idx.parse::<usize>().ok())
-        {
-            indexed.push((idx, value.into_owned()));
-            continue;
-        }
-        if key == param {
-            indexed.push((indexed.len() + 1, value.into_owned()));
-        }
+    if indexed.is_empty() {
+        indexed = req.query_params.get(param).into_iter().cloned().collect();
     }
-
-    indexed.sort_by_key(|(idx, _)| *idx);
-    indexed.into_iter().map(|(_, v)| v).collect()
+    indexed
 }
 
 fn optional_usize_param(req: &AwsRequest, name: &str) -> Result<Option<usize>, AwsServiceError> {
@@ -4203,7 +4169,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_query_list_param_reads_flat_and_indexed_body_values() {
+    fn parse_query_list_param_reads_indexed_and_flat_query_values() {
         let req = AwsRequest {
             service: "elasticache".to_string(),
             action: "ModifyServerlessCache".to_string(),
@@ -4211,8 +4177,11 @@ mod tests {
             account_id: "000000000000".to_string(),
             request_id: "req-1".to_string(),
             headers: HeaderMap::new(),
-            query_params: HashMap::new(),
-            body: Bytes::from("SecurityGroupIds.member.1=sg-a&SecurityGroupIds.member.2=sg-b"),
+            query_params: HashMap::from([
+                ("SecurityGroupIds.member.1".to_string(), "sg-a".to_string()),
+                ("SecurityGroupIds.member.2".to_string(), "sg-b".to_string()),
+            ]),
+            body: Bytes::new(),
             path_segments: vec![],
             raw_path: "/".to_string(),
             raw_query: String::new(),
@@ -4226,7 +4195,7 @@ mod tests {
         );
 
         let req = AwsRequest {
-            body: Bytes::from("SecurityGroupIds=sg-flat"),
+            query_params: HashMap::from([("SecurityGroupIds".to_string(), "sg-flat".to_string())]),
             ..req
         };
         assert_eq!(
