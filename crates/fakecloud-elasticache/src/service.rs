@@ -535,7 +535,7 @@ fn cache_subnet_group_xml(g: &CacheSubnetGroup, region: &str) -> String {
         .iter()
         .enumerate()
         .map(|(i, id)| {
-            let az = format!("{}{}", region, (b'a' + (i as u8 % 6)) as char);
+            let az = format!("{}{}", region, (b'a' + (i % 6) as u8) as char);
             format!(
                 "<Subnet>\
                  <SubnetIdentifier>{}</SubnetIdentifier>\
