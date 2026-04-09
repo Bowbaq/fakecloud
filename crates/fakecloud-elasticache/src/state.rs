@@ -132,6 +132,69 @@ pub struct CacheSnapshot {
     pub snapshot_source: String,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ServerlessCacheUsageLimits {
+    pub data_storage: Option<ServerlessCacheDataStorage>,
+    pub ecpu_per_second: Option<ServerlessCacheEcpuPerSecond>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ServerlessCacheDataStorage {
+    pub maximum: Option<i32>,
+    pub minimum: Option<i32>,
+    pub unit: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ServerlessCacheEcpuPerSecond {
+    pub maximum: Option<i32>,
+    pub minimum: Option<i32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ServerlessCacheEndpoint {
+    pub address: String,
+    pub port: u16,
+}
+
+#[derive(Debug, Clone)]
+pub struct ServerlessCache {
+    pub serverless_cache_name: String,
+    pub description: String,
+    pub engine: String,
+    pub major_engine_version: String,
+    pub full_engine_version: String,
+    pub status: String,
+    pub endpoint: ServerlessCacheEndpoint,
+    pub reader_endpoint: ServerlessCacheEndpoint,
+    pub arn: String,
+    pub created_at: String,
+    pub cache_usage_limits: Option<ServerlessCacheUsageLimits>,
+    pub security_group_ids: Vec<String>,
+    pub subnet_ids: Vec<String>,
+    pub kms_key_id: Option<String>,
+    pub user_group_id: Option<String>,
+    pub snapshot_retention_limit: Option<i32>,
+    pub daily_snapshot_time: Option<String>,
+    pub container_id: String,
+    pub host_port: u16,
+}
+
+#[derive(Debug, Clone)]
+pub struct ServerlessCacheSnapshot {
+    pub serverless_cache_snapshot_name: String,
+    pub arn: String,
+    pub kms_key_id: Option<String>,
+    pub snapshot_type: String,
+    pub status: String,
+    pub create_time: String,
+    pub expiry_time: Option<String>,
+    pub bytes_used_for_cache: Option<String>,
+    pub serverless_cache_name: String,
+    pub engine: String,
+    pub major_engine_version: String,
+}
+
 #[derive(Debug)]
 pub struct ElastiCacheState {
     pub account_id: String,
@@ -143,9 +206,12 @@ pub struct ElastiCacheState {
     pub users: HashMap<String, ElastiCacheUser>,
     pub user_groups: HashMap<String, ElastiCacheUserGroup>,
     pub snapshots: HashMap<String, CacheSnapshot>,
+    pub serverless_caches: HashMap<String, ServerlessCache>,
+    pub serverless_cache_snapshots: HashMap<String, ServerlessCacheSnapshot>,
     pub tags: HashMap<String, Vec<(String, String)>>,
     in_progress_cache_cluster_ids: HashSet<String>,
     in_progress_replication_group_ids: HashSet<String>,
+    in_progress_serverless_cache_names: HashSet<String>,
 }
 
 impl ElastiCacheState {
@@ -170,9 +236,12 @@ impl ElastiCacheState {
             users,
             user_groups: HashMap::new(),
             snapshots: HashMap::new(),
+            serverless_caches: HashMap::new(),
+            serverless_cache_snapshots: HashMap::new(),
             tags,
             in_progress_cache_cluster_ids: HashSet::new(),
             in_progress_replication_group_ids: HashSet::new(),
+            in_progress_serverless_cache_names: HashSet::new(),
         }
     }
 
@@ -184,6 +253,8 @@ impl ElastiCacheState {
         self.users = default_users(&self.account_id, &self.region);
         self.user_groups.clear();
         self.snapshots.clear();
+        self.serverless_caches.clear();
+        self.serverless_cache_snapshots.clear();
         self.tags.clear();
         for g in self.subnet_groups.values() {
             self.tags.insert(g.arn.clone(), Vec::new());
@@ -193,6 +264,7 @@ impl ElastiCacheState {
         }
         self.in_progress_cache_cluster_ids.clear();
         self.in_progress_replication_group_ids.clear();
+        self.in_progress_serverless_cache_names.clear();
     }
 
     pub fn begin_cache_cluster_creation(&mut self, cache_cluster_id: &str) -> bool {
@@ -244,6 +316,32 @@ impl ElastiCacheState {
     pub fn cancel_replication_group_creation(&mut self, replication_group_id: &str) {
         self.in_progress_replication_group_ids
             .remove(replication_group_id);
+    }
+
+    pub fn begin_serverless_cache_creation(&mut self, serverless_cache_name: &str) -> bool {
+        if self.serverless_caches.contains_key(serverless_cache_name)
+            || self
+                .in_progress_serverless_cache_names
+                .contains(serverless_cache_name)
+        {
+            return false;
+        }
+        self.in_progress_serverless_cache_names
+            .insert(serverless_cache_name.to_string());
+        true
+    }
+
+    pub fn finish_serverless_cache_creation(&mut self, cache: ServerlessCache) {
+        self.in_progress_serverless_cache_names
+            .remove(&cache.serverless_cache_name);
+        self.tags.insert(cache.arn.clone(), Vec::new());
+        self.serverless_caches
+            .insert(cache.serverless_cache_name.clone(), cache);
+    }
+
+    pub fn cancel_serverless_cache_creation(&mut self, serverless_cache_name: &str) {
+        self.in_progress_serverless_cache_names
+            .remove(serverless_cache_name);
     }
 
     pub fn register_arn(&mut self, arn: &str) {
@@ -486,6 +584,13 @@ mod tests {
     }
 
     #[test]
+    fn state_new_has_empty_serverless_caches() {
+        let state = ElastiCacheState::new("123456789012", "us-east-1");
+        assert!(state.serverless_caches.is_empty());
+        assert!(state.serverless_cache_snapshots.is_empty());
+    }
+
+    #[test]
     fn begin_cache_cluster_creation_rejects_duplicate_ids() {
         let mut state = ElastiCacheState::new("123456789012", "us-east-1");
 
@@ -505,6 +610,56 @@ mod tests {
 
         state.cancel_replication_group_creation("rg-1");
         assert!(state.begin_replication_group_creation("rg-1"));
+    }
+
+    #[test]
+    fn begin_serverless_cache_creation_rejects_duplicate_names() {
+        let mut state = ElastiCacheState::new("123456789012", "us-east-1");
+
+        assert!(state.begin_serverless_cache_creation("cache-1"));
+        assert!(!state.begin_serverless_cache_creation("cache-1"));
+
+        state.cancel_serverless_cache_creation("cache-1");
+        assert!(state.begin_serverless_cache_creation("cache-1"));
+    }
+
+    #[test]
+    fn finish_serverless_cache_creation_registers_cache_and_tags() {
+        let mut state = ElastiCacheState::new("123456789012", "us-east-1");
+        assert!(state.begin_serverless_cache_creation("cache-1"));
+
+        let cache = ServerlessCache {
+            serverless_cache_name: "cache-1".to_string(),
+            description: "test".to_string(),
+            engine: "redis".to_string(),
+            major_engine_version: "7.1".to_string(),
+            full_engine_version: "7.1".to_string(),
+            status: "available".to_string(),
+            endpoint: ServerlessCacheEndpoint {
+                address: "127.0.0.1".to_string(),
+                port: 6379,
+            },
+            reader_endpoint: ServerlessCacheEndpoint {
+                address: "127.0.0.1".to_string(),
+                port: 6379,
+            },
+            arn: "arn:aws:elasticache:us-east-1:123456789012:serverlesscache:cache-1".to_string(),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            cache_usage_limits: None,
+            security_group_ids: Vec::new(),
+            subnet_ids: Vec::new(),
+            kms_key_id: None,
+            user_group_id: None,
+            snapshot_retention_limit: None,
+            daily_snapshot_time: None,
+            container_id: "cid".to_string(),
+            host_port: 6379,
+        };
+
+        state.finish_serverless_cache_creation(cache.clone());
+
+        assert!(state.serverless_caches.contains_key("cache-1"));
+        assert!(state.tags.contains_key(&cache.arn));
     }
 
     #[test]
@@ -648,5 +803,63 @@ mod tests {
         assert_eq!(state.cache_clusters.len(), 1);
         state.reset();
         assert!(state.cache_clusters.is_empty());
+    }
+
+    #[test]
+    fn reset_clears_serverless_cache_state() {
+        let mut state = ElastiCacheState::new("123456789012", "us-east-1");
+        state.serverless_caches.insert(
+            "serverless".to_string(),
+            ServerlessCache {
+                serverless_cache_name: "serverless".to_string(),
+                description: "test".to_string(),
+                engine: "redis".to_string(),
+                major_engine_version: "7.1".to_string(),
+                full_engine_version: "7.1".to_string(),
+                status: "available".to_string(),
+                endpoint: ServerlessCacheEndpoint {
+                    address: "127.0.0.1".to_string(),
+                    port: 6379,
+                },
+                reader_endpoint: ServerlessCacheEndpoint {
+                    address: "127.0.0.1".to_string(),
+                    port: 6379,
+                },
+                arn: "arn:aws:elasticache:us-east-1:123456789012:serverlesscache:serverless"
+                    .to_string(),
+                created_at: "2024-01-01T00:00:00Z".to_string(),
+                cache_usage_limits: None,
+                security_group_ids: Vec::new(),
+                subnet_ids: Vec::new(),
+                kms_key_id: None,
+                user_group_id: None,
+                snapshot_retention_limit: None,
+                daily_snapshot_time: None,
+                container_id: "cid".to_string(),
+                host_port: 6379,
+            },
+        );
+        state.serverless_cache_snapshots.insert(
+            "snap-1".to_string(),
+            ServerlessCacheSnapshot {
+                serverless_cache_snapshot_name: "snap-1".to_string(),
+                arn: "arn:aws:elasticache:us-east-1:123456789012:serverlesssnapshot:snap-1"
+                    .to_string(),
+                kms_key_id: None,
+                snapshot_type: "manual".to_string(),
+                status: "available".to_string(),
+                create_time: "2024-01-01T00:00:00Z".to_string(),
+                expiry_time: None,
+                bytes_used_for_cache: None,
+                serverless_cache_name: "serverless".to_string(),
+                engine: "redis".to_string(),
+                major_engine_version: "7.1".to_string(),
+            },
+        );
+
+        state.reset();
+
+        assert!(state.serverless_caches.is_empty());
+        assert!(state.serverless_cache_snapshots.is_empty());
     }
 }
