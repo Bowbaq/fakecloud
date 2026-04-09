@@ -383,6 +383,13 @@ impl ElastiCacheService {
         let replication_group_id = required_param(request, "ReplicationGroupId")?;
         let description = required_param(request, "ReplicationGroupDescription")?;
         let engine = optional_param(request, "Engine").unwrap_or_else(|| "redis".to_string());
+        if engine != "redis" && engine != "valkey" {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidParameterValue",
+                format!("Invalid value for Engine: {engine}. Supported engines: redis, valkey"),
+            ));
+        }
         let engine_version =
             optional_param(request, "EngineVersion").unwrap_or_else(|| "7.1".to_string());
         let cache_node_type = optional_param(request, "CacheNodeType")
