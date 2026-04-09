@@ -9,8 +9,8 @@ use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceErr
 use crate::runtime::{ElastiCacheRuntime, RuntimeError};
 use crate::state::{
     default_engine_versions, default_parameters_for_family, CacheEngineVersion,
-    CacheParameterGroup, CacheSubnetGroup, EngineDefaultParameter, ReplicationGroup,
-    SharedElastiCacheState,
+    CacheParameterGroup, CacheSubnetGroup, ElastiCacheUser, ElastiCacheUserGroup,
+    EngineDefaultParameter, ReplicationGroup, SharedElastiCacheState,
 };
 
 const ELASTICACHE_NS: &str = "http://elasticache.amazonaws.com/doc/2015-02-02/";
@@ -18,13 +18,19 @@ const SUPPORTED_ACTIONS: &[&str] = &[
     "AddTagsToResource",
     "CreateCacheSubnetGroup",
     "CreateReplicationGroup",
+    "CreateUser",
+    "CreateUserGroup",
     "DeleteCacheSubnetGroup",
     "DeleteReplicationGroup",
+    "DeleteUser",
+    "DeleteUserGroup",
     "DescribeCacheEngineVersions",
     "DescribeCacheParameterGroups",
     "DescribeCacheSubnetGroups",
     "DescribeEngineDefaultParameters",
     "DescribeReplicationGroups",
+    "DescribeUserGroups",
+    "DescribeUsers",
     "ListTagsForResource",
     "ModifyCacheSubnetGroup",
     "RemoveTagsFromResource",
@@ -60,13 +66,19 @@ impl AwsService for ElastiCacheService {
             "AddTagsToResource" => self.add_tags_to_resource(&request),
             "CreateCacheSubnetGroup" => self.create_cache_subnet_group(&request),
             "CreateReplicationGroup" => self.create_replication_group(&request).await,
+            "CreateUser" => self.create_user(&request),
+            "CreateUserGroup" => self.create_user_group(&request),
             "DeleteCacheSubnetGroup" => self.delete_cache_subnet_group(&request),
             "DeleteReplicationGroup" => self.delete_replication_group(&request).await,
+            "DeleteUser" => self.delete_user(&request),
+            "DeleteUserGroup" => self.delete_user_group(&request),
             "DescribeCacheEngineVersions" => self.describe_cache_engine_versions(&request),
             "DescribeCacheParameterGroups" => self.describe_cache_parameter_groups(&request),
             "DescribeCacheSubnetGroups" => self.describe_cache_subnet_groups(&request),
             "DescribeEngineDefaultParameters" => self.describe_engine_default_parameters(&request),
             "DescribeReplicationGroups" => self.describe_replication_groups(&request),
+            "DescribeUserGroups" => self.describe_user_groups(&request),
+            "DescribeUsers" => self.describe_users(&request),
             "ListTagsForResource" => self.list_tags_for_resource(&request),
             "ModifyCacheSubnetGroup" => self.modify_cache_subnet_group(&request),
             "RemoveTagsFromResource" => self.remove_tags_from_resource(&request),
@@ -599,6 +611,317 @@ impl ElastiCacheService {
         ))
     }
 
+    fn create_user(&self, request: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let user_id = required_param(request, "UserId")?;
+        let user_name = required_param(request, "UserName")?;
+        let engine = required_param(request, "Engine")?;
+        let access_string = required_param(request, "AccessString")?;
+
+        if engine != "redis" && engine != "valkey" {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidParameterValue",
+                format!("Invalid value for Engine: {engine}. Supported engines: redis, valkey"),
+            ));
+        }
+
+        let no_password_required =
+            parse_optional_bool(optional_param(request, "NoPasswordRequired").as_deref())?
+                .unwrap_or(false);
+        let passwords = parse_member_list(&request.query_params, "Passwords", "member");
+        let auth_mode_type = optional_param(request, "AuthenticationMode.Type");
+
+        let (authentication_type, password_count) = if no_password_required {
+            ("no-password".to_string(), 0)
+        } else if let Some(ref mode) = auth_mode_type {
+            let mode_passwords = parse_member_list(
+                &request.query_params,
+                "AuthenticationMode.Passwords",
+                "member",
+            );
+            (mode.clone(), mode_passwords.len() as i32)
+        } else if !passwords.is_empty() {
+            ("password".to_string(), passwords.len() as i32)
+        } else {
+            ("no-password".to_string(), 0)
+        };
+
+        let minimum_engine_version = if engine == "valkey" {
+            "8.0".to_string()
+        } else {
+            "6.0".to_string()
+        };
+
+        let mut state = self.state.write();
+
+        if state.users.contains_key(&user_id) {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "UserAlreadyExistsFault",
+                format!("User {user_id} already exists."),
+            ));
+        }
+
+        let arn = format!(
+            "arn:aws:elasticache:{}:{}:user:{}",
+            state.region, state.account_id, user_id
+        );
+
+        let user = ElastiCacheUser {
+            user_id: user_id.clone(),
+            user_name,
+            engine,
+            access_string,
+            status: "active".to_string(),
+            authentication_type,
+            password_count,
+            arn,
+            minimum_engine_version,
+            user_group_ids: Vec::new(),
+        };
+
+        let xml = user_xml(&user);
+        state.register_arn(&user.arn);
+        state.users.insert(user_id, user);
+
+        Ok(AwsResponse::xml(
+            StatusCode::OK,
+            xml_wrap("CreateUser", &xml, &request.request_id),
+        ))
+    }
+
+    fn describe_users(&self, request: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let user_id = optional_param(request, "UserId");
+        let max_records = optional_usize_param(request, "MaxRecords")?;
+        let marker = optional_param(request, "Marker");
+
+        let state = self.state.read();
+
+        let users: Vec<&ElastiCacheUser> = if let Some(ref id) = user_id {
+            match state.users.get(id) {
+                Some(u) => vec![u],
+                None => {
+                    return Err(AwsServiceError::aws_error(
+                        StatusCode::NOT_FOUND,
+                        "UserNotFoundFault",
+                        format!("User {id} not found."),
+                    ));
+                }
+            }
+        } else {
+            let mut users: Vec<&ElastiCacheUser> = state.users.values().collect();
+            users.sort_by(|a, b| a.user_id.cmp(&b.user_id));
+            users
+        };
+
+        let (page, next_marker) = paginate(&users, marker.as_deref(), max_records);
+
+        let members_xml: String = page
+            .iter()
+            .map(|u| format!("<member>{}</member>", user_xml(u)))
+            .collect();
+        let marker_xml = next_marker
+            .map(|m| format!("<Marker>{}</Marker>", xml_escape(&m)))
+            .unwrap_or_default();
+
+        Ok(AwsResponse::xml(
+            StatusCode::OK,
+            xml_wrap(
+                "DescribeUsers",
+                &format!("<Users>{members_xml}</Users>{marker_xml}"),
+                &request.request_id,
+            ),
+        ))
+    }
+
+    fn delete_user(&self, request: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let user_id = required_param(request, "UserId")?;
+
+        if user_id == "default" {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidParameterValue",
+                "Cannot delete the default user.".to_string(),
+            ));
+        }
+
+        let mut state = self.state.write();
+
+        let user = state.users.remove(&user_id).ok_or_else(|| {
+            AwsServiceError::aws_error(
+                StatusCode::NOT_FOUND,
+                "UserNotFoundFault",
+                format!("User {user_id} not found."),
+            )
+        })?;
+
+        state.tags.remove(&user.arn);
+
+        // Remove user from any user groups
+        for group in state.user_groups.values_mut() {
+            group.user_ids.retain(|id| id != &user_id);
+        }
+
+        let mut deleted_user = user;
+        deleted_user.status = "deleting".to_string();
+        let xml = user_xml(&deleted_user);
+
+        Ok(AwsResponse::xml(
+            StatusCode::OK,
+            xml_wrap("DeleteUser", &xml, &request.request_id),
+        ))
+    }
+
+    fn create_user_group(&self, request: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let user_group_id = required_param(request, "UserGroupId")?;
+        let engine = required_param(request, "Engine")?;
+
+        if engine != "redis" && engine != "valkey" {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidParameterValue",
+                format!("Invalid value for Engine: {engine}. Supported engines: redis, valkey"),
+            ));
+        }
+
+        let user_ids = parse_member_list(&request.query_params, "UserIds", "member");
+
+        let minimum_engine_version = if engine == "valkey" {
+            "8.0".to_string()
+        } else {
+            "6.0".to_string()
+        };
+
+        let mut state = self.state.write();
+
+        if state.user_groups.contains_key(&user_group_id) {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "UserGroupAlreadyExistsFault",
+                format!("User Group {user_group_id} already exists."),
+            ));
+        }
+
+        // Validate all referenced users exist
+        for uid in &user_ids {
+            if !state.users.contains_key(uid) {
+                return Err(AwsServiceError::aws_error(
+                    StatusCode::NOT_FOUND,
+                    "UserNotFoundFault",
+                    format!("User {uid} not found."),
+                ));
+            }
+        }
+
+        let arn = format!(
+            "arn:aws:elasticache:{}:{}:usergroup:{}",
+            state.region, state.account_id, user_group_id
+        );
+
+        let group = ElastiCacheUserGroup {
+            user_group_id: user_group_id.clone(),
+            engine,
+            status: "active".to_string(),
+            user_ids: user_ids.clone(),
+            arn,
+            minimum_engine_version,
+            pending_changes: None,
+            replication_groups: Vec::new(),
+        };
+
+        // Update user_group_ids on referenced users
+        for uid in &user_ids {
+            if let Some(user) = state.users.get_mut(uid) {
+                user.user_group_ids.push(user_group_id.clone());
+            }
+        }
+
+        let xml = user_group_xml(&group);
+        state.register_arn(&group.arn);
+        state.user_groups.insert(user_group_id, group);
+
+        Ok(AwsResponse::xml(
+            StatusCode::OK,
+            xml_wrap("CreateUserGroup", &xml, &request.request_id),
+        ))
+    }
+
+    fn describe_user_groups(&self, request: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let user_group_id = optional_param(request, "UserGroupId");
+        let max_records = optional_usize_param(request, "MaxRecords")?;
+        let marker = optional_param(request, "Marker");
+
+        let state = self.state.read();
+
+        let groups: Vec<&ElastiCacheUserGroup> = if let Some(ref id) = user_group_id {
+            match state.user_groups.get(id) {
+                Some(g) => vec![g],
+                None => {
+                    return Err(AwsServiceError::aws_error(
+                        StatusCode::NOT_FOUND,
+                        "UserGroupNotFoundFault",
+                        format!("User Group {id} not found."),
+                    ));
+                }
+            }
+        } else {
+            let mut groups: Vec<&ElastiCacheUserGroup> = state.user_groups.values().collect();
+            groups.sort_by(|a, b| a.user_group_id.cmp(&b.user_group_id));
+            groups
+        };
+
+        let (page, next_marker) = paginate(&groups, marker.as_deref(), max_records);
+
+        let members_xml: String = page
+            .iter()
+            .map(|g| format!("<member>{}</member>", user_group_xml(g)))
+            .collect();
+        let marker_xml = next_marker
+            .map(|m| format!("<Marker>{}</Marker>", xml_escape(&m)))
+            .unwrap_or_default();
+
+        Ok(AwsResponse::xml(
+            StatusCode::OK,
+            xml_wrap(
+                "DescribeUserGroups",
+                &format!("<UserGroups>{members_xml}</UserGroups>{marker_xml}"),
+                &request.request_id,
+            ),
+        ))
+    }
+
+    fn delete_user_group(&self, request: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let user_group_id = required_param(request, "UserGroupId")?;
+
+        let mut state = self.state.write();
+
+        let group = state.user_groups.remove(&user_group_id).ok_or_else(|| {
+            AwsServiceError::aws_error(
+                StatusCode::NOT_FOUND,
+                "UserGroupNotFoundFault",
+                format!("User Group {user_group_id} not found."),
+            )
+        })?;
+
+        state.tags.remove(&group.arn);
+
+        // Remove this group from users' user_group_ids
+        for uid in &group.user_ids {
+            if let Some(user) = state.users.get_mut(uid) {
+                user.user_group_ids.retain(|gid| gid != &user_group_id);
+            }
+        }
+
+        let mut deleted_group = group;
+        deleted_group.status = "deleting".to_string();
+        let xml = user_group_xml(&deleted_group);
+
+        Ok(AwsResponse::xml(
+            StatusCode::OK,
+            xml_wrap("DeleteUserGroup", &xml, &request.request_id),
+        ))
+    }
+
     fn add_tags_to_resource(&self, request: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let resource_name = required_param(request, "ResourceName")?;
         let tags = parse_tags(request)?;
@@ -995,6 +1318,85 @@ fn replication_group_xml(g: &ReplicationGroup, region: &str) -> String {
     )
 }
 
+fn user_xml(u: &ElastiCacheUser) -> String {
+    let user_group_ids_xml: String = u
+        .user_group_ids
+        .iter()
+        .map(|id| format!("<member>{}</member>", xml_escape(id)))
+        .collect();
+    format!(
+        "<UserId>{}</UserId>\
+         <UserName>{}</UserName>\
+         <Status>{}</Status>\
+         <Engine>{}</Engine>\
+         <MinimumEngineVersion>{}</MinimumEngineVersion>\
+         <AccessString>{}</AccessString>\
+         <UserGroupIds>{user_group_ids_xml}</UserGroupIds>\
+         <Authentication>\
+         <Type>{}</Type>\
+         <PasswordCount>{}</PasswordCount>\
+         </Authentication>\
+         <ARN>{}</ARN>",
+        xml_escape(&u.user_id),
+        xml_escape(&u.user_name),
+        xml_escape(&u.status),
+        xml_escape(&u.engine),
+        xml_escape(&u.minimum_engine_version),
+        xml_escape(&u.access_string),
+        xml_escape(&u.authentication_type),
+        u.password_count,
+        xml_escape(&u.arn),
+    )
+}
+
+fn user_group_xml(g: &ElastiCacheUserGroup) -> String {
+    let user_ids_xml: String = g
+        .user_ids
+        .iter()
+        .map(|id| format!("<member>{}</member>", xml_escape(id)))
+        .collect();
+    let replication_groups_xml: String = g
+        .replication_groups
+        .iter()
+        .map(|id| format!("<member>{}</member>", xml_escape(id)))
+        .collect();
+    let pending_xml = if let Some(ref pc) = g.pending_changes {
+        let to_add: String = pc
+            .user_ids_to_add
+            .iter()
+            .map(|id| format!("<member>{}</member>", xml_escape(id)))
+            .collect();
+        let to_remove: String = pc
+            .user_ids_to_remove
+            .iter()
+            .map(|id| format!("<member>{}</member>", xml_escape(id)))
+            .collect();
+        format!(
+            "<PendingChanges>\
+             <UserIdsToAdd>{to_add}</UserIdsToAdd>\
+             <UserIdsToRemove>{to_remove}</UserIdsToRemove>\
+             </PendingChanges>"
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        "<UserGroupId>{}</UserGroupId>\
+         <Status>{}</Status>\
+         <Engine>{}</Engine>\
+         <MinimumEngineVersion>{}</MinimumEngineVersion>\
+         <UserIds>{user_ids_xml}</UserIds>\
+         <ReplicationGroups>{replication_groups_xml}</ReplicationGroups>\
+         {pending_xml}\
+         <ARN>{}</ARN>",
+        xml_escape(&g.user_group_id),
+        xml_escape(&g.status),
+        xml_escape(&g.engine),
+        xml_escape(&g.minimum_engine_version),
+        xml_escape(&g.arn),
+    )
+}
+
 fn runtime_error_to_service_error(error: RuntimeError) -> AwsServiceError {
     match error {
         RuntimeError::Unavailable => AwsServiceError::aws_error(
@@ -1254,5 +1656,177 @@ mod tests {
     fn tag_xml_produces_valid_element() {
         let xml = tag_xml(&("env".to_string(), "prod".to_string()));
         assert_eq!(xml, "<Tag><Key>env</Key><Value>prod</Value></Tag>");
+    }
+
+    #[test]
+    fn user_xml_contains_all_fields() {
+        let user = ElastiCacheUser {
+            user_id: "myuser".to_string(),
+            user_name: "myuser".to_string(),
+            engine: "redis".to_string(),
+            access_string: "on ~* +@all".to_string(),
+            status: "active".to_string(),
+            authentication_type: "password".to_string(),
+            password_count: 1,
+            arn: "arn:aws:elasticache:us-east-1:123:user:myuser".to_string(),
+            minimum_engine_version: "6.0".to_string(),
+            user_group_ids: vec!["group1".to_string()],
+        };
+        let xml = user_xml(&user);
+        assert!(xml.contains("<UserId>myuser</UserId>"));
+        assert!(xml.contains("<UserName>myuser</UserName>"));
+        assert!(xml.contains("<Engine>redis</Engine>"));
+        assert!(xml.contains("<AccessString>on ~* +@all</AccessString>"));
+        assert!(xml.contains("<Status>active</Status>"));
+        assert!(xml.contains("<Type>password</Type>"));
+        assert!(xml.contains("<PasswordCount>1</PasswordCount>"));
+        assert!(xml.contains("<member>group1</member>"));
+        assert!(xml.contains("<ARN>arn:aws:elasticache:us-east-1:123:user:myuser</ARN>"));
+    }
+
+    #[test]
+    fn user_group_xml_contains_all_fields() {
+        let group = ElastiCacheUserGroup {
+            user_group_id: "mygroup".to_string(),
+            engine: "redis".to_string(),
+            status: "active".to_string(),
+            user_ids: vec!["default".to_string(), "myuser".to_string()],
+            arn: "arn:aws:elasticache:us-east-1:123:usergroup:mygroup".to_string(),
+            minimum_engine_version: "6.0".to_string(),
+            pending_changes: None,
+            replication_groups: Vec::new(),
+        };
+        let xml = user_group_xml(&group);
+        assert!(xml.contains("<UserGroupId>mygroup</UserGroupId>"));
+        assert!(xml.contains("<Engine>redis</Engine>"));
+        assert!(xml.contains("<Status>active</Status>"));
+        assert!(xml.contains("<member>default</member>"));
+        assert!(xml.contains("<member>myuser</member>"));
+        assert!(xml.contains("<ARN>arn:aws:elasticache:us-east-1:123:usergroup:mygroup</ARN>"));
+    }
+
+    #[test]
+    fn create_user_returns_user_xml() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let service = ElastiCacheService::new(shared);
+
+        let req = request(
+            "CreateUser",
+            &[
+                ("UserId", "testuser"),
+                ("UserName", "testuser"),
+                ("Engine", "redis"),
+                ("AccessString", "on ~* +@all"),
+            ],
+        );
+        let resp = service.create_user(&req).unwrap();
+        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        assert!(body.contains("<UserId>testuser</UserId>"));
+        assert!(body.contains("<Status>active</Status>"));
+        assert!(body.contains("<CreateUserResponse"));
+    }
+
+    #[test]
+    fn create_user_rejects_duplicate() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let service = ElastiCacheService::new(shared);
+
+        let req = request(
+            "CreateUser",
+            &[
+                ("UserId", "default"),
+                ("UserName", "default"),
+                ("Engine", "redis"),
+                ("AccessString", "on ~* +@all"),
+            ],
+        );
+        assert!(service.create_user(&req).is_err());
+    }
+
+    #[test]
+    fn delete_user_rejects_default() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let service = ElastiCacheService::new(shared);
+
+        let req = request("DeleteUser", &[("UserId", "default")]);
+        assert!(service.delete_user(&req).is_err());
+    }
+
+    #[test]
+    fn describe_users_returns_default_user() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let service = ElastiCacheService::new(shared);
+
+        let req = request("DescribeUsers", &[]);
+        let resp = service.describe_users(&req).unwrap();
+        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        assert!(body.contains("<UserId>default</UserId>"));
+    }
+
+    #[test]
+    fn create_and_describe_user_group() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let service = ElastiCacheService::new(shared);
+
+        let req = request(
+            "CreateUserGroup",
+            &[
+                ("UserGroupId", "mygroup"),
+                ("Engine", "redis"),
+                ("UserIds.member.1", "default"),
+            ],
+        );
+        let resp = service.create_user_group(&req).unwrap();
+        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        assert!(body.contains("<UserGroupId>mygroup</UserGroupId>"));
+        assert!(body.contains("<member>default</member>"));
+
+        let req = request("DescribeUserGroups", &[]);
+        let resp = service.describe_user_groups(&req).unwrap();
+        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        assert!(body.contains("<UserGroupId>mygroup</UserGroupId>"));
+    }
+
+    #[test]
+    fn create_user_group_rejects_unknown_user() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let service = ElastiCacheService::new(shared);
+
+        let req = request(
+            "CreateUserGroup",
+            &[
+                ("UserGroupId", "mygroup"),
+                ("Engine", "redis"),
+                ("UserIds.member.1", "nonexistent"),
+            ],
+        );
+        assert!(service.create_user_group(&req).is_err());
+    }
+
+    #[test]
+    fn delete_user_group_removes_from_state() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let service = ElastiCacheService::new(shared);
+
+        let req = request(
+            "CreateUserGroup",
+            &[("UserGroupId", "delgroup"), ("Engine", "redis")],
+        );
+        service.create_user_group(&req).unwrap();
+
+        let req = request("DeleteUserGroup", &[("UserGroupId", "delgroup")]);
+        let resp = service.delete_user_group(&req).unwrap();
+        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        assert!(body.contains("<Status>deleting</Status>"));
+
+        let req = request("DescribeUserGroups", &[("UserGroupId", "delgroup")]);
+        assert!(service.describe_user_groups(&req).is_err());
     }
 }

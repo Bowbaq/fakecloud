@@ -63,6 +63,38 @@ pub struct ReplicationGroup {
     pub member_clusters: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ElastiCacheUser {
+    pub user_id: String,
+    pub user_name: String,
+    pub engine: String,
+    pub access_string: String,
+    pub status: String,
+    pub authentication_type: String,
+    pub password_count: i32,
+    pub arn: String,
+    pub minimum_engine_version: String,
+    pub user_group_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ElastiCacheUserGroup {
+    pub user_group_id: String,
+    pub engine: String,
+    pub status: String,
+    pub user_ids: Vec<String>,
+    pub arn: String,
+    pub minimum_engine_version: String,
+    pub pending_changes: Option<UserGroupPendingChanges>,
+    pub replication_groups: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct UserGroupPendingChanges {
+    pub user_ids_to_add: Vec<String>,
+    pub user_ids_to_remove: Vec<String>,
+}
+
 #[derive(Debug)]
 pub struct ElastiCacheState {
     pub account_id: String,
@@ -70,6 +102,8 @@ pub struct ElastiCacheState {
     pub parameter_groups: Vec<CacheParameterGroup>,
     pub subnet_groups: HashMap<String, CacheSubnetGroup>,
     pub replication_groups: HashMap<String, ReplicationGroup>,
+    pub users: HashMap<String, ElastiCacheUser>,
+    pub user_groups: HashMap<String, ElastiCacheUserGroup>,
     pub tags: HashMap<String, Vec<(String, String)>>,
     in_progress_replication_group_ids: HashSet<String>,
 }
@@ -78,6 +112,7 @@ impl ElastiCacheState {
     pub fn new(account_id: &str, region: &str) -> Self {
         let parameter_groups = default_parameter_groups(account_id, region);
         let subnet_groups = default_subnet_groups(account_id, region);
+        let users = default_users(account_id, region);
         let tags: HashMap<String, Vec<(String, String)>> = subnet_groups
             .values()
             .map(|g| (g.arn.clone(), Vec::new()))
@@ -88,6 +123,8 @@ impl ElastiCacheState {
             parameter_groups,
             subnet_groups,
             replication_groups: HashMap::new(),
+            users,
+            user_groups: HashMap::new(),
             tags,
             in_progress_replication_group_ids: HashSet::new(),
         }
@@ -97,6 +134,8 @@ impl ElastiCacheState {
         self.parameter_groups = default_parameter_groups(&self.account_id, &self.region);
         self.subnet_groups = default_subnet_groups(&self.account_id, &self.region);
         self.replication_groups.clear();
+        self.users = default_users(&self.account_id, &self.region);
+        self.user_groups.clear();
         self.tags.clear();
         for g in self.subnet_groups.values() {
             self.tags.insert(g.arn.clone(), Vec::new());
@@ -262,6 +301,26 @@ pub fn default_parameters_for_family(family: &str) -> Vec<EngineDefaultParameter
     }
 }
 
+fn default_users(account_id: &str, region: &str) -> HashMap<String, ElastiCacheUser> {
+    let mut map = HashMap::new();
+    map.insert(
+        "default".to_string(),
+        ElastiCacheUser {
+            user_id: "default".to_string(),
+            user_name: "default".to_string(),
+            engine: "redis".to_string(),
+            access_string: "on ~* +@all".to_string(),
+            status: "active".to_string(),
+            authentication_type: "no-password".to_string(),
+            password_count: 0,
+            arn: format!("arn:aws:elasticache:{region}:{account_id}:user:default"),
+            minimum_engine_version: "6.0".to_string(),
+            user_group_ids: Vec::new(),
+        },
+    );
+    map
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,6 +411,58 @@ mod tests {
 
         state.cancel_replication_group_creation("rg-1");
         assert!(state.begin_replication_group_creation("rg-1"));
+    }
+
+    #[test]
+    fn state_new_creates_default_user() {
+        let state = ElastiCacheState::new("123456789012", "us-east-1");
+        assert_eq!(state.users.len(), 1);
+        let default = state.users.get("default").unwrap();
+        assert_eq!(default.user_id, "default");
+        assert_eq!(default.user_name, "default");
+        assert_eq!(default.engine, "redis");
+        assert_eq!(default.access_string, "on ~* +@all");
+        assert_eq!(default.status, "active");
+        assert_eq!(default.authentication_type, "no-password");
+        assert_eq!(default.password_count, 0);
+        assert!(default.arn.contains("user:default"));
+    }
+
+    #[test]
+    fn state_new_has_empty_user_groups() {
+        let state = ElastiCacheState::new("123456789012", "us-east-1");
+        assert!(state.user_groups.is_empty());
+    }
+
+    #[test]
+    fn reset_restores_default_user() {
+        let mut state = ElastiCacheState::new("123456789012", "us-east-1");
+        state.users.clear();
+        assert!(state.users.is_empty());
+        state.reset();
+        assert_eq!(state.users.len(), 1);
+        assert!(state.users.contains_key("default"));
+    }
+
+    #[test]
+    fn reset_clears_user_groups() {
+        let mut state = ElastiCacheState::new("123456789012", "us-east-1");
+        state.user_groups.insert(
+            "my-group".to_string(),
+            ElastiCacheUserGroup {
+                user_group_id: "my-group".to_string(),
+                engine: "redis".to_string(),
+                status: "active".to_string(),
+                user_ids: vec!["default".to_string()],
+                arn: "arn:aws:elasticache:us-east-1:123456789012:usergroup:my-group".to_string(),
+                minimum_engine_version: "6.0".to_string(),
+                pending_changes: None,
+                replication_groups: Vec::new(),
+            },
+        );
+        assert_eq!(state.user_groups.len(), 1);
+        state.reset();
+        assert!(state.user_groups.is_empty());
     }
 
     #[test]

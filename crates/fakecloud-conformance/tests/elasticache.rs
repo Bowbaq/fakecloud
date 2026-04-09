@@ -358,6 +358,137 @@ async fn elasticache_remove_tags_from_resource() {
     assert_eq!(tags[0].key(), Some("team"));
 }
 
+#[test_action("elasticache", "CreateUser", checksum = "eeb45fb0")]
+#[tokio::test]
+async fn elasticache_create_user() {
+    let server = TestServer::start().await;
+    let client = server.elasticache_client().await;
+
+    let response = client
+        .create_user()
+        .user_id("testuser")
+        .user_name("testuser")
+        .engine("redis")
+        .access_string("on ~* +@all")
+        .no_password_required(true)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.user_id(), Some("testuser"));
+    assert_eq!(response.user_name(), Some("testuser"));
+    assert_eq!(response.status(), Some("active"));
+}
+
+#[test_action("elasticache", "DescribeUsers", checksum = "e5c2e676")]
+#[tokio::test]
+async fn elasticache_describe_users() {
+    let server = TestServer::start().await;
+    let client = server.elasticache_client().await;
+
+    let response = client.describe_users().send().await.unwrap();
+
+    let users = response.users();
+    assert!(!users.is_empty());
+    assert!(users.iter().any(|u| u.user_id() == Some("default")));
+}
+
+#[test_action("elasticache", "DeleteUser", checksum = "98b86a69")]
+#[tokio::test]
+async fn elasticache_delete_user() {
+    let server = TestServer::start().await;
+    let client = server.elasticache_client().await;
+
+    client
+        .create_user()
+        .user_id("deluser")
+        .user_name("deluser")
+        .engine("redis")
+        .access_string("on ~* +@all")
+        .no_password_required(true)
+        .send()
+        .await
+        .unwrap();
+
+    let response = client
+        .delete_user()
+        .user_id("deluser")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.user_id(), Some("deluser"));
+}
+
+#[test_action("elasticache", "CreateUserGroup", checksum = "294a66f3")]
+#[tokio::test]
+async fn elasticache_create_user_group() {
+    let server = TestServer::start().await;
+    let client = server.elasticache_client().await;
+
+    let response = client
+        .create_user_group()
+        .user_group_id("test-group")
+        .engine("redis")
+        .user_ids("default")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.user_group_id(), Some("test-group"));
+    assert_eq!(response.status(), Some("active"));
+}
+
+#[test_action("elasticache", "DescribeUserGroups", checksum = "94732ab4")]
+#[tokio::test]
+async fn elasticache_describe_user_groups() {
+    let server = TestServer::start().await;
+    let client = server.elasticache_client().await;
+
+    client
+        .create_user_group()
+        .user_group_id("desc-group")
+        .engine("redis")
+        .send()
+        .await
+        .unwrap();
+
+    let response = client
+        .describe_user_groups()
+        .user_group_id("desc-group")
+        .send()
+        .await
+        .unwrap();
+
+    let groups = response.user_groups();
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].user_group_id(), Some("desc-group"));
+}
+
+#[test_action("elasticache", "DeleteUserGroup", checksum = "39a6b59a")]
+#[tokio::test]
+async fn elasticache_delete_user_group() {
+    let server = TestServer::start().await;
+    let client = server.elasticache_client().await;
+
+    client
+        .create_user_group()
+        .user_group_id("del-group")
+        .engine("redis")
+        .send()
+        .await
+        .unwrap();
+
+    let response = client
+        .delete_user_group()
+        .user_group_id("del-group")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.user_group_id(), Some("del-group"));
+}
+
 #[test_action("elasticache", "DescribeCacheParameterGroups", checksum = "f2d641d8")]
 #[tokio::test]
 async fn elasticache_describe_cache_parameter_groups() {
