@@ -29,7 +29,10 @@
       <a href="/#compare">Compare</a>
       <a href="/blog/">Blog</a>
       <a href="{{ config.extra.github }}">GitHub</a>
-      <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme"></button>
+      <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
+        <svg class="icon-sun" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M10 15a5 5 0 100-10 5 5 0 000 10zm0-13a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm0 14a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zm7-7a1 1 0 110 2h-1a1 1 0 110-2h1zM4 9a1 1 0 110 2H3a1 1 0 110-2h1zm11.07-4.07a1 1 0 010 1.41l-.7.71a1 1 0 11-1.42-1.42l.71-.7a1 1 0 011.41 0zM6.34 14.34a1 1 0 010 1.41l-.7.71a1 1 0 11-1.42-1.42l.71-.7a1 1 0 011.41 0zm8.02 1.41a1 1 0 01-1.41 0l-.71-.7a1 1 0 111.42-1.42l.7.71a1 1 0 010 1.41zM5.64 6.05a1 1 0 01-1.41 0l-.71-.7a1 1 0 011.42-1.42l.7.71a1 1 0 010 1.41z"/></svg>
+        <svg class="icon-moon" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z"/></svg>
+      </button>
     </div>
   </div>
 </nav>
@@ -55,17 +58,14 @@
       if (t) return t;
       return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
     }
-    function update() {
-      btn.textContent = getEffective() === 'dark' ? '\u2600\uFE0F' : '\uD83C\uDF19';
-    }
     btn.addEventListener('click', function() {
       var next = getEffective() === 'dark' ? 'light' : 'dark';
       document.documentElement.setAttribute('data-theme', next);
       localStorage.setItem('theme', next);
-      update();
     });
-    update();
-    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', update);
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function() {
+      // Theme will be handled by CSS automatically
+    });
   })();
 
   // Copy buttons

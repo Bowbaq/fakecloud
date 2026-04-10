@@ -53,7 +53,18 @@
   line-height: 1;
   transition: border-color 0.2s, color 0.2s;
   &:hover { color: var(--text); border-color: var(--text-muted); }
+  svg {
+    width: 16px;
+    height: 16px;
+    fill: currentColor;
+    display: block;
+  }
 }
+
+.icon-sun { display: none; }
+.icon-moon { display: block; }
+[data-theme="dark"] .icon-sun { display: block; }
+[data-theme="dark"] .icon-moon { display: none; }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html { scroll-behavior: smooth; }
