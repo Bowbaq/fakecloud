@@ -128,10 +128,49 @@ impl RdsService {
         let deletion_protection =
             parse_optional_bool(optional_param(request, "DeletionProtection").as_deref())?
                 .unwrap_or(false);
-        let port = optional_i32_param(request, "Port")?.unwrap_or(5432);
+        // Default port based on engine
+        let default_port = match engine.as_str() {
+            "postgres" => 5432,
+            "mysql" | "mariadb" => 3306,
+            _ => 5432,
+        };
+        let port = optional_i32_param(request, "Port")?.unwrap_or(default_port);
         let vpc_security_group_ids = parse_vpc_security_group_ids(request);
-        let db_parameter_group_name = optional_param(request, "DBParameterGroupName")
-            .or_else(|| Some("default.postgres16".to_string()));
+
+        // Default parameter group based on engine and version
+        let default_param_group = match engine.as_str() {
+            "postgres" => {
+                let major = engine_version.split('.').next().unwrap_or("16");
+                format!("default.postgres{}", major)
+            }
+            "mysql" => {
+                let major = if engine_version.starts_with("5.7") {
+                    "5.7"
+                } else {
+                    "8.0"
+                };
+                format!("default.mysql{}", major)
+            }
+            "mariadb" => {
+                let major = if engine_version.starts_with("10.11") {
+                    "10.11"
+                } else {
+                    "10.6"
+                };
+                format!("default.mariadb{}", major)
+            }
+            _ => "default.postgres16".to_string(),
+        };
+        let db_parameter_group_name =
+            optional_param(request, "DBParameterGroupName").or(Some(default_param_group));
+
+        let backup_retention_period =
+            optional_i32_param(request, "BackupRetentionPeriod")?.unwrap_or(1);
+        let preferred_backup_window = optional_param(request, "PreferredBackupWindow")
+            .unwrap_or_else(|| "03:00-04:00".to_string());
+        let option_group_name = optional_param(request, "OptionGroupName");
+        let multi_az =
+            parse_optional_bool(optional_param(request, "MultiAZ").as_deref())?.unwrap_or(false);
 
         validate_create_request(
             &db_instance_identifier,
@@ -161,10 +200,17 @@ impl RdsService {
             )
         })?;
 
-        let logical_db_name = db_name.clone().unwrap_or_else(|| "postgres".to_string());
+        // Default database name based on engine
+        let logical_db_name = db_name.clone().unwrap_or_else(|| match engine.as_str() {
+            "postgres" => "postgres".to_string(),
+            "mysql" | "mariadb" => "mysql".to_string(),
+            _ => "postgres".to_string(),
+        });
         let running = runtime
             .ensure_postgres(
                 &db_instance_identifier,
+                &engine,
+                &engine_version,
                 &master_username,
                 &master_user_password,
                 &logical_db_name,
@@ -178,6 +224,7 @@ impl RdsService {
             })?;
 
         let mut state = self.state.write();
+        let created_at = Utc::now();
         let instance = DbInstance {
             db_instance_identifier: db_instance_identifier.clone(),
             db_instance_arn: state.db_instance_arn(&db_instance_identifier),
@@ -192,7 +239,7 @@ impl RdsService {
             allocated_storage,
             publicly_accessible,
             deletion_protection,
-            created_at: Utc::now(),
+            created_at,
             dbi_resource_id: state.next_dbi_resource_id(),
             master_user_password,
             container_id: running.container_id,
@@ -202,6 +249,11 @@ impl RdsService {
             read_replica_db_instance_identifiers: Vec::new(),
             vpc_security_group_ids,
             db_parameter_group_name,
+            backup_retention_period,
+            preferred_backup_window,
+            latest_restorable_time: created_at,
+            option_group_name,
+            multi_az,
         };
         state.finish_instance_creation(instance.clone());
 
@@ -969,6 +1021,8 @@ impl RdsService {
         let running = match runtime
             .ensure_postgres(
                 &db_instance_identifier,
+                &snapshot.engine,
+                &snapshot.engine_version,
                 &snapshot.master_username,
                 &snapshot.master_user_password,
                 db_name,
@@ -1025,6 +1079,11 @@ impl RdsService {
             read_replica_db_instance_identifiers: Vec::new(),
             vpc_security_group_ids,
             db_parameter_group_name: None,
+            backup_retention_period: 1,
+            preferred_backup_window: "03:00-04:00".to_string(),
+            latest_restorable_time: created_at,
+            option_group_name: None,
+            multi_az: false,
         };
 
         state.finish_instance_creation(instance.clone());
@@ -1110,6 +1169,8 @@ impl RdsService {
         let running = match runtime
             .ensure_postgres(
                 &db_instance_identifier,
+                &source_instance.engine,
+                &source_instance.engine_version,
                 &source_instance.master_username,
                 &source_instance.master_user_password,
                 &db_name,
@@ -1164,6 +1225,11 @@ impl RdsService {
             read_replica_db_instance_identifiers: Vec::new(),
             vpc_security_group_ids: source_instance.vpc_security_group_ids.clone(),
             db_parameter_group_name: source_instance.db_parameter_group_name.clone(),
+            backup_retention_period: source_instance.backup_retention_period,
+            preferred_backup_window: source_instance.preferred_backup_window.clone(),
+            latest_restorable_time: created_at,
+            option_group_name: source_instance.option_group_name.clone(),
+            multi_az: source_instance.multi_az,
         };
 
         let source_missing = {
@@ -1862,14 +1928,25 @@ fn validate_create_request(
             "DBInstanceIdentifier must contain only alphanumeric characters or hyphens.",
         ));
     }
-    if engine != "postgres" {
+    // Validate engine
+    let supported_engines = ["postgres", "mysql", "mariadb"];
+    if !supported_engines.contains(&engine) {
         return Err(AwsServiceError::aws_error(
             StatusCode::BAD_REQUEST,
             "InvalidParameterValue",
-            format!("Engine '{engine}' is not supported yet."),
+            format!("Engine '{}' is not supported.", engine),
         ));
     }
-    if engine_version != "16.3" {
+
+    // Validate engine version
+    let supported_versions = match engine {
+        "postgres" => vec!["16.3", "15.5", "14.10", "13.13"],
+        "mysql" => vec!["8.0.35", "8.0.28", "5.7.44"],
+        "mariadb" => vec!["10.11.6", "10.6.16"],
+        _ => vec![],
+    };
+
+    if !supported_versions.contains(&engine_version) {
         return Err(AwsServiceError::aws_error(
             StatusCode::BAD_REQUEST,
             "InvalidParameterValue",
@@ -1881,11 +1958,20 @@ fn validate_create_request(
 }
 
 fn validate_db_instance_class(db_instance_class: &str) -> Result<(), AwsServiceError> {
-    if db_instance_class != "db.t3.micro" {
+    let supported_classes = [
+        "db.t3.micro",
+        "db.t3.small",
+        "db.t3.medium",
+        "db.t3.large",
+        "db.t4g.micro",
+        "db.t4g.small",
+        "db.m5.large",
+    ];
+    if !supported_classes.contains(&db_instance_class) {
         return Err(AwsServiceError::aws_error(
             StatusCode::BAD_REQUEST,
             "InvalidParameterValue",
-            format!("DBInstanceClass '{db_instance_class}' is not supported yet."),
+            format!("DBInstanceClass '{}' is not supported.", db_instance_class),
         ));
     }
     Ok(())
@@ -2085,6 +2171,19 @@ fn db_instance_xml(instance: &DbInstance, status_override: Option<&str>) -> Stri
         None => "<DBParameterGroups/>".to_string(),
     };
 
+    let option_group_memberships_xml = match &instance.option_group_name {
+        Some(og_name) => format!(
+            "<OptionGroupMemberships>\
+             <OptionGroupMembership>\
+             <OptionGroupName>{}</OptionGroupName>\
+             <Status>in-sync</Status>\
+             </OptionGroupMembership>\
+             </OptionGroupMemberships>",
+            xml_escape(og_name)
+        ),
+        None => "<OptionGroupMemberships/>".to_string(),
+    };
+
     format!(
         "<DBInstanceIdentifier>{}</DBInstanceIdentifier>\
          <DBInstanceClass>{}</DBInstanceClass>\
@@ -2095,20 +2194,21 @@ fn db_instance_xml(instance: &DbInstance, status_override: Option<&str>) -> Stri
          <Endpoint><Address>{}</Address><Port>{}</Port></Endpoint>\
          <AllocatedStorage>{}</AllocatedStorage>\
          <InstanceCreateTime>{}</InstanceCreateTime>\
-         <PreferredBackupWindow>00:00-00:30</PreferredBackupWindow>\
-         <BackupRetentionPeriod>1</BackupRetentionPeriod>\
+         <PreferredBackupWindow>{}</PreferredBackupWindow>\
+         <BackupRetentionPeriod>{}</BackupRetentionPeriod>\
          <DBSecurityGroups/>\
          {}\
          {}\
          <AvailabilityZone>us-east-1a</AvailabilityZone>\
+         <LatestRestorableTime>{}</LatestRestorableTime>\
          <PreferredMaintenanceWindow>sun:00:00-sun:00:30</PreferredMaintenanceWindow>\
-         <MultiAZ>false</MultiAZ>\
+         <MultiAZ>{}</MultiAZ>\
          <EngineVersion>{}</EngineVersion>\
          <AutoMinorVersionUpgrade>true</AutoMinorVersionUpgrade>\
          {}\
          {}\
          <LicenseModel>postgresql-license</LicenseModel>\
-         <OptionGroupMemberships/>\
+         {}\
          <PubliclyAccessible>{}</PubliclyAccessible>\
          <StorageType>gp2</StorageType>\
          <DbInstancePort>{}</DbInstancePort>\
@@ -2126,11 +2226,16 @@ fn db_instance_xml(instance: &DbInstance, status_override: Option<&str>) -> Stri
         instance.port,
         instance.allocated_storage,
         instance.created_at.to_rfc3339(),
+        xml_escape(&instance.preferred_backup_window),
+        instance.backup_retention_period,
         vpc_security_groups_xml,
         db_parameter_groups_xml,
+        instance.latest_restorable_time.to_rfc3339(),
+        if instance.multi_az { "true" } else { "false" },
         xml_escape(&instance.engine_version),
         read_replica_identifiers_xml,
         read_replica_source_xml,
+        option_group_memberships_xml,
         if instance.publicly_accessible {
             "true"
         } else {
@@ -2329,8 +2434,8 @@ mod tests {
         let filtered =
             filter_engine_versions(&versions, &Some("postgres".to_string()), &None, &None);
 
-        assert_eq!(filtered.len(), 1);
-        assert_eq!(filtered[0].engine, "postgres");
+        assert_eq!(filtered.len(), 4); // All postgres versions
+        assert!(filtered.iter().all(|v| v.engine == "postgres"));
     }
 
     #[test]
@@ -2369,6 +2474,7 @@ mod tests {
 
     #[test]
     fn db_instance_xml_renders_endpoint_and_status() {
+        let created_at = Utc::now();
         let instance = DbInstance {
             db_instance_identifier: "test-db".to_string(),
             db_instance_arn: "arn:aws:rds:us-east-1:123456789012:db:test-db".to_string(),
@@ -2383,7 +2489,7 @@ mod tests {
             allocated_storage: 20,
             publicly_accessible: true,
             deletion_protection: false,
-            created_at: Utc::now(),
+            created_at,
             dbi_resource_id: format!("db-{}", Uuid::new_v4().simple()),
             master_user_password: "secret123".to_string(),
             container_id: "container".to_string(),
@@ -2393,6 +2499,11 @@ mod tests {
             read_replica_db_instance_identifiers: Vec::new(),
             vpc_security_group_ids: vec!["sg-12345678".to_string()],
             db_parameter_group_name: Some("default.postgres16".to_string()),
+            backup_retention_period: 1,
+            preferred_backup_window: "03:00-04:00".to_string(),
+            latest_restorable_time: created_at,
+            option_group_name: None,
+            multi_az: false,
         };
 
         let xml = db_instance_xml(&instance, Some("creating"));

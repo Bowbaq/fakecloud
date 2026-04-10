@@ -1441,6 +1441,7 @@ mod tests {
     #[test]
     fn reset_service_clears_rds_state() {
         let mut rds = RdsState::new("123456789012", "us-east-1");
+        let created_at = Utc::now();
         rds.instances.insert(
             "db-1".to_string(),
             DbInstance {
@@ -1457,7 +1458,7 @@ mod tests {
                 allocated_storage: 20,
                 publicly_accessible: true,
                 deletion_protection: false,
-                created_at: Utc::now(),
+                created_at,
                 dbi_resource_id: "db-test".to_string(),
                 master_user_password: "secret123".to_string(),
                 container_id: "container-id".to_string(),
@@ -1467,6 +1468,11 @@ mod tests {
                 read_replica_db_instance_identifiers: Vec::new(),
                 vpc_security_group_ids: Vec::new(),
                 db_parameter_group_name: None,
+                backup_retention_period: 1,
+                preferred_backup_window: "03:00-04:00".to_string(),
+                latest_restorable_time: created_at,
+                option_group_name: None,
+                multi_az: false,
             },
         );
 
@@ -1547,6 +1553,7 @@ mod tests {
 
     #[test]
     fn rds_instance_response_omits_password_but_keeps_runtime_metadata() {
+        let created_at = Utc::now();
         let instance = DbInstance {
             db_instance_identifier: "db-1".to_string(),
             db_instance_arn: "arn:aws:rds:us-east-1:123456789012:db:db-1".to_string(),
@@ -1561,7 +1568,7 @@ mod tests {
             allocated_storage: 20,
             publicly_accessible: true,
             deletion_protection: false,
-            created_at: Utc::now(),
+            created_at,
             dbi_resource_id: "db-test".to_string(),
             master_user_password: "secret123".to_string(),
             container_id: "container-id".to_string(),
@@ -1574,6 +1581,11 @@ mod tests {
             read_replica_db_instance_identifiers: Vec::new(),
             vpc_security_group_ids: Vec::new(),
             db_parameter_group_name: None,
+            backup_retention_period: 1,
+            preferred_backup_window: "03:00-04:00".to_string(),
+            latest_restorable_time: created_at,
+            option_group_name: None,
+            multi_az: false,
         };
 
         let response = rds_instance_response(&instance);
