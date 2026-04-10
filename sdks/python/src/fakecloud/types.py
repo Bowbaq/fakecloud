@@ -197,9 +197,7 @@ class ElastiCacheServerlessCacheIntrospection:
     cache_node_type: Optional[str]
 
     @classmethod
-    def from_dict(
-        cls, data: Dict[str, Any]
-    ) -> ElastiCacheServerlessCacheIntrospection:
+    def from_dict(cls, data: Dict[str, Any]) -> ElastiCacheServerlessCacheIntrospection:
         d = _convert_keys(data)
         return cls(**d)
 
