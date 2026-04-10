@@ -557,6 +557,7 @@ impl RdsService {
         let running = runtime
             .restart_container(
                 &db_instance_identifier,
+                &instance.engine,
                 &instance.master_username,
                 &instance.master_user_password,
                 instance.db_name.as_deref().unwrap_or("postgres"),
