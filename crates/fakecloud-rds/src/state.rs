@@ -266,26 +266,112 @@ impl RdsState {
 }
 
 pub fn default_engine_versions() -> Vec<EngineVersionInfo> {
-    vec![EngineVersionInfo {
-        engine: "postgres".to_string(),
-        engine_version: "16.3".to_string(),
-        db_parameter_group_family: "postgres16".to_string(),
-        db_engine_description: "PostgreSQL".to_string(),
-        db_engine_version_description: "PostgreSQL 16.3".to_string(),
-        status: "available".to_string(),
-    }]
+    vec![
+        // PostgreSQL versions
+        EngineVersionInfo {
+            engine: "postgres".to_string(),
+            engine_version: "16.3".to_string(),
+            db_parameter_group_family: "postgres16".to_string(),
+            db_engine_description: "PostgreSQL".to_string(),
+            db_engine_version_description: "PostgreSQL 16.3".to_string(),
+            status: "available".to_string(),
+        },
+        EngineVersionInfo {
+            engine: "postgres".to_string(),
+            engine_version: "15.5".to_string(),
+            db_parameter_group_family: "postgres15".to_string(),
+            db_engine_description: "PostgreSQL".to_string(),
+            db_engine_version_description: "PostgreSQL 15.5".to_string(),
+            status: "available".to_string(),
+        },
+        EngineVersionInfo {
+            engine: "postgres".to_string(),
+            engine_version: "14.10".to_string(),
+            db_parameter_group_family: "postgres14".to_string(),
+            db_engine_description: "PostgreSQL".to_string(),
+            db_engine_version_description: "PostgreSQL 14.10".to_string(),
+            status: "available".to_string(),
+        },
+        EngineVersionInfo {
+            engine: "postgres".to_string(),
+            engine_version: "13.13".to_string(),
+            db_parameter_group_family: "postgres13".to_string(),
+            db_engine_description: "PostgreSQL".to_string(),
+            db_engine_version_description: "PostgreSQL 13.13".to_string(),
+            status: "available".to_string(),
+        },
+        // MySQL versions
+        EngineVersionInfo {
+            engine: "mysql".to_string(),
+            engine_version: "8.0.35".to_string(),
+            db_parameter_group_family: "mysql8.0".to_string(),
+            db_engine_description: "MySQL Community Edition".to_string(),
+            db_engine_version_description: "MySQL 8.0.35".to_string(),
+            status: "available".to_string(),
+        },
+        EngineVersionInfo {
+            engine: "mysql".to_string(),
+            engine_version: "8.0.28".to_string(),
+            db_parameter_group_family: "mysql8.0".to_string(),
+            db_engine_description: "MySQL Community Edition".to_string(),
+            db_engine_version_description: "MySQL 8.0.28".to_string(),
+            status: "available".to_string(),
+        },
+        EngineVersionInfo {
+            engine: "mysql".to_string(),
+            engine_version: "5.7.44".to_string(),
+            db_parameter_group_family: "mysql5.7".to_string(),
+            db_engine_description: "MySQL Community Edition".to_string(),
+            db_engine_version_description: "MySQL 5.7.44".to_string(),
+            status: "available".to_string(),
+        },
+        // MariaDB versions
+        EngineVersionInfo {
+            engine: "mariadb".to_string(),
+            engine_version: "10.11.6".to_string(),
+            db_parameter_group_family: "mariadb10.11".to_string(),
+            db_engine_description: "MariaDB Community Edition".to_string(),
+            db_engine_version_description: "MariaDB 10.11.6".to_string(),
+            status: "available".to_string(),
+        },
+        EngineVersionInfo {
+            engine: "mariadb".to_string(),
+            engine_version: "10.6.16".to_string(),
+            db_parameter_group_family: "mariadb10.6".to_string(),
+            db_engine_description: "MariaDB Community Edition".to_string(),
+            db_engine_version_description: "MariaDB 10.6.16".to_string(),
+            status: "available".to_string(),
+        },
+    ]
 }
 
 pub fn default_orderable_options() -> Vec<OrderableDbInstanceOption> {
-    vec![OrderableDbInstanceOption {
-        engine: "postgres".to_string(),
-        engine_version: "16.3".to_string(),
-        db_instance_class: "db.t3.micro".to_string(),
-        license_model: "postgresql-license".to_string(),
-        storage_type: "gp2".to_string(),
-        min_storage_size: 20,
-        max_storage_size: 16384,
-    }]
+    let mut options = Vec::new();
+    let engines_and_versions = vec![
+        ("postgres", "16.3", "postgresql-license"),
+        ("postgres", "15.5", "postgresql-license"),
+        ("postgres", "14.10", "postgresql-license"),
+        ("postgres", "13.13", "postgresql-license"),
+        ("mysql", "8.0.35", "general-public-license"),
+        ("mysql", "8.0.28", "general-public-license"),
+        ("mysql", "5.7.44", "general-public-license"),
+        ("mariadb", "10.11.6", "general-public-license"),
+        ("mariadb", "10.6.16", "general-public-license"),
+    ];
+
+    for (engine, version, license) in engines_and_versions {
+        options.push(OrderableDbInstanceOption {
+            engine: engine.to_string(),
+            engine_version: version.to_string(),
+            db_instance_class: "db.t3.micro".to_string(),
+            license_model: license.to_string(),
+            storage_type: "gp2".to_string(),
+            min_storage_size: 20,
+            max_storage_size: 16384,
+        });
+    }
+
+    options
 }
 
 pub fn default_parameter_groups(
@@ -294,16 +380,30 @@ pub fn default_parameter_groups(
 ) -> HashMap<String, DbParameterGroup> {
     let mut groups = HashMap::new();
 
-    let default_group = DbParameterGroup {
-        db_parameter_group_name: "default.postgres16".to_string(),
-        db_parameter_group_arn: format!("arn:aws:rds:{region}:{account_id}:pg:default.postgres16"),
-        db_parameter_group_family: "postgres16".to_string(),
-        description: "Default parameter group for postgres16".to_string(),
-        parameters: HashMap::new(),
-        tags: Vec::new(),
-    };
+    let families = vec![
+        ("postgres16", "Default parameter group for postgres16"),
+        ("postgres15", "Default parameter group for postgres15"),
+        ("postgres14", "Default parameter group for postgres14"),
+        ("postgres13", "Default parameter group for postgres13"),
+        ("mysql8.0", "Default parameter group for mysql8.0"),
+        ("mysql5.7", "Default parameter group for mysql5.7"),
+        ("mariadb10.11", "Default parameter group for mariadb10.11"),
+        ("mariadb10.6", "Default parameter group for mariadb10.6"),
+    ];
 
-    groups.insert("default.postgres16".to_string(), default_group);
+    for (family, description) in families {
+        let group_name = format!("default.{}", family);
+        let group = DbParameterGroup {
+            db_parameter_group_name: group_name.clone(),
+            db_parameter_group_arn: format!("arn:aws:rds:{region}:{account_id}:pg:{group_name}"),
+            db_parameter_group_family: family.to_string(),
+            description: description.to_string(),
+            parameters: HashMap::new(),
+            tags: Vec::new(),
+        };
+        groups.insert(group_name, group);
+    }
+
     groups
 }
 
@@ -365,7 +465,8 @@ mod tests {
     fn default_engine_versions_are_postgres_metadata() {
         let versions = default_engine_versions();
 
-        assert_eq!(versions.len(), 1);
+        assert_eq!(versions.len(), 9); // 4 postgres + 3 mysql + 2 mariadb
+                                       // Check first postgres version
         assert_eq!(versions[0].engine, "postgres");
         assert_eq!(versions[0].engine_version, "16.3");
         assert_eq!(versions[0].db_parameter_group_family, "postgres16");
@@ -376,10 +477,13 @@ mod tests {
         let versions = default_engine_versions();
         let options = default_orderable_options();
 
-        assert_eq!(options.len(), 1);
-        assert_eq!(options[0].engine, versions[0].engine);
-        assert_eq!(options[0].engine_version, versions[0].engine_version);
-        assert_eq!(options[0].db_instance_class, "db.t3.micro");
+        assert_eq!(options.len(), 9); // One per engine version
+                                      // Verify all engines and versions have orderable options
+        for version in &versions {
+            assert!(options.iter().any(|opt| {
+                opt.engine == version.engine && opt.engine_version == version.engine_version
+            }));
+        }
     }
 
     #[test]

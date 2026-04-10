@@ -128,10 +128,41 @@ impl RdsService {
         let deletion_protection =
             parse_optional_bool(optional_param(request, "DeletionProtection").as_deref())?
                 .unwrap_or(false);
-        let port = optional_i32_param(request, "Port")?.unwrap_or(5432);
+        // Default port based on engine
+        let default_port = match engine.as_str() {
+            "postgres" => 5432,
+            "mysql" | "mariadb" => 3306,
+            _ => 5432,
+        };
+        let port = optional_i32_param(request, "Port")?.unwrap_or(default_port);
         let vpc_security_group_ids = parse_vpc_security_group_ids(request);
-        let db_parameter_group_name = optional_param(request, "DBParameterGroupName")
-            .or_else(|| Some("default.postgres16".to_string()));
+
+        // Default parameter group based on engine and version
+        let default_param_group = match engine.as_str() {
+            "postgres" => {
+                let major = engine_version.split('.').next().unwrap_or("16");
+                format!("default.postgres{}", major)
+            }
+            "mysql" => {
+                let major = if engine_version.starts_with("5.7") {
+                    "5.7"
+                } else {
+                    "8.0"
+                };
+                format!("default.mysql{}", major)
+            }
+            "mariadb" => {
+                let major = if engine_version.starts_with("10.11") {
+                    "10.11"
+                } else {
+                    "10.6"
+                };
+                format!("default.mariadb{}", major)
+            }
+            _ => "default.postgres16".to_string(),
+        };
+        let db_parameter_group_name =
+            optional_param(request, "DBParameterGroupName").or(Some(default_param_group));
 
         validate_create_request(
             &db_instance_identifier,
@@ -161,10 +192,17 @@ impl RdsService {
             )
         })?;
 
-        let logical_db_name = db_name.clone().unwrap_or_else(|| "postgres".to_string());
+        // Default database name based on engine
+        let logical_db_name = db_name.clone().unwrap_or_else(|| match engine.as_str() {
+            "postgres" => "postgres".to_string(),
+            "mysql" | "mariadb" => "mysql".to_string(),
+            _ => "postgres".to_string(),
+        });
         let running = runtime
             .ensure_postgres(
                 &db_instance_identifier,
+                &engine,
+                &engine_version,
                 &master_username,
                 &master_user_password,
                 &logical_db_name,
@@ -969,6 +1007,8 @@ impl RdsService {
         let running = match runtime
             .ensure_postgres(
                 &db_instance_identifier,
+                &snapshot.engine,
+                &snapshot.engine_version,
                 &snapshot.master_username,
                 &snapshot.master_user_password,
                 db_name,
@@ -1110,6 +1150,8 @@ impl RdsService {
         let running = match runtime
             .ensure_postgres(
                 &db_instance_identifier,
+                &source_instance.engine,
+                &source_instance.engine_version,
                 &source_instance.master_username,
                 &source_instance.master_user_password,
                 &db_name,
@@ -1862,14 +1904,25 @@ fn validate_create_request(
             "DBInstanceIdentifier must contain only alphanumeric characters or hyphens.",
         ));
     }
-    if engine != "postgres" {
+    // Validate engine
+    let supported_engines = ["postgres", "mysql", "mariadb"];
+    if !supported_engines.contains(&engine) {
         return Err(AwsServiceError::aws_error(
             StatusCode::BAD_REQUEST,
             "InvalidParameterValue",
-            format!("Engine '{engine}' is not supported yet."),
+            format!("Engine '{}' is not supported.", engine),
         ));
     }
-    if engine_version != "16.3" {
+
+    // Validate engine version
+    let supported_versions = match engine {
+        "postgres" => vec!["16.3", "15.5", "14.10", "13.13"],
+        "mysql" => vec!["8.0.35", "8.0.28", "5.7.44"],
+        "mariadb" => vec!["10.11.6", "10.6.16"],
+        _ => vec![],
+    };
+
+    if !supported_versions.contains(&engine_version) {
         return Err(AwsServiceError::aws_error(
             StatusCode::BAD_REQUEST,
             "InvalidParameterValue",
@@ -2329,8 +2382,8 @@ mod tests {
         let filtered =
             filter_engine_versions(&versions, &Some("postgres".to_string()), &None, &None);
 
-        assert_eq!(filtered.len(), 1);
-        assert_eq!(filtered[0].engine, "postgres");
+        assert_eq!(filtered.len(), 4); // All postgres versions
+        assert!(filtered.iter().all(|v| v.engine == "postgres"));
     }
 
     #[test]

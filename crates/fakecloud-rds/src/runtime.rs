@@ -54,29 +54,84 @@ impl RdsRuntime {
     pub async fn ensure_postgres(
         &self,
         db_instance_identifier: &str,
+        engine: &str,
+        engine_version: &str,
         username: &str,
         password: &str,
         db_name: &str,
     ) -> Result<RunningDbContainer, RuntimeError> {
         self.stop_container(db_instance_identifier).await;
 
+        // Determine Docker image and port based on engine
+        let (image, port, env_vars) = match engine {
+            "postgres" => {
+                let major_version = engine_version.split('.').next().unwrap_or("16");
+                let image = format!("postgres:{}-alpine", major_version);
+                let env_vars = vec![
+                    format!("POSTGRES_USER={username}"),
+                    format!("POSTGRES_PASSWORD={password}"),
+                    format!("POSTGRES_DB={db_name}"),
+                ];
+                (image, "5432", env_vars)
+            }
+            "mysql" => {
+                let major_version = if engine_version.starts_with("5.7") {
+                    "5.7"
+                } else {
+                    "8.0"
+                };
+                let image = format!("mysql:{}", major_version);
+                let env_vars = vec![
+                    format!("MYSQL_ROOT_PASSWORD={password}"),
+                    format!("MYSQL_USER={username}"),
+                    format!("MYSQL_PASSWORD={password}"),
+                    format!("MYSQL_DATABASE={db_name}"),
+                ];
+                (image, "3306", env_vars)
+            }
+            "mariadb" => {
+                let major_version = if engine_version.starts_with("10.11") {
+                    "10.11"
+                } else {
+                    "10.6"
+                };
+                let image = format!("mariadb:{}", major_version);
+                let env_vars = vec![
+                    format!("MARIADB_ROOT_PASSWORD={password}"),
+                    format!("MARIADB_USER={username}"),
+                    format!("MARIADB_PASSWORD={password}"),
+                    format!("MARIADB_DATABASE={db_name}"),
+                ];
+                (image, "3306", env_vars)
+            }
+            _ => {
+                return Err(RuntimeError::ContainerStartFailed(format!(
+                    "Unsupported engine: {}",
+                    engine
+                )))
+            }
+        };
+
+        // Build container create args
+        let mut args = vec![
+            "create".to_string(),
+            "-p".to_string(),
+            format!(":{}", port),
+            "--label".to_string(),
+            format!("fakecloud-rds={db_instance_identifier}"),
+            "--label".to_string(),
+            format!("fakecloud-instance={}", self.instance_id),
+        ];
+
+        for env_var in env_vars {
+            args.push("-e".to_string());
+            args.push(env_var);
+        }
+
+        args.push(image);
+
         let output = tokio::process::Command::new(&self.cli)
-            .args([
-                "create",
-                "-p",
-                ":5432",
-                "--label",
-                &format!("fakecloud-rds={db_instance_identifier}"),
-                "--label",
-                &format!("fakecloud-instance={}", self.instance_id),
-                "-e",
-                &format!("POSTGRES_USER={username}"),
-                "-e",
-                &format!("POSTGRES_PASSWORD={password}"),
-                "-e",
-                &format!("POSTGRES_DB={db_name}"),
-                "postgres:16-alpine",
-            ])
+            .args(&args)
             .output()
             .await
             .map_err(|e| RuntimeError::ContainerStartFailed(e.to_string()))?;
@@ -109,12 +164,19 @@ impl RdsRuntime {
                 return Err(error);
             }
         };
-        if let Err(error) = self
-            .wait_for_postgres(username, password, db_name, host_port)
-            .await
-        {
-            self.remove_container(&container_id).await;
-            return Err(error);
+
+        // Wait for database to be ready (currently only supports postgres check)
+        if engine == "postgres" {
+            if let Err(error) = self
+                .wait_for_postgres(username, password, db_name, host_port)
+                .await
+            {
+                self.remove_container(&container_id).await;
+                return Err(error);
+            }
+        } else {
+            // For MySQL/MariaDB, give it a moment to start
+            tokio::time::sleep(Duration::from_secs(5)).await;
         }
 
         let running = RunningDbContainer {

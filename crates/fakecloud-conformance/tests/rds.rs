@@ -17,10 +17,9 @@ async fn rds_describe_db_engine_versions() {
         .unwrap();
 
     let versions = response.db_engine_versions();
-    assert_eq!(versions.len(), 1);
-    assert_eq!(versions[0].engine(), Some("postgres"));
-    assert_eq!(versions[0].engine_version(), Some("16.3"));
-    assert_eq!(versions[0].db_parameter_group_family(), Some("postgres16"));
+    // Returns all postgres versions
+    assert!(versions.len() >= 4);
+    assert!(versions.iter().any(|v| v.engine_version() == Some("16.3")));
 }
 
 #[test_action("rds", "DescribeOrderableDBInstanceOptions", checksum = "cc28ac3c")]
