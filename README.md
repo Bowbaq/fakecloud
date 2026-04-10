@@ -49,10 +49,13 @@ tests; they are an extra layer, not the whole story.
 | Startup time | ~500ms | ~3s |
 | Idle memory | ~10 MiB | ~150 MiB |
 | Install size | ~19 MB binary | ~1 GB Docker image |
-| AWS services | 15 | 30+ |
+| AWS services | 18 | 30+ |
+| Test assertion SDKs | TypeScript, Python, Go, Rust | Python, Java |
 | Cognito User Pools | 80 operations | [Paid only](https://docs.localstack.cloud/references/licensing/) |
 | SES v2 | 97 operations | [Paid only](https://docs.localstack.cloud/references/licensing/) |
 | SES inbound email | Real receipt rule action execution | [Stored but never executed](https://docs.localstack.cloud/user-guide/aws/ses/) |
+| RDS | 22 operations, PostgreSQL/MySQL/MariaDB via Docker | [Paid only](https://docs.localstack.cloud/references/licensing/) |
+| ElastiCache | 44 operations, Redis and Valkey via Docker | [Paid only](https://docs.localstack.cloud/references/licensing/) |
 
 ## First-party SDKs
 
