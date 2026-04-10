@@ -133,11 +133,11 @@ Top-level client. Defaults to `http://localhost:4566`.
 
 ### `fc.elasticache`
 
-| Method                     | Description                                   |
-| -------------------------- | --------------------------------------------- |
-| `getClusters()`            | List ElastiCache cache clusters               |
-| `getReplicationGroups()`   | List ElastiCache replication groups           |
-| `getServerlessCaches()`    | List ElastiCache serverless caches            |
+| Method                   | Description                         |
+| ------------------------ | ----------------------------------- |
+| `getClusters()`          | List ElastiCache cache clusters     |
+| `getReplicationGroups()` | List ElastiCache replication groups |
+| `getServerlessCaches()`  | List ElastiCache serverless caches  |
 
 ### Error handling
 
