@@ -164,6 +164,14 @@ impl RdsService {
         let db_parameter_group_name =
             optional_param(request, "DBParameterGroupName").or(Some(default_param_group));
 
+        let backup_retention_period =
+            optional_i32_param(request, "BackupRetentionPeriod")?.unwrap_or(1);
+        let preferred_backup_window = optional_param(request, "PreferredBackupWindow")
+            .unwrap_or_else(|| "03:00-04:00".to_string());
+        let option_group_name = optional_param(request, "OptionGroupName");
+        let multi_az =
+            parse_optional_bool(optional_param(request, "MultiAZ").as_deref())?.unwrap_or(false);
+
         validate_create_request(
             &db_instance_identifier,
             allocated_storage,
@@ -216,6 +224,7 @@ impl RdsService {
             })?;
 
         let mut state = self.state.write();
+        let created_at = Utc::now();
         let instance = DbInstance {
             db_instance_identifier: db_instance_identifier.clone(),
             db_instance_arn: state.db_instance_arn(&db_instance_identifier),
@@ -230,7 +239,7 @@ impl RdsService {
             allocated_storage,
             publicly_accessible,
             deletion_protection,
-            created_at: Utc::now(),
+            created_at,
             dbi_resource_id: state.next_dbi_resource_id(),
             master_user_password,
             container_id: running.container_id,
@@ -240,6 +249,11 @@ impl RdsService {
             read_replica_db_instance_identifiers: Vec::new(),
             vpc_security_group_ids,
             db_parameter_group_name,
+            backup_retention_period,
+            preferred_backup_window,
+            latest_restorable_time: created_at,
+            option_group_name,
+            multi_az,
         };
         state.finish_instance_creation(instance.clone());
 
@@ -1065,6 +1079,11 @@ impl RdsService {
             read_replica_db_instance_identifiers: Vec::new(),
             vpc_security_group_ids,
             db_parameter_group_name: None,
+            backup_retention_period: 1,
+            preferred_backup_window: "03:00-04:00".to_string(),
+            latest_restorable_time: created_at,
+            option_group_name: None,
+            multi_az: false,
         };
 
         state.finish_instance_creation(instance.clone());
@@ -1206,6 +1225,11 @@ impl RdsService {
             read_replica_db_instance_identifiers: Vec::new(),
             vpc_security_group_ids: source_instance.vpc_security_group_ids.clone(),
             db_parameter_group_name: source_instance.db_parameter_group_name.clone(),
+            backup_retention_period: source_instance.backup_retention_period,
+            preferred_backup_window: source_instance.preferred_backup_window.clone(),
+            latest_restorable_time: created_at,
+            option_group_name: source_instance.option_group_name.clone(),
+            multi_az: source_instance.multi_az,
         };
 
         let source_missing = {
@@ -2147,6 +2171,19 @@ fn db_instance_xml(instance: &DbInstance, status_override: Option<&str>) -> Stri
         None => "<DBParameterGroups/>".to_string(),
     };
 
+    let option_group_memberships_xml = match &instance.option_group_name {
+        Some(og_name) => format!(
+            "<OptionGroupMemberships>\
+             <OptionGroupMembership>\
+             <OptionGroupName>{}</OptionGroupName>\
+             <Status>in-sync</Status>\
+             </OptionGroupMembership>\
+             </OptionGroupMemberships>",
+            xml_escape(og_name)
+        ),
+        None => "<OptionGroupMemberships/>".to_string(),
+    };
+
     format!(
         "<DBInstanceIdentifier>{}</DBInstanceIdentifier>\
          <DBInstanceClass>{}</DBInstanceClass>\
@@ -2157,20 +2194,21 @@ fn db_instance_xml(instance: &DbInstance, status_override: Option<&str>) -> Stri
          <Endpoint><Address>{}</Address><Port>{}</Port></Endpoint>\
          <AllocatedStorage>{}</AllocatedStorage>\
          <InstanceCreateTime>{}</InstanceCreateTime>\
-         <PreferredBackupWindow>00:00-00:30</PreferredBackupWindow>\
-         <BackupRetentionPeriod>1</BackupRetentionPeriod>\
+         <PreferredBackupWindow>{}</PreferredBackupWindow>\
+         <BackupRetentionPeriod>{}</BackupRetentionPeriod>\
          <DBSecurityGroups/>\
          {}\
          {}\
          <AvailabilityZone>us-east-1a</AvailabilityZone>\
+         <LatestRestorableTime>{}</LatestRestorableTime>\
          <PreferredMaintenanceWindow>sun:00:00-sun:00:30</PreferredMaintenanceWindow>\
-         <MultiAZ>false</MultiAZ>\
+         <MultiAZ>{}</MultiAZ>\
          <EngineVersion>{}</EngineVersion>\
          <AutoMinorVersionUpgrade>true</AutoMinorVersionUpgrade>\
          {}\
          {}\
          <LicenseModel>postgresql-license</LicenseModel>\
-         <OptionGroupMemberships/>\
+         {}\
          <PubliclyAccessible>{}</PubliclyAccessible>\
          <StorageType>gp2</StorageType>\
          <DbInstancePort>{}</DbInstancePort>\
@@ -2188,11 +2226,16 @@ fn db_instance_xml(instance: &DbInstance, status_override: Option<&str>) -> Stri
         instance.port,
         instance.allocated_storage,
         instance.created_at.to_rfc3339(),
+        xml_escape(&instance.preferred_backup_window),
+        instance.backup_retention_period,
         vpc_security_groups_xml,
         db_parameter_groups_xml,
+        instance.latest_restorable_time.to_rfc3339(),
+        if instance.multi_az { "true" } else { "false" },
         xml_escape(&instance.engine_version),
         read_replica_identifiers_xml,
         read_replica_source_xml,
+        option_group_memberships_xml,
         if instance.publicly_accessible {
             "true"
         } else {
@@ -2431,6 +2474,7 @@ mod tests {
 
     #[test]
     fn db_instance_xml_renders_endpoint_and_status() {
+        let created_at = Utc::now();
         let instance = DbInstance {
             db_instance_identifier: "test-db".to_string(),
             db_instance_arn: "arn:aws:rds:us-east-1:123456789012:db:test-db".to_string(),
@@ -2445,7 +2489,7 @@ mod tests {
             allocated_storage: 20,
             publicly_accessible: true,
             deletion_protection: false,
-            created_at: Utc::now(),
+            created_at,
             dbi_resource_id: format!("db-{}", Uuid::new_v4().simple()),
             master_user_password: "secret123".to_string(),
             container_id: "container".to_string(),
@@ -2455,6 +2499,11 @@ mod tests {
             read_replica_db_instance_identifiers: Vec::new(),
             vpc_security_group_ids: vec!["sg-12345678".to_string()],
             db_parameter_group_name: Some("default.postgres16".to_string()),
+            backup_retention_period: 1,
+            preferred_backup_window: "03:00-04:00".to_string(),
+            latest_restorable_time: created_at,
+            option_group_name: None,
+            multi_az: false,
         };
 
         let xml = db_instance_xml(&instance, Some("creating"));

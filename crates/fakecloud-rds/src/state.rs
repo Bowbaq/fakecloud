@@ -34,6 +34,11 @@ pub struct DbInstance {
     pub read_replica_db_instance_identifiers: Vec<String>,
     pub vpc_security_group_ids: Vec<String>,
     pub db_parameter_group_name: Option<String>,
+    pub backup_retention_period: i32,
+    pub preferred_backup_window: String,
+    pub latest_restorable_time: DateTime<Utc>,
+    pub option_group_name: Option<String>,
+    pub multi_az: bool,
 }
 
 impl fmt::Debug for DbInstance {
@@ -68,6 +73,11 @@ impl fmt::Debug for DbInstance {
             )
             .field("vpc_security_group_ids", &self.vpc_security_group_ids)
             .field("db_parameter_group_name", &self.db_parameter_group_name)
+            .field("backup_retention_period", &self.backup_retention_period)
+            .field("preferred_backup_window", &self.preferred_backup_window)
+            .field("latest_restorable_time", &self.latest_restorable_time)
+            .field("option_group_name", &self.option_group_name)
+            .field("multi_az", &self.multi_az)
             .finish()
     }
 }
@@ -438,6 +448,7 @@ mod tests {
     #[test]
     fn reset_clears_instances() {
         let mut state = RdsState::new("123456789012", "us-east-1");
+        let created_at = Utc::now();
         state.instances.insert(
             "db-1".to_string(),
             DbInstance {
@@ -454,7 +465,7 @@ mod tests {
                 allocated_storage: 20,
                 publicly_accessible: true,
                 deletion_protection: false,
-                created_at: Utc::now(),
+                created_at,
                 dbi_resource_id: "db-test".to_string(),
                 master_user_password: "secret123".to_string(),
                 container_id: "container-id".to_string(),
@@ -464,6 +475,11 @@ mod tests {
                 read_replica_db_instance_identifiers: Vec::new(),
                 vpc_security_group_ids: Vec::new(),
                 db_parameter_group_name: None,
+                backup_retention_period: 1,
+                preferred_backup_window: "03:00-04:00".to_string(),
+                latest_restorable_time: created_at,
+                option_group_name: None,
+                multi_az: false,
             },
         );
 
