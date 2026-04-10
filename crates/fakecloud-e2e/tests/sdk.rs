@@ -196,11 +196,7 @@ async fn sdk_elasticache_get_clusters() {
         .await
         .unwrap();
 
-    let clusters = fc
-        .elasticache()
-        .get_clusters()
-        .await
-        .expect("get clusters");
+    let clusters = fc.elasticache().get_clusters().await.expect("get clusters");
     let cluster = clusters
         .clusters
         .iter()
