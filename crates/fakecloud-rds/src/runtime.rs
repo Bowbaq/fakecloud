@@ -157,7 +157,7 @@ impl RdsRuntime {
             )));
         }
 
-        let host_port = match self.lookup_port(&container_id).await {
+        let host_port = match self.lookup_port(&container_id, port).await {
             Ok(host_port) => host_port,
             Err(error) => {
                 self.remove_container(&container_id).await;
@@ -165,18 +165,22 @@ impl RdsRuntime {
             }
         };
 
-        // Wait for database to be ready (currently only supports postgres check)
-        if engine == "postgres" {
-            if let Err(error) = self
-                .wait_for_postgres(username, password, db_name, host_port)
-                .await
-            {
-                self.remove_container(&container_id).await;
-                return Err(error);
+        // Wait for database to be ready
+        let wait_result = match engine {
+            "postgres" => {
+                self.wait_for_postgres(username, password, db_name, host_port)
+                    .await
             }
-        } else {
-            // For MySQL/MariaDB, give it a moment to start
-            tokio::time::sleep(Duration::from_secs(5)).await;
+            "mysql" | "mariadb" => {
+                self.wait_for_mysql(username, password, db_name, host_port)
+                    .await
+            }
+            _ => unreachable!("engine already validated"),
+        };
+
+        if let Err(error) = wait_result {
+            self.remove_container(&container_id).await;
+            return Err(error);
         }
 
         let running = RunningDbContainer {
@@ -199,6 +203,7 @@ impl RdsRuntime {
     pub async fn restart_container(
         &self,
         db_instance_identifier: &str,
+        engine: &str,
         username: &str,
         password: &str,
         db_name: &str,
@@ -223,9 +228,28 @@ impl RdsRuntime {
             )));
         }
 
-        let host_port = self.lookup_port(&running.container_id).await?;
-        self.wait_for_postgres(username, password, db_name, host_port)
-            .await?;
+        let port = match engine {
+            "postgres" => "5432",
+            "mysql" | "mariadb" => "3306",
+            _ => "5432", // fallback
+        };
+
+        let host_port = self.lookup_port(&running.container_id, port).await?;
+
+        match engine {
+            "postgres" => {
+                self.wait_for_postgres(username, password, db_name, host_port)
+                    .await?
+            }
+            "mysql" | "mariadb" => {
+                self.wait_for_mysql(username, password, db_name, host_port)
+                    .await?
+            }
+            _ => {
+                self.wait_for_postgres(username, password, db_name, host_port)
+                    .await?
+            }
+        };
         let running = RunningDbContainer {
             container_id: running.container_id,
             host_port,
@@ -249,9 +273,9 @@ impl RdsRuntime {
         }
     }
 
-    async fn lookup_port(&self, container_id: &str) -> Result<u16, RuntimeError> {
+    async fn lookup_port(&self, container_id: &str, port: &str) -> Result<u16, RuntimeError> {
         let port_output = tokio::process::Command::new(&self.cli)
-            .args(["port", container_id, "5432"])
+            .args(["port", container_id, port])
             .output()
             .await
             .map_err(|e| RuntimeError::ContainerStartFailed(e.to_string()))?;
@@ -264,7 +288,7 @@ impl RdsRuntime {
             .and_then(|value| value.parse::<u16>().ok())
             .ok_or_else(|| {
                 RuntimeError::ContainerStartFailed(format!(
-                    "could not determine postgres port from '{}'",
+                    "could not determine container port from '{}'",
                     port_str.trim()
                 ))
             })
@@ -296,6 +320,45 @@ impl RdsRuntime {
 
         Err(RuntimeError::ContainerStartFailed(
             "postgres container did not become ready within 20 seconds".to_string(),
+        ))
+    }
+
+    async fn wait_for_mysql(
+        &self,
+        username: &str,
+        password: &str,
+        db_name: &str,
+        host_port: u16,
+    ) -> Result<(), RuntimeError> {
+        use mysql_async::prelude::*;
+        use mysql_async::OptsBuilder;
+
+        for attempt in 1..=40 {
+            let opts = OptsBuilder::default()
+                .ip_or_hostname("127.0.0.1")
+                .tcp_port(host_port)
+                .user(Some(username))
+                .pass(Some(password))
+                .db_name(Some(db_name));
+
+            match mysql_async::Conn::new(opts).await {
+                Ok(mut conn) => {
+                    if conn.query_drop("SELECT 1").await.is_ok() {
+                        let _ = conn.disconnect().await;
+                        return Ok(());
+                    }
+                }
+                Err(_) => {
+                    if attempt < 40 {
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    }
+                    continue;
+                }
+            }
+        }
+
+        Err(RuntimeError::ContainerStartFailed(
+            "MySQL/MariaDB container did not become ready within 20 seconds".to_string(),
         ))
     }
 
