@@ -599,9 +599,7 @@ class _SyncStepFunctionsClient:
         self._base = base_url
 
     def get_executions(self) -> StepFunctionsExecutionsResponse:
-        resp = self._client.get(
-            f"{self._base}/_fakecloud/stepfunctions/executions"
-        )
+        resp = self._client.get(f"{self._base}/_fakecloud/stepfunctions/executions")
         _check(resp)
         return StepFunctionsExecutionsResponse.from_dict(resp.json())
 

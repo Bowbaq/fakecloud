@@ -846,8 +846,7 @@ class StepFunctionsExecutionsResponse:
     def from_dict(cls, data: Dict[str, Any]) -> StepFunctionsExecutionsResponse:
         return cls(
             executions=[
-                StepFunctionsExecution.from_dict(e)
-                for e in data.get("executions", [])
+                StepFunctionsExecution.from_dict(e) for e in data.get("executions", [])
             ],
         )
 
