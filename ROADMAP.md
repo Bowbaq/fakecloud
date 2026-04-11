@@ -4,7 +4,15 @@ fakecloud's goal is to be the best free AWS emulator for integration testing and
 
 For every service we implement, the standard is the same: full API coverage, real behavior (not stubs), conformance testing against AWS Smithy models, and cross-service integrations where applicable.
 
-## Recently shipped (v0.6.1)
+## Recently shipped
+
+### API Gateway v2
+
+HTTP APIs with Lambda proxy integration, route-based request handling, path parameters, wildcards, CORS, JWT and Lambda authorizers. 28 operations, full Lambda proxy integration v2.0 format, HTTP proxy and Mock integrations. Completes the serverless stack: API Gateway → Lambda → Step Functions.
+
+### Step Functions
+
+Complete AWS Step Functions implementation with full Amazon States Language (ASL) interpreter. All state types: Task, Pass, Choice, Wait, Parallel, Map, Succeed, Fail. Error handling with Retry and Catch. Cross-service task integrations: Lambda, SQS, SNS, EventBridge, DynamoDB. 14 operations, 60 E2E tests, 100% conformance.
 
 ### Kinesis
 
@@ -20,29 +28,39 @@ Complete ElastiCache implementation covering cache clusters, replication groups,
 
 ## Up next
 
-### ECR + ECS
+Priorities based on real-world usage research and user demand signals.
 
-Container registry and container orchestration. ECR provides image storage and lifecycle management. ECS provides clusters, services, task definitions, and task execution — backed by real Docker containers.
+### Bedrock
 
-### Elastic Load Balancing
+AWS AI/ML service for foundation model invocation, guardrails, knowledge bases, and agents. Testing AI features locally is painful without mock service support.
 
-Application Load Balancers, target groups, listeners, and routing rules. Configuration management and basic request routing.
+### Lambda Containers
+
+Extend existing Lambda implementation to support container image deployments (not just ZIP). Larger deployment packages, custom runtimes, modern Lambda patterns. More practical than full ECS for most testing workflows.
 
 ### CloudFront
 
-Distribution configuration, cache behaviors, origins, and invalidations.
+CDN configuration, cache behaviors, origins, and invalidations. LocalStack paid-only feature.
 
-### API Gateway v2
+### Athena
 
-HTTP APIs and WebSocket APIs. REST API v1 is available in LocalStack Community; HTTP API v2 is not. Integrates with Lambda (already supported).
+SQL analytics on S3 with query execution, result handling, and workgroup management. Complements existing S3 implementation.
 
-### Step Functions
+### AppConfig
 
-Amazon States Language interpreter with full execution semantics. Task, Choice, Parallel, Map, Wait, and all other state types. Integrates with Lambda and other fakecloud services.
+Feature flags and configuration management. Modern pattern for gradual rollouts and A/B testing.
 
 ### CloudWatch Metrics
 
 Metric storage, alarms, dashboards, and math expressions. Completes the CloudWatch story alongside our existing CloudWatch Logs implementation (113 operations).
+
+### ECR
+
+Container registry for image storage and lifecycle management. Primarily needed as dependency for Lambda Containers.
+
+### ECS
+
+Container orchestration with clusters, services, task definitions, and task execution (backed by real Docker containers). Deferred until clearer demand signal — Lambda Containers addresses most container testing needs without full orchestration complexity.
 
 ## Testing APIs
 
@@ -54,6 +72,8 @@ Read internal state that AWS doesn't expose. Useful for test assertions.
 
 - **`GET /_fakecloud/ses/emails`** — Every email sent through SES, with full headers and body.
 - **`GET /_fakecloud/lambda/invocations`** — Every Lambda invocation with request payload and response.
+- **`GET /_fakecloud/stepfunctions/executions`** — All Step Functions executions with status, input, output, and timestamps.
+- **`GET /_fakecloud/apigatewayv2/requests`** — All HTTP API requests with method, path, headers, and response.
 - **`GET /_fakecloud/sns/messages`** — All messages published to SNS topics.
 - **`GET /_fakecloud/sqs/messages`** — All messages across all SQS queues with receive counts.
 - **`GET /_fakecloud/events/history`** — All EventBridge events and target deliveries.
@@ -88,11 +108,13 @@ Java.
 
 ## Design principles
 
-**Smart proxy pattern** — For services that wrap stateful software (RDS, ElastiCache, ECS), fakecloud implements the full AWS API and delegates execution to real software via Docker. This gives you API compatibility and real behavior in one package.
+**Smart proxy pattern** — For services that wrap stateful software (RDS, ElastiCache, Lambda execution), fakecloud implements the full AWS API and delegates execution to real software via Docker. This gives you API compatibility and real behavior in one package.
 
 **No stubs** — Every operation either does what AWS does or returns an explicit error. We don't return fake success responses for things we haven't implemented.
 
 **Conformance testing** — Every service is tested against AWS Smithy models with thousands of auto-generated test variants covering boundary values, optional field permutations, and negative cases.
+
+**Demand-driven** — Priorities come from real-world usage patterns, not just AWS service catalog breadth. We analyze LocalStack usage, GitHub code searches, and direct user requests.
 
 ## Suggesting a service
 
