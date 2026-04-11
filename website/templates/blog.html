@@ -10,7 +10,7 @@
     <p class="section-sub">Updates, guides, and thoughts on building a free, open-source AWS emulator.</p>
     <div class="blog-list">
       {% for page in section.pages %}
-      <a href="{{ page.permalink }}" class="post">
+      <a href="{{ page.permalink }}" class="post" data-publish-date="{{ page.date | date(format="%Y-%m-%d") }}">
         <div class="date">{{ page.date | date(format="%B %d, %Y") }}</div>
         <h3>{{ page.title }}</h3>
         <p>{{ page.description }}</p>

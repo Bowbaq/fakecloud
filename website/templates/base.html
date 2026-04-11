@@ -76,6 +76,12 @@
     });
   })();
 
+  // Hide future blog posts
+  var today = new Date().toISOString().split('T')[0];
+  document.querySelectorAll('[data-publish-date]').forEach(function(el) {
+    if (el.dataset.publishDate > today) el.style.display = 'none';
+  });
+
   // Copy buttons
   document.querySelectorAll('.blog-article pre, .code-block').forEach(function(block) {
     var btn = document.createElement('button');
