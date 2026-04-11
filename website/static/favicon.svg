@@ -1,0 +1,7 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+    <!-- Orange square background with rounded corners -->
+    <rect width="512" height="512" fill="#d97706" rx="80"/>
+
+    <!-- "fc" text in white -->
+    <text x="256" y="340" font-family="system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="200" font-weight="700" fill="white" text-anchor="middle">fc</text>
+</svg>
