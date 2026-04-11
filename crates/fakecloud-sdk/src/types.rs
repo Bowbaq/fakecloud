@@ -514,3 +514,27 @@ pub struct AuthEvent {
 pub struct AuthEventsResponse {
     pub events: Vec<AuthEvent>,
 }
+
+// ── API Gateway v2 ──────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiGatewayV2Request {
+    pub request_id: String,
+    pub api_id: String,
+    pub stage: String,
+    pub method: String,
+    pub path: String,
+    pub headers: std::collections::HashMap<String, String>,
+    pub query_params: std::collections::HashMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    pub timestamp: String,
+    pub status_code: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiGatewayV2RequestsResponse {
+    pub requests: Vec<ApiGatewayV2Request>,
+}

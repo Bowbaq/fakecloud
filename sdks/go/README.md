@@ -148,6 +148,12 @@ func main() {
 | `GetReplicationGroups(ctx)` | List replication groups |
 | `GetServerlessCaches(ctx)` | List serverless caches |
 
+### API Gateway v2 - `fc.ApiGatewayV2()`
+
+| Method | Description |
+|--------|-------------|
+| `GetRequests(ctx)` | List all HTTP API requests received |
+
 ### Error handling
 
 Non-2xx responses return `*fakecloud.APIError`:

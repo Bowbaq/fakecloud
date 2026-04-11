@@ -413,3 +413,24 @@ type AuthEvent struct {
 type AuthEventsResponse struct {
 	Events []AuthEvent `json:"events"`
 }
+
+// ── API Gateway v2 ─────────────────────────────────────────────────
+
+// ApiGatewayV2Request represents an HTTP API request that was received.
+type ApiGatewayV2Request struct {
+	RequestID   string            `json:"requestId"`
+	ApiID       string            `json:"apiId"`
+	Stage       string            `json:"stage"`
+	Method      string            `json:"method"`
+	Path        string            `json:"path"`
+	Headers     map[string]string `json:"headers"`
+	QueryParams map[string]string `json:"queryParams"`
+	Body        *string           `json:"body,omitempty"`
+	Timestamp   string            `json:"timestamp"`
+	StatusCode  uint16            `json:"statusCode"`
+}
+
+// ApiGatewayV2RequestsResponse contains all recorded HTTP API requests.
+type ApiGatewayV2RequestsResponse struct {
+	Requests []ApiGatewayV2Request `json:"requests"`
+}

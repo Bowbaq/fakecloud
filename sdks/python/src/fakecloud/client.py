@@ -5,6 +5,7 @@ from __future__ import annotations
 import httpx
 
 from fakecloud.types import (
+    ApiGatewayV2RequestsResponse,
     AuthEventsResponse,
     ConfirmationCodesResponse,
     ConfirmSubscriptionRequest,
@@ -317,6 +318,19 @@ class CognitoClient:
         return AuthEventsResponse.from_dict(resp.json())
 
 
+class ApiGatewayV2Client:
+    """Async API Gateway v2 introspection client."""
+
+    def __init__(self, client: httpx.AsyncClient, base_url: str) -> None:
+        self._client = client
+        self._base = base_url
+
+    async def get_requests(self) -> ApiGatewayV2RequestsResponse:
+        resp = await self._client.get(f"{self._base}/_fakecloud/apigatewayv2/requests")
+        _check(resp)
+        return ApiGatewayV2RequestsResponse.from_dict(resp.json())
+
+
 # ── Sync sub-clients ────────────────────────────────────────────────
 
 
@@ -552,6 +566,17 @@ class _SyncCognitoClient:
         return AuthEventsResponse.from_dict(resp.json())
 
 
+class _SyncApiGatewayV2Client:
+    def __init__(self, client: httpx.Client, base_url: str) -> None:
+        self._client = client
+        self._base = base_url
+
+    def get_requests(self) -> ApiGatewayV2RequestsResponse:
+        resp = self._client.get(f"{self._base}/_fakecloud/apigatewayv2/requests")
+        _check(resp)
+        return ApiGatewayV2RequestsResponse.from_dict(resp.json())
+
+
 # ── Main clients ────────────────────────────────────────────────────
 
 
@@ -641,6 +666,10 @@ class FakeCloud:
     def cognito(self) -> CognitoClient:
         return CognitoClient(self._client, self._base)
 
+    @property
+    def apigatewayv2(self) -> ApiGatewayV2Client:
+        return ApiGatewayV2Client(self._client, self._base)
+
     # ── Lifecycle ───────────────────────────────────────────────────
 
     async def aclose(self) -> None:
@@ -729,6 +758,10 @@ class FakeCloudSync:
     @property
     def cognito(self) -> _SyncCognitoClient:
         return _SyncCognitoClient(self._client, self._base)
+
+    @property
+    def apigatewayv2(self) -> _SyncApiGatewayV2Client:
+        return _SyncApiGatewayV2Client(self._client, self._base)
 
     # ── Lifecycle ───────────────────────────────────────────────────
 

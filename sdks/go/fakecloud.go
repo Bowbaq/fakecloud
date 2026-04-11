@@ -85,6 +85,9 @@ func (fc *FakeCloud) SecretsManager() *SecretsManagerClient { return &SecretsMan
 // Cognito returns the Cognito sub-client.
 func (fc *FakeCloud) Cognito() *CognitoClient { return &CognitoClient{fc: fc} }
 
+// ApiGatewayV2 returns the API Gateway v2 sub-client.
+func (fc *FakeCloud) ApiGatewayV2() *ApiGatewayV2Client { return &ApiGatewayV2Client{fc: fc} }
+
 // ── Error type ─────────────────────────────────────────────────────
 
 // APIError is returned when the server responds with a non-2xx status.

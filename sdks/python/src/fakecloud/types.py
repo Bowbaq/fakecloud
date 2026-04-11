@@ -816,3 +816,36 @@ class AuthEventsResponse:
         return cls(
             events=[AuthEvent.from_dict(e) for e in data.get("events", [])],
         )
+
+
+# ── API Gateway v2 ──────────────────────────────────────────────────────
+
+
+@dataclass
+class ApiGatewayV2Request:
+    request_id: str
+    api_id: str
+    stage: str
+    method: str
+    path: str
+    headers: Dict[str, str]
+    query_params: Dict[str, str]
+    timestamp: str
+    status_code: int
+    body: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> ApiGatewayV2Request:
+        d = _convert_keys(data)
+        return cls(**d)
+
+
+@dataclass
+class ApiGatewayV2RequestsResponse:
+    requests: List[ApiGatewayV2Request]
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> ApiGatewayV2RequestsResponse:
+        return cls(
+            requests=[ApiGatewayV2Request.from_dict(r) for r in data.get("requests", [])],
+        )

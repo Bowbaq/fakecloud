@@ -1,4 +1,5 @@
 import type {
+  ApiGatewayV2RequestsResponse,
   HealthResponse,
   ResetResponse,
   ResetServiceResponse,
@@ -306,6 +307,15 @@ export class CognitoClient {
   }
 }
 
+export class ApiGatewayV2Client {
+  constructor(private readonly baseUrl: string) {}
+
+  async getRequests(): Promise<ApiGatewayV2RequestsResponse> {
+    const resp = await fetch(`${this.baseUrl}/_fakecloud/apigatewayv2/requests`);
+    return parse(resp);
+  }
+}
+
 // ── Main client ────────────────────────────────────────────────────
 
 export class FakeCloud {
@@ -322,6 +332,7 @@ export class FakeCloud {
   private readonly _dynamodb: DynamoDbClient;
   private readonly _secretsmanager: SecretsManagerClient;
   private readonly _cognito: CognitoClient;
+  private readonly _apigatewayv2: ApiGatewayV2Client;
 
   constructor(baseUrl: string = "http://localhost:4566") {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
@@ -337,6 +348,7 @@ export class FakeCloud {
     this._dynamodb = new DynamoDbClient(this.baseUrl);
     this._secretsmanager = new SecretsManagerClient(this.baseUrl);
     this._cognito = new CognitoClient(this.baseUrl);
+    this._apigatewayv2 = new ApiGatewayV2Client(this.baseUrl);
   }
 
   // ── Health & Reset ─────────────────────────────────────────────
@@ -403,5 +415,9 @@ export class FakeCloud {
 
   get cognito(): CognitoClient {
     return this._cognito;
+  }
+
+  get apigatewayv2(): ApiGatewayV2Client {
+    return this._apigatewayv2;
   }
 }

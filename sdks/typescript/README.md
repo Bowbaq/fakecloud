@@ -139,6 +139,12 @@ Top-level client. Defaults to `http://localhost:4566`.
 | `getReplicationGroups()` | List ElastiCache replication groups |
 | `getServerlessCaches()`  | List ElastiCache serverless caches  |
 
+### `fc.apigatewayv2`
+
+| Method          | Description                         |
+| --------------- | ----------------------------------- |
+| `getRequests()` | List all HTTP API requests received |
+
 ### Error handling
 
 All methods throw `FakeCloudError` on non-2xx responses:

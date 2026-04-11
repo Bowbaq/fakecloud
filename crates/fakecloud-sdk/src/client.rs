@@ -94,6 +94,10 @@ impl FakeCloud {
         ElastiCacheClient { fc: self }
     }
 
+    pub fn apigatewayv2(&self) -> ApiGatewayV2Client<'_> {
+        ApiGatewayV2Client { fc: self }
+    }
+
     // ── Internal helpers ────────────────────────────────────────────
 
     async fn parse<T: serde::de::DeserializeOwned>(resp: reqwest::Response) -> Result<T, Error> {
@@ -574,6 +578,28 @@ impl CognitoClient<'_> {
             .client
             .get(format!(
                 "{}/_fakecloud/cognito/auth-events",
+                self.fc.base_url
+            ))
+            .send()
+            .await?;
+        FakeCloud::parse(resp).await
+    }
+}
+
+// ── API Gateway v2 ──────────────────────────────────────────────────
+
+pub struct ApiGatewayV2Client<'a> {
+    fc: &'a FakeCloud,
+}
+
+impl ApiGatewayV2Client<'_> {
+    /// List all HTTP API requests that were received and processed.
+    pub async fn get_requests(&self) -> Result<ApiGatewayV2RequestsResponse, Error> {
+        let resp = self
+            .fc
+            .client
+            .get(format!(
+                "{}/_fakecloud/apigatewayv2/requests",
                 self.fc.base_url
             ))
             .send()

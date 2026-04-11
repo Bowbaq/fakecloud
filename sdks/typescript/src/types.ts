@@ -363,3 +363,22 @@ export interface AuthEvent {
 export interface AuthEventsResponse {
   events: AuthEvent[];
 }
+
+// ── API Gateway v2 ──────────────────────────────────────────────────
+
+export interface ApiGatewayV2Request {
+  requestId: string;
+  apiId: string;
+  stage: string;
+  method: string;
+  path: string;
+  headers: Record<string, string>;
+  queryParams: Record<string, string>;
+  body?: string | null;
+  timestamp: string;
+  statusCode: number;
+}
+
+export interface ApiGatewayV2RequestsResponse {
+  requests: ApiGatewayV2Request[];
+}
