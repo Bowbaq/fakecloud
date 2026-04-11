@@ -286,6 +286,7 @@ fakecloud exposes `/_fakecloud/*` endpoints for testing behaviors that AWS runs 
 | `/_fakecloud/cognito/expire-tokens`                           | POST   | Expire tokens. Body: `{"userPoolId": "...", "username": "..."}` (both optional).                                        |
 | `/_fakecloud/cognito/auth-events`                             | GET    | List all auth events (sign-up, sign-in, failures, password changes).                                                    |
 | `/_fakecloud/stepfunctions/executions`                        | GET    | List all Step Functions executions with status, input, output, and timestamps.                                          |
+| `/_fakecloud/apigatewayv2/requests`                           | GET    | List all HTTP API requests received (method, path, headers, query params, status code).                                 |
 | `/_fakecloud/reset`                                           | POST   | Reset all state across all services.                                                                                    |
 | `/_fakecloud/reset/{service}`                                 | POST   | Reset only the specified service's state. Returns `{"reset": "service_name"}`.                                          |
 
