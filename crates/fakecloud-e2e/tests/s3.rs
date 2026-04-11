@@ -897,7 +897,6 @@ async fn s3_object_lock_prevents_overwrite() {
 // ---- S3 Multipart Upload Tests ----
 
 #[tokio::test]
-#[ignore] // Multipart completion has edge cases with part size validation
 async fn s3_multipart_upload_basic() {
     let server = TestServer::start().await;
     let client = server.s3_client().await;
