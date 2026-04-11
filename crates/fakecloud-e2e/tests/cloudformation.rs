@@ -482,7 +482,8 @@ fn dockerized_endpoint(server: &TestServer) -> String {
 fn dockerized_queue_url(server: &TestServer, queue_name: &str) -> String {
     format!(
         "http://host.docker.internal:{}/123456789012/{}",
-        server.port(), queue_name
+        server.port(),
+        queue_name
     )
 }
 
@@ -517,36 +518,36 @@ async fn cloudformation_custom_resource_invokes_lambda() {
     let docker_endpoint = dockerized_endpoint(&server);
     let docker_queue_url = dockerized_queue_url(&server, "cf-custom-result");
 
-    // 2. Create Lambda that forwards the CF event's ResourceProperties to SQS
+    // 2. Create Lambda that forwards the CF event's ResourceProperties to SQS.
+    // Use boto3 here instead of raw urllib so this path matches the successful
+    // Lambda-runtime integration patterns already proven in CI.
     let python_code = r#"
 import json
 import os
-import urllib.request
-import urllib.parse
+import boto3
 
 def lambda_handler(event, context):
-    endpoint = os.environ["FAKECLOUD_ENDPOINT"]
     queue_url = os.environ["RESULT_QUEUE_URL"]
+    endpoint = os.environ["FAKECLOUD_ENDPOINT"]
 
-    params = urllib.parse.urlencode({
-        "Action": "SendMessage",
-        "QueueUrl": queue_url,
-        "MessageBody": json.dumps({
+    sqs = boto3.client(
+        "sqs",
+        endpoint_url=endpoint,
+        region_name="us-east-1",
+        aws_access_key_id="test",
+        aws_secret_access_key="test",
+    )
+
+    sqs.send_message(
+        QueueUrl=queue_url,
+        MessageBody=json.dumps({
             "marker": "custom-resource-invoked",
             "request_type": event.get("RequestType", ""),
             "resource_type": event.get("ResourceType", ""),
             "logical_resource_id": event.get("LogicalResourceId", ""),
             "resource_properties": event.get("ResourceProperties", {}),
         }),
-    }).encode()
-
-    req = urllib.request.Request(endpoint, data=params, method="POST")
-    req.add_header("Content-Type", "application/x-www-form-urlencoded")
-    req.add_header("Authorization", (
-        "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20200101/us-east-1/sqs/aws4_request, "
-        "SignedHeaders=host, Signature=fake"
-    ))
-    urllib.request.urlopen(req)
+    )
 
     return {"statusCode": 200, "body": "ok"}
 "#;
