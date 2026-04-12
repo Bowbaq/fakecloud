@@ -13,9 +13,26 @@ use crate::state::{SsmParameter, SsmParameterVersion};
 
 use super::{missing, SsmService, PARAMETER_VERSION_LIMIT};
 
-impl SsmService {
-    pub(super) fn put_parameter(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = req.json_body();
+/// All fields of a ``PutParameter`` request, already parsed and validated.
+struct PutParameterInput {
+    name: String,
+    value: String,
+    param_type: Option<String>,
+    overwrite: bool,
+    description: Option<String>,
+    key_id: Option<String>,
+    allowed_pattern: Option<String>,
+    data_type: String,
+    /// Whether the caller explicitly included ``DataType`` in the request — we
+    /// only overwrite an existing parameter's ``data_type`` when this is true.
+    data_type_explicit: bool,
+    tier: String,
+    policies: Option<String>,
+    tags: Option<Vec<(String, String)>>,
+}
+
+impl PutParameterInput {
+    fn from_body(body: &Value) -> Result<Self, AwsServiceError> {
         let name = body["Name"]
             .as_str()
             .ok_or_else(|| missing("Name"))?
@@ -25,7 +42,6 @@ impl SsmService {
             .ok_or_else(|| missing("Value"))?
             .to_string();
 
-        // Validate empty value
         if value.is_empty() {
             return Err(AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -37,24 +53,9 @@ impl SsmService {
         }
 
         let param_type = body["Type"].as_str().map(|s| s.to_string());
-        let overwrite = body["Overwrite"].as_bool().unwrap_or(false);
-        let description = body["Description"].as_str().map(|s| s.to_string());
-        let key_id = body["KeyId"].as_str().map(|s| s.to_string());
-        let allowed_pattern = body["AllowedPattern"].as_str().map(|s| s.to_string());
+        let data_type_explicit = body["DataType"].as_str().is_some();
         let data_type = body["DataType"].as_str().unwrap_or("text").to_string();
-        let tier = body["Tier"].as_str().unwrap_or("Standard").to_string();
-        let policies = body["Policies"].as_str().map(|s| s.to_string());
-        let tags: Option<Vec<(String, String)>> = body["Tags"].as_array().map(|arr| {
-            arr.iter()
-                .filter_map(|t| {
-                    let k = t["Key"].as_str()?;
-                    let v = t["Value"].as_str()?;
-                    Some((k.to_string(), v.to_string()))
-                })
-                .collect()
-        });
 
-        // Validate data type
         if !["text", "aws:ec2:image"].contains(&data_type.as_str()) {
             return Err(AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -66,7 +67,6 @@ impl SsmService {
             ));
         }
 
-        // Validate param type
         if let Some(ref pt) = param_type {
             if !["String", "StringList", "SecureString"].contains(&pt.as_str()) {
                 return Err(AwsServiceError::aws_error(
@@ -81,152 +81,186 @@ impl SsmService {
             }
         }
 
-        // Validate name
         if let Some(err) = validate_param_name(&name) {
             return Err(err);
         }
 
-        let mut state = self.state.write();
+        let tags: Option<Vec<(String, String)>> = body["Tags"].as_array().map(|arr| {
+            arr.iter()
+                .filter_map(|t| {
+                    let k = t["Key"].as_str()?;
+                    let v = t["Value"].as_str()?;
+                    Some((k.to_string(), v.to_string()))
+                })
+                .collect()
+        });
 
-        if let Some(existing) = lookup_param_mut(&mut state.parameters, &name) {
-            if !overwrite {
-                return Err(AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "ParameterAlreadyExists",
-                    "The parameter already exists. To overwrite this value, set the \
-                     overwrite option in the request to true.",
-                ));
-            }
-
-            // Cannot have tags and overwrite at the same time
-            if tags.is_some() {
-                return Err(AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "ValidationException",
-                    "Invalid request: tags and overwrite can't be used together.",
-                ));
-            }
-
-            // Check version limit
-            if existing.version >= PARAMETER_VERSION_LIMIT {
-                // Check if oldest version has a label
-                let oldest_version = existing
-                    .history
-                    .first()
-                    .map(|h| h.version)
-                    .unwrap_or(existing.version);
-                let oldest_has_label = existing
-                    .labels
-                    .get(&oldest_version)
-                    .is_some_and(|l| !l.is_empty());
-
-                if oldest_has_label {
-                    return Err(AwsServiceError::aws_error(
-                        StatusCode::BAD_REQUEST,
-                        "ParameterMaxVersionLimitExceeded",
-                        format!(
-                            "You attempted to create a new version of {} by calling \
-                             the PutParameter API with the overwrite flag. Version {}, \
-                             the oldest version, can't be deleted because it has a label \
-                             associated with it. Move the label to another version of the \
-                             parameter, and try again.",
-                            name, oldest_version
-                        ),
-                    ));
-                }
-
-                // Delete oldest version from history to make room
-                if !existing.history.is_empty() {
-                    let removed = existing.history.remove(0);
-                    existing.labels.remove(&removed.version);
-                }
-            }
-
-            let now = Utc::now();
-            let current_labels = existing
-                .labels
-                .get(&existing.version)
-                .cloned()
-                .unwrap_or_default();
-            existing.history.push(SsmParameterVersion {
-                value: existing.value.clone(),
-                version: existing.version,
-                last_modified: existing.last_modified,
-                param_type: existing.param_type.clone(),
-                description: existing.description.clone(),
-                key_id: existing.key_id.clone(),
-                labels: current_labels,
-            });
-            existing.version += 1;
-            existing.value = value;
-            existing.last_modified = now;
-
-            // Only update these if provided
-            if let Some(pt) = param_type {
-                existing.param_type = pt;
-            }
-            if description.is_some() {
-                existing.description = description;
-            }
-            if key_id.is_some() {
-                existing.key_id = key_id;
-            }
-            // Always update data_type if explicitly provided
-            if body["DataType"].as_str().is_some() {
-                existing.data_type = data_type;
-            }
-
-            let resp_tier = existing.tier.clone();
-            return Ok(AwsResponse::ok_json(json!({
-                "Version": existing.version,
-                "Tier": resp_tier,
-            })));
-        }
-
-        // New parameter - type is required
-        let param_type = match param_type {
-            Some(pt) => pt,
-            None => {
-                return Err(AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "ValidationException",
-                    "A parameter type is required when you create a parameter.",
-                ));
-            }
-        };
-
-        let now = Utc::now();
-        let arn = param_arn(&req.region, &state.account_id, &name);
-
-        let mut tag_map = HashMap::new();
-        if let Some(tag_list) = tags {
-            for (k, v) in tag_list {
-                tag_map.insert(k, v);
-            }
-        }
-
-        let param = SsmParameter {
-            name: name.clone(),
+        Ok(Self {
+            name,
             value,
             param_type,
-            version: 1,
-            arn,
-            last_modified: now,
-            history: Vec::new(),
-            labels: HashMap::new(),
-            tags: tag_map,
-            description,
-            allowed_pattern,
-            key_id,
+            overwrite: body["Overwrite"].as_bool().unwrap_or(false),
+            description: body["Description"].as_str().map(|s| s.to_string()),
+            key_id: body["KeyId"].as_str().map(|s| s.to_string()),
+            allowed_pattern: body["AllowedPattern"].as_str().map(|s| s.to_string()),
             data_type,
-            tier: tier.clone(),
-            policies,
-        };
+            data_type_explicit,
+            tier: body["Tier"].as_str().unwrap_or("Standard").to_string(),
+            policies: body["Policies"].as_str().map(|s| s.to_string()),
+            tags,
+        })
+    }
+}
 
+/// Apply a ``PutParameter`` overwrite to an existing parameter: validate the
+/// overwrite-compatible constraints, rotate version history if we're at the
+/// version limit, and update the mutable fields.
+fn apply_overwrite(
+    existing: &mut SsmParameter,
+    input: PutParameterInput,
+) -> Result<AwsResponse, AwsServiceError> {
+    if !input.overwrite {
+        return Err(AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "ParameterAlreadyExists",
+            "The parameter already exists. To overwrite this value, set the \
+             overwrite option in the request to true.",
+        ));
+    }
+
+    if input.tags.is_some() {
+        return Err(AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "ValidationException",
+            "Invalid request: tags and overwrite can't be used together.",
+        ));
+    }
+
+    if existing.version >= PARAMETER_VERSION_LIMIT {
+        let oldest_version = existing
+            .history
+            .first()
+            .map(|h| h.version)
+            .unwrap_or(existing.version);
+        let oldest_has_label = existing
+            .labels
+            .get(&oldest_version)
+            .is_some_and(|l| !l.is_empty());
+
+        if oldest_has_label {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "ParameterMaxVersionLimitExceeded",
+                format!(
+                    "You attempted to create a new version of {} by calling \
+                     the PutParameter API with the overwrite flag. Version {}, \
+                     the oldest version, can't be deleted because it has a label \
+                     associated with it. Move the label to another version of the \
+                     parameter, and try again.",
+                    input.name, oldest_version
+                ),
+            ));
+        }
+
+        if !existing.history.is_empty() {
+            let removed = existing.history.remove(0);
+            existing.labels.remove(&removed.version);
+        }
+    }
+
+    let now = Utc::now();
+    let current_labels = existing
+        .labels
+        .get(&existing.version)
+        .cloned()
+        .unwrap_or_default();
+    existing.history.push(SsmParameterVersion {
+        value: existing.value.clone(),
+        version: existing.version,
+        last_modified: existing.last_modified,
+        param_type: existing.param_type.clone(),
+        description: existing.description.clone(),
+        key_id: existing.key_id.clone(),
+        labels: current_labels,
+    });
+    existing.version += 1;
+    existing.value = input.value;
+    existing.last_modified = now;
+
+    if let Some(pt) = input.param_type {
+        existing.param_type = pt;
+    }
+    if input.description.is_some() {
+        existing.description = input.description;
+    }
+    if input.key_id.is_some() {
+        existing.key_id = input.key_id;
+    }
+    if input.data_type_explicit {
+        existing.data_type = input.data_type;
+    }
+
+    Ok(AwsResponse::ok_json(json!({
+        "Version": existing.version,
+        "Tier": existing.tier,
+    })))
+}
+
+/// Build a brand-new ``SsmParameter`` from a validated input. ``Type`` is
+/// required for new parameters; the overwrite path allows it to be omitted.
+fn create_new_parameter(
+    region: &str,
+    account_id: &str,
+    input: PutParameterInput,
+) -> Result<SsmParameter, AwsServiceError> {
+    let param_type = input.param_type.ok_or_else(|| {
+        AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "ValidationException",
+            "A parameter type is required when you create a parameter.",
+        )
+    })?;
+
+    let tag_map = input
+        .tags
+        .map(|list| list.into_iter().collect::<HashMap<_, _>>())
+        .unwrap_or_default();
+
+    Ok(SsmParameter {
+        arn: param_arn(region, account_id, &input.name),
+        name: input.name,
+        value: input.value,
+        param_type,
+        version: 1,
+        last_modified: Utc::now(),
+        history: Vec::new(),
+        labels: HashMap::new(),
+        tags: tag_map,
+        description: input.description,
+        allowed_pattern: input.allowed_pattern,
+        key_id: input.key_id,
+        data_type: input.data_type,
+        tier: input.tier,
+        policies: input.policies,
+    })
+}
+
+impl SsmService {
+    pub(super) fn put_parameter(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let input = PutParameterInput::from_body(&req.json_body())?;
+
+        let mut state = self.state.write();
+        if let Some(existing) = lookup_param_mut(&mut state.parameters, &input.name) {
+            return apply_overwrite(existing, input);
+        }
+
+        let tier_for_response = input.tier.clone();
+        let name = input.name.clone();
+        let param = create_new_parameter(&req.region, &state.account_id, input)?;
         state.parameters.insert(name, param);
         Ok(AwsResponse::ok_json(json!({
             "Version": 1,
-            "Tier": tier,
+            "Tier": tier_for_response,
         })))
     }
 
