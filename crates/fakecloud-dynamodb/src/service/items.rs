@@ -87,30 +87,24 @@ impl DynamoDbService {
             }
 
             // Capture kinesis delivery info (delivered after lock release)
-            let kinesis_info = if table
-                .kinesis_destinations
-                .iter()
-                .any(|d| d.destination_status == "ACTIVE")
-            {
-                Some((
-                    table.clone(),
+            let kinesis_info = DynamoDbService::kinesis_target(table).map(|target| {
+                (
+                    target,
                     event_name.to_string(),
                     key,
                     old_item_for_stream,
                     Some(item.clone()),
-                ))
-            } else {
-                None
-            };
+                )
+            });
 
             (old_item_for_return, kinesis_info)
         };
         // --- Write lock released, build response ---
 
         // Deliver to Kinesis destinations outside the lock
-        if let Some((table, event_name, keys, old_image, new_image)) = kinesis_info {
+        if let Some((target, event_name, keys, old_image, new_image)) = kinesis_info {
             self.deliver_to_kinesis_destinations(
-                &table,
+                &target,
                 &event_name,
                 &keys,
                 old_image.as_ref(),
@@ -235,12 +229,8 @@ impl DynamoDbService {
                 }
 
                 // Capture kinesis delivery info
-                if table
-                    .kinesis_destinations
-                    .iter()
-                    .any(|d| d.destination_status == "ACTIVE")
-                {
-                    kinesis_info = Some((table.clone(), key.clone(), Some(old_item)));
+                if let Some(target) = DynamoDbService::kinesis_target(table) {
+                    kinesis_info = Some((target, key.clone(), Some(old_item)));
                 }
 
                 table.items.remove(idx);
@@ -267,8 +257,14 @@ impl DynamoDbService {
         };
 
         // Deliver to Kinesis destinations outside the lock
-        if let Some((table, keys, old_image)) = kinesis_info {
-            self.deliver_to_kinesis_destinations(&table, "REMOVE", &keys, old_image.as_ref(), None);
+        if let Some((target, keys, old_image)) = kinesis_info {
+            self.deliver_to_kinesis_destinations(
+                &target,
+                "REMOVE",
+                &keys,
+                old_image.as_ref(),
+                None,
+            );
         }
 
         Self::ok_json(result)
@@ -363,21 +359,15 @@ impl DynamoDbService {
         }
 
         // Capture kinesis delivery info
-        let kinesis_info = if table
-            .kinesis_destinations
-            .iter()
-            .any(|d| d.destination_status == "ACTIVE")
-        {
-            Some((
-                table.clone(),
+        let kinesis_info = DynamoDbService::kinesis_target(table).map(|target| {
+            (
+                target,
                 event_name.to_string(),
                 key.clone(),
                 old_item_for_stream,
                 Some(new_item_for_stream),
-            ))
-        } else {
-            None
-        };
+            )
+        });
 
         table.recalculate_stats();
 
@@ -385,9 +375,9 @@ impl DynamoDbService {
         drop(state);
 
         // Deliver to Kinesis destinations outside the lock
-        if let Some((tbl, ev, keys, old_image, new_image)) = kinesis_info {
+        if let Some((target, ev, keys, old_image, new_image)) = kinesis_info {
             self.deliver_to_kinesis_destinations(
-                &tbl,
+                &target,
                 &ev,
                 &keys,
                 old_image.as_ref(),

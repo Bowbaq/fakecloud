@@ -34,6 +34,7 @@ impl KmsState {
     }
 }
 
+#[derive(Clone)]
 pub struct KmsKey {
     pub key_id: String,
     pub arn: String,
@@ -82,6 +83,7 @@ pub struct KmsGrant {
     pub creation_date: f64,
 }
 
+#[derive(Clone)]
 pub struct KeyRotation {
     pub key_id: String,
     pub rotation_date: f64,
