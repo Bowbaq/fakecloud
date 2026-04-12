@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use serde_json::{json, Value};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use fakecloud_core::delivery::DeliveryBus;
 use fakecloud_dynamodb::state::SharedDynamoDbState;
@@ -571,7 +571,12 @@ async fn execute_wait_state(state_def: &Value, input: &Value) {
                 }
             }
         }
+        return;
     }
+
+    warn!(
+        "Wait state has no valid Seconds, SecondsPath, Timestamp, or TimestampPath — skipping wait"
+    );
 }
 
 /// Execute a Pass state: apply InputPath, use Result if present, apply ResultPath and OutputPath.
@@ -1518,6 +1523,16 @@ fn add_event(
 }
 
 fn succeed_execution(state: &SharedStepFunctionsState, execution_arn: &str, output: &Value) {
+    // Check terminal status before recording events to avoid inconsistent history
+    {
+        let s = state.read();
+        if let Some(exec) = s.executions.get(execution_arn) {
+            if exec.status != ExecutionStatus::Running {
+                return;
+            }
+        }
+    }
+
     let output_str = serde_json::to_string(output).unwrap_or_default();
 
     add_event(
@@ -1537,6 +1552,16 @@ fn succeed_execution(state: &SharedStepFunctionsState, execution_arn: &str, outp
 }
 
 fn fail_execution(state: &SharedStepFunctionsState, execution_arn: &str, error: &str, cause: &str) {
+    // Check terminal status before recording events to avoid inconsistent history
+    {
+        let s = state.read();
+        if let Some(exec) = s.executions.get(execution_arn) {
+            if exec.status != ExecutionStatus::Running {
+                return;
+            }
+        }
+    }
+
     add_event(
         state,
         execution_arn,

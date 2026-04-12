@@ -39,7 +39,10 @@ fn evaluate_rule(rule: &Value, input: &Value) -> bool {
 
     // Presence/type checks
     if let Some(expected) = rule.get("IsPresent") {
-        let is_present = !value.is_null();
+        // Check if the field exists in the input (including explicit null).
+        // resolve_path returns Value::Null for both missing and null fields,
+        // so we need to check the parent object directly.
+        let is_present = field_exists_in_input(input, variable);
         return expected.as_bool().unwrap_or(false) == is_present;
     }
     if let Some(expected) = rule.get("IsNull") {
@@ -231,6 +234,65 @@ fn string_matches(value: &str, pattern: &str) -> bool {
     dp[m][n]
 }
 
+/// Check if a field referenced by a JsonPath expression actually exists in the input,
+/// including fields explicitly set to null. This is different from resolve_path which
+/// returns Value::Null for both missing and null fields.
+/// Handles both object fields ($.foo.bar) and array indices ($.items[0]).
+fn field_exists_in_input(root: &Value, path: &str) -> bool {
+    if path == "$" {
+        return true;
+    }
+    let path = path.strip_prefix("$.").unwrap_or(path);
+    let parts: Vec<&str> = path.split('.').collect();
+    let mut current = root;
+
+    for (i, part) in parts.iter().enumerate() {
+        let is_last = i == parts.len() - 1;
+
+        // Check for array index syntax: field[idx]
+        if let Some(bracket_pos) = part.find('[') {
+            let field_name = &part[..bracket_pos];
+            // Ensure closing bracket exists and is at the end of the segment
+            if !part.ends_with(']') {
+                return false; // malformed segment like "foo[0]extra"
+            }
+            let close_bracket = part.len() - 1;
+            if close_bracket <= bracket_pos {
+                return false;
+            }
+            let idx_str = &part[bracket_pos + 1..close_bracket];
+
+            match current.get(field_name) {
+                Some(arr) => {
+                    if let Ok(idx) = idx_str.parse::<usize>() {
+                        if is_last {
+                            return arr.as_array().is_some_and(|a| idx < a.len());
+                        }
+                        match arr.get(idx) {
+                            Some(v) => current = v,
+                            None => return false,
+                        }
+                    } else {
+                        return false;
+                    }
+                }
+                None => return false,
+            }
+        } else if is_last {
+            return match current.as_object() {
+                Some(obj) => obj.contains_key(*part),
+                None => false,
+            };
+        } else {
+            match current.get(*part) {
+                Some(v) => current = v,
+                None => return false,
+            }
+        }
+    }
+    false
+}
+
 enum PatternSegment {
     Literal(String),
     Wildcard,
@@ -343,6 +405,32 @@ mod tests {
 
         let input = json!({"other": "value"});
         assert!(!evaluate_rule(&rule, &input));
+    }
+
+    #[test]
+    fn test_is_present_with_array_index() {
+        let rule = json!({
+            "Variable": "$.items[0]",
+            "IsPresent": true,
+            "Next": "HasItem"
+        });
+        let input = json!({"items": [10, 20, 30]});
+        assert!(evaluate_rule(&rule, &input));
+
+        let input = json!({"items": []});
+        assert!(!evaluate_rule(&rule, &input));
+    }
+
+    #[test]
+    fn test_is_present_with_null_value() {
+        // A field that is explicitly set to null should be considered "present"
+        let rule = json!({
+            "Variable": "$.optional",
+            "IsPresent": true,
+            "Next": "HasField"
+        });
+        let input = json!({"optional": null});
+        assert!(evaluate_rule(&rule, &input));
     }
 
     #[test]
