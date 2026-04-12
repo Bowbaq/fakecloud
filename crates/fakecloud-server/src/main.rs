@@ -228,9 +228,13 @@ async fn main() {
     let sfn_delivery_for_eb: Arc<dyn fakecloud_core::delivery::StepFunctionsDelivery> = {
         // Build a full delivery bus for the SFN interpreter so task states
         // (SNS Publish, EventBridge PutEvents, etc.) actually deliver.
+        let mut sns_fanout_for_sfn = DeliveryBus::new().with_sqs(sqs_delivery.clone());
+        if let Some(ref ld) = lambda_delivery {
+            sns_fanout_for_sfn = sns_fanout_for_sfn.with_lambda(ld.clone());
+        }
         let sns_for_sfn_delivery = Arc::new(fakecloud_sns::delivery::SnsDeliveryImpl::new(
             sns_state.clone(),
-            Arc::new(DeliveryBus::new().with_sqs(sqs_delivery.clone())),
+            Arc::new(sns_fanout_for_sfn),
         ));
         let eb_for_sfn_delivery = Arc::new(
             fakecloud_eventbridge::delivery::EventBridgeDeliveryImpl::new(
