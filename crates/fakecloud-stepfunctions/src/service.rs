@@ -853,6 +853,15 @@ pub fn start_execution_from_delivery(
     state_machine_arn: &str,
     input: &str,
 ) {
+    // Validate input is valid JSON
+    if serde_json::from_str::<serde_json::Value>(input).is_err() {
+        tracing::warn!(
+            state_machine_arn,
+            "Step Functions delivery: invalid JSON input, skipping execution"
+        );
+        return;
+    }
+
     let execution_name = uuid::Uuid::new_v4().to_string();
 
     let mut st = state.write();

@@ -226,7 +226,22 @@ async fn main() {
 
     // Step Functions delivery (EventBridge/Scheduler can start executions)
     let sfn_delivery_for_eb: Arc<dyn fakecloud_core::delivery::StepFunctionsDelivery> = {
-        let mut sfn_interpreter_bus = DeliveryBus::new().with_sqs(sqs_delivery.clone());
+        // Build a full delivery bus for the SFN interpreter so task states
+        // (SNS Publish, EventBridge PutEvents, etc.) actually deliver.
+        let sns_for_sfn_delivery = Arc::new(fakecloud_sns::delivery::SnsDeliveryImpl::new(
+            sns_state.clone(),
+            Arc::new(DeliveryBus::new().with_sqs(sqs_delivery.clone())),
+        ));
+        let eb_for_sfn_delivery = Arc::new(
+            fakecloud_eventbridge::delivery::EventBridgeDeliveryImpl::new(
+                eb_state.clone(),
+                Arc::new(DeliveryBus::new().with_sqs(sqs_delivery.clone())),
+            ),
+        );
+        let mut sfn_interpreter_bus = DeliveryBus::new()
+            .with_sqs(sqs_delivery.clone())
+            .with_sns(sns_for_sfn_delivery)
+            .with_eventbridge(eb_for_sfn_delivery);
         if let Some(ref ld) = lambda_delivery {
             sfn_interpreter_bus = sfn_interpreter_bus.with_lambda(ld.clone());
         }
