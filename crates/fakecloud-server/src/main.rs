@@ -15,6 +15,7 @@ mod dynamodb_streams_lambda_poller;
 mod kinesis_lambda_poller;
 mod lambda_delivery;
 mod sqs_lambda_poller;
+mod stepfunctions_delivery;
 use dynamodb_streams_lambda_poller::DynamoDbStreamsLambdaPoller;
 use kinesis_lambda_poller::KinesisLambdaPoller;
 use sqs_lambda_poller::SqsLambdaPoller;
@@ -222,11 +223,26 @@ async fn main() {
     ));
     let kinesis_delivery_for_eb =
         fakecloud_kinesis::delivery::KinesisDeliveryImpl::new(kinesis_state.clone());
+
+    // Step Functions delivery (EventBridge/Scheduler can start executions)
+    let sfn_delivery_for_eb: Arc<dyn fakecloud_core::delivery::StepFunctionsDelivery> = {
+        let mut sfn_interpreter_bus = DeliveryBus::new().with_sqs(sqs_delivery.clone());
+        if let Some(ref ld) = lambda_delivery {
+            sfn_interpreter_bus = sfn_interpreter_bus.with_lambda(ld.clone());
+        }
+        Arc::new(stepfunctions_delivery::StepFunctionsDeliveryImpl::new(
+            stepfunctions_state.clone(),
+            Some(Arc::new(sfn_interpreter_bus)),
+            Some(dynamodb_state.clone()),
+        ))
+    };
+
     let delivery_for_eb = Arc::new(
         DeliveryBus::new()
             .with_sqs(sqs_delivery.clone())
             .with_sns(sns_delivery.clone())
-            .with_kinesis(kinesis_delivery_for_eb),
+            .with_kinesis(kinesis_delivery_for_eb)
+            .with_stepfunctions(sfn_delivery_for_eb),
     );
 
     // Step 3: S3 delivery (S3 notifications can push to SQS, SNS, Lambda, and EventBridge)
@@ -450,7 +466,7 @@ async fn main() {
     }
     registry.register(Arc::new(elasticache_service));
     let mut sfn_service = StepFunctionsService::new(stepfunctions_state.clone());
-    {
+    let sfn_delivery_bus = {
         let mut sns_eb_bus = DeliveryBus::new().with_sqs(sqs_delivery.clone());
         if let Some(ref ld) = lambda_delivery {
             sns_eb_bus = sns_eb_bus.with_lambda(ld.clone());
@@ -482,10 +498,11 @@ async fn main() {
         if let Some(ref ld) = lambda_delivery {
             bus = bus.with_lambda(ld.clone());
         }
-        sfn_service = sfn_service
-            .with_delivery(Arc::new(bus))
-            .with_dynamodb(dynamodb_state.clone());
-    }
+        Arc::new(bus)
+    };
+    sfn_service = sfn_service
+        .with_delivery(sfn_delivery_bus.clone())
+        .with_dynamodb(dynamodb_state.clone());
     registry.register(Arc::new(sfn_service));
 
     let mut apigw_service = ApiGatewayV2Service::new(apigatewayv2_state.clone());
