@@ -105,7 +105,10 @@ pub fn update_custom_model_deployment(
 ) -> Result<AwsResponse, AwsServiceError> {
     let mut s = state.write();
     let key = find_deployment_key(&s.custom_model_deployments, deployment_identifier)?;
-    let deployment = s.custom_model_deployments.get_mut(&key).unwrap();
+    let deployment = s
+        .custom_model_deployments
+        .get_mut(&key)
+        .expect("key validated by find_deployment_key");
 
     if let Some(model_arn) = body["modelArn"].as_str() {
         deployment.model_arn = model_arn.to_string();

@@ -106,13 +106,14 @@ impl S3Service {
 
         let mut headers = HeaderMap::new();
         if let Some(algo) = &sse_algorithm {
-            headers.insert("x-amz-server-side-encryption", algo.parse().unwrap());
+            if let Ok(val) = algo.parse() {
+                headers.insert("x-amz-server-side-encryption", val);
+            }
         }
         if let Some(kid) = &sse_kms_key_id {
-            headers.insert(
-                "x-amz-server-side-encryption-aws-kms-key-id",
-                kid.parse().unwrap(),
-            );
+            if let Ok(val) = kid.parse() {
+                headers.insert("x-amz-server-side-encryption-aws-kms-key-id", val);
+            }
         }
 
         let body = format!(

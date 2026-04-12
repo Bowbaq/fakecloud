@@ -138,7 +138,11 @@ pub fn update_automated_reasoning_policy(
         )
     })?;
 
-    let policy = s.automated_reasoning_policies.get_mut(&key).unwrap();
+    // SAFETY: key was just validated by find_policy_key above while holding the write lock
+    let policy = s
+        .automated_reasoning_policies
+        .get_mut(&key)
+        .expect("key validated by find_policy_key");
 
     if let Some(name) = body["policyName"].as_str() {
         policy.policy_name = name.to_string();
@@ -196,7 +200,10 @@ pub fn create_automated_reasoning_policy_version(
         )
     })?;
 
-    let policy = s.automated_reasoning_policies.get_mut(&key).unwrap();
+    let policy = s
+        .automated_reasoning_policies
+        .get_mut(&key)
+        .expect("key validated by find_policy_key");
 
     let current: u32 = policy.version.parse().unwrap_or(1);
     let next = current.saturating_add(1);
