@@ -2338,89 +2338,67 @@ impl KmsService {
 
         let mut state = self.state.write();
 
-        // Clone all needed data from source key first to avoid borrow issues
-        let source_key = state.keys.get(&resolved).ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "KMSInternalException",
-                "Key state became inconsistent",
-            )
-        })?;
-        let source_key_id = source_key.key_id.clone();
-        let source_arn = source_key.arn.clone();
-        let source_creation_date = source_key.creation_date;
-        let source_description = source_key.description.clone();
-        let source_enabled = source_key.enabled;
-        let source_key_usage = source_key.key_usage.clone();
-        let source_key_spec = source_key.key_spec.clone();
-        let source_key_manager = source_key.key_manager.clone();
-        let source_key_state = source_key.key_state.clone();
-        let source_origin = source_key.origin.clone();
-        let source_tags = source_key.tags.clone();
-        let source_policy = source_key.policy.clone();
-        let source_signing_algorithms = source_key.signing_algorithms.clone();
-        let source_encryption_algorithms = source_key.encryption_algorithms.clone();
-        let source_mac_algorithms = source_key.mac_algorithms.clone();
+        // Clone the source key once and drop the borrow — the replica reuses
+        // every field except the region-dependent ones.
+        let source_key = state
+            .keys
+            .get(&resolved)
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KMSInternalException",
+                    "Key state became inconsistent",
+                )
+            })?
+            .clone();
         let account_id = state.account_id.clone();
         let source_region = state.region.clone();
 
         let replica_arn = format!(
             "arn:aws:kms:{}:{}:key/{}",
-            replica_region, account_id, source_key_id
+            replica_region, account_id, source_key.key_id
         );
 
         let metadata = json!({
-            "KeyId": source_key_id,
+            "KeyId": source_key.key_id,
             "Arn": replica_arn,
             "AWSAccountId": account_id,
-            "CreationDate": source_creation_date,
-            "Description": source_description,
-            "Enabled": source_enabled,
-            "KeyUsage": source_key_usage,
-            "KeySpec": source_key_spec,
-            "CustomerMasterKeySpec": source_key_spec,
-            "KeyManager": source_key_manager,
-            "KeyState": source_key_state,
-            "Origin": source_origin,
+            "CreationDate": source_key.creation_date,
+            "Description": source_key.description,
+            "Enabled": source_key.enabled,
+            "KeyUsage": source_key.key_usage,
+            "KeySpec": source_key.key_spec,
+            "CustomerMasterKeySpec": source_key.key_spec,
+            "KeyManager": source_key.key_manager,
+            "KeyState": source_key.key_state,
+            "Origin": source_key.origin,
             "MultiRegion": true,
             "MultiRegionConfiguration": {
                 "MultiRegionKeyType": "REPLICA",
                 "PrimaryKey": {
-                    "Arn": source_arn,
+                    "Arn": source_key.arn,
                     "Region": source_region,
                 },
                 "ReplicaKeys": [],
             },
         });
 
+        let replica_storage_key = format!("{}:{}", replica_region, source_key.key_id);
+        let source_policy = source_key.policy.clone();
         let replica_key = KmsKey {
-            key_id: source_key_id.clone(),
             arn: replica_arn,
-            creation_date: source_creation_date,
-            description: source_description,
-            enabled: source_enabled,
-            key_usage: source_key_usage,
-            key_spec: source_key_spec,
-            key_manager: source_key_manager,
-            key_state: source_key_state,
             deletion_date: None,
-            tags: source_tags,
-            policy: source_policy.clone(),
             key_rotation_enabled: false,
-            origin: source_origin,
             multi_region: true,
             rotations: Vec::new(),
-            signing_algorithms: source_signing_algorithms,
-            encryption_algorithms: source_encryption_algorithms,
-            mac_algorithms: source_mac_algorithms,
             custom_key_store_id: None,
             imported_key_material: false,
             imported_material_bytes: None,
             private_key_seed: rand_bytes(32),
             primary_region: None,
+            ..source_key
         };
 
-        let replica_storage_key = format!("{}:{}", replica_region, source_key_id);
         state.keys.insert(replica_storage_key, replica_key);
 
         Ok(AwsResponse::json(

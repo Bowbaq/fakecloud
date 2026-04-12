@@ -20,9 +20,21 @@ use fakecloud_s3::state::SharedS3State;
 
 use crate::state::{
     attribute_type_and_value, AttributeDefinition, AttributeValue, DynamoTable,
-    GlobalSecondaryIndex, KeySchemaElement, LocalSecondaryIndex, Projection, ProvisionedThroughput,
-    SharedDynamoDbState,
+    GlobalSecondaryIndex, KeySchemaElement, KinesisDestination, LocalSecondaryIndex, Projection,
+    ProvisionedThroughput, SharedDynamoDbState,
 };
+
+/// Minimal subset of a ``DynamoTable`` that Kinesis streaming delivery needs.
+///
+/// A table can carry megabytes of items; cloning the whole table just to
+/// release the write lock and deliver one change record is extremely wasteful.
+/// Extracting only the fields the delivery path actually reads (destinations,
+/// arn, name) keeps the clone small.
+pub(super) struct KinesisDeliveryTarget {
+    pub destinations: Vec<KinesisDestination>,
+    pub arn: String,
+    pub name: String,
+}
 
 pub struct DynamoDbService {
     state: SharedDynamoDbState,
@@ -49,10 +61,26 @@ impl DynamoDbService {
         self
     }
 
+    fn kinesis_target(table: &DynamoTable) -> Option<KinesisDeliveryTarget> {
+        if table
+            .kinesis_destinations
+            .iter()
+            .any(|d| d.destination_status == "ACTIVE")
+        {
+            Some(KinesisDeliveryTarget {
+                destinations: table.kinesis_destinations.clone(),
+                arn: table.arn.clone(),
+                name: table.name.clone(),
+            })
+        } else {
+            None
+        }
+    }
+
     /// Deliver a change record to all active Kinesis streaming destinations for a table.
-    fn deliver_to_kinesis_destinations(
+    pub(super) fn deliver_to_kinesis_destinations(
         &self,
-        table: &DynamoTable,
+        target: &KinesisDeliveryTarget,
         event_name: &str,
         keys: &HashMap<String, AttributeValue>,
         old_image: Option<&HashMap<String, AttributeValue>>,
@@ -63,8 +91,8 @@ impl DynamoDbService {
             None => return,
         };
 
-        let active_destinations: Vec<_> = table
-            .kinesis_destinations
+        let active_destinations: Vec<_> = target
+            .destinations
             .iter()
             .filter(|d| d.destination_status == "ACTIVE")
             .collect();
@@ -78,15 +106,15 @@ impl DynamoDbService {
             "eventName": event_name,
             "eventVersion": "1.1",
             "eventSource": "aws:dynamodb",
-            "awsRegion": table.arn.split(':').nth(3).unwrap_or("us-east-1"),
+            "awsRegion": target.arn.split(':').nth(3).unwrap_or("us-east-1"),
             "dynamodb": {
                 "Keys": keys,
                 "SequenceNumber": chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0).to_string(),
                 "SizeBytes": serde_json::to_string(keys).map(|s| s.len()).unwrap_or(0),
                 "StreamViewType": "NEW_AND_OLD_IMAGES",
             },
-            "eventSourceARN": &table.arn,
-            "tableName": &table.name,
+            "eventSourceARN": &target.arn,
+            "tableName": &target.name,
         });
 
         if let Some(old) = old_image {

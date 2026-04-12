@@ -746,14 +746,13 @@ impl DynamoDbService {
             state.region, state.account_id, target_table_name
         );
 
-        let restored_items = backup.items.clone();
         let mut table = DynamoTable {
             name: target_table_name.to_string(),
             arn: arn.clone(),
             key_schema: backup.key_schema.clone(),
             attribute_definitions: backup.attribute_definitions.clone(),
             provisioned_throughput: backup.provisioned_throughput.clone(),
-            items: restored_items,
+            items: backup.items.clone(),
             gsi: Vec::new(),
             lsi: Vec::new(),
             tags: HashMap::new(),
