@@ -849,7 +849,10 @@ fn evaluate_key_condition(
     true
 }
 
-fn split_on_and(expr: &str) -> Vec<&str> {
+/// Split a DynamoDB condition expression on a top-level keyword (``" AND "``,
+/// ``" OR "``), case-insensitively. Parenthesised groups are skipped so only
+/// unparenthesised occurrences of the keyword act as separators.
+fn split_on_top_level_keyword<'a>(expr: &'a str, keyword: &str) -> Vec<&'a str> {
     let mut parts = Vec::new();
     let mut start = 0;
     let len = expr.len();
@@ -864,13 +867,13 @@ fn split_on_and(expr: &str) -> Vec<&str> {
                 depth -= 1;
             }
         } else if depth == 0
-            && i + 5 <= len
+            && i + keyword.len() <= len
             && expr.is_char_boundary(i)
-            && expr.is_char_boundary(i + 5)
-            && expr[i..i + 5].eq_ignore_ascii_case(" AND ")
+            && expr.is_char_boundary(i + keyword.len())
+            && expr[i..i + keyword.len()].eq_ignore_ascii_case(keyword)
         {
             parts.push(&expr[start..i]);
-            start = i + 5;
+            start = i + keyword.len();
             i = start;
             continue;
         }
@@ -880,35 +883,12 @@ fn split_on_and(expr: &str) -> Vec<&str> {
     parts
 }
 
+fn split_on_and(expr: &str) -> Vec<&str> {
+    split_on_top_level_keyword(expr, " AND ")
+}
+
 fn split_on_or(expr: &str) -> Vec<&str> {
-    let mut parts = Vec::new();
-    let mut start = 0;
-    let len = expr.len();
-    let mut i = 0;
-    let mut depth = 0;
-    while i < len {
-        let ch = expr.as_bytes()[i];
-        if ch == b'(' {
-            depth += 1;
-        } else if ch == b')' {
-            if depth > 0 {
-                depth -= 1;
-            }
-        } else if depth == 0
-            && i + 4 <= len
-            && expr.is_char_boundary(i)
-            && expr.is_char_boundary(i + 4)
-            && expr[i..i + 4].eq_ignore_ascii_case(" OR ")
-        {
-            parts.push(&expr[start..i]);
-            start = i + 4;
-            i = start;
-            continue;
-        }
-        i += 1;
-    }
-    parts.push(&expr[start..]);
-    parts
+    split_on_top_level_keyword(expr, " OR ")
 }
 
 fn evaluate_single_key_condition(

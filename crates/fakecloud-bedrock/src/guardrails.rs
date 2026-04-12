@@ -2,7 +2,6 @@ use chrono::Utc;
 use http::StatusCode;
 use regex::Regex;
 use serde_json::{json, Value};
-use uuid::Uuid;
 
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 
@@ -30,7 +29,7 @@ pub fn create_guardrail(
         .unwrap_or("Sorry, the model cannot answer this question.")
         .to_string();
 
-    let guardrail_id = Uuid::new_v4().to_string()[..8].to_string();
+    let guardrail_id = crate::short_uuid();
     let guardrail_arn = format!(
         "arn:aws:bedrock:{}:{}:guardrail/{}",
         req.region, req.account_id, guardrail_id

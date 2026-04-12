@@ -3,6 +3,7 @@ use chrono::Utc;
 use md5::{Digest, Md5};
 
 use crate::state::{S3Object, SharedS3State};
+use crate::xml_util::extract_tag;
 
 /// Parsed inventory destination from the inventory configuration XML.
 struct InventoryDestination {
@@ -153,15 +154,6 @@ fn csv_escape(value: &str) -> String {
     } else {
         format!("\"{value}\"")
     }
-}
-
-fn extract_tag(body: &str, tag: &str) -> Option<String> {
-    let open = format!("<{tag}>");
-    let close = format!("</{tag}>");
-    let start = body.find(&open)?;
-    let content_start = start + open.len();
-    let end = body[content_start..].find(&close)?;
-    Some(body[content_start..content_start + end].trim().to_string())
 }
 
 #[cfg(test)]

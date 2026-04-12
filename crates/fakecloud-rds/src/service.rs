@@ -59,6 +59,21 @@ impl RdsService {
         self.runtime = Some(runtime);
         self
     }
+
+    /// Return the runtime or a ``ServiceUnavailable`` error if it was not configured.
+    ///
+    /// RDS operations that start, stop, or reach into a database container fail
+    /// with a consistent wire error when the daemon (Docker/Podman) is missing
+    /// rather than each caller restating the message.
+    fn require_runtime(&self) -> Result<&Arc<RdsRuntime>, AwsServiceError> {
+        self.runtime.as_ref().ok_or_else(|| {
+            AwsServiceError::aws_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "InvalidParameterValue",
+                "Docker/Podman is required for RDS DB instances but is not available",
+            )
+        })
+    }
 }
 
 #[async_trait]
@@ -203,13 +218,7 @@ impl RdsService {
             }
         }
 
-        let runtime = self.runtime.as_ref().ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "InvalidParameterValue",
-                "Docker/Podman is required for RDS DB instances but is not available",
-            )
-        })?;
+        let runtime = self.require_runtime()?;
 
         // Default database name based on engine
         let logical_db_name = db_name.clone().unwrap_or_else(|| match engine.as_str() {
@@ -564,13 +573,7 @@ impl RdsService {
                 .ok_or_else(|| db_instance_not_found(&db_instance_identifier))?
         };
 
-        let runtime = self.runtime.as_ref().ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "InvalidParameterValue",
-                "Docker/Podman is required for RDS DB instances but is not available",
-            )
-        })?;
+        let runtime = self.require_runtime()?;
 
         let running = runtime
             .restart_container(
@@ -1053,13 +1056,7 @@ impl RdsService {
         let db_snapshot_identifier = required_param(request, "DBSnapshotIdentifier")?;
         let vpc_security_group_ids = parse_vpc_security_group_ids(request);
 
-        let runtime = self.runtime.as_ref().ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "InvalidParameterValue",
-                "Docker/Podman is required for RDS DB instances but is not available",
-            )
-        })?;
+        let runtime = self.require_runtime()?;
 
         let (snapshot, dbi_resource_id, db_instance_arn, created_at) = {
             let mut state = self.state.write();

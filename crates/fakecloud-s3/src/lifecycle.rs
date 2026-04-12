@@ -3,6 +3,7 @@ use std::time::Duration;
 use chrono::{NaiveDate, Utc};
 
 use crate::state::SharedS3State;
+use crate::xml_util::extract_tag;
 
 /// Background task that processes S3 lifecycle rules.
 ///
@@ -262,16 +263,6 @@ fn parse_lifecycle_rules(xml: &str) -> Option<Vec<LifecycleRule>> {
     }
 
     Some(rules)
-}
-
-/// Extract text content of a simple XML tag, e.g. `<Days>30</Days>` -> "30".
-fn extract_tag(body: &str, tag: &str) -> Option<String> {
-    let open = format!("<{tag}>");
-    let close = format!("</{tag}>");
-    let start = body.find(&open)?;
-    let content_start = start + open.len();
-    let end = body[content_start..].find(&close)?;
-    Some(body[content_start..content_start + end].trim().to_string())
 }
 
 /// Extract the body of a block element, e.g. `<Filter>...</Filter>` -> "...".
