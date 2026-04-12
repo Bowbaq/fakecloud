@@ -492,18 +492,10 @@ impl S3Service {
             part_sizes: Some(part_sizes),
             sse_algorithm: upload.sse_algorithm.clone(),
             sse_kms_key_id: upload.sse_kms_key_id.clone(),
-            bucket_key_enabled: None,
             version_id: version_id.clone(),
-            is_delete_marker: false,
-            content_encoding: None,
-            website_redirect_location: None,
-            restore_ongoing: None,
-            restore_expiry: None,
             checksum_algorithm: upload.checksum_algorithm.clone(),
             checksum_value,
-            lock_mode: None,
-            lock_retain_until: None,
-            lock_legal_hold: None,
+            ..Default::default()
         };
         b.objects.insert(key.to_string(), obj);
         b.multipart_uploads.remove(upload_id);

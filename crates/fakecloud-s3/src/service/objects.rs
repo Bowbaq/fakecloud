@@ -930,22 +930,18 @@ impl S3Service {
             tags,
             acl_grants,
             acl_owner_id: Some(acl_owner_id),
-            parts_count: None,
-            part_sizes: None,
             sse_algorithm: sse_algorithm.clone(),
             sse_kms_key_id: sse_kms_key_id.clone(),
             bucket_key_enabled,
             version_id: version_id.clone(),
-            is_delete_marker: false,
             content_encoding,
             website_redirect_location,
-            restore_ongoing: None,
-            restore_expiry: None,
             checksum_algorithm: checksum_algorithm.clone(),
             checksum_value: checksum_value.clone(),
             lock_mode,
             lock_retain_until,
             lock_legal_hold,
+            ..Default::default()
         };
 
         // --- Write lock phase: insert object and handle versioning/replication ---
@@ -2094,17 +2090,12 @@ impl S3Service {
             sse_kms_key_id: new_kms.clone(),
             bucket_key_enabled: new_bke,
             version_id: version_id.clone(),
-            is_delete_marker: false,
             content_encoding: src_obj.content_encoding,
             website_redirect_location: new_redirect,
-            restore_ongoing: None,
-            restore_expiry: None,
             checksum_algorithm: new_checksum_algo.clone(),
             checksum_value: new_checksum_val.clone(),
-            // Do not copy lock from source
-            lock_mode: None,
-            lock_retain_until: None,
-            lock_legal_hold: None,
+            // Lock status is not copied from the source object.
+            ..Default::default()
         };
 
         // Store in version history if versioning enabled

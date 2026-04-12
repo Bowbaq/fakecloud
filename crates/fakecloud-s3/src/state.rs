@@ -14,7 +14,7 @@ pub struct AclGrant {
     pub permission: String, // READ, WRITE, READ_ACP, WRITE_ACP, FULL_CONTROL
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct S3Object {
     pub key: String,
     pub data: Bytes,

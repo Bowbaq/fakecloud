@@ -992,27 +992,8 @@ impl DynamoDbService {
                     etag,
                     size: data_size as u64,
                     last_modified: now,
-                    metadata: HashMap::new(),
                     storage_class: "STANDARD".to_string(),
-                    tags: HashMap::new(),
-                    acl_grants: Vec::new(),
-                    acl_owner_id: None,
-                    parts_count: None,
-                    part_sizes: None,
-                    sse_algorithm: None,
-                    sse_kms_key_id: None,
-                    bucket_key_enabled: None,
-                    version_id: None,
-                    is_delete_marker: false,
-                    content_encoding: None,
-                    website_redirect_location: None,
-                    restore_ongoing: None,
-                    restore_expiry: None,
-                    checksum_algorithm: None,
-                    checksum_value: None,
-                    lock_mode: None,
-                    lock_retain_until: None,
-                    lock_legal_hold: None,
+                    ..Default::default()
                 };
                 bucket.objects.insert(s3_key, obj);
             } else {
