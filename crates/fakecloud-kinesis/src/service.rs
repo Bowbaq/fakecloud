@@ -1180,7 +1180,7 @@ impl KinesisService {
         let stream = state.lookup_stream(&body)?;
 
         let exclusive_start = body["ExclusiveStartShardId"].as_str();
-        let shards: Vec<Value> = stream
+        let mut shards: Vec<Value> = stream
             .shards
             .iter()
             .filter(|s| {
@@ -1190,11 +1190,21 @@ impl KinesisService {
                     true
                 }
             })
-            .take(max_results)
+            .take(max_results + 1)
             .map(shard_to_json)
             .collect();
 
-        Ok(AwsResponse::ok_json(json!({ "Shards": shards })))
+        let has_more = shards.len() > max_results;
+        shards.truncate(max_results);
+
+        let mut resp = json!({ "Shards": shards });
+        if has_more {
+            if let Some(last) = shards.last() {
+                resp["NextToken"] = last["ShardId"].clone();
+            }
+        }
+
+        Ok(AwsResponse::ok_json(resp))
     }
 
     fn merge_shards(&self, request: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
@@ -1254,7 +1264,9 @@ impl KinesisService {
             .starting_hash_key
             .parse()
             .unwrap_or(0);
-        if end1 + 1 != start2 && end2 + 1 != start1 {
+        let adj1 = end1.checked_add(1) == Some(start2);
+        let adj2 = end2.checked_add(1) == Some(start1);
+        if !adj1 && !adj2 {
             return Err(invalid_argument(
                 "ShardToMerge and AdjacentShardToMerge must be adjacent shards",
             ));
@@ -1371,8 +1383,10 @@ impl KinesisService {
         let target = body["TargetShardCount"]
             .as_i64()
             .ok_or_else(|| invalid_argument("TargetShardCount is required"))?;
-        if target <= 0 {
-            return Err(invalid_argument("TargetShardCount must be positive"));
+        if target <= 0 || target > 10000 {
+            return Err(invalid_argument(
+                "TargetShardCount must be between 1 and 10000",
+            ));
         }
         let _scaling_type = body["ScalingType"]
             .as_str()
