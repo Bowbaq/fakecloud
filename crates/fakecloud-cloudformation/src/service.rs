@@ -20,59 +20,41 @@ use crate::state::{SharedCloudFormationState, Stack};
 use crate::template;
 use crate::xml_responses;
 
+/// State references for every service CloudFormation can provision resources in.
+pub struct CloudFormationDeps {
+    pub sqs: SharedSqsState,
+    pub sns: SharedSnsState,
+    pub ssm: SharedSsmState,
+    pub iam: SharedIamState,
+    pub s3: SharedS3State,
+    pub eventbridge: SharedEventBridgeState,
+    pub dynamodb: SharedDynamoDbState,
+    pub logs: SharedLogsState,
+    pub delivery: Arc<DeliveryBus>,
+}
+
 pub struct CloudFormationService {
     state: SharedCloudFormationState,
-    sqs_state: SharedSqsState,
-    sns_state: SharedSnsState,
-    ssm_state: SharedSsmState,
-    iam_state: SharedIamState,
-    s3_state: SharedS3State,
-    eventbridge_state: SharedEventBridgeState,
-    dynamodb_state: SharedDynamoDbState,
-    logs_state: SharedLogsState,
-    delivery: Arc<DeliveryBus>,
+    deps: CloudFormationDeps,
 }
 
 impl CloudFormationService {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        state: SharedCloudFormationState,
-        sqs_state: SharedSqsState,
-        sns_state: SharedSnsState,
-        ssm_state: SharedSsmState,
-        iam_state: SharedIamState,
-        s3_state: SharedS3State,
-        eventbridge_state: SharedEventBridgeState,
-        dynamodb_state: SharedDynamoDbState,
-        logs_state: SharedLogsState,
-        delivery: Arc<DeliveryBus>,
-    ) -> Self {
-        Self {
-            state,
-            sqs_state,
-            sns_state,
-            ssm_state,
-            iam_state,
-            s3_state,
-            eventbridge_state,
-            dynamodb_state,
-            logs_state,
-            delivery,
-        }
+    pub fn new(state: SharedCloudFormationState, deps: CloudFormationDeps) -> Self {
+        Self { state, deps }
     }
 
     fn provisioner(&self, stack_id: &str) -> ResourceProvisioner {
         let cf_state = self.state.read();
         ResourceProvisioner {
-            sqs_state: self.sqs_state.clone(),
-            sns_state: self.sns_state.clone(),
-            ssm_state: self.ssm_state.clone(),
-            iam_state: self.iam_state.clone(),
-            s3_state: self.s3_state.clone(),
-            eventbridge_state: self.eventbridge_state.clone(),
-            dynamodb_state: self.dynamodb_state.clone(),
-            logs_state: self.logs_state.clone(),
-            delivery: self.delivery.clone(),
+            sqs_state: self.deps.sqs.clone(),
+            sns_state: self.deps.sns.clone(),
+            ssm_state: self.deps.ssm.clone(),
+            iam_state: self.deps.iam.clone(),
+            s3_state: self.deps.s3.clone(),
+            eventbridge_state: self.deps.eventbridge.clone(),
+            dynamodb_state: self.deps.dynamodb.clone(),
+            logs_state: self.deps.logs.clone(),
+            delivery: self.deps.delivery.clone(),
             account_id: cf_state.account_id.clone(),
             region: cf_state.region.clone(),
             stack_id: stack_id.to_string(),
@@ -306,7 +288,7 @@ impl CloudFormationService {
         }
 
         Self::send_stack_notification(
-            &self.delivery,
+            &self.deps.delivery,
             &notification_arns,
             stack_name,
             &stack_id,
@@ -360,7 +342,7 @@ impl CloudFormationService {
             drop(state);
 
             Self::send_stack_notification(
-                &self.delivery,
+                &self.deps.delivery,
                 &notification_arns,
                 &stack_name_for_notif,
                 &stack_id,
@@ -642,7 +624,7 @@ impl CloudFormationService {
         if update_failed {
             drop(state);
             Self::send_stack_notification(
-                &self.delivery,
+                &self.deps.delivery,
                 &notification_arns,
                 &stack_name_for_notif,
                 &stack_id,
@@ -657,7 +639,7 @@ impl CloudFormationService {
 
         drop(state);
         Self::send_stack_notification(
-            &self.delivery,
+            &self.deps.delivery,
             &notification_arns,
             &stack_name_for_notif,
             &stack_id,
@@ -751,42 +733,42 @@ mod tests {
             "123456789012",
             "us-east-1",
         )));
-        CloudFormationService::new(
-            cf_state,
-            Arc::new(RwLock::new(fakecloud_sqs::state::SqsState::new(
+        let deps = CloudFormationDeps {
+            sqs: Arc::new(RwLock::new(fakecloud_sqs::state::SqsState::new(
                 "123456789012",
                 "us-east-1",
                 "http://localhost:4566",
             ))),
-            Arc::new(RwLock::new(fakecloud_sns::state::SnsState::new(
+            sns: Arc::new(RwLock::new(fakecloud_sns::state::SnsState::new(
                 "123456789012",
                 "us-east-1",
                 "http://localhost:4566",
             ))),
-            Arc::new(RwLock::new(fakecloud_ssm::state::SsmState::new(
+            ssm: Arc::new(RwLock::new(fakecloud_ssm::state::SsmState::new(
                 "123456789012",
                 "us-east-1",
             ))),
-            Arc::new(RwLock::new(fakecloud_iam::state::IamState::new(
+            iam: Arc::new(RwLock::new(fakecloud_iam::state::IamState::new(
                 "123456789012",
             ))),
-            Arc::new(RwLock::new(fakecloud_s3::state::S3State::new(
+            s3: Arc::new(RwLock::new(fakecloud_s3::state::S3State::new(
                 "123456789012",
                 "us-east-1",
             ))),
-            Arc::new(RwLock::new(
+            eventbridge: Arc::new(RwLock::new(
                 fakecloud_eventbridge::state::EventBridgeState::new("123456789012", "us-east-1"),
             )),
-            Arc::new(RwLock::new(fakecloud_dynamodb::state::DynamoDbState::new(
+            dynamodb: Arc::new(RwLock::new(fakecloud_dynamodb::state::DynamoDbState::new(
                 "123456789012",
                 "us-east-1",
             ))),
-            Arc::new(RwLock::new(fakecloud_logs::state::LogsState::new(
+            logs: Arc::new(RwLock::new(fakecloud_logs::state::LogsState::new(
                 "123456789012",
                 "us-east-1",
             ))),
-            Arc::new(DeliveryBus::new()),
-        )
+            delivery: Arc::new(DeliveryBus::new()),
+        };
+        CloudFormationService::new(cf_state, deps)
     }
 
     fn make_request(action: &str, params: HashMap<String, String>) -> AwsRequest {

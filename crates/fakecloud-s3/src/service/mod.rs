@@ -536,12 +536,14 @@ impl AwsService for S3Service {
             logging::maybe_write_access_log(
                 &self.state,
                 b_name,
-                op,
-                key.as_deref(),
-                status_code,
-                &req.request_id,
-                req.method.as_str(),
-                &req.raw_path,
+                &logging::AccessLogRequest {
+                    operation: op,
+                    key: key.as_deref(),
+                    status: status_code,
+                    request_id: &req.request_id,
+                    method: req.method.as_str(),
+                    path: &req.raw_path,
+                },
             );
         }
 

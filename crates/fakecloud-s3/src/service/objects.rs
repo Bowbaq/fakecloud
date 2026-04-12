@@ -1043,12 +1043,14 @@ impl S3Service {
             deliver_notifications(
                 &self.delivery,
                 config,
-                "ObjectCreated:Put",
-                &bucket_name,
-                &obj_key,
-                obj_size,
-                &obj_etag,
-                &region,
+                &super::notifications::ObjectEvent {
+                    event_name: "ObjectCreated:Put",
+                    bucket_name: &bucket_name,
+                    key: &obj_key,
+                    size: obj_size,
+                    etag: &obj_etag,
+                    region: &region,
+                },
                 Some(&self.state),
             );
         }
@@ -1514,12 +1516,14 @@ impl S3Service {
                 deliver_notifications(
                     &self.delivery,
                     config,
-                    "ObjectRemoved:DeleteMarkerCreated",
-                    &bucket_name,
-                    &obj_key,
-                    0,
-                    "",
-                    &region,
+                    &super::notifications::ObjectEvent {
+                        event_name: "ObjectRemoved:DeleteMarkerCreated",
+                        bucket_name: &bucket_name,
+                        key: &obj_key,
+                        size: 0,
+                        etag: "",
+                        region: &region,
+                    },
                     Some(&self.state),
                 );
             }
@@ -1545,12 +1549,14 @@ impl S3Service {
             deliver_notifications(
                 &self.delivery,
                 config,
-                "ObjectRemoved:Delete",
-                &bucket_name,
-                &obj_key,
-                0,
-                "",
-                &region,
+                &super::notifications::ObjectEvent {
+                    event_name: "ObjectRemoved:Delete",
+                    bucket_name: &bucket_name,
+                    key: &obj_key,
+                    size: 0,
+                    etag: "",
+                    region: &region,
+                },
                 Some(&self.state),
             );
         }
@@ -2172,12 +2178,14 @@ impl S3Service {
             deliver_notifications(
                 &self.delivery,
                 config,
-                "ObjectCreated:Copy",
-                &copy_bucket,
-                &copy_key,
-                copy_size,
-                &copy_etag,
-                &region,
+                &super::notifications::ObjectEvent {
+                    event_name: "ObjectCreated:Copy",
+                    bucket_name: &copy_bucket,
+                    key: &copy_key,
+                    size: copy_size,
+                    etag: &copy_etag,
+                    region: &region,
+                },
                 Some(&self.state),
             );
         }

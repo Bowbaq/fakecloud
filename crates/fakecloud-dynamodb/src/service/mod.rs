@@ -1807,20 +1807,34 @@ fn apply_delete_assignment(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn build_table_description_json(
-    arn: &str,
-    key_schema: &[KeySchemaElement],
-    attribute_definitions: &[AttributeDefinition],
-    provisioned_throughput: &ProvisionedThroughput,
-    gsi: &[GlobalSecondaryIndex],
-    lsi: &[LocalSecondaryIndex],
-    billing_mode: &str,
-    created_at: chrono::DateTime<chrono::Utc>,
-    item_count: i64,
-    size_bytes: i64,
-    status: &str,
-) -> Value {
+pub(super) struct TableDescriptionInput<'a> {
+    pub arn: &'a str,
+    pub key_schema: &'a [KeySchemaElement],
+    pub attribute_definitions: &'a [AttributeDefinition],
+    pub provisioned_throughput: &'a ProvisionedThroughput,
+    pub gsi: &'a [GlobalSecondaryIndex],
+    pub lsi: &'a [LocalSecondaryIndex],
+    pub billing_mode: &'a str,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub item_count: i64,
+    pub size_bytes: i64,
+    pub status: &'a str,
+}
+
+fn build_table_description_json(input: &TableDescriptionInput<'_>) -> Value {
+    let TableDescriptionInput {
+        arn,
+        key_schema,
+        attribute_definitions,
+        provisioned_throughput,
+        gsi,
+        lsi,
+        billing_mode,
+        created_at,
+        item_count,
+        size_bytes,
+        status,
+    } = *input;
     let table_name = arn.rsplit('/').next().unwrap_or("");
     let creation_timestamp =
         created_at.timestamp() as f64 + created_at.timestamp_subsec_millis() as f64 / 1000.0;
@@ -1926,19 +1940,19 @@ fn build_table_description_json(
 }
 
 fn build_table_description(table: &DynamoTable) -> Value {
-    let mut desc = build_table_description_json(
-        &table.arn,
-        &table.key_schema,
-        &table.attribute_definitions,
-        &table.provisioned_throughput,
-        &table.gsi,
-        &table.lsi,
-        &table.billing_mode,
-        table.created_at,
-        table.item_count,
-        table.size_bytes,
-        &table.status,
-    );
+    let mut desc = build_table_description_json(&TableDescriptionInput {
+        arn: &table.arn,
+        key_schema: &table.key_schema,
+        attribute_definitions: &table.attribute_definitions,
+        provisioned_throughput: &table.provisioned_throughput,
+        gsi: &table.gsi,
+        lsi: &table.lsi,
+        billing_mode: &table.billing_mode,
+        created_at: table.created_at,
+        item_count: table.item_count,
+        size_bytes: table.size_bytes,
+        status: &table.status,
+    });
 
     // Add stream specification if streams are enabled
     if table.stream_enabled {

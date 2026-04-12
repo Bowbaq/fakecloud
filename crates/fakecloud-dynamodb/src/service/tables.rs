@@ -183,19 +183,19 @@ impl DynamoDbService {
 
         state.tables.insert(table_name, table);
 
-        let table_desc = build_table_description_json(
-            &arn,
-            &key_schema,
-            &attribute_definitions,
-            &provisioned_throughput,
-            &gsi,
-            &lsi,
-            &billing_mode,
-            now,
-            0,
-            0,
-            "ACTIVE",
-        );
+        let table_desc = build_table_description_json(&super::TableDescriptionInput {
+            arn: &arn,
+            key_schema: &key_schema,
+            attribute_definitions: &attribute_definitions,
+            provisioned_throughput: &provisioned_throughput,
+            gsi: &gsi,
+            lsi: &lsi,
+            billing_mode: &billing_mode,
+            created_at: now,
+            item_count: 0,
+            size_bytes: 0,
+            status: "ACTIVE",
+        });
 
         Self::ok_json(json!({ "TableDescription": table_desc }))
     }
@@ -213,19 +213,19 @@ impl DynamoDbService {
             )
         })?;
 
-        let table_desc = build_table_description_json(
-            &table.arn,
-            &table.key_schema,
-            &table.attribute_definitions,
-            &table.provisioned_throughput,
-            &table.gsi,
-            &table.lsi,
-            &table.billing_mode,
-            table.created_at,
-            table.item_count,
-            table.size_bytes,
-            "DELETING",
-        );
+        let table_desc = build_table_description_json(&super::TableDescriptionInput {
+            arn: &table.arn,
+            key_schema: &table.key_schema,
+            attribute_definitions: &table.attribute_definitions,
+            provisioned_throughput: &table.provisioned_throughput,
+            gsi: &table.gsi,
+            lsi: &table.lsi,
+            billing_mode: &table.billing_mode,
+            created_at: table.created_at,
+            item_count: table.item_count,
+            size_bytes: table.size_bytes,
+            status: "DELETING",
+        });
 
         Self::ok_json(json!({ "TableDescription": table_desc }))
     }
@@ -335,19 +335,19 @@ impl DynamoDbService {
             }
         }
 
-        let table_desc = build_table_description_json(
-            &table.arn,
-            &table.key_schema,
-            &table.attribute_definitions,
-            &table.provisioned_throughput,
-            &table.gsi,
-            &table.lsi,
-            &table.billing_mode,
-            table.created_at,
-            table.item_count,
-            table.size_bytes,
-            &table.status,
-        );
+        let table_desc = build_table_description_json(&super::TableDescriptionInput {
+            arn: &table.arn,
+            key_schema: &table.key_schema,
+            attribute_definitions: &table.attribute_definitions,
+            provisioned_throughput: &table.provisioned_throughput,
+            gsi: &table.gsi,
+            lsi: &table.lsi,
+            billing_mode: &table.billing_mode,
+            created_at: table.created_at,
+            item_count: table.item_count,
+            size_bytes: table.size_bytes,
+            status: &table.status,
+        });
 
         Self::ok_json(json!({ "TableDescription": table_desc }))
     }

@@ -1126,16 +1126,16 @@ impl SnsService {
             let lambda_payloads: Vec<(String, String)> = lambda_subscribers
                 .iter()
                 .map(|(function_arn, subscription_arn)| {
-                    let payload = build_sns_lambda_event(
-                        &msg_id,
-                        &topic_arn,
+                    let payload = build_sns_lambda_event(&SnsLambdaEventInput {
+                        message_id: &msg_id,
+                        topic_arn: &topic_arn,
                         subscription_arn,
-                        &default_message,
-                        subject.as_deref(),
-                        &envelope_attrs,
-                        &now,
-                        &endpoint,
-                    );
+                        message: &default_message,
+                        subject: subject.as_deref(),
+                        message_attributes: &envelope_attrs,
+                        timestamp: &now,
+                        endpoint: &endpoint,
+                    });
                     (function_arn.clone(), payload)
                 })
                 .collect();
@@ -2602,36 +2602,38 @@ impl SnsService {
     }
 }
 
+/// Inputs to `build_sns_lambda_event` — one SNS message delivered to one Lambda subscription.
+pub(crate) struct SnsLambdaEventInput<'a> {
+    pub message_id: &'a str,
+    pub topic_arn: &'a str,
+    pub subscription_arn: &'a str,
+    pub message: &'a str,
+    pub subject: Option<&'a str>,
+    pub message_attributes: &'a serde_json::Map<String, Value>,
+    pub timestamp: &'a chrono::DateTime<Utc>,
+    pub endpoint: &'a str,
+}
+
 /// Build an SNS Lambda event payload (matches real AWS format).
 /// Used by both direct Publish and cross-service delivery.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn build_sns_lambda_event(
-    message_id: &str,
-    topic_arn: &str,
-    subscription_arn: &str,
-    message: &str,
-    subject: Option<&str>,
-    message_attributes: &serde_json::Map<String, Value>,
-    timestamp: &chrono::DateTime<Utc>,
-    endpoint: &str,
-) -> String {
+pub(crate) fn build_sns_lambda_event(input: &SnsLambdaEventInput<'_>) -> String {
     let sns_event = serde_json::json!({
         "Records": [{
             "EventVersion": "1.0",
-            "EventSubscriptionArn": subscription_arn,
+            "EventSubscriptionArn": input.subscription_arn,
             "EventSource": "aws:sns",
             "Sns": {
                 "SignatureVersion": "1",
-                "Timestamp": timestamp.to_rfc3339(),
+                "Timestamp": input.timestamp.to_rfc3339(),
                 "Signature": "FAKE_SIGNATURE",
                 "SigningCertUrl": "https://sns.us-east-1.amazonaws.com/SimpleNotificationService-0000000000000000000000.pem",
-                "MessageId": message_id,
-                "Message": message,
-                "MessageAttributes": message_attributes,
+                "MessageId": input.message_id,
+                "Message": input.message,
+                "MessageAttributes": input.message_attributes,
                 "Type": "Notification",
-                "UnsubscribeUrl": format!("{}/?Action=Unsubscribe&SubscriptionArn={}", endpoint, subscription_arn),
-                "TopicArn": topic_arn,
-                "Subject": subject.unwrap_or(""),
+                "UnsubscribeUrl": format!("{}/?Action=Unsubscribe&SubscriptionArn={}", input.endpoint, input.subscription_arn),
+                "TopicArn": input.topic_arn,
+                "Subject": input.subject.unwrap_or(""),
             }
         }]
     });
@@ -3601,16 +3603,16 @@ mod tests {
         let topic_arn = "arn:aws:sns:us-east-1:123456789012:my-topic";
         let attrs = serde_json::Map::new();
 
-        let payload = build_sns_lambda_event(
-            "msg-001",
+        let payload = build_sns_lambda_event(&SnsLambdaEventInput {
+            message_id: "msg-001",
             topic_arn,
-            sub_arn,
-            "hello",
-            Some("test subject"),
-            &attrs,
-            &now,
-            "http://localhost:4566",
-        );
+            subscription_arn: sub_arn,
+            message: "hello",
+            subject: Some("test subject"),
+            message_attributes: &attrs,
+            timestamp: &now,
+            endpoint: "http://localhost:4566",
+        });
 
         let parsed: Value = serde_json::from_str(&payload).unwrap();
         let record = &parsed["Records"][0];
@@ -3662,16 +3664,16 @@ mod tests {
         let attrs = serde_json::Map::new();
         let endpoint = "http://custom:9999";
 
-        let payload = build_sns_lambda_event(
-            "msg-003",
-            "arn:aws:sns:us-east-1:123456789012:my-topic",
-            sub_arn,
-            "hello",
-            None,
-            &attrs,
-            &now,
+        let payload = build_sns_lambda_event(&SnsLambdaEventInput {
+            message_id: "msg-003",
+            topic_arn: "arn:aws:sns:us-east-1:123456789012:my-topic",
+            subscription_arn: sub_arn,
+            message: "hello",
+            subject: None,
+            message_attributes: &attrs,
+            timestamp: &now,
             endpoint,
-        );
+        });
 
         let parsed: Value = serde_json::from_str(&payload).unwrap();
         let unsub_url = parsed["Records"][0]["Sns"]["UnsubscribeUrl"]

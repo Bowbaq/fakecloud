@@ -378,15 +378,17 @@ async fn main() {
     let mut registry = ServiceRegistry::new();
     registry.register(Arc::new(CloudFormationService::new(
         cloudformation_state,
-        sqs_state.clone(),
-        sns_state.clone(),
-        ssm_state.clone(),
-        iam_state.clone(),
-        s3_state.clone(),
-        eb_state.clone(),
-        dynamodb_state.clone(),
-        logs_state.clone(),
-        delivery_for_cf,
+        fakecloud_cloudformation::service::CloudFormationDeps {
+            sqs: sqs_state.clone(),
+            sns: sns_state.clone(),
+            ssm: ssm_state.clone(),
+            iam: iam_state.clone(),
+            s3: s3_state.clone(),
+            eventbridge: eb_state.clone(),
+            dynamodb: dynamodb_state.clone(),
+            logs: logs_state.clone(),
+            delivery: delivery_for_cf,
+        },
     )));
     registry.register(Arc::new(SqsService::new(sqs_state.clone())));
     let sns_state_for_sfn = sns_state.clone();

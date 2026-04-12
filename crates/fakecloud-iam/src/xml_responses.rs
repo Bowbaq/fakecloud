@@ -582,24 +582,30 @@ impl StsCredentials {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn assume_role_response(
-    role_arn: &str,
-    role_session_name: &str,
-    role_id: &str,
-    account_id: &str,
-    partition: &str,
-    creds: &StsCredentials,
-    expiration: &str,
-    request_id: &str,
-) -> String {
-    // Extract role name from ARN
-    let role_name = role_arn.rsplit('/').next().unwrap_or("unknown");
-    let assumed_role_arn = format!(
-        "arn:{}:sts::{}:assumed-role/{}/{}",
-        partition, account_id, role_name, role_session_name
-    );
+/// Inputs shared by all assume-role variants used to build an STS XML response.
+pub struct AssumedRoleInfo<'a> {
+    pub role_arn: &'a str,
+    pub role_session_name: &'a str,
+    pub assumed_role_id: &'a str,
+    pub account_id: &'a str,
+    pub partition: &'a str,
+    pub creds: &'a StsCredentials,
+    pub expiration: &'a str,
+    pub request_id: &'a str,
+}
 
+impl AssumedRoleInfo<'_> {
+    fn assumed_role_arn(&self) -> String {
+        let role_name = self.role_arn.rsplit('/').next().unwrap_or("unknown");
+        format!(
+            "arn:{}:sts::{}:assumed-role/{}/{}",
+            self.partition, self.account_id, role_name, self.role_session_name
+        )
+    }
+}
+
+pub fn assume_role_response(info: &AssumedRoleInfo<'_>) -> String {
+    let assumed_role_arn = info.assumed_role_arn();
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <AssumeRoleResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
@@ -619,32 +625,19 @@ pub fn assume_role_response(
     <RequestId>{request_id}</RequestId>
   </ResponseMetadata>
 </AssumeRoleResponse>"#,
-        access_key_id = creds.access_key_id,
-        secret_access_key = creds.secret_access_key,
-        session_token = creds.session_token,
-        role_id = role_id,
+        access_key_id = info.creds.access_key_id,
+        secret_access_key = info.creds.secret_access_key,
+        session_token = info.creds.session_token,
+        role_id = info.assumed_role_id,
         assumed_role_arn = assumed_role_arn,
-        session = role_session_name,
+        session = info.role_session_name,
+        expiration = info.expiration,
+        request_id = info.request_id,
     )
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn assume_role_with_web_identity_response(
-    role_arn: &str,
-    role_session_name: &str,
-    account_id: &str,
-    partition: &str,
-    creds: &StsCredentials,
-    assumed_role_id: &str,
-    expiration: &str,
-    request_id: &str,
-) -> String {
-    let role_name = role_arn.rsplit('/').next().unwrap_or("unknown");
-    let assumed_role_arn = format!(
-        "arn:{}:sts::{}:assumed-role/{}/{}",
-        partition, account_id, role_name, role_session_name
-    );
-
+pub fn assume_role_with_web_identity_response(info: &AssumedRoleInfo<'_>) -> String {
+    let assumed_role_arn = info.assumed_role_arn();
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <AssumeRoleWithWebIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
@@ -664,33 +657,19 @@ pub fn assume_role_with_web_identity_response(
     <RequestId>{request_id}</RequestId>
   </ResponseMetadata>
 </AssumeRoleWithWebIdentityResponse>"#,
-        access_key_id = creds.access_key_id,
-        secret_access_key = creds.secret_access_key,
-        session_token = creds.session_token,
-        assumed_role_id = assumed_role_id,
+        access_key_id = info.creds.access_key_id,
+        secret_access_key = info.creds.secret_access_key,
+        session_token = info.creds.session_token,
+        assumed_role_id = info.assumed_role_id,
         assumed_role_arn = assumed_role_arn,
-        session = role_session_name,
-        request_id = request_id,
+        session = info.role_session_name,
+        expiration = info.expiration,
+        request_id = info.request_id,
     )
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn assume_role_with_saml_response(
-    role_arn: &str,
-    role_session_name: &str,
-    account_id: &str,
-    partition: &str,
-    creds: &StsCredentials,
-    assumed_role_id: &str,
-    expiration: &str,
-    request_id: &str,
-) -> String {
-    let role_name = role_arn.rsplit('/').next().unwrap_or("unknown");
-    let assumed_role_arn = format!(
-        "arn:{}:sts::{}:assumed-role/{}/{}",
-        partition, account_id, role_name, role_session_name
-    );
-
+pub fn assume_role_with_saml_response(info: &AssumedRoleInfo<'_>) -> String {
+    let assumed_role_arn = info.assumed_role_arn();
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <AssumeRoleWithSAMLResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
@@ -710,13 +689,14 @@ pub fn assume_role_with_saml_response(
     <RequestId>{request_id}</RequestId>
   </ResponseMetadata>
 </AssumeRoleWithSAMLResponse>"#,
-        access_key_id = creds.access_key_id,
-        secret_access_key = creds.secret_access_key,
-        session_token = creds.session_token,
-        assumed_role_id = assumed_role_id,
+        access_key_id = info.creds.access_key_id,
+        secret_access_key = info.creds.secret_access_key,
+        session_token = info.creds.session_token,
+        assumed_role_id = info.assumed_role_id,
         assumed_role_arn = assumed_role_arn,
-        session = role_session_name,
-        request_id = request_id,
+        session = info.role_session_name,
+        expiration = info.expiration,
+        request_id = info.request_id,
     )
 }
 

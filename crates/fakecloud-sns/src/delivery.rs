@@ -82,16 +82,17 @@ impl SnsDelivery for SnsDeliveryImpl {
         let lambda_payloads: Vec<(String, String)> = lambda_subscribers
             .iter()
             .map(|(function_arn, subscription_arn)| {
-                let payload = crate::service::build_sns_lambda_event(
-                    &msg_id,
-                    topic_arn,
-                    subscription_arn,
-                    message,
-                    subject,
-                    &empty_attrs,
-                    &now,
-                    &endpoint,
-                );
+                let payload =
+                    crate::service::build_sns_lambda_event(&crate::service::SnsLambdaEventInput {
+                        message_id: &msg_id,
+                        topic_arn,
+                        subscription_arn,
+                        message,
+                        subject,
+                        message_attributes: &empty_attrs,
+                        timestamp: &now,
+                        endpoint: &endpoint,
+                    });
                 (function_arn.clone(), payload)
             })
             .collect();

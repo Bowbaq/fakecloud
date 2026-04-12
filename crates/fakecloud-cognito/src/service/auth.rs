@@ -786,15 +786,18 @@ impl CognitoService {
                 let mut challenge_metadata: Option<String> = None;
 
                 if let Some(create_arn) = create_arn {
+                    let create_ctx = triggers::AuthChallengeContext {
+                        pool_id: &pool_id,
+                        client_id: Some(&client_id_owned),
+                        username: &username_owned,
+                        user_attributes: &user_attrs,
+                        region: &region,
+                        account_id: &account_id,
+                    };
                     let create_event = triggers::build_create_auth_challenge_event(
-                        &pool_id,
-                        Some(&client_id_owned),
-                        &username_owned,
-                        &user_attrs,
+                        &create_ctx,
                         &challenge_name,
                         &challenge_results,
-                        &region,
-                        &account_id,
                     );
                     if let Some(create_response) =
                         triggers::invoke_trigger(ctx, &create_arn, &create_event).await
@@ -1207,15 +1210,18 @@ impl CognitoService {
                     )
                 })?;
 
+                let verify_ctx = triggers::AuthChallengeContext {
+                    pool_id: &pool_id,
+                    client_id: Some(&session_client_id),
+                    username: &username,
+                    user_attributes: &user_attrs,
+                    region: &region,
+                    account_id: &account_id,
+                };
                 let verify_event = triggers::build_verify_auth_challenge_event(
-                    &pool_id,
-                    Some(&session_client_id),
-                    &username,
-                    &user_attrs,
+                    &verify_ctx,
                     answer,
                     challenge_metadata.as_deref(),
-                    &region,
-                    &account_id,
                 );
 
                 let verify_response = triggers::invoke_trigger(ctx, &verify_arn, &verify_event)
@@ -1374,15 +1380,18 @@ impl CognitoService {
                 let mut new_challenge_metadata: Option<String> = None;
 
                 if let Some(create_arn) = create_arn {
+                    let create_ctx = triggers::AuthChallengeContext {
+                        pool_id: &pool_id,
+                        client_id: Some(&session_client_id),
+                        username: &username,
+                        user_attributes: &user_attrs,
+                        region: &region,
+                        account_id: &account_id,
+                    };
                     let create_event = triggers::build_create_auth_challenge_event(
-                        &pool_id,
-                        Some(&session_client_id),
-                        &username,
-                        &user_attrs,
+                        &create_ctx,
                         &next_challenge_name,
                         &challenge_results,
-                        &region,
-                        &account_id,
                     );
                     if let Some(create_response) =
                         triggers::invoke_trigger(ctx, &create_arn, &create_event).await
