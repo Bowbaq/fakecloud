@@ -9,6 +9,7 @@ use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 
 use crate::state::UserAttribute;
 use crate::triggers::{self, TriggerSource};
+use crate::user_status;
 
 use super::{
     generate_confirmation_code, matches_filter, parse_filter_expression, parse_string_array,
@@ -87,7 +88,7 @@ impl CognitoService {
                 sub: sub_val,
                 attributes,
                 enabled: true,
-                user_status: "FORCE_CHANGE_PASSWORD".to_string(),
+                user_status: user_status::FORCE_CHANGE_PASSWORD.to_string(),
                 user_create_date: now,
                 user_last_modified_date: now,
                 password: None,
@@ -142,7 +143,7 @@ impl CognitoService {
                             .get_mut(&pool_id_owned)
                             .and_then(|users| users.get_mut(&username_owned))
                         {
-                            u.user_status = "CONFIRMED".to_string();
+                            u.user_status = user_status::CONFIRMED.to_string();
                             u.user_last_modified_date = Utc::now();
                         }
                     }
@@ -642,7 +643,7 @@ impl CognitoService {
         if permanent {
             user.password = Some(password.to_string());
             user.temporary_password = None;
-            user.user_status = "CONFIRMED".to_string();
+            user.user_status = user_status::CONFIRMED.to_string();
         } else {
             user.temporary_password = Some(password.to_string());
         }

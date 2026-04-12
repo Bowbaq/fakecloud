@@ -11,6 +11,7 @@ use crate::state::{
     AccessTokenData, AuthEvent, ChallengeResult, RefreshTokenData, SessionData, UserAttribute,
 };
 use crate::triggers::{self, TriggerSource};
+use crate::user_status;
 
 use super::{
     generate_confirmation_code, generate_tokens, parse_user_attributes, require_str,
@@ -224,7 +225,7 @@ impl CognitoService {
             }
 
             // Check if user needs to change password
-            if user.user_status == "FORCE_CHANGE_PASSWORD" {
+            if user.user_status == user_status::FORCE_CHANGE_PASSWORD {
                 let session = Uuid::new_v4().to_string();
                 state.sessions.insert(
                     session.clone(),
@@ -489,7 +490,7 @@ impl CognitoService {
                         ));
                     }
 
-                    if user.user_status == "FORCE_CHANGE_PASSWORD" {
+                    if user.user_status == user_status::FORCE_CHANGE_PASSWORD {
                         let session = Uuid::new_v4().to_string();
                         state.sessions.insert(
                             session.clone(),
@@ -1066,7 +1067,7 @@ impl CognitoService {
 
                 user.password = Some(new_password.to_string());
                 user.temporary_password = None;
-                user.user_status = "CONFIRMED".to_string();
+                user.user_status = user_status::CONFIRMED.to_string();
                 user.user_last_modified_date = Utc::now();
 
                 let sub = user.sub.clone();
@@ -1508,7 +1509,7 @@ impl CognitoService {
                 sub: sub.clone(),
                 attributes,
                 enabled: true,
-                user_status: "UNCONFIRMED".to_string(),
+                user_status: user_status::UNCONFIRMED.to_string(),
                 user_create_date: now,
                 user_last_modified_date: now,
                 password: Some(password.to_string()),
@@ -1571,7 +1572,7 @@ impl CognitoService {
                 .get_mut(&pool_id)
                 .and_then(|users| users.get_mut(username))
             {
-                u.user_status = "CONFIRMED".to_string();
+                u.user_status = user_status::CONFIRMED.to_string();
                 u.user_last_modified_date = Utc::now();
             }
         }
@@ -1623,7 +1624,7 @@ impl CognitoService {
                 )
             })?;
 
-        user.user_status = "CONFIRMED".to_string();
+        user.user_status = user_status::CONFIRMED.to_string();
         user.user_last_modified_date = Utc::now();
 
         let user_attrs = triggers::collect_user_attributes(user);
@@ -1686,7 +1687,7 @@ impl CognitoService {
                 )
             })?;
 
-        user.user_status = "CONFIRMED".to_string();
+        user.user_status = user_status::CONFIRMED.to_string();
         user.user_last_modified_date = Utc::now();
 
         let user_attrs = triggers::collect_user_attributes(user);
@@ -1968,7 +1969,7 @@ impl CognitoService {
         user.password = Some(password.to_string());
         user.temporary_password = None;
         user.confirmation_code = None;
-        user.user_status = "CONFIRMED".to_string();
+        user.user_status = user_status::CONFIRMED.to_string();
         user.user_last_modified_date = Utc::now();
 
         Ok(AwsResponse::ok_json(json!({})))
@@ -2006,7 +2007,7 @@ impl CognitoService {
                 )
             })?;
 
-        user.user_status = "RESET_REQUIRED".to_string();
+        user.user_status = user_status::RESET_REQUIRED.to_string();
         user.confirmation_code = Some(generate_confirmation_code());
         user.user_last_modified_date = Utc::now();
 
