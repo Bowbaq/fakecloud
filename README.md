@@ -156,7 +156,7 @@ aws --endpoint-url http://localhost:4566 sqs create-queue --queue-name my-queue
 
 ## Supported Services
 
-20 AWS services, 1044 API operations:
+21 AWS services, 1071 API operations:
 
 | Service                | Actions | Highlights                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ---------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -180,6 +180,7 @@ aws --endpoint-url http://localhost:4566 sqs create-queue --queue-name my-queue
 | **ElastiCache**        | 44      | Cache clusters, replication groups, global replication groups, serverless caches and snapshots, subnet groups, users/user groups, failover, tagging (Redis and Valkey via Docker)                                                                                                                                                                                                                           |
 | **Step Functions**     | 14      | State machine CRUD, executions, ASL interpreter (Pass, Task, Choice, Wait, Parallel, Map, Succeed, Fail), Retry/Catch, Lambda/SQS/SNS/EventBridge/DynamoDB task integrations                                                                                                                                                                                                                              |
 | **API Gateway v2**     | 28      | HTTP APIs, routes with path parameters and wildcards, Lambda proxy integration, HTTP proxy integration, Mock integration, stages, deployments, authorizers (JWT and Lambda), CORS configuration, request history                                                                                                                                                                                          |
+| **Bedrock**            | 27      | Foundation models, guardrails with versioning, model customization jobs, provisioned throughput, invocation logging, InvokeModel/Converse (sync and streaming), tagging                                                                                                                                                                                                                                    |
 
 ### Cross-Service Integration
 
@@ -231,8 +232,10 @@ curl http://localhost:4566/_fakecloud/health
 ```json
 {
   "status": "ok",
-  "version": "0.6.1",
+  "version": "0.7.1",
   "services": [
+    "apigatewayv2",
+    "bedrock",
     "cloudformation",
     "cognito-idp",
     "dynamodb",
@@ -250,6 +253,7 @@ curl http://localhost:4566/_fakecloud/health
     "sns",
     "sqs",
     "ssm",
+    "states",
     "sts"
   ]
 }

@@ -439,7 +439,6 @@ async fn main() {
         CognitoService::new(cognito_state.clone()).with_delivery(cognito_delivery_ctx),
     ));
     registry.register(Arc::new(KinesisService::new(kinesis_state.clone())));
-    registry.register(Arc::new(KinesisService::new(kinesis_state.clone())));
     let mut rds_service = RdsService::new(rds_state);
     if let Some(ref rt) = rds_runtime {
         rds_service = rds_service.with_runtime(rt.clone());
