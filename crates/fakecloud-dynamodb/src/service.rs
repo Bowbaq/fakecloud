@@ -7288,4 +7288,62 @@ mod tests {
         assert_eq!(tags[0].get("S").and_then(|s| s.as_str()), Some("red"));
         assert_eq!(tags[1].get("S").and_then(|s| s.as_str()), Some("green"));
     }
+
+    #[test]
+    fn test_unrecognized_expression_returns_false() {
+        // evaluate_single_key_condition must fail-closed: an expression shape
+        // it doesn't recognize should return false (reject), not true (accept).
+        let item = cond_item(&[("x", "1")]);
+        let names: HashMap<String, String> = HashMap::new();
+        let values: HashMap<String, Value> = HashMap::new();
+
+        assert!(
+            !evaluate_single_key_condition("GARBAGE NONSENSE", &item, "", &names, &values),
+            "unrecognized expression must return false"
+        );
+    }
+
+    #[test]
+    fn test_set_list_index_out_of_range_returns_error() {
+        // SET list[N] where N > len must return a ValidationException,
+        // not silently no-op.
+        let mut item = HashMap::new();
+        item.insert("items".to_string(), json!({"L": [{"S": "a"}, {"S": "b"}]}));
+
+        let names: HashMap<String, String> = HashMap::new();
+        let mut values = HashMap::new();
+        values.insert(":v".to_string(), json!({"S": "z"}));
+
+        let result = apply_update_expression(&mut item, "SET items[5] = :v", &names, &values);
+        assert!(
+            result.is_err(),
+            "out-of-range list index must return an error"
+        );
+
+        // List should be unchanged
+        let list = item
+            .get("items")
+            .and_then(|v| v.get("L"))
+            .and_then(|v| v.as_array())
+            .unwrap();
+        assert_eq!(list.len(), 2);
+    }
+
+    #[test]
+    fn test_set_list_index_on_non_list_returns_error() {
+        // SET attr[0] = :v where attr is a string (not a list) must return
+        // a ValidationException.
+        let mut item = HashMap::new();
+        item.insert("name".to_string(), json!({"S": "hello"}));
+
+        let names: HashMap<String, String> = HashMap::new();
+        let mut values = HashMap::new();
+        values.insert(":v".to_string(), json!({"S": "z"}));
+
+        let result = apply_update_expression(&mut item, "SET name[0] = :v", &names, &values);
+        assert!(
+            result.is_err(),
+            "list index on non-list attribute must return an error"
+        );
+    }
 }
