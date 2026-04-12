@@ -1185,7 +1185,7 @@ impl ElastiCacheService {
             })?;
 
         for member in &group.members {
-            if !retain_primary && member.role == "PRIMARY" {
+            if !retain_primary && member.role == "primary" {
                 // Delete the primary replication group when RetainPrimaryReplicationGroup=false
                 if let Some(rg) = state
                     .replication_groups

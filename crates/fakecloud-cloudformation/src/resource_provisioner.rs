@@ -633,18 +633,15 @@ impl ResourceProvisioner {
         // Parse StreamSpecification from CloudFormation properties
         let (stream_enabled, stream_view_type) =
             if let Some(stream_spec) = props.get("StreamSpecification") {
+                let view_type = stream_spec
+                    .get("StreamViewType")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
                 let enabled = stream_spec
                     .get("StreamEnabled")
                     .and_then(|v| v.as_bool().or_else(|| v.as_str().map(|s| s == "true")))
-                    .unwrap_or(false);
-                let view_type = if enabled {
-                    stream_spec
-                        .get("StreamViewType")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string())
-                } else {
-                    None
-                };
+                    // If StreamViewType is set, treat streams as enabled even if StreamEnabled is missing
+                    .unwrap_or(view_type.is_some());
                 (enabled, view_type)
             } else {
                 (false, None)
