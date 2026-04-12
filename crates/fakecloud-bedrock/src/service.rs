@@ -751,13 +751,14 @@ impl AwsService for BedrockService {
                 action: format!("{} {}", req.method, req.raw_path),
             })?;
 
+        let body = req.json_body();
+
         match action {
             "ListFoundationModels" => self.list_foundation_models(&req),
             "GetFoundationModel" => {
                 self.get_foundation_model(&req, &resource_id.unwrap_or_default())
             }
             "TagResource" => {
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
                 let arn = body["resourceARN"]
                     .as_str()
                     .filter(|s| !s.is_empty())
@@ -771,7 +772,6 @@ impl AwsService for BedrockService {
                 self.tag_resource(&req, arn, &body)
             }
             "UntagResource" => {
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
                 let arn = body["resourceARN"].as_str().unwrap_or_default();
                 let tag_keys: Vec<String> = body["tagKeys"]
                     .as_array()
@@ -784,39 +784,29 @@ impl AwsService for BedrockService {
                 self.untag_resource_from_body(arn, &tag_keys)
             }
             "ListTagsForResource" => {
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
                 let arn = body["resourceARN"].as_str().unwrap_or_default();
                 self.list_tags_for_resource(&req, arn)
             }
-            "CreateGuardrail" => {
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
-                crate::guardrails::create_guardrail(&self.state, &req, &body)
-            }
+            "CreateGuardrail" => crate::guardrails::create_guardrail(&self.state, &req, &body),
             "GetGuardrail" => crate::guardrails::get_guardrail(
                 &self.state,
                 &req,
                 &resource_id.unwrap_or_default(),
             ),
             "ListGuardrails" => crate::guardrails::list_guardrails(&self.state, &req),
-            "UpdateGuardrail" => {
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
-                crate::guardrails::update_guardrail(
-                    &self.state,
-                    &resource_id.unwrap_or_default(),
-                    &body,
-                )
-            }
+            "UpdateGuardrail" => crate::guardrails::update_guardrail(
+                &self.state,
+                &resource_id.unwrap_or_default(),
+                &body,
+            ),
             "DeleteGuardrail" => {
                 crate::guardrails::delete_guardrail(&self.state, &resource_id.unwrap_or_default())
             }
-            "CreateGuardrailVersion" => {
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
-                crate::guardrails::create_guardrail_version(
-                    &self.state,
-                    &resource_id.unwrap_or_default(),
-                    &body,
-                )
-            }
+            "CreateGuardrailVersion" => crate::guardrails::create_guardrail_version(
+                &self.state,
+                &resource_id.unwrap_or_default(),
+                &body,
+            ),
             "ApplyGuardrail" => crate::guardrails::apply_guardrail(
                 &self.state,
                 &resource_id.unwrap_or_default(),
@@ -825,7 +815,6 @@ impl AwsService for BedrockService {
             ),
             // Custom models
             "CreateCustomModel" => {
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
                 crate::custom_models::create_custom_model(&self.state, &req, &body)
             }
             "GetCustomModel" => crate::custom_models::get_custom_model(
@@ -839,7 +828,6 @@ impl AwsService for BedrockService {
             ),
             // Custom model deployments
             "CreateCustomModelDeployment" => {
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
                 crate::custom_model_deployments::create_custom_model_deployment(
                     &self.state,
                     &req,
@@ -856,7 +844,6 @@ impl AwsService for BedrockService {
                 crate::custom_model_deployments::list_custom_model_deployments(&self.state, &req)
             }
             "UpdateCustomModelDeployment" => {
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
                 crate::custom_model_deployments::update_custom_model_deployment(
                     &self.state,
                     &resource_id.unwrap_or_default(),
@@ -871,7 +858,6 @@ impl AwsService for BedrockService {
             }
             // Model import jobs
             "CreateModelImportJob" => {
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
                 crate::model_import::create_model_import_job(&self.state, &req, &body)
             }
             "GetModelImportJob" => crate::model_import::get_model_import_job(
@@ -890,7 +876,6 @@ impl AwsService for BedrockService {
             ),
             // Model copy jobs
             "CreateModelCopyJob" => {
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
                 crate::model_copy::create_model_copy_job(&self.state, &req, &body)
             }
             "GetModelCopyJob" => {
@@ -899,7 +884,6 @@ impl AwsService for BedrockService {
             "ListModelCopyJobs" => crate::model_copy::list_model_copy_jobs(&self.state, &req),
             // Model invocation jobs
             "CreateModelInvocationJob" => {
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
                 crate::invocation_jobs::create_model_invocation_job(&self.state, &req, &body)
             }
             "GetModelInvocationJob" => crate::invocation_jobs::get_model_invocation_job(
@@ -915,7 +899,6 @@ impl AwsService for BedrockService {
             ),
             // Evaluation jobs
             "CreateEvaluationJob" => {
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
                 crate::evaluation::create_evaluation_job(&self.state, &req, &body)
             }
             "GetEvaluationJob" => {
@@ -927,12 +910,10 @@ impl AwsService for BedrockService {
                 &resource_id.unwrap_or_default(),
             ),
             "BatchDeleteEvaluationJob" => {
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
                 crate::evaluation::batch_delete_evaluation_job(&self.state, &body)
             }
             // Inference profiles
             "CreateInferenceProfile" => {
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
                 crate::inference_profiles::create_inference_profile(&self.state, &req, &body)
             }
             "GetInferenceProfile" => crate::inference_profiles::get_inference_profile(
@@ -948,7 +929,6 @@ impl AwsService for BedrockService {
             ),
             // Prompt routers
             "CreatePromptRouter" => {
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
                 crate::prompt_routers::create_prompt_router(&self.state, &req, &body)
             }
             "GetPromptRouter" => crate::prompt_routers::get_prompt_router(
@@ -962,7 +942,6 @@ impl AwsService for BedrockService {
             ),
             // Resource policies
             "PutResourcePolicy" => {
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
                 crate::resource_policies::put_resource_policy(&self.state, &body)
             }
             "GetResourcePolicy" => crate::resource_policies::get_resource_policy(
@@ -975,7 +954,6 @@ impl AwsService for BedrockService {
             ),
             // Marketplace model endpoints
             "CreateMarketplaceModelEndpoint" => {
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
                 crate::marketplace::create_marketplace_model_endpoint(&self.state, &req, &body)
             }
             "GetMarketplaceModelEndpoint" => crate::marketplace::get_marketplace_model_endpoint(
@@ -986,7 +964,6 @@ impl AwsService for BedrockService {
                 crate::marketplace::list_marketplace_model_endpoints(&self.state, &req)
             }
             "UpdateMarketplaceModelEndpoint" => {
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
                 crate::marketplace::update_marketplace_model_endpoint(
                     &self.state,
                     &resource_id.unwrap_or_default(),
@@ -1013,7 +990,6 @@ impl AwsService for BedrockService {
             }
             // Foundation model agreements
             "CreateFoundationModelAgreement" => {
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
                 crate::foundation_model_agreements::create_foundation_model_agreement(
                     &self.state,
                     &req,
@@ -1021,7 +997,6 @@ impl AwsService for BedrockService {
                 )
             }
             "DeleteFoundationModelAgreement" => {
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
                 crate::foundation_model_agreements::delete_foundation_model_agreement(
                     &self.state,
                     &body,
@@ -1043,7 +1018,6 @@ impl AwsService for BedrockService {
                 crate::foundation_model_agreements::get_use_case_for_model_access(&self.state)
             }
             "PutUseCaseForModelAccess" => {
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
                 crate::foundation_model_agreements::put_use_case_for_model_access(
                     &self.state,
                     &body,
@@ -1051,7 +1025,6 @@ impl AwsService for BedrockService {
             }
             // Enforced guardrails
             "PutEnforcedGuardrailConfiguration" => {
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
                 crate::enforced_guardrails::put_enforced_guardrail_configuration(&self.state, &body)
             }
             "ListEnforcedGuardrailsConfiguration" => {
@@ -1068,7 +1041,6 @@ impl AwsService for BedrockService {
             }
             // Automated reasoning policies
             "CreateAutomatedReasoningPolicy" => {
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
                 crate::automated_reasoning::create_automated_reasoning_policy(
                     &self.state,
                     &req,
@@ -1085,7 +1057,6 @@ impl AwsService for BedrockService {
                 crate::automated_reasoning::list_automated_reasoning_policies(&self.state, &req)
             }
             "UpdateAutomatedReasoningPolicy" => {
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
                 crate::automated_reasoning::update_automated_reasoning_policy(
                     &self.state,
                     &resource_id.unwrap_or_default(),
@@ -1099,7 +1070,6 @@ impl AwsService for BedrockService {
                 )
             }
             "CreateAutomatedReasoningPolicyVersion" => {
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
                 crate::automated_reasoning::create_automated_reasoning_policy_version(
                     &self.state,
                     &resource_id.unwrap_or_default(),
@@ -1114,7 +1084,6 @@ impl AwsService for BedrockService {
                 )
             }
             "CreateAutomatedReasoningPolicyTestCase" => {
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
                 crate::automated_reasoning::create_automated_reasoning_policy_test_case(
                     &self.state,
                     &resource_id.unwrap_or_default(),
@@ -1136,7 +1105,6 @@ impl AwsService for BedrockService {
                 )
             }
             "UpdateAutomatedReasoningPolicyTestCase" => {
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
                 crate::automated_reasoning::update_automated_reasoning_policy_test_case(
                     &self.state,
                     &resource_id.unwrap_or_default(),
@@ -1229,7 +1197,6 @@ impl AwsService for BedrockService {
                 )
             }
             "UpdateAutomatedReasoningPolicyAnnotations" => {
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
                 crate::automated_reasoning_workflows::update_annotations(
                     &self.state,
                     &resource_id.unwrap_or_default(),
@@ -1246,7 +1213,6 @@ impl AwsService for BedrockService {
             }
             // Model customization jobs
             "CreateModelCustomizationJob" => {
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
                 crate::customization::create_model_customization_job(&self.state, &req, &body)
             }
             "GetModelCustomizationJob" => crate::customization::get_model_customization_job(
@@ -1263,7 +1229,6 @@ impl AwsService for BedrockService {
             ),
             // Provisioned model throughput
             "CreateProvisionedModelThroughput" => {
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
                 crate::throughput::create_provisioned_model_throughput(&self.state, &req, &body)
             }
             "GetProvisionedModelThroughput" => crate::throughput::get_provisioned_model_throughput(
@@ -1274,7 +1239,6 @@ impl AwsService for BedrockService {
                 crate::throughput::list_provisioned_model_throughputs(&self.state, &req)
             }
             "UpdateProvisionedModelThroughput" => {
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
                 crate::throughput::update_provisioned_model_throughput(
                     &self.state,
                     &resource_id.unwrap_or_default(),
@@ -1289,7 +1253,6 @@ impl AwsService for BedrockService {
             }
             // Logging configuration
             "PutModelInvocationLoggingConfiguration" => {
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
                 crate::logging::put_model_invocation_logging_configuration(&self.state, &body)
             }
             "GetModelInvocationLoggingConfiguration" => {
@@ -1360,10 +1323,7 @@ impl AwsService for BedrockService {
                 })
             }
             // Async invoke
-            "StartAsyncInvoke" => {
-                let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
-                crate::async_invoke::start_async_invoke(&self.state, &req, &body)
-            }
+            "StartAsyncInvoke" => crate::async_invoke::start_async_invoke(&self.state, &req, &body),
             "GetAsyncInvoke" => {
                 crate::async_invoke::get_async_invoke(&self.state, &resource_id.unwrap_or_default())
             }
