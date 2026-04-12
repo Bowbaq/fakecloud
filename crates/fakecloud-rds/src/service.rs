@@ -190,6 +190,17 @@ impl RdsService {
                     format!("DBInstance {} already exists.", db_instance_identifier),
                 ));
             }
+            // Validate parameter group exists if specified by the caller
+            if let Some(ref pg_name) = db_parameter_group_name {
+                if !state.parameter_groups.contains_key(pg_name) {
+                    state.cancel_instance_creation(&db_instance_identifier);
+                    return Err(AwsServiceError::aws_error(
+                        StatusCode::NOT_FOUND,
+                        "DBParameterGroupNotFound",
+                        format!("DBParameterGroup {} not found.", pg_name),
+                    ));
+                }
+            }
         }
 
         let runtime = self.runtime.as_ref().ok_or_else(|| {
