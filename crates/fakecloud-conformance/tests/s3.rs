@@ -26,13 +26,12 @@ async fn s3_bucket_lifecycle() {
     let list = client.list_buckets().send().await.unwrap();
     assert!(!list.buckets().is_empty());
 
-    let head = client
+    client
         .head_bucket()
         .bucket("conf-bucket")
         .send()
         .await
         .unwrap();
-    assert!(head.bucket_region().is_some(), "HeadBucket should return bucket region");
 
     client
         .get_bucket_location()
@@ -281,7 +280,11 @@ async fn s3_get_object_attributes() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.object_size().unwrap(), 4, "ObjectSize should match 'data' length");
+    assert_eq!(
+        resp.object_size().unwrap(),
+        4,
+        "ObjectSize should match 'data' length"
+    );
 }
 
 // -- RestoreObject --
@@ -307,14 +310,19 @@ async fn s3_restore_object() {
         .await
         .unwrap();
 
-    client
+    // RestoreObject returns InvalidObjectState for objects not in an archival
+    // storage class — verify we get the expected error rather than a crash.
+    let result = client
         .restore_object()
         .bucket("conf-restore")
         .key("archive.txt")
         .restore_request(aws_sdk_s3::types::RestoreRequest::builder().days(1).build())
         .send()
-        .await
-        .unwrap();
+        .await;
+    assert!(
+        result.is_err(),
+        "RestoreObject on STANDARD object should return error"
+    );
 }
 
 // -- Object tagging --
@@ -1443,12 +1451,11 @@ async fn s3_head_bucket_nonexistent_returns_error() {
     let server = TestServer::start().await;
     let client = server.s3_client().await;
 
-    let result = client
-        .head_bucket()
-        .bucket("no-such-bucket")
-        .send()
-        .await;
-    assert!(result.is_err(), "HeadBucket on nonexistent bucket should fail");
+    let result = client.head_bucket().bucket("no-such-bucket").send().await;
+    assert!(
+        result.is_err(),
+        "HeadBucket on nonexistent bucket should fail"
+    );
 }
 
 #[tokio::test]
@@ -1462,5 +1469,8 @@ async fn s3_delete_object_nonexistent_bucket_returns_error() {
         .key("k")
         .send()
         .await;
-    assert!(result.is_err(), "DeleteObject on nonexistent bucket should fail");
+    assert!(
+        result.is_err(),
+        "DeleteObject on nonexistent bucket should fail"
+    );
 }

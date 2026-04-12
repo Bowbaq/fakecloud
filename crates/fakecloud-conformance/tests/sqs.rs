@@ -576,7 +576,10 @@ async fn sqs_send_message_nonexistent_queue_returns_error() {
         .message_body("hello")
         .send()
         .await;
-    assert!(result.is_err(), "SendMessage to nonexistent queue should fail");
+    assert!(
+        result.is_err(),
+        "SendMessage to nonexistent queue should fail"
+    );
 }
 
 #[tokio::test]
@@ -589,7 +592,10 @@ async fn sqs_receive_message_nonexistent_queue_returns_error() {
         .queue_url("http://localhost:0/000000000000/no-such-queue")
         .send()
         .await;
-    assert!(result.is_err(), "ReceiveMessage from nonexistent queue should fail");
+    assert!(
+        result.is_err(),
+        "ReceiveMessage from nonexistent queue should fail"
+    );
 }
 
 #[tokio::test]
@@ -605,10 +611,9 @@ async fn sqs_create_duplicate_queue_same_attrs_succeeds() {
         .unwrap();
 
     // Creating the same queue with the same attributes should succeed (idempotent)
-    let result = client
-        .create_queue()
-        .queue_name("dup-queue")
-        .send()
-        .await;
-    assert!(result.is_ok(), "Creating duplicate queue with same attrs should succeed");
+    let result = client.create_queue().queue_name("dup-queue").send().await;
+    assert!(
+        result.is_ok(),
+        "Creating duplicate queue with same attrs should succeed"
+    );
 }

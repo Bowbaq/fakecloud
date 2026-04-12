@@ -148,7 +148,9 @@ async fn dynamodb_update_table() {
     let table = resp.table().expect("table should be present");
     assert_eq!(table.table_name(), Some("UpdTable"));
     assert_eq!(
-        table.billing_mode_summary().map(|b| b.billing_mode().cloned()),
+        table
+            .billing_mode_summary()
+            .map(|b| b.billing_mode().cloned()),
         Some(Some(BillingMode::PayPerRequest))
     );
 }
@@ -1630,7 +1632,10 @@ async fn dynamodb_describe_nonexistent_table_returns_error() {
         .table_name("NoSuchTable")
         .send()
         .await;
-    assert!(result.is_err(), "Describing a nonexistent table should fail");
+    assert!(
+        result.is_err(),
+        "Describing a nonexistent table should fail"
+    );
 }
 
 #[tokio::test]
