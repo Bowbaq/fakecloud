@@ -165,7 +165,10 @@ pub fn update_marketplace_model_endpoint(
             )
         })?;
 
-    let endpoint = s.marketplace_endpoints.get_mut(&key).unwrap();
+    let endpoint = s
+        .marketplace_endpoints
+        .get_mut(&key)
+        .expect("key validated by find above");
 
     if let Some(config) = body.get("endpointConfig") {
         endpoint.endpoint_config = config.clone();
@@ -237,7 +240,10 @@ pub fn register_marketplace_model_endpoint(
             )
         })?;
 
-    let endpoint = s.marketplace_endpoints.get_mut(&key).unwrap();
+    let endpoint = s
+        .marketplace_endpoints
+        .get_mut(&key)
+        .expect("key validated by find above");
     endpoint.status = "Registered".to_string();
     endpoint.updated_at = Utc::now();
 
@@ -277,7 +283,10 @@ pub fn deregister_marketplace_model_endpoint(
             )
         })?;
 
-    let endpoint = s.marketplace_endpoints.get_mut(&key).unwrap();
+    let endpoint = s
+        .marketplace_endpoints
+        .get_mut(&key)
+        .expect("key validated by find above");
     endpoint.status = "Active".to_string();
     endpoint.updated_at = Utc::now();
 

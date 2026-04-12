@@ -236,7 +236,9 @@ fn find_throughput_mut<'a>(
                 format!("Provisioned model {id_or_arn} not found"),
             )
         })?;
-    Ok(throughputs.get_mut(&key).unwrap())
+    Ok(throughputs
+        .get_mut(&key)
+        .expect("key validated by find above"))
 }
 
 fn throughput_to_json(t: &ProvisionedThroughput) -> Value {

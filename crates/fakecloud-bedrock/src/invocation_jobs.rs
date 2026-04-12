@@ -128,7 +128,10 @@ pub fn stop_model_invocation_job(
 ) -> Result<AwsResponse, AwsServiceError> {
     let mut s = state.write();
     let key = find_job_key(&s.model_invocation_jobs, job_identifier)?;
-    let job = s.model_invocation_jobs.get_mut(&key).unwrap();
+    let job = s
+        .model_invocation_jobs
+        .get_mut(&key)
+        .expect("key validated by find_job_key");
 
     if job.status != "InProgress" {
         return Err(AwsServiceError::aws_error(

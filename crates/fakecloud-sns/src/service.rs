@@ -532,9 +532,11 @@ impl SnsService {
         // If setting Policy, compact the JSON
         if attr_name == "Policy" {
             if let Ok(parsed) = serde_json::from_str::<Value>(&attr_value) {
-                topic
-                    .attributes
-                    .insert(attr_name, serde_json::to_string(&parsed).unwrap());
+                if let Ok(compact) = serde_json::to_string(&parsed) {
+                    topic.attributes.insert(attr_name, compact);
+                } else {
+                    topic.attributes.insert(attr_name, attr_value);
+                }
             } else {
                 topic.attributes.insert(attr_name, attr_value);
             }

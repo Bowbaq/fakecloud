@@ -763,7 +763,14 @@ fn validate_definition(definition: &str) -> Result<(), AwsServiceError> {
         ));
     }
 
-    let start_at = parsed["StartAt"].as_str().unwrap();
+    let start_at = parsed["StartAt"].as_str().ok_or_else(|| {
+        AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "InvalidDefinition",
+            "Invalid State Machine Definition: 'MISSING_START_AT' (StartAt field is required)"
+                .to_string(),
+        )
+    })?;
     let states_obj = states.unwrap();
     if !states_obj.contains_key(start_at) {
         return Err(AwsServiceError::aws_error(
