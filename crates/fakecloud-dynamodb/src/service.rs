@@ -4078,12 +4078,12 @@ fn evaluate_single_key_condition(
                     let cmp = compare_attribute_values(actual, expected);
                     cmp == std::cmp::Ordering::Greater || cmp == std::cmp::Ordering::Equal
                 }
-                _ => true,
+                _ => false,
             };
         }
     }
 
-    true
+    false
 }
 
 fn extract_string_value(val: &Value) -> Option<String> {
@@ -4472,7 +4472,7 @@ fn apply_set_assignment(
     let val = resolve_value(right, item, expr_attr_names, expr_attr_values);
     if let Some(v) = val {
         match list_index {
-            Some(idx) => assign_list_index(item, &attr, idx, v),
+            Some(idx) => assign_list_index(item, &attr, idx, v)?,
             None => {
                 item.insert(attr, v);
             }
@@ -4505,26 +4505,40 @@ fn parse_list_index_suffix(path: &str) -> Option<(&str, usize)> {
 
 /// Assign a value to a specific index of a `L`-typed attribute. If `idx` is
 /// within the current list, replaces that slot; if it's at the end, appends.
-/// AWS rejects writes beyond `len`, but callers that compute the index from
-/// a fresh read should never hit that — no-op on a non-list attribute or an
-/// out-of-range index so we don't corrupt unrelated state.
+/// AWS rejects writes beyond `len`, so we return a `ValidationException` for
+/// out-of-range indices and non-list attributes.
 fn assign_list_index(
     item: &mut HashMap<String, AttributeValue>,
     attr: &str,
     idx: usize,
     value: Value,
-) {
+) -> Result<(), AwsServiceError> {
     let Some(existing) = item.get_mut(attr) else {
-        return;
+        return Err(AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "ValidationException",
+            "The document path provided in the update expression is invalid for update",
+        ));
     };
     let Some(list) = existing.get_mut("L").and_then(|l| l.as_array_mut()) else {
-        return;
+        return Err(AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "ValidationException",
+            "The document path provided in the update expression is invalid for update",
+        ));
     };
     if idx < list.len() {
         list[idx] = value;
     } else if idx == list.len() {
         list.push(value);
+    } else {
+        return Err(AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "ValidationException",
+            "The document path provided in the update expression is invalid for update",
+        ));
     }
+    Ok(())
 }
 
 fn resolve_value(
