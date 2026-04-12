@@ -393,37 +393,11 @@ impl SesState {
         }
     }
 
+    /// Reinitialize every field except ``account_id`` / ``region``.
     pub fn reset(&mut self) {
-        self.identities.clear();
-        self.configuration_sets.clear();
-        self.templates.clear();
-        self.sent_emails.clear();
-        self.contact_lists.clear();
-        self.contacts.clear();
-        self.tags.clear();
-        self.suppressed_destinations.clear();
-        self.event_destinations.clear();
-        self.identity_policies.clear();
-        self.custom_verification_email_templates.clear();
-        self.dedicated_ip_pools.clear();
-        self.dedicated_ips.clear();
-        self.multi_region_endpoints.clear();
-        self.account_settings = AccountSettings {
-            sending_enabled: true,
-            dedicated_ip_auto_warmup_enabled: false,
-            suppressed_reasons: Vec::new(),
-            vdm_attributes: None,
-            details: None,
-        };
-        self.import_jobs.clear();
-        self.export_jobs.clear();
-        self.tenants.clear();
-        self.tenant_resource_associations.clear();
-        self.reputation_entities.clear();
-        self.receipt_rule_sets.clear();
-        self.active_receipt_rule_set = None;
-        self.receipt_filters.clear();
-        self.inbound_emails.clear();
+        let account_id = std::mem::take(&mut self.account_id);
+        let region = std::mem::take(&mut self.region);
+        *self = Self::new(&account_id, &region);
     }
 }
 

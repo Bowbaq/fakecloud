@@ -604,7 +604,7 @@ impl BedrockService {
     }
 
     fn list_foundation_models(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let mut model_summaries: Vec<Value> = Vec::new();
+        let mut model_summaries: Vec<Value> = vec![];
 
         let by_provider = req.query_params.get("byProvider");
         let by_output_modality = req.query_params.get("byOutputModality");
