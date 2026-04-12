@@ -222,10 +222,6 @@ impl SsmService {
         Ok(AwsResponse::ok_json(resp))
     }
 
-    // -----------------------------------------------------------------------
-    // Document extras
-    // -----------------------------------------------------------------------
-
     pub(super) fn get_ops_summary(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = req.json_body();
         validate_optional_string_length("SyncName", body["SyncName"].as_str(), 1, 64)?;

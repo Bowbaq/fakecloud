@@ -140,9 +140,7 @@ async fn bedrock_tag_untag_list_tags() {
     assert!(!tags.iter().any(|t| t.key() == "team"));
 }
 
-// ---------------------------------------------------------------------------
 // Guardrails
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn bedrock_guardrail_crud() {
@@ -338,9 +336,7 @@ async fn bedrock_guardrail_with_pii_detection() {
     assert!(resp.sensitive_information_policy().is_some());
 }
 
-// ---------------------------------------------------------------------------
 // Model Customization Jobs
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn bedrock_model_customization_job_lifecycle() {
@@ -405,9 +401,7 @@ async fn bedrock_model_customization_job_lifecycle() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Provisioned Model Throughput
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn bedrock_provisioned_throughput_crud() {
@@ -472,9 +466,7 @@ async fn bedrock_provisioned_throughput_crud() {
     assert!(service_err.is_resource_not_found_exception());
 }
 
-// ---------------------------------------------------------------------------
 // Model Invocation Logging
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn bedrock_logging_configuration() {
@@ -529,9 +521,7 @@ async fn bedrock_logging_configuration() {
     assert!(resp.logging_config().is_none());
 }
 
-// ---------------------------------------------------------------------------
 // InvokeModel (Runtime)
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn bedrock_invoke_model_anthropic() {
@@ -591,9 +581,7 @@ async fn bedrock_invoke_model_titan() {
     assert_eq!(response_body["results"][0]["completionReason"], "FINISH");
 }
 
-// ---------------------------------------------------------------------------
 // Converse (Runtime)
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn bedrock_converse() {
@@ -625,9 +613,7 @@ async fn bedrock_converse() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Introspection & Simulation
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn bedrock_introspection_invocations() {
@@ -721,9 +707,7 @@ async fn bedrock_simulation_custom_response() {
     assert_eq!(response_body["content"][0]["text"], "Custom test response!");
 }
 
-// ---------------------------------------------------------------------------
 // ApplyGuardrail (Runtime)
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn bedrock_apply_guardrail() {
@@ -797,9 +781,7 @@ async fn bedrock_apply_guardrail() {
     assert!(!blocked_resp.assessments().is_empty());
 }
 
-// ---------------------------------------------------------------------------
 // Converse with inferenceConfig and toolConfig
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn bedrock_converse_with_system_and_inference_config() {
@@ -889,9 +871,7 @@ async fn bedrock_converse_with_tool_config() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // CountTokens (Runtime)
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn bedrock_count_tokens_raw() {
@@ -929,9 +909,7 @@ async fn bedrock_count_tokens_raw() {
     assert!(token_count > 0, "should count some tokens");
 }
 
-// ---------------------------------------------------------------------------
 // Async Invoke (Runtime)
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn bedrock_async_invoke_lifecycle_raw() {
@@ -1003,9 +981,7 @@ async fn bedrock_async_invoke_lifecycle_raw() {
     assert!(!summaries.is_empty());
 }
 
-// ---------------------------------------------------------------------------
 // InvokeModelWithBidirectionalStream (via raw HTTP)
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn bedrock_invoke_model_with_bidirectional_stream_raw() {
@@ -1043,9 +1019,7 @@ async fn bedrock_invoke_model_with_bidirectional_stream_raw() {
     assert!(body_bytes.len() > 16, "should have event stream data");
 }
 
-// ---------------------------------------------------------------------------
 // InvokeModel response headers
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn bedrock_invoke_model_response_headers() {
@@ -1093,9 +1067,7 @@ async fn bedrock_invoke_model_response_headers() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Streaming (via raw HTTP — AWS SDK event stream parsing is complex)
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn bedrock_invoke_model_with_response_stream_raw() {
@@ -1184,9 +1156,7 @@ async fn bedrock_converse_stream_raw() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Custom Models
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn bedrock_custom_model_crud() {
@@ -1258,9 +1228,7 @@ async fn bedrock_custom_model_crud() {
     assert_eq!(resp.status(), 404);
 }
 
-// ---------------------------------------------------------------------------
 // Custom Model Deployments
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn bedrock_custom_model_deployment_crud() {
@@ -1373,9 +1341,7 @@ async fn bedrock_custom_model_deployment_crud() {
     assert_eq!(resp.status(), 404);
 }
 
-// ---------------------------------------------------------------------------
 // Model Import Jobs + Imported Models
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn bedrock_model_import_lifecycle() {
@@ -1448,9 +1414,7 @@ async fn bedrock_model_import_lifecycle() {
     assert_eq!(resp.status(), 200);
 }
 
-// ---------------------------------------------------------------------------
 // Model Copy Jobs
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn bedrock_model_copy_lifecycle() {
@@ -1499,9 +1463,7 @@ async fn bedrock_model_copy_lifecycle() {
         .is_empty());
 }
 
-// ---------------------------------------------------------------------------
 // Model Invocation Jobs
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn bedrock_model_invocation_job_lifecycle() {
@@ -1586,9 +1548,7 @@ async fn bedrock_model_invocation_job_lifecycle() {
     assert_eq!(result["status"], "Stopped");
 }
 
-// ---------------------------------------------------------------------------
 // Evaluation Jobs
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn bedrock_evaluation_job_lifecycle() {
@@ -1677,9 +1637,7 @@ async fn bedrock_evaluation_job_lifecycle() {
     assert_eq!(resp.status(), 404);
 }
 
-// ---------------------------------------------------------------------------
 // Inference Profiles
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn bedrock_inference_profile_crud() {
@@ -1741,9 +1699,7 @@ async fn bedrock_inference_profile_crud() {
     assert_eq!(r.status(), 404);
 }
 
-// ---------------------------------------------------------------------------
 // Prompt Routers
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn bedrock_prompt_router_crud() {
@@ -1795,9 +1751,7 @@ async fn bedrock_prompt_router_crud() {
     assert_eq!(r.status(), 200);
 }
 
-// ---------------------------------------------------------------------------
 // Resource Policies
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn bedrock_resource_policy_crud() {

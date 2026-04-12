@@ -1688,9 +1688,7 @@ async fn s3_delete_specific_version_preserves_current_object() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // P2 Cubic regression tests
-// ---------------------------------------------------------------------------
 
 /// Bug 1: CreateMultipartUpload ignores x-amz-grant-* headers.
 #[tokio::test]

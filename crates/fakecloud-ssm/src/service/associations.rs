@@ -572,10 +572,6 @@ impl SsmService {
         ))
     }
 
-    // -----------------------------------------------------------------------
-    // OpsItems
-    // -----------------------------------------------------------------------
-
     pub(super) fn describe_effective_instance_associations(
         &self,
         req: &AwsRequest,

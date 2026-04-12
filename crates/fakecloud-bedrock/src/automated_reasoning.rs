@@ -7,9 +7,7 @@ use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 
 use crate::state::{AutomatedReasoningPolicy, AutomatedReasoningTestCase, SharedBedrockState};
 
-// ---------------------------------------------------------------------------
 // Policy CRUD
-// ---------------------------------------------------------------------------
 
 pub fn create_automated_reasoning_policy(
     state: &SharedBedrockState,
@@ -181,9 +179,7 @@ pub fn delete_automated_reasoning_policy(
     Ok(AwsResponse::json(StatusCode::OK, "{}".to_string()))
 }
 
-// ---------------------------------------------------------------------------
 // Policy versions
-// ---------------------------------------------------------------------------
 
 pub fn create_automated_reasoning_policy_version(
     state: &SharedBedrockState,
@@ -254,9 +250,7 @@ pub fn export_automated_reasoning_policy_version(
     })))
 }
 
-// ---------------------------------------------------------------------------
 // Test cases
-// ---------------------------------------------------------------------------
 
 pub fn create_automated_reasoning_policy_test_case(
     state: &SharedBedrockState,
@@ -474,9 +468,7 @@ pub fn delete_automated_reasoning_policy_test_case(
     Ok(AwsResponse::json(StatusCode::OK, "{}".to_string()))
 }
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
 
 fn find_policy<'a>(
     policies: &'a std::collections::HashMap<String, AutomatedReasoningPolicy>,

@@ -633,9 +633,7 @@ impl AwsService for S3Service {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Conditional request helpers
-// ---------------------------------------------------------------------------
 
 /// Truncate a DateTime to second-level precision (HTTP dates have no sub-second info).
 pub(crate) fn truncate_to_seconds(dt: DateTime<Utc>) -> DateTime<Utc> {
@@ -818,9 +816,7 @@ pub(crate) fn precondition_failed(condition: &str) -> AwsServiceError {
     )
 }
 
-// ---------------------------------------------------------------------------
 // ACL helpers
-// ---------------------------------------------------------------------------
 
 pub(crate) fn build_acl_xml(owner_id: &str, grants: &[AclGrant], _account_id: &str) -> String {
     let mut grants_xml = String::new();
@@ -1021,9 +1017,7 @@ pub(crate) fn parse_acl_xml(xml: &str) -> Result<Vec<AclGrant>, AwsServiceError>
     Ok(grants)
 }
 
-// ---------------------------------------------------------------------------
 // Range helpers
-// ---------------------------------------------------------------------------
 
 pub(crate) enum RangeResult {
     Satisfiable { start: usize, end: usize },
@@ -1062,9 +1056,7 @@ pub(crate) fn parse_range_header(range_str: &str, total_size: usize) -> Option<R
     }
 }
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
 
 /// S3 XML response with `application/xml` content type (unlike Query protocol's `text/xml`).
 pub(crate) fn s3_xml(status: StatusCode, body: impl Into<Bytes>) -> AwsResponse {

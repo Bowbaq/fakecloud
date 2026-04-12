@@ -6,6 +6,7 @@ mod identity_providers;
 mod legacy;
 mod mfa;
 mod misc;
+mod resource_servers;
 mod user_pools;
 mod users;
 

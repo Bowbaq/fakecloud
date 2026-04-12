@@ -7,9 +7,7 @@ use std::path::PathBuf;
 use syn::parse::{Parse, ParseStream};
 use syn::{parse_macro_input, ItemFn, LitStr, Token};
 
-// ---------------------------------------------------------------------------
 // Macro argument parsing
-// ---------------------------------------------------------------------------
 
 struct TestActionArgs {
     service: String,
@@ -40,9 +38,7 @@ impl Parse for TestActionArgs {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Cached model store (thread-local to avoid re-parsing per invocation)
-// ---------------------------------------------------------------------------
 
 thread_local! {
     #[allow(clippy::missing_const_for_thread_local)]
@@ -105,9 +101,7 @@ fn load_model(model_key: &str) -> serde_json::Value {
     })
 }
 
-// ---------------------------------------------------------------------------
 // Resolve model key from service name (e.g. "sqs" -> "sqs", "logs" -> "cloudwatch-logs")
-// ---------------------------------------------------------------------------
 
 fn resolve_model_key(service: &str) -> Option<String> {
     let service_map = load_service_map();
@@ -124,9 +118,7 @@ fn resolve_model_key(service: &str) -> Option<String> {
     None
 }
 
-// ---------------------------------------------------------------------------
 // Minimal Smithy model querying (enough for operation lookup + checksum)
-// ---------------------------------------------------------------------------
 
 struct OperationInfo {
     name: String,
@@ -243,9 +235,7 @@ fn collect_resource_operations(
     }
 }
 
-// ---------------------------------------------------------------------------
 // Checksum computation (mirrors fakecloud-conformance/src/checksum.rs exactly)
-// ---------------------------------------------------------------------------
 
 #[derive(Debug)]
 struct ShapeCanonical {
@@ -518,9 +508,7 @@ fn build_canonical(
     parts.join("\n")
 }
 
-// ---------------------------------------------------------------------------
 // The proc macro itself
-// ---------------------------------------------------------------------------
 
 /// Attribute macro for Level 2 conformance tests.
 ///

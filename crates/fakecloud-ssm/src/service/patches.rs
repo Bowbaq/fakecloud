@@ -532,10 +532,6 @@ impl SsmService {
         Ok(AwsResponse::ok_json(resp))
     }
 
-    // -----------------------------------------------------------------------
-    // Associations
-    // -----------------------------------------------------------------------
-
     pub(super) fn update_patch_baseline(
         &self,
         req: &AwsRequest,
