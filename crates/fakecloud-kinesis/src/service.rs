@@ -6,6 +6,9 @@ use md5::{Digest, Md5};
 use serde_json::{json, Value};
 
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
+use fakecloud_core::validation::{
+    validate_optional_json_range, validate_optional_string_length, validate_string_length,
+};
 
 use crate::state::{KinesisRecord, KinesisShard, KinesisStream, SharedKinesisState};
 
@@ -159,10 +162,10 @@ impl KinesisService {
     fn list_streams(&self, request: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = request.json_body();
         let exclusive_start = body["ExclusiveStartStreamName"].as_str();
-        let limit = body["Limit"].as_i64().unwrap_or(i64::MAX);
-        if limit <= 0 {
-            return Err(invalid_argument("Limit must be greater than zero"));
-        }
+        validate_optional_string_length("ExclusiveStartStreamName", exclusive_start, 1, 128)?;
+        validate_optional_string_length("NextToken", body["NextToken"].as_str(), 1, 1048576)?;
+        validate_optional_json_range("Limit", &body["Limit"], 1, 100)?;
+        let limit = body["Limit"].as_i64().unwrap_or(100);
 
         let state = self.state.read();
         let mut names: Vec<String> = state.streams.keys().cloned().collect();
@@ -478,10 +481,12 @@ impl crate::state::KinesisState {
 }
 
 fn require_stream_name(body: &Value) -> Result<&str, AwsServiceError> {
-    body["StreamName"]
+    let name = body["StreamName"]
         .as_str()
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| invalid_argument("StreamName is required"))
+        .ok_or_else(|| invalid_argument("StreamName is required"))?;
+    validate_string_length("StreamName", name, 1, 128)?;
+    Ok(name)
 }
 
 fn resolve_stream_name(
@@ -492,6 +497,7 @@ fn resolve_stream_name(
         .as_str()
         .filter(|value| !value.is_empty())
     {
+        validate_string_length("StreamName", stream_name, 1, 128)?;
         return Ok(stream_name.to_string());
     }
 
