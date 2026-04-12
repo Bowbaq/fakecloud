@@ -252,7 +252,12 @@ fn field_exists_in_input(root: &Value, path: &str) -> bool {
         // Check for array index syntax: field[idx]
         if let Some(bracket_pos) = part.find('[') {
             let field_name = &part[..bracket_pos];
-            let idx_str = &part[bracket_pos + 1..part.len() - 1];
+            // Ensure closing bracket exists
+            let close_bracket = match part.rfind(']') {
+                Some(pos) if pos > bracket_pos => pos,
+                _ => return false, // malformed segment like "foo[bar"
+            };
+            let idx_str = &part[bracket_pos + 1..close_bracket];
 
             match current.get(field_name) {
                 Some(arr) => {
