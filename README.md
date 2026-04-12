@@ -376,9 +376,23 @@ Contributions are welcome.
 
 **fakecloud is** a free, open-source local AWS emulator for integration testing and
 local development. For every service it implements, the goal is 100% behavioral
-parity with real AWS — verified by 34,000+ automated conformance test variants
-against official AWS Smithy models across all API operations. 16 of 18 tested
-services at 100% conformance (Cognito and Kinesis in progress).
+parity with real AWS — measured by a schema-driven conformance harness that runs
+**54,334 / 56,694 generated test variants (95.8%)** against official AWS Smithy
+models on every commit. 19 of 21 implemented services at 100%; Kinesis and
+Cognito Identity Provider in progress.
+
+**How conformance is measured.** We commit AWS's own Smithy models to
+[`aws-models/`](./aws-models/) and generate inputs with six orthogonal
+strategies: boundary values from `@length`/`@range` constraints, exhaustive
+enum coverage, optional-field permutations, property-based random generation,
+examples from the model's `@examples` trait, and negative tests for each
+constraint. Every response is validated against the operation's Smithy output
+shape — missing required fields, unexpected fields, and wrong types are all
+failures. The baseline ([`conformance-baseline.json`](./conformance-baseline.json))
+is checked in CI: any regression blocks the merge. See
+[`crates/fakecloud-conformance/`](./crates/fakecloud-conformance/) for the
+harness and methodology. Reproduce locally with
+`cargo run -p fakecloud-conformance -- run --services s3`.
 
 **fakecloud is not** a production-ready cloud replacement. It's not designed to
 be scalable or to handle production workloads. It's for testing — making sure
