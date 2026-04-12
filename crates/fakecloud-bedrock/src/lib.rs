@@ -24,3 +24,13 @@ pub mod service;
 pub mod state;
 pub mod streaming;
 pub mod throughput;
+
+/// Eight-character lowercase hex suffix derived from a fresh UUID.
+///
+/// Many Bedrock resources (guardrails, prompt routers, inference profiles,
+/// custom models) generate a human-readable short identifier when the caller
+/// doesn't supply one. We cut the UUID down to 8 characters so the resulting
+/// name/id stays short and matches AWS's own convention for these resources.
+pub(crate) fn short_uuid() -> String {
+    uuid::Uuid::new_v4().to_string()[..8].to_string()
+}

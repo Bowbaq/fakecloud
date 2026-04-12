@@ -52,37 +52,37 @@ impl LambdaService {
             return None;
         }
 
-        match (req.method.clone(), segs.len()) {
+        match (&req.method, segs.len()) {
             // /2015-03-31/functions
-            (Method::POST, 2) if segs[1] == "functions" => Some(("CreateFunction", None)),
-            (Method::GET, 2) if segs[1] == "functions" => Some(("ListFunctions", None)),
+            (&Method::POST, 2) if segs[1] == "functions" => Some(("CreateFunction", None)),
+            (&Method::GET, 2) if segs[1] == "functions" => Some(("ListFunctions", None)),
             // /2015-03-31/functions/{name}
-            (Method::GET, 3) if segs[1] == "functions" => {
+            (&Method::GET, 3) if segs[1] == "functions" => {
                 Some(("GetFunction", Some(segs[2].clone())))
             }
-            (Method::DELETE, 3) if segs[1] == "functions" => {
+            (&Method::DELETE, 3) if segs[1] == "functions" => {
                 Some(("DeleteFunction", Some(segs[2].clone())))
             }
             // /2015-03-31/functions/{name}/invocations
-            (Method::POST, 4) if segs[1] == "functions" && segs[3] == "invocations" => {
+            (&Method::POST, 4) if segs[1] == "functions" && segs[3] == "invocations" => {
                 Some(("Invoke", Some(segs[2].clone())))
             }
             // /2015-03-31/functions/{name}/versions
-            (Method::POST, 4) if segs[1] == "functions" && segs[3] == "versions" => {
+            (&Method::POST, 4) if segs[1] == "functions" && segs[3] == "versions" => {
                 Some(("PublishVersion", Some(segs[2].clone())))
             }
             // /2015-03-31/event-source-mappings
-            (Method::POST, 2) if segs[1] == "event-source-mappings" => {
+            (&Method::POST, 2) if segs[1] == "event-source-mappings" => {
                 Some(("CreateEventSourceMapping", None))
             }
-            (Method::GET, 2) if segs[1] == "event-source-mappings" => {
+            (&Method::GET, 2) if segs[1] == "event-source-mappings" => {
                 Some(("ListEventSourceMappings", None))
             }
             // /2015-03-31/event-source-mappings/{uuid}
-            (Method::GET, 3) if segs[1] == "event-source-mappings" => {
+            (&Method::GET, 3) if segs[1] == "event-source-mappings" => {
                 Some(("GetEventSourceMapping", Some(segs[2].clone())))
             }
-            (Method::DELETE, 3) if segs[1] == "event-source-mappings" => {
+            (&Method::DELETE, 3) if segs[1] == "event-source-mappings" => {
                 Some(("DeleteEventSourceMapping", Some(segs[2].clone())))
             }
             _ => None,

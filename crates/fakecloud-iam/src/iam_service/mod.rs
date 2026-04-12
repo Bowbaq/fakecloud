@@ -737,6 +737,22 @@ mod tests {
         }
     }
 
+    /// Pull the text inside the first ``<tag>...</tag>`` element of ``body``.
+    /// Used by IAM tests to fish an ARN out of a create-* response without
+    /// pulling in a real XML parser.
+    fn extract_xml_tag<'a>(body: &'a str, tag: &str) -> &'a str {
+        let open = format!("<{tag}>");
+        let close = format!("</{tag}>");
+        let start = body
+            .find(&open)
+            .unwrap_or_else(|| panic!("tag <{tag}> not found"))
+            + open.len();
+        let end = body
+            .find(&close)
+            .unwrap_or_else(|| panic!("tag </{tag}> not found"));
+        &body[start..end]
+    }
+
     #[test]
     fn list_access_keys_max_items_zero_returns_error() {
         let svc = make_service();
@@ -1406,9 +1422,7 @@ mod tests {
         let resp = svc.create_policy(&req).unwrap();
         let body = String::from_utf8_lossy(&resp.body);
         // Extract policy ARN
-        let arn_start = body.find("<Arn>").unwrap() + 5;
-        let arn_end = body.find("</Arn>").unwrap();
-        let policy_arn = &body[arn_start..arn_end];
+        let policy_arn = extract_xml_tag(&body, "Arn");
 
         // Create v2
         let new_doc = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetObject","s3:PutObject"],"Resource":"*"}]}"#;
@@ -1446,9 +1460,7 @@ mod tests {
         );
         let resp = svc.create_policy(&req).unwrap();
         let body = String::from_utf8_lossy(&resp.body);
-        let arn_start = body.find("<Arn>").unwrap() + 5;
-        let arn_end = body.find("</Arn>").unwrap();
-        let policy_arn = &body[arn_start..arn_end];
+        let policy_arn = extract_xml_tag(&body, "Arn");
 
         // Create v2
         let req = make_request(
@@ -1475,9 +1487,7 @@ mod tests {
         );
         let resp = svc.create_policy(&req).unwrap();
         let body = String::from_utf8_lossy(&resp.body);
-        let arn_start = body.find("<Arn>").unwrap() + 5;
-        let arn_end = body.find("</Arn>").unwrap();
-        let policy_arn = &body[arn_start..arn_end];
+        let policy_arn = extract_xml_tag(&body, "Arn");
 
         // v1 is the default; deleting it should fail
         let req = make_request(
@@ -1498,9 +1508,7 @@ mod tests {
         );
         let resp = svc.create_policy(&req).unwrap();
         let body = String::from_utf8_lossy(&resp.body);
-        let arn_start = body.find("<Arn>").unwrap() + 5;
-        let arn_end = body.find("</Arn>").unwrap();
-        let policy_arn = &body[arn_start..arn_end];
+        let policy_arn = extract_xml_tag(&body, "Arn");
 
         // Create v2
         let req = make_request(
@@ -1935,9 +1943,7 @@ mod tests {
         );
         let resp = svc.create_policy(&req).unwrap();
         let body = String::from_utf8_lossy(&resp.body);
-        let arn_start = body.find("<Arn>").unwrap() + 5;
-        let arn_end = body.find("</Arn>").unwrap();
-        let policy_arn = body[arn_start..arn_end].to_string();
+        let policy_arn = extract_xml_tag(&body, "Arn").to_string();
 
         let req = make_request(
             "TagPolicy",
@@ -2265,9 +2271,7 @@ mod tests {
         );
         let resp = svc.create_policy(&req).unwrap();
         let body = String::from_utf8_lossy(&resp.body);
-        let arn_start = body.find("<Arn>").unwrap() + 5;
-        let arn_end = body.find("</Arn>").unwrap();
-        let policy_arn = body[arn_start..arn_end].to_string();
+        let policy_arn = extract_xml_tag(&body, "Arn").to_string();
 
         // Create role and attach policy
         let trust = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}"#;

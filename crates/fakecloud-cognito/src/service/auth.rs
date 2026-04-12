@@ -11,10 +11,11 @@ use crate::state::{
     AccessTokenData, AuthEvent, ChallengeResult, RefreshTokenData, SessionData, UserAttribute,
 };
 use crate::triggers::{self, TriggerSource};
+use crate::user_status;
 
 use super::{
-    generate_confirmation_code, generate_tokens, parse_user_attributes, require_str,
-    validate_password, CognitoService,
+    ensure_user_pool_exists, generate_confirmation_code, generate_tokens, parse_user_attributes,
+    require_str, validate_password, CognitoService,
 };
 
 impl CognitoService {
@@ -74,13 +75,7 @@ impl CognitoService {
             let state = self.state.read();
 
             // Validate pool exists
-            if !state.user_pools.contains_key(pool_id) {
-                return Err(AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "ResourceNotFoundException",
-                    format!("User pool {pool_id} does not exist."),
-                ));
-            }
+            ensure_user_pool_exists(&state, pool_id)?;
 
             // Validate client exists and belongs to pool
             let client = state.user_pool_clients.get(client_id).ok_or_else(|| {
@@ -224,7 +219,7 @@ impl CognitoService {
             }
 
             // Check if user needs to change password
-            if user.user_status == "FORCE_CHANGE_PASSWORD" {
+            if user.user_status == user_status::FORCE_CHANGE_PASSWORD {
                 let session = Uuid::new_v4().to_string();
                 state.sessions.insert(
                     session.clone(),
@@ -489,7 +484,7 @@ impl CognitoService {
                         ));
                     }
 
-                    if user.user_status == "FORCE_CHANGE_PASSWORD" {
+                    if user.user_status == user_status::FORCE_CHANGE_PASSWORD {
                         let session = Uuid::new_v4().to_string();
                         state.sessions.insert(
                             session.clone(),
@@ -786,15 +781,18 @@ impl CognitoService {
                 let mut challenge_metadata: Option<String> = None;
 
                 if let Some(create_arn) = create_arn {
+                    let create_ctx = triggers::AuthChallengeContext {
+                        pool_id: &pool_id,
+                        client_id: Some(&client_id_owned),
+                        username: &username_owned,
+                        user_attributes: &user_attrs,
+                        region: &region,
+                        account_id: &account_id,
+                    };
                     let create_event = triggers::build_create_auth_challenge_event(
-                        &pool_id,
-                        Some(&client_id_owned),
-                        &username_owned,
-                        &user_attrs,
+                        &create_ctx,
                         &challenge_name,
                         &challenge_results,
-                        &region,
-                        &account_id,
                     );
                     if let Some(create_response) =
                         triggers::invoke_trigger(ctx, &create_arn, &create_event).await
@@ -1063,7 +1061,7 @@ impl CognitoService {
 
                 user.password = Some(new_password.to_string());
                 user.temporary_password = None;
-                user.user_status = "CONFIRMED".to_string();
+                user.user_status = user_status::CONFIRMED.to_string();
                 user.user_last_modified_date = Utc::now();
 
                 let sub = user.sub.clone();
@@ -1207,15 +1205,18 @@ impl CognitoService {
                     )
                 })?;
 
+                let verify_ctx = triggers::AuthChallengeContext {
+                    pool_id: &pool_id,
+                    client_id: Some(&session_client_id),
+                    username: &username,
+                    user_attributes: &user_attrs,
+                    region: &region,
+                    account_id: &account_id,
+                };
                 let verify_event = triggers::build_verify_auth_challenge_event(
-                    &pool_id,
-                    Some(&session_client_id),
-                    &username,
-                    &user_attrs,
+                    &verify_ctx,
                     answer,
                     challenge_metadata.as_deref(),
-                    &region,
-                    &account_id,
                 );
 
                 let verify_response = triggers::invoke_trigger(ctx, &verify_arn, &verify_event)
@@ -1374,15 +1375,18 @@ impl CognitoService {
                 let mut new_challenge_metadata: Option<String> = None;
 
                 if let Some(create_arn) = create_arn {
+                    let create_ctx = triggers::AuthChallengeContext {
+                        pool_id: &pool_id,
+                        client_id: Some(&session_client_id),
+                        username: &username,
+                        user_attributes: &user_attrs,
+                        region: &region,
+                        account_id: &account_id,
+                    };
                     let create_event = triggers::build_create_auth_challenge_event(
-                        &pool_id,
-                        Some(&session_client_id),
-                        &username,
-                        &user_attrs,
+                        &create_ctx,
                         &next_challenge_name,
                         &challenge_results,
-                        &region,
-                        &account_id,
                     );
                     if let Some(create_response) =
                         triggers::invoke_trigger(ctx, &create_arn, &create_event).await
@@ -1499,7 +1503,7 @@ impl CognitoService {
                 sub: sub.clone(),
                 attributes,
                 enabled: true,
-                user_status: "UNCONFIRMED".to_string(),
+                user_status: user_status::UNCONFIRMED.to_string(),
                 user_create_date: now,
                 user_last_modified_date: now,
                 password: Some(password.to_string()),
@@ -1562,7 +1566,7 @@ impl CognitoService {
                 .get_mut(&pool_id)
                 .and_then(|users| users.get_mut(username))
             {
-                u.user_status = "CONFIRMED".to_string();
+                u.user_status = user_status::CONFIRMED.to_string();
                 u.user_last_modified_date = Utc::now();
             }
         }
@@ -1614,7 +1618,7 @@ impl CognitoService {
                 )
             })?;
 
-        user.user_status = "CONFIRMED".to_string();
+        user.user_status = user_status::CONFIRMED.to_string();
         user.user_last_modified_date = Utc::now();
 
         let user_attrs = triggers::collect_user_attributes(user);
@@ -1657,13 +1661,7 @@ impl CognitoService {
         let mut state = self.state.write();
 
         // Validate pool exists
-        if !state.user_pools.contains_key(pool_id) {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ResourceNotFoundException",
-                format!("User pool {pool_id} does not exist."),
-            ));
-        }
+        ensure_user_pool_exists(&state, pool_id)?;
 
         let user = state
             .users
@@ -1677,7 +1675,7 @@ impl CognitoService {
                 )
             })?;
 
-        user.user_status = "CONFIRMED".to_string();
+        user.user_status = user_status::CONFIRMED.to_string();
         user.user_last_modified_date = Utc::now();
 
         let user_attrs = triggers::collect_user_attributes(user);
@@ -1959,7 +1957,7 @@ impl CognitoService {
         user.password = Some(password.to_string());
         user.temporary_password = None;
         user.confirmation_code = None;
-        user.user_status = "CONFIRMED".to_string();
+        user.user_status = user_status::CONFIRMED.to_string();
         user.user_last_modified_date = Utc::now();
 
         Ok(AwsResponse::ok_json(json!({})))
@@ -1977,13 +1975,7 @@ impl CognitoService {
         let mut state = self.state.write();
 
         // Validate pool exists
-        if !state.user_pools.contains_key(pool_id) {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ResourceNotFoundException",
-                format!("User pool {pool_id} does not exist."),
-            ));
-        }
+        ensure_user_pool_exists(&state, pool_id)?;
 
         let user = state
             .users
@@ -1997,7 +1989,7 @@ impl CognitoService {
                 )
             })?;
 
-        user.user_status = "RESET_REQUIRED".to_string();
+        user.user_status = user_status::RESET_REQUIRED.to_string();
         user.confirmation_code = Some(generate_confirmation_code());
         user.user_last_modified_date = Utc::now();
 
@@ -2047,13 +2039,7 @@ impl CognitoService {
         let mut state = self.state.write();
 
         // Validate pool exists
-        if !state.user_pools.contains_key(pool_id) {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ResourceNotFoundException",
-                format!("User pool {pool_id} does not exist."),
-            ));
-        }
+        ensure_user_pool_exists(&state, pool_id)?;
 
         // Validate user exists
         if !state

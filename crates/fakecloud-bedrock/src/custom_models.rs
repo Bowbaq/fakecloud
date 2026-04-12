@@ -12,7 +12,7 @@ pub fn create_custom_model(
     req: &AwsRequest,
     body: &Value,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let default_name = Uuid::new_v4().to_string()[..8].to_string();
+    let default_name = crate::short_uuid();
     let model_name = body["modelName"].as_str().unwrap_or(&default_name);
 
     let model_id = Uuid::new_v4().to_string();

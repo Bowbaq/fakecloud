@@ -20,9 +20,21 @@ use fakecloud_s3::state::SharedS3State;
 
 use crate::state::{
     attribute_type_and_value, AttributeDefinition, AttributeValue, DynamoTable,
-    GlobalSecondaryIndex, KeySchemaElement, LocalSecondaryIndex, Projection, ProvisionedThroughput,
-    SharedDynamoDbState,
+    GlobalSecondaryIndex, KeySchemaElement, KinesisDestination, LocalSecondaryIndex, Projection,
+    ProvisionedThroughput, SharedDynamoDbState,
 };
+
+/// Minimal subset of a ``DynamoTable`` that Kinesis streaming delivery needs.
+///
+/// A table can carry megabytes of items; cloning the whole table just to
+/// release the write lock and deliver one change record is extremely wasteful.
+/// Extracting only the fields the delivery path actually reads (destinations,
+/// arn, name) keeps the clone small.
+pub(super) struct KinesisDeliveryTarget {
+    pub destinations: Vec<KinesisDestination>,
+    pub arn: String,
+    pub name: String,
+}
 
 pub struct DynamoDbService {
     state: SharedDynamoDbState,
@@ -49,10 +61,26 @@ impl DynamoDbService {
         self
     }
 
+    fn kinesis_target(table: &DynamoTable) -> Option<KinesisDeliveryTarget> {
+        if table
+            .kinesis_destinations
+            .iter()
+            .any(|d| d.destination_status == "ACTIVE")
+        {
+            Some(KinesisDeliveryTarget {
+                destinations: table.kinesis_destinations.clone(),
+                arn: table.arn.clone(),
+                name: table.name.clone(),
+            })
+        } else {
+            None
+        }
+    }
+
     /// Deliver a change record to all active Kinesis streaming destinations for a table.
-    fn deliver_to_kinesis_destinations(
+    pub(super) fn deliver_to_kinesis_destinations(
         &self,
-        table: &DynamoTable,
+        target: &KinesisDeliveryTarget,
         event_name: &str,
         keys: &HashMap<String, AttributeValue>,
         old_image: Option<&HashMap<String, AttributeValue>>,
@@ -63,8 +91,8 @@ impl DynamoDbService {
             None => return,
         };
 
-        let active_destinations: Vec<_> = table
-            .kinesis_destinations
+        let active_destinations: Vec<_> = target
+            .destinations
             .iter()
             .filter(|d| d.destination_status == "ACTIVE")
             .collect();
@@ -78,15 +106,15 @@ impl DynamoDbService {
             "eventName": event_name,
             "eventVersion": "1.1",
             "eventSource": "aws:dynamodb",
-            "awsRegion": table.arn.split(':').nth(3).unwrap_or("us-east-1"),
+            "awsRegion": target.arn.split(':').nth(3).unwrap_or("us-east-1"),
             "dynamodb": {
                 "Keys": keys,
                 "SequenceNumber": chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0).to_string(),
                 "SizeBytes": serde_json::to_string(keys).map(|s| s.len()).unwrap_or(0),
                 "StreamViewType": "NEW_AND_OLD_IMAGES",
             },
-            "eventSourceARN": &table.arn,
-            "tableName": &table.name,
+            "eventSourceARN": &target.arn,
+            "tableName": &target.name,
         });
 
         if let Some(old) = old_image {
@@ -849,7 +877,10 @@ fn evaluate_key_condition(
     true
 }
 
-fn split_on_and(expr: &str) -> Vec<&str> {
+/// Split a DynamoDB condition expression on a top-level keyword (``" AND "``,
+/// ``" OR "``), case-insensitively. Parenthesised groups are skipped so only
+/// unparenthesised occurrences of the keyword act as separators.
+fn split_on_top_level_keyword<'a>(expr: &'a str, keyword: &str) -> Vec<&'a str> {
     let mut parts = Vec::new();
     let mut start = 0;
     let len = expr.len();
@@ -864,13 +895,13 @@ fn split_on_and(expr: &str) -> Vec<&str> {
                 depth -= 1;
             }
         } else if depth == 0
-            && i + 5 <= len
+            && i + keyword.len() <= len
             && expr.is_char_boundary(i)
-            && expr.is_char_boundary(i + 5)
-            && expr[i..i + 5].eq_ignore_ascii_case(" AND ")
+            && expr.is_char_boundary(i + keyword.len())
+            && expr[i..i + keyword.len()].eq_ignore_ascii_case(keyword)
         {
             parts.push(&expr[start..i]);
-            start = i + 5;
+            start = i + keyword.len();
             i = start;
             continue;
         }
@@ -880,35 +911,12 @@ fn split_on_and(expr: &str) -> Vec<&str> {
     parts
 }
 
+fn split_on_and(expr: &str) -> Vec<&str> {
+    split_on_top_level_keyword(expr, " AND ")
+}
+
 fn split_on_or(expr: &str) -> Vec<&str> {
-    let mut parts = Vec::new();
-    let mut start = 0;
-    let len = expr.len();
-    let mut i = 0;
-    let mut depth = 0;
-    while i < len {
-        let ch = expr.as_bytes()[i];
-        if ch == b'(' {
-            depth += 1;
-        } else if ch == b')' {
-            if depth > 0 {
-                depth -= 1;
-            }
-        } else if depth == 0
-            && i + 4 <= len
-            && expr.is_char_boundary(i)
-            && expr.is_char_boundary(i + 4)
-            && expr[i..i + 4].eq_ignore_ascii_case(" OR ")
-        {
-            parts.push(&expr[start..i]);
-            start = i + 4;
-            i = start;
-            continue;
-        }
-        i += 1;
-    }
-    parts.push(&expr[start..]);
-    parts
+    split_on_top_level_keyword(expr, " OR ")
 }
 
 fn evaluate_single_key_condition(
@@ -1807,20 +1815,34 @@ fn apply_delete_assignment(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn build_table_description_json(
-    arn: &str,
-    key_schema: &[KeySchemaElement],
-    attribute_definitions: &[AttributeDefinition],
-    provisioned_throughput: &ProvisionedThroughput,
-    gsi: &[GlobalSecondaryIndex],
-    lsi: &[LocalSecondaryIndex],
-    billing_mode: &str,
-    created_at: chrono::DateTime<chrono::Utc>,
-    item_count: i64,
-    size_bytes: i64,
-    status: &str,
-) -> Value {
+pub(super) struct TableDescriptionInput<'a> {
+    pub arn: &'a str,
+    pub key_schema: &'a [KeySchemaElement],
+    pub attribute_definitions: &'a [AttributeDefinition],
+    pub provisioned_throughput: &'a ProvisionedThroughput,
+    pub gsi: &'a [GlobalSecondaryIndex],
+    pub lsi: &'a [LocalSecondaryIndex],
+    pub billing_mode: &'a str,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub item_count: i64,
+    pub size_bytes: i64,
+    pub status: &'a str,
+}
+
+fn build_table_description_json(input: &TableDescriptionInput<'_>) -> Value {
+    let TableDescriptionInput {
+        arn,
+        key_schema,
+        attribute_definitions,
+        provisioned_throughput,
+        gsi,
+        lsi,
+        billing_mode,
+        created_at,
+        item_count,
+        size_bytes,
+        status,
+    } = *input;
     let table_name = arn.rsplit('/').next().unwrap_or("");
     let creation_timestamp =
         created_at.timestamp() as f64 + created_at.timestamp_subsec_millis() as f64 / 1000.0;
@@ -1926,19 +1948,19 @@ fn build_table_description_json(
 }
 
 fn build_table_description(table: &DynamoTable) -> Value {
-    let mut desc = build_table_description_json(
-        &table.arn,
-        &table.key_schema,
-        &table.attribute_definitions,
-        &table.provisioned_throughput,
-        &table.gsi,
-        &table.lsi,
-        &table.billing_mode,
-        table.created_at,
-        table.item_count,
-        table.size_bytes,
-        &table.status,
-    );
+    let mut desc = build_table_description_json(&TableDescriptionInput {
+        arn: &table.arn,
+        key_schema: &table.key_schema,
+        attribute_definitions: &table.attribute_definitions,
+        provisioned_throughput: &table.provisioned_throughput,
+        gsi: &table.gsi,
+        lsi: &table.lsi,
+        billing_mode: &table.billing_mode,
+        created_at: table.created_at,
+        item_count: table.item_count,
+        size_bytes: table.size_bytes,
+        status: &table.status,
+    });
 
     // Add stream specification if streams are enabled
     if table.stream_enabled {

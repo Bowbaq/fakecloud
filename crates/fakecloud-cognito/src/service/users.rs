@@ -9,10 +9,12 @@ use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 
 use crate::state::UserAttribute;
 use crate::triggers::{self, TriggerSource};
+use crate::user_status;
 
 use super::{
-    generate_confirmation_code, matches_filter, parse_filter_expression, parse_string_array,
-    parse_user_attributes, require_str, user_to_json, validate_password, CognitoService,
+    ensure_user_pool_exists, generate_confirmation_code, matches_filter, parse_filter_expression,
+    parse_string_array, parse_user_attributes, require_str, user_to_json, validate_password,
+    CognitoService,
 };
 
 impl CognitoService {
@@ -48,13 +50,7 @@ impl CognitoService {
             let mut state = self.state.write();
 
             // Validate pool exists
-            if !state.user_pools.contains_key(pool_id) {
-                return Err(AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "ResourceNotFoundException",
-                    format!("User pool {pool_id} does not exist."),
-                ));
-            }
+            ensure_user_pool_exists(&state, pool_id)?;
 
             // Check username doesn't already exist
             let pool_users = state.users.entry(pool_id.to_string()).or_default();
@@ -87,7 +83,7 @@ impl CognitoService {
                 sub: sub_val,
                 attributes,
                 enabled: true,
-                user_status: "FORCE_CHANGE_PASSWORD".to_string(),
+                user_status: user_status::FORCE_CHANGE_PASSWORD.to_string(),
                 user_create_date: now,
                 user_last_modified_date: now,
                 password: None,
@@ -142,7 +138,7 @@ impl CognitoService {
                             .get_mut(&pool_id_owned)
                             .and_then(|users| users.get_mut(&username_owned))
                         {
-                            u.user_status = "CONFIRMED".to_string();
+                            u.user_status = user_status::CONFIRMED.to_string();
                             u.user_last_modified_date = Utc::now();
                         }
                     }
@@ -181,13 +177,7 @@ impl CognitoService {
         let state = self.state.read();
 
         // Validate pool exists
-        if !state.user_pools.contains_key(pool_id) {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ResourceNotFoundException",
-                format!("User pool {pool_id} does not exist."),
-            ));
-        }
+        ensure_user_pool_exists(&state, pool_id)?;
 
         let user = state
             .users
@@ -247,13 +237,7 @@ impl CognitoService {
         let mut state = self.state.write();
 
         // Validate pool exists
-        if !state.user_pools.contains_key(pool_id) {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ResourceNotFoundException",
-                format!("User pool {pool_id} does not exist."),
-            ));
-        }
+        ensure_user_pool_exists(&state, pool_id)?;
 
         let pool_users = state.users.get_mut(pool_id).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -548,13 +532,7 @@ impl CognitoService {
         let state = self.state.read();
 
         // Validate pool exists
-        if !state.user_pools.contains_key(pool_id) {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ResourceNotFoundException",
-                format!("User pool {pool_id} does not exist."),
-            ));
-        }
+        ensure_user_pool_exists(&state, pool_id)?;
 
         let empty = std::collections::HashMap::new();
         let pool_users = state.users.get(pool_id).unwrap_or(&empty);
@@ -642,7 +620,7 @@ impl CognitoService {
         if permanent {
             user.password = Some(password.to_string());
             user.temporary_password = None;
-            user.user_status = "CONFIRMED".to_string();
+            user.user_status = user_status::CONFIRMED.to_string();
         } else {
             user.temporary_password = Some(password.to_string());
         }

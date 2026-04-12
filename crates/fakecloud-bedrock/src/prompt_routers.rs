@@ -12,7 +12,7 @@ pub fn create_prompt_router(
     req: &AwsRequest,
     body: &Value,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let default_name = Uuid::new_v4().to_string()[..8].to_string();
+    let default_name = crate::short_uuid();
     let router_name = body["promptRouterName"].as_str().unwrap_or(&default_name);
 
     let router_id = Uuid::new_v4().to_string();

@@ -4,6 +4,7 @@ use md5::{Digest, Md5};
 use uuid::Uuid;
 
 use crate::state::{S3Object, SharedS3State};
+use crate::xml_util::extract_tag;
 
 /// Parsed logging configuration extracted from the XML stored on the bucket.
 pub struct LoggingConfig {
@@ -27,23 +28,35 @@ pub fn parse_logging_config(xml: &str) -> Option<LoggingConfig> {
     })
 }
 
+/// Everything needed to describe a single S3 request for access logging.
+pub struct AccessLogRequest<'a> {
+    pub operation: &'a str,
+    pub key: Option<&'a str>,
+    pub status: u16,
+    pub request_id: &'a str,
+    pub method: &'a str,
+    pub path: &'a str,
+}
+
 /// Generate an S3 access log line in a format similar to AWS.
 ///
 /// See <https://docs.aws.amazon.com/AmazonS3/latest/userguide/LogFormat.html>
-#[allow(clippy::too_many_arguments)]
 pub fn format_access_log_entry(
     bucket_owner: &str,
     bucket: &str,
-    operation: &str,
-    key: Option<&str>,
-    status: u16,
-    request_id: &str,
-    method: &str,
-    path: &str,
+    request: &AccessLogRequest<'_>,
 ) -> String {
     let now = Utc::now();
     let time = now.format("[%d/%b/%Y:%H:%M:%S %z]");
-    let key_str = key.unwrap_or("-");
+    let key_str = request.key.unwrap_or("-");
+    let AccessLogRequest {
+        operation,
+        status,
+        request_id,
+        method,
+        path,
+        ..
+    } = request;
     // Simplified log line matching the AWS format fields
     format!(
         "{bucket_owner} {bucket} {time} 127.0.0.1 arn:aws:iam::000000000000:user/testuser {request_id} REST.{operation} {key_str} \"{method} {path} HTTP/1.1\" {status} - - - - - \"-\" \"FakeCloud/1.0\" - - - - -\n"
@@ -55,16 +68,10 @@ pub fn format_access_log_entry(
 ///
 /// This should be called at the end of the `handle` method so that every S3
 /// operation on a logging-enabled bucket produces a record.
-#[allow(clippy::too_many_arguments)]
 pub fn maybe_write_access_log(
     state: &SharedS3State,
     source_bucket: &str,
-    operation: &str,
-    key: Option<&str>,
-    status: u16,
-    request_id: &str,
-    method: &str,
-    path: &str,
+    request: &AccessLogRequest<'_>,
 ) {
     // Read logging config from the source bucket
     let logging_config_xml = {
@@ -87,16 +94,7 @@ pub fn maybe_write_access_log(
             .unwrap_or_else(|| "unknown".to_string())
     };
 
-    let entry = format_access_log_entry(
-        &bucket_owner,
-        source_bucket,
-        operation,
-        key,
-        status,
-        request_id,
-        method,
-        path,
-    );
+    let entry = format_access_log_entry(&bucket_owner, source_bucket, request);
 
     let now = Utc::now();
     let log_key = format!(
@@ -161,15 +159,6 @@ pub fn operation_name(method: &http::Method, key: Option<&str>) -> &'static str 
     }
 }
 
-fn extract_tag(body: &str, tag: &str) -> Option<String> {
-    let open = format!("<{tag}>");
-    let close = format!("</{tag}>");
-    let start = body.find(&open)?;
-    let content_start = start + open.len();
-    let end = body[content_start..].find(&close)?;
-    Some(body[content_start..content_start + end].trim().to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,16 +187,15 @@ mod tests {
 
     #[test]
     fn format_log_entry_contains_fields() {
-        let entry = format_access_log_entry(
-            "owner123",
-            "my-bucket",
-            "GET.OBJECT",
-            Some("my-key.txt"),
-            200,
-            "req-abc",
-            "GET",
-            "/my-bucket/my-key.txt",
-        );
+        let request = AccessLogRequest {
+            operation: "GET.OBJECT",
+            key: Some("my-key.txt"),
+            status: 200,
+            request_id: "req-abc",
+            method: "GET",
+            path: "/my-bucket/my-key.txt",
+        };
+        let entry = format_access_log_entry("owner123", "my-bucket", &request);
         assert!(entry.contains("owner123"));
         assert!(entry.contains("my-bucket"));
         assert!(entry.contains("GET.OBJECT"));

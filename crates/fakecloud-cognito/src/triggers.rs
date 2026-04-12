@@ -269,24 +269,40 @@ pub fn build_define_auth_challenge_event(
     event
 }
 
+/// Caller/user/pool identity bundled for auth-challenge trigger events.
+pub struct AuthChallengeContext<'a> {
+    pub pool_id: &'a str,
+    pub client_id: Option<&'a str>,
+    pub username: &'a str,
+    pub user_attributes: &'a [UserAttribute],
+    pub region: &'a str,
+    pub account_id: &'a str,
+}
+
+impl<'a> AuthChallengeContext<'a> {
+    fn caller_context(&self) -> Value {
+        json!({
+            "awsSdkVersion": "fakecloud",
+            "clientId": self.client_id.unwrap_or(""),
+            "accountId": self.account_id,
+        })
+    }
+
+    fn user_attrs_value(&self) -> Value {
+        self.user_attributes
+            .iter()
+            .map(|a| (a.name.clone(), Value::String(a.value.clone())))
+            .collect::<serde_json::Map<String, Value>>()
+            .into()
+    }
+}
+
 /// Build a CreateAuthChallenge trigger event.
-#[allow(clippy::too_many_arguments)]
 pub fn build_create_auth_challenge_event(
-    pool_id: &str,
-    client_id: Option<&str>,
-    username: &str,
-    user_attributes: &[UserAttribute],
+    ctx: &AuthChallengeContext<'_>,
     challenge_name: &str,
     challenge_results: &[ChallengeResult],
-    region: &str,
-    account_id: &str,
 ) -> Value {
-    let user_attrs: Value = user_attributes
-        .iter()
-        .map(|a| (a.name.clone(), Value::String(a.value.clone())))
-        .collect::<serde_json::Map<String, Value>>()
-        .into();
-
     let session: Vec<Value> = challenge_results
         .iter()
         .map(|cr| {
@@ -304,16 +320,12 @@ pub fn build_create_auth_challenge_event(
     json!({
         "version": "1",
         "triggerSource": TriggerSource::CreateAuthChallengeAuthentication.as_str(),
-        "region": region,
-        "userPoolId": pool_id,
-        "userName": username,
-        "callerContext": {
-            "awsSdkVersion": "fakecloud",
-            "clientId": client_id.unwrap_or(""),
-            "accountId": account_id,
-        },
+        "region": ctx.region,
+        "userPoolId": ctx.pool_id,
+        "userName": ctx.username,
+        "callerContext": ctx.caller_context(),
         "request": {
-            "userAttributes": user_attrs,
+            "userAttributes": ctx.user_attrs_value(),
             "challengeName": challenge_name,
             "session": session,
         },
@@ -326,36 +338,20 @@ pub fn build_create_auth_challenge_event(
 }
 
 /// Build a VerifyAuthChallengeResponse trigger event.
-#[allow(clippy::too_many_arguments)]
 pub fn build_verify_auth_challenge_event(
-    pool_id: &str,
-    client_id: Option<&str>,
-    username: &str,
-    user_attributes: &[UserAttribute],
+    ctx: &AuthChallengeContext<'_>,
     challenge_answer: &str,
     challenge_metadata: Option<&str>,
-    region: &str,
-    account_id: &str,
 ) -> Value {
-    let user_attrs: Value = user_attributes
-        .iter()
-        .map(|a| (a.name.clone(), Value::String(a.value.clone())))
-        .collect::<serde_json::Map<String, Value>>()
-        .into();
-
     json!({
         "version": "1",
         "triggerSource": TriggerSource::VerifyAuthChallengeResponseAuthentication.as_str(),
-        "region": region,
-        "userPoolId": pool_id,
-        "userName": username,
-        "callerContext": {
-            "awsSdkVersion": "fakecloud",
-            "clientId": client_id.unwrap_or(""),
-            "accountId": account_id,
-        },
+        "region": ctx.region,
+        "userPoolId": ctx.pool_id,
+        "userName": ctx.username,
+        "callerContext": ctx.caller_context(),
         "request": {
-            "userAttributes": user_attrs,
+            "userAttributes": ctx.user_attrs_value(),
             "challengeAnswer": challenge_answer,
             "privateChallengeParameters": {},
             "challengeMetadata": challenge_metadata.unwrap_or(""),
@@ -669,17 +665,16 @@ mod tests {
             name: "email".to_string(),
             value: "user@example.com".to_string(),
         }];
+        let ctx = AuthChallengeContext {
+            pool_id: "us-east-1_abc",
+            client_id: Some("client-id-1"),
+            username: "testuser",
+            user_attributes: &attrs,
+            region: "us-east-1",
+            account_id: "123456789012",
+        };
 
-        let event = build_create_auth_challenge_event(
-            "us-east-1_abc",
-            Some("client-id-1"),
-            "testuser",
-            &attrs,
-            "CUSTOM_CHALLENGE",
-            &[],
-            "us-east-1",
-            "123456789012",
-        );
+        let event = build_create_auth_challenge_event(&ctx, "CUSTOM_CHALLENGE", &[]);
 
         assert_eq!(event["triggerSource"], "CreateAuthChallenge_Authentication");
         assert_eq!(event["request"]["challengeName"], "CUSTOM_CHALLENGE");
@@ -696,17 +691,16 @@ mod tests {
             name: "sub".to_string(),
             value: "abc-123".to_string(),
         }];
+        let ctx = AuthChallengeContext {
+            pool_id: "us-east-1_abc",
+            client_id: Some("client-id-1"),
+            username: "testuser",
+            user_attributes: &attrs,
+            region: "us-east-1",
+            account_id: "123456789012",
+        };
 
-        let event = build_verify_auth_challenge_event(
-            "us-east-1_abc",
-            Some("client-id-1"),
-            "testuser",
-            &attrs,
-            "my-answer",
-            Some("challenge-meta"),
-            "us-east-1",
-            "123456789012",
-        );
+        let event = build_verify_auth_challenge_event(&ctx, "my-answer", Some("challenge-meta"));
 
         assert_eq!(
             event["triggerSource"],

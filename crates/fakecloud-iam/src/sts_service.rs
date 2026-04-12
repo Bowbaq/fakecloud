@@ -271,16 +271,16 @@ impl StsService {
             },
         );
 
-        let xml = xml_responses::assume_role_response(
+        let xml = xml_responses::assume_role_response(&xml_responses::AssumedRoleInfo {
             role_arn,
             role_session_name,
-            &role_id,
-            &account_id,
+            assumed_role_id: &role_id,
+            account_id: &account_id,
             partition,
-            &creds,
-            &expiration,
-            &req.request_id,
-        );
+            creds: &creds,
+            expiration: &expiration,
+            request_id: &req.request_id,
+        });
         Ok(AwsResponse::xml(StatusCode::OK, xml))
     }
 
@@ -377,14 +377,16 @@ impl StsService {
         );
 
         let xml = xml_responses::assume_role_with_web_identity_response(
-            role_arn,
-            role_session_name,
-            &account_id,
-            partition,
-            &creds,
-            &role_id,
-            &expiration,
-            &req.request_id,
+            &xml_responses::AssumedRoleInfo {
+                role_arn,
+                role_session_name,
+                assumed_role_id: &role_id,
+                account_id: &account_id,
+                partition,
+                creds: &creds,
+                expiration: &expiration,
+                request_id: &req.request_id,
+            },
         );
         Ok(AwsResponse::xml(StatusCode::OK, xml))
     }
@@ -475,16 +477,16 @@ impl StsService {
             },
         );
 
-        let xml = xml_responses::assume_role_with_saml_response(
+        let xml = xml_responses::assume_role_with_saml_response(&xml_responses::AssumedRoleInfo {
             role_arn,
-            &role_session_name,
-            &account_id,
+            role_session_name: &role_session_name,
+            assumed_role_id: &role_id,
+            account_id: &account_id,
             partition,
-            &creds,
-            &role_id,
-            &expiration,
-            &req.request_id,
-        );
+            creds: &creds,
+            expiration: &expiration,
+            request_id: &req.request_id,
+        });
         Ok(AwsResponse::xml(StatusCode::OK, xml))
     }
 
