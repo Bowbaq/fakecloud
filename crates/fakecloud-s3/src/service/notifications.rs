@@ -498,19 +498,32 @@ pub(crate) fn event_matches(event_name: &str, filter: &str) -> bool {
     false
 }
 
+/// Everything a reader needs to describe a single S3 object-level event.
+pub(crate) struct ObjectEvent<'a> {
+    pub event_name: &'a str,
+    pub bucket_name: &'a str,
+    pub key: &'a str,
+    pub size: u64,
+    pub etag: &'a str,
+    pub region: &'a str,
+}
+
 /// Deliver S3 event notifications for a bucket operation.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn deliver_notifications(
     delivery: &Arc<DeliveryBus>,
     notification_config: &str,
-    event_name: &str,
-    bucket_name: &str,
-    key: &str,
-    size: u64,
-    etag: &str,
-    region: &str,
+    event: &ObjectEvent<'_>,
     s3_state: Option<&SharedS3State>,
 ) {
+    let ObjectEvent {
+        event_name,
+        bucket_name,
+        key,
+        size,
+        etag,
+        region,
+    } = *event;
+
     let targets = parse_notification_config(notification_config);
     let s3_event_name = format!("s3:{event_name}");
     let message = build_s3_event_notification(event_name, bucket_name, key, size, etag, region);
