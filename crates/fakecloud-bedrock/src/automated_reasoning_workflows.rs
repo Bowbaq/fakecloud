@@ -7,10 +7,6 @@ use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 
 use crate::state::{AutomatedReasoningBuildWorkflow, SharedBedrockState};
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 fn find_policy_arn(
     policies: &std::collections::HashMap<String, crate::state::AutomatedReasoningPolicy>,
     identifier: &str,
@@ -49,10 +45,6 @@ fn workflow_to_json(w: &AutomatedReasoningBuildWorkflow) -> Value {
     })
 }
 
-// ---------------------------------------------------------------------------
-// 1. StartBuildWorkflow
-// ---------------------------------------------------------------------------
-
 pub fn start_build_workflow(
     state: &SharedBedrockState,
     policy_identifier: &str,
@@ -81,10 +73,6 @@ pub fn start_build_workflow(
     ))
 }
 
-// ---------------------------------------------------------------------------
-// 2. GetBuildWorkflow
-// ---------------------------------------------------------------------------
-
 pub fn get_build_workflow(
     state: &SharedBedrockState,
     policy_identifier: &str,
@@ -106,10 +94,6 @@ pub fn get_build_workflow(
 
     Ok(AwsResponse::ok_json(workflow_to_json(workflow)))
 }
-
-// ---------------------------------------------------------------------------
-// 3. ListBuildWorkflows
-// ---------------------------------------------------------------------------
 
 pub fn list_build_workflows(
     state: &SharedBedrockState,
@@ -162,10 +146,6 @@ pub fn list_build_workflows(
     Ok(AwsResponse::ok_json(resp))
 }
 
-// ---------------------------------------------------------------------------
-// 4. CancelBuildWorkflow
-// ---------------------------------------------------------------------------
-
 pub fn cancel_build_workflow(
     state: &SharedBedrockState,
     policy_identifier: &str,
@@ -190,10 +170,6 @@ pub fn cancel_build_workflow(
 
     Ok(AwsResponse::json(StatusCode::OK, "{}".to_string()))
 }
-
-// ---------------------------------------------------------------------------
-// 5. DeleteBuildWorkflow
-// ---------------------------------------------------------------------------
 
 pub fn delete_build_workflow(
     state: &SharedBedrockState,
@@ -221,10 +197,6 @@ pub fn delete_build_workflow(
     Ok(AwsResponse::json(StatusCode::OK, "{}".to_string()))
 }
 
-// ---------------------------------------------------------------------------
-// 6. GetBuildWorkflowResultAssets
-// ---------------------------------------------------------------------------
-
 pub fn get_build_workflow_result_assets(
     state: &SharedBedrockState,
     policy_identifier: &str,
@@ -246,10 +218,6 @@ pub fn get_build_workflow_result_assets(
 
     Ok(AwsResponse::ok_json(json!({ "assets": [] })))
 }
-
-// ---------------------------------------------------------------------------
-// 7. StartTestWorkflow
-// ---------------------------------------------------------------------------
 
 pub fn start_test_workflow(
     state: &SharedBedrockState,
@@ -276,10 +244,6 @@ pub fn start_test_workflow(
         json!({ "testWorkflowId": test_workflow_id }),
     ))
 }
-
-// ---------------------------------------------------------------------------
-// 8. GetTestResult
-// ---------------------------------------------------------------------------
 
 pub fn get_test_result(
     state: &SharedBedrockState,
@@ -318,10 +282,6 @@ pub fn get_test_result(
 
     Ok(AwsResponse::ok_json(result))
 }
-
-// ---------------------------------------------------------------------------
-// 9. ListTestResults
-// ---------------------------------------------------------------------------
 
 pub fn list_test_results(
     state: &SharedBedrockState,
@@ -386,10 +346,6 @@ pub fn list_test_results(
     Ok(AwsResponse::ok_json(resp))
 }
 
-// ---------------------------------------------------------------------------
-// 10. GetAnnotations
-// ---------------------------------------------------------------------------
-
 pub fn get_annotations(
     state: &SharedBedrockState,
     policy_identifier: &str,
@@ -418,10 +374,6 @@ pub fn get_annotations(
     Ok(AwsResponse::ok_json(annotations))
 }
 
-// ---------------------------------------------------------------------------
-// 11. UpdateAnnotations
-// ---------------------------------------------------------------------------
-
 pub fn update_annotations(
     state: &SharedBedrockState,
     policy_identifier: &str,
@@ -447,10 +399,6 @@ pub fn update_annotations(
 
     Ok(AwsResponse::ok_json(body.clone()))
 }
-
-// ---------------------------------------------------------------------------
-// 12. GetNextScenario
-// ---------------------------------------------------------------------------
 
 pub fn get_next_scenario(
     state: &SharedBedrockState,

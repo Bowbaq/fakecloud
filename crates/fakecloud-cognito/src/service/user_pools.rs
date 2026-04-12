@@ -747,8 +747,6 @@ impl CognitoService {
         Ok(AwsResponse::ok_json(response))
     }
 
-    // ── Custom Attributes ──────────────────────────────────────────────
-
     pub(super) fn add_custom_attributes(
         &self,
         req: &AwsRequest,
@@ -914,8 +912,6 @@ impl CognitoService {
             "ClientSecrets": secrets
         })))
     }
-
-    // ── Signing Certificate ────────────────────────────────────────────
 
     pub(super) fn get_signing_certificate(
         &self,

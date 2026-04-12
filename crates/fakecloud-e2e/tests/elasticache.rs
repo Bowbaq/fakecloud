@@ -2,9 +2,7 @@ mod helpers;
 
 use helpers::TestServer;
 
-// ---------------------------------------------------------------------------
 // CacheCluster tests
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn elasticache_create_cache_cluster_and_describe() {
@@ -208,9 +206,7 @@ async fn elasticache_describe_reserved_cache_nodes_offerings_filters_and_paginat
     assert_eq!(next_page.reserved_cache_nodes_offerings().len(), 1);
 }
 
-// ---------------------------------------------------------------------------
 // CacheSubnetGroup tests
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn elasticache_create_subnet_group_and_describe() {
@@ -387,9 +383,7 @@ async fn elasticache_delete_nonexistent_subnet_group_errors() {
     assert!(result.is_err());
 }
 
-// ---------------------------------------------------------------------------
 // Tag tests
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn elasticache_add_and_list_tags_on_subnet_group() {
@@ -584,9 +578,7 @@ async fn elasticache_tags_on_unknown_arn_errors() {
     assert!(result.is_err());
 }
 
-// ---------------------------------------------------------------------------
 // ReplicationGroup tests
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn elasticache_create_replication_group_and_describe() {
@@ -853,9 +845,7 @@ async fn elasticache_global_replication_group_lifecycle() {
     assert!(replication_group.global_replication_group_info().is_none());
 }
 
-// ---------------------------------------------------------------------------
 // User tests
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn elasticache_create_user_and_verify_in_describe() {
@@ -930,9 +920,7 @@ async fn elasticache_cannot_delete_default_user() {
     assert!(result.is_err());
 }
 
-// ---------------------------------------------------------------------------
 // UserGroup tests
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn elasticache_create_user_group_with_user_references() {
@@ -1027,9 +1015,7 @@ async fn elasticache_delete_user_group() {
     assert!(result.is_err());
 }
 
-// ---------------------------------------------------------------------------
 // Existing tests
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn elasticache_describe_cache_engine_versions_all() {
@@ -1165,9 +1151,7 @@ async fn elasticache_describe_cache_parameter_groups_by_name() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // ReplicationGroup operational tests
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn elasticache_modify_replication_group_description() {
@@ -1290,9 +1274,7 @@ async fn elasticache_test_failover() {
     assert_eq!(group.status(), Some("available"));
 }
 
-// ---------------------------------------------------------------------------
 // Snapshot tests
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn elasticache_create_snapshot_and_describe() {
@@ -1475,9 +1457,7 @@ async fn elasticache_delete_nonexistent_snapshot_errors() {
     assert!(result.is_err());
 }
 
-// ---------------------------------------------------------------------------
 // ServerlessCache tests
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn elasticache_create_serverless_cache_and_describe() {

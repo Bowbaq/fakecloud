@@ -2867,9 +2867,7 @@ impl ElastiCacheService {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
 
 fn optional_param(req: &AwsRequest, name: &str) -> Option<String> {
     fakecloud_core::query::optional_query_param(req, name)
@@ -3132,9 +3130,7 @@ fn paginate<T: Clone>(
     (page, next_marker)
 }
 
-// ---------------------------------------------------------------------------
 // Tag helpers
-// ---------------------------------------------------------------------------
 
 fn parse_tags(req: &AwsRequest) -> Result<Vec<(String, String)>, AwsServiceError> {
     let mut tags = Vec::new();
@@ -3188,9 +3184,7 @@ fn tag_xml(tag: &(String, String)) -> String {
     )
 }
 
-// ---------------------------------------------------------------------------
 // Filtering
-// ---------------------------------------------------------------------------
 
 fn filter_engine_versions(
     versions: &[CacheEngineVersion],
@@ -3215,9 +3209,7 @@ fn filter_engine_versions(
         .collect()
 }
 
-// ---------------------------------------------------------------------------
 // XML formatting
-// ---------------------------------------------------------------------------
 
 fn xml_wrap(action: &str, inner: &str, request_id: &str) -> String {
     fakecloud_core::query::query_response_xml(action, ELASTICACHE_NS, inner, request_id)
@@ -5572,9 +5564,7 @@ mod tests {
         assert!(service.test_failover(&req).is_err());
     }
 
-    // -----------------------------------------------------------------------
     // Snapshot tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn create_snapshot_returns_snapshot_xml() {
