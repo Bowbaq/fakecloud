@@ -1,10 +1,9 @@
 use chrono::Utc;
-use http::StatusCode;
 use serde_json::json;
 
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 
-use super::{require_str, CognitoService};
+use super::{ensure_user_pool_exists, require_str, CognitoService};
 
 impl CognitoService {
     // ── UI Customization ──────────────────────────────────────────────
@@ -19,13 +18,7 @@ impl CognitoService {
 
         let state = self.state.read();
 
-        if !state.user_pools.contains_key(pool_id) {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ResourceNotFoundException",
-                format!("User pool {pool_id} does not exist."),
-            ));
-        }
+        ensure_user_pool_exists(&state, pool_id)?;
 
         let key = format!("{pool_id}:{client_id}");
 
@@ -67,13 +60,7 @@ impl CognitoService {
 
         let mut state = self.state.write();
 
-        if !state.user_pools.contains_key(pool_id) {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ResourceNotFoundException",
-                format!("User pool {pool_id} does not exist."),
-            ));
-        }
+        ensure_user_pool_exists(&state, pool_id)?;
 
         let now = Utc::now();
         let key = format!("{pool_id}:{client_id}");
@@ -115,13 +102,7 @@ impl CognitoService {
 
         let state = self.state.read();
 
-        if !state.user_pools.contains_key(pool_id) {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ResourceNotFoundException",
-                format!("User pool {pool_id} does not exist."),
-            ));
-        }
+        ensure_user_pool_exists(&state, pool_id)?;
 
         let config = state
             .log_delivery_configs
@@ -149,13 +130,7 @@ impl CognitoService {
 
         let mut state = self.state.write();
 
-        if !state.user_pools.contains_key(pool_id) {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ResourceNotFoundException",
-                format!("User pool {pool_id} does not exist."),
-            ));
-        }
+        ensure_user_pool_exists(&state, pool_id)?;
 
         let config = json!({
             "UserPoolId": pool_id,
@@ -183,13 +158,7 @@ impl CognitoService {
 
         let state = self.state.read();
 
-        if !state.user_pools.contains_key(pool_id) {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ResourceNotFoundException",
-                format!("User pool {pool_id} does not exist."),
-            ));
-        }
+        ensure_user_pool_exists(&state, pool_id)?;
 
         let key = format!("{pool_id}:{client_id}");
 
@@ -229,13 +198,7 @@ impl CognitoService {
 
         let mut state = self.state.write();
 
-        if !state.user_pools.contains_key(pool_id) {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ResourceNotFoundException",
-                format!("User pool {pool_id} does not exist."),
-            ));
-        }
+        ensure_user_pool_exists(&state, pool_id)?;
 
         let key = format!("{pool_id}:{client_id}");
 

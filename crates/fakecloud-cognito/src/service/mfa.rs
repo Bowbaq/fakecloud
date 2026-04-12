@@ -10,7 +10,7 @@ use crate::state::{
 };
 // AccessTokenData is used via state.access_tokens.get()
 
-use super::{generate_totp_secret, require_str, CognitoService};
+use super::{ensure_user_pool_exists, generate_totp_secret, require_str, CognitoService};
 
 impl CognitoService {
     pub(super) fn set_user_pool_mfa_config(
@@ -158,13 +158,7 @@ impl CognitoService {
         let mut state = self.state.write();
 
         // Verify pool exists
-        if !state.user_pools.contains_key(pool_id) {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ResourceNotFoundException",
-                format!("User pool {pool_id} does not exist."),
-            ));
-        }
+        ensure_user_pool_exists(&state, pool_id)?;
 
         let user = state
             .users

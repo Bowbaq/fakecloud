@@ -10,8 +10,8 @@ use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 use crate::state::{AccessTokenData, CustomDomainConfig, Device, UserImportJob, UserPoolDomain};
 
 use super::{
-    device_to_json, domain_description_to_json, import_job_to_json, require_str,
-    validate_string_length, CognitoService,
+    device_to_json, domain_description_to_json, ensure_user_pool_exists, import_job_to_json,
+    require_str, validate_string_length, CognitoService,
 };
 
 impl CognitoService {
@@ -33,13 +33,7 @@ impl CognitoService {
 
         let mut state = self.state.write();
 
-        if !state.user_pools.contains_key(pool_id) {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ResourceNotFoundException",
-                format!("User pool {pool_id} does not exist."),
-            ));
-        }
+        ensure_user_pool_exists(&state, pool_id)?;
 
         if state.domains.contains_key(domain) {
             return Err(AwsServiceError::aws_error(
@@ -819,13 +813,7 @@ impl CognitoService {
 
         let mut state = self.state.write();
 
-        if !state.user_pools.contains_key(pool_id) {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ResourceNotFoundException",
-                format!("User pool {pool_id} does not exist."),
-            ));
-        }
+        ensure_user_pool_exists(&state, pool_id)?;
 
         let job_id = format!("import-{}", Uuid::new_v4());
         let now = Utc::now();
@@ -895,13 +883,7 @@ impl CognitoService {
 
         let state = self.state.read();
 
-        if !state.user_pools.contains_key(pool_id) {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ResourceNotFoundException",
-                format!("User pool {pool_id} does not exist."),
-            ));
-        }
+        ensure_user_pool_exists(&state, pool_id)?;
 
         let mut jobs: Vec<&UserImportJob> = state
             .import_jobs

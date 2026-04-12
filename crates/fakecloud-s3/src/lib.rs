@@ -4,3 +4,4 @@ pub mod logging;
 pub mod service;
 pub mod simulation;
 pub mod state;
+mod xml_util;

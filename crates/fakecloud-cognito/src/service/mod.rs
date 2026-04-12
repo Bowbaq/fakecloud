@@ -317,6 +317,26 @@ impl AwsService for CognitoService {
     }
 }
 
+/// Confirm that ``pool_id`` refers to a known user pool, returning the standard
+/// ``ResourceNotFoundException`` otherwise. Most ``CognitoService`` operations
+/// take a ``UserPoolId`` and validate it before touching any other state, so
+/// this helper collapses what would otherwise be the same 7-line guard written
+/// at every call site.
+fn ensure_user_pool_exists(
+    state: &crate::state::CognitoState,
+    pool_id: &str,
+) -> Result<(), AwsServiceError> {
+    if state.user_pools.contains_key(pool_id) {
+        Ok(())
+    } else {
+        Err(AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "ResourceNotFoundException",
+            format!("User pool {pool_id} does not exist."),
+        ))
+    }
+}
+
 fn device_to_json(device: &Device) -> Value {
     let attrs: Vec<Value> = device
         .device_attributes

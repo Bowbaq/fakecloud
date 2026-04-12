@@ -13,8 +13,8 @@ use crate::state::{
 use crate::triggers::{self, TriggerSource};
 
 use super::{
-    generate_confirmation_code, generate_tokens, parse_user_attributes, require_str,
-    validate_password, CognitoService,
+    ensure_user_pool_exists, generate_confirmation_code, generate_tokens, parse_user_attributes,
+    require_str, validate_password, CognitoService,
 };
 
 impl CognitoService {
@@ -74,13 +74,7 @@ impl CognitoService {
             let state = self.state.read();
 
             // Validate pool exists
-            if !state.user_pools.contains_key(pool_id) {
-                return Err(AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "ResourceNotFoundException",
-                    format!("User pool {pool_id} does not exist."),
-                ));
-            }
+            ensure_user_pool_exists(&state, pool_id)?;
 
             // Validate client exists and belongs to pool
             let client = state.user_pool_clients.get(client_id).ok_or_else(|| {
@@ -1657,13 +1651,7 @@ impl CognitoService {
         let mut state = self.state.write();
 
         // Validate pool exists
-        if !state.user_pools.contains_key(pool_id) {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ResourceNotFoundException",
-                format!("User pool {pool_id} does not exist."),
-            ));
-        }
+        ensure_user_pool_exists(&state, pool_id)?;
 
         let user = state
             .users
@@ -1977,13 +1965,7 @@ impl CognitoService {
         let mut state = self.state.write();
 
         // Validate pool exists
-        if !state.user_pools.contains_key(pool_id) {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ResourceNotFoundException",
-                format!("User pool {pool_id} does not exist."),
-            ));
-        }
+        ensure_user_pool_exists(&state, pool_id)?;
 
         let user = state
             .users
@@ -2047,13 +2029,7 @@ impl CognitoService {
         let mut state = self.state.write();
 
         // Validate pool exists
-        if !state.user_pools.contains_key(pool_id) {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ResourceNotFoundException",
-                format!("User pool {pool_id} does not exist."),
-            ));
-        }
+        ensure_user_pool_exists(&state, pool_id)?;
 
         // Validate user exists
         if !state
