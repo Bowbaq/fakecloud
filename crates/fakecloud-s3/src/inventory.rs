@@ -116,27 +116,8 @@ pub fn generate_inventory_report(state: &SharedS3State, source_bucket: &str, con
         etag,
         size,
         last_modified: now,
-        metadata: Default::default(),
         storage_class: "STANDARD".to_string(),
-        tags: Default::default(),
-        acl_grants: vec![],
-        acl_owner_id: None,
-        parts_count: None,
-        part_sizes: None,
-        sse_algorithm: None,
-        sse_kms_key_id: None,
-        bucket_key_enabled: None,
-        version_id: None,
-        is_delete_marker: false,
-        content_encoding: None,
-        website_redirect_location: None,
-        restore_ongoing: None,
-        restore_expiry: None,
-        checksum_algorithm: None,
-        checksum_value: None,
-        lock_mode: None,
-        lock_retain_until: None,
-        lock_legal_hold: None,
+        ..Default::default()
     };
 
     let mut st = state.write();

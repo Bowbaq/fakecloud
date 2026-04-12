@@ -704,27 +704,8 @@ async fn main() {
                                     etag,
                                     size,
                                     last_modified: now,
-                                    metadata: std::collections::HashMap::new(),
                                     storage_class: "STANDARD".to_string(),
-                                    tags: std::collections::HashMap::new(),
-                                    acl_grants: Vec::new(),
-                                    acl_owner_id: None,
-                                    parts_count: None,
-                                    part_sizes: None,
-                                    sse_algorithm: None,
-                                    sse_kms_key_id: None,
-                                    bucket_key_enabled: None,
-                                    version_id: None,
-                                    is_delete_marker: false,
-                                    content_encoding: None,
-                                    website_redirect_location: None,
-                                    restore_ongoing: None,
-                                    restore_expiry: None,
-                                    checksum_algorithm: None,
-                                    checksum_value: None,
-                                    lock_mode: None,
-                                    lock_retain_until: None,
-                                    lock_legal_hold: None,
+                                    ..Default::default()
                                 };
                                 let mut state = s3_for_inbound.write();
                                 if let Some(bucket) = state.buckets.get_mut(bucket_name) {
