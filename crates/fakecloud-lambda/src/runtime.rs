@@ -185,10 +185,15 @@ impl ContainerRuntime {
         let image = runtime_to_image(&func.runtime)
             .ok_or_else(|| RuntimeError::UnsupportedRuntime(func.runtime.clone()))?;
 
-        // Extract ZIP to a temp directory (only needed during container setup)
+        // Extract ZIP to a temp directory (only needed during container setup).
+        // Run in spawn_blocking to avoid blocking the async runtime with fs I/O.
         let code_dir =
             TempDir::new().map_err(|e| RuntimeError::ZipExtractionFailed(e.to_string()))?;
-        extract_zip(zip_bytes, code_dir.path())?;
+        let zip_bytes = zip_bytes.to_vec();
+        let code_path = code_dir.path().to_path_buf();
+        tokio::task::spawn_blocking(move || extract_zip(&zip_bytes, &code_path))
+            .await
+            .map_err(|e| RuntimeError::ZipExtractionFailed(e.to_string()))??;
 
         // Step 1: docker create (no volume mounts — works in Docker-in-Docker)
         let mut cmd = tokio::process::Command::new(&self.cli);

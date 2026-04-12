@@ -39,7 +39,7 @@ rust-version = "1.94"
 version = "0.8.1"
 
 [workspace.dependencies]
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "time", "signal", "sync", "process", "fs"] }
 axum = "0.8"
 hyper = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
