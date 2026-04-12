@@ -58,6 +58,8 @@ tests; they are an extra layer, not the whole story.
 | ElastiCache         | 44 operations, Redis and Valkey via Docker         | [Paid only](https://docs.localstack.cloud/references/licensing/)               |
 | Bedrock             | 111 operations (control plane + runtime)           | Not available                                                                  |
 
+> Performance numbers measured on Apple M1: startup via `time fakecloud`, memory via `ps -o rss` after startup, binary size via `ls -lh`.
+
 ## First-party SDKs
 
 fakecloud now ships SDKs for the introspection and simulation API, so your tests
@@ -191,7 +193,7 @@ integration tests:
 
 - **SNS -> SQS/Lambda/HTTP**: Fan-out delivery to all subscription types
 - **S3 -> SNS/SQS/Lambda/EventBridge**: Bucket notifications on object create/delete
-- **EventBridge -> SNS/SQS/Lambda/Logs/Kinesis/HTTP**: Rules deliver to targets on schedule or event match, including API Destinations
+- **EventBridge -> SNS/SQS/Lambda/Logs/Kinesis/StepFunctions/HTTP**: Rules deliver to targets on schedule or event match, including API Destinations
 - **SQS -> Lambda**: Event source mapping polls and invokes
 - **Kinesis -> Lambda**: Event source mapping polls shards and invokes
 - **DynamoDB Streams -> Lambda**: Event source mapping polls stream records and invokes
@@ -375,12 +377,21 @@ Contributions are welcome.
 **fakecloud is** a free, open-source local AWS emulator for integration testing and
 local development. For every service it implements, the goal is 100% behavioral
 parity with real AWS — verified by 34,000+ automated conformance test variants
-against official AWS Smithy models across all API operations. 19 services,
-100% conformance.
+against official AWS Smithy models across all API operations. 16 of 18 tested
+services at 100% conformance (Cognito and Kinesis in progress).
 
 **fakecloud is not** a production-ready cloud replacement. It's not designed to
 be scalable or to handle production workloads. It's for testing — making sure
 your code works correctly before it hits the real cloud.
+
+**Known limitations:**
+
+- SNS email/SMS delivery: messages are recorded for introspection but not actually sent (no SMTP/SMS gateway). Use the `/_fakecloud/sns/messages` endpoint to verify delivery in tests.
+- CloudWatch Logs anomaly detection: anomaly detectors are fully managed (CRUD), but no anomaly analysis runs. `ListAnomalies` returns empty.
+
+**Docker socket:** Lambda, RDS, and ElastiCache require a Docker socket mount (`/var/run/docker.sock`) to run real containers. This grants the fakecloud process the ability to manage Docker containers on the host. Only use in development/testing environments.
+
+**License (AGPL-3.0):** Using fakecloud as a dev/test tool has zero AGPL implications for your application. The AGPL copyleft clause only applies if you modify and redistribute fakecloud itself as a network service.
 
 ## Use with AI Coding Tools
 
