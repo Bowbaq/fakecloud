@@ -1,6 +1,7 @@
 mod auth;
 mod groups;
 mod identity_providers;
+mod legacy;
 mod mfa;
 mod misc;
 mod user_pools;
@@ -148,6 +149,13 @@ impl AwsService for CognitoService {
             "CreateUserImportJob" => self.create_user_import_job(&req),
             "DescribeUserImportJob" => self.describe_user_import_job(&req),
             "ListUserImportJobs" => self.list_user_import_jobs(&req),
+            "AdminSetUserSettings" => self.admin_set_user_settings(&req),
+            "SetUserSettings" => self.set_user_settings(&req),
+            "AdminDisableProviderForUser" => self.admin_disable_provider_for_user(&req),
+            "AdminLinkProviderForUser" => self.admin_link_provider_for_user(&req),
+            "AdminListUserAuthEvents" => self.admin_list_user_auth_events(&req),
+            "AdminUpdateAuthEventFeedback" => self.admin_update_auth_event_feedback(&req),
+            "UpdateAuthEventFeedback" => self.update_auth_event_feedback(&req),
             "StartUserImportJob" => self.start_user_import_job(&req),
             "StopUserImportJob" => self.stop_user_import_job(&req),
             _ => Err(AwsServiceError::action_not_implemented(
@@ -252,6 +260,13 @@ impl AwsService for CognitoService {
             "CreateUserImportJob",
             "DescribeUserImportJob",
             "ListUserImportJobs",
+            "AdminSetUserSettings",
+            "SetUserSettings",
+            "AdminDisableProviderForUser",
+            "AdminLinkProviderForUser",
+            "AdminListUserAuthEvents",
+            "AdminUpdateAuthEventFeedback",
+            "UpdateAuthEventFeedback",
             "StartUserImportJob",
             "StopUserImportJob",
         ]
@@ -1556,6 +1571,7 @@ mod tests {
             totp_secret: None,
             totp_verified: false,
             devices: HashMap::new(),
+            linked_providers: Vec::new(),
         };
 
         let filter = parse_filter_expression(r#"username = "testuser""#).unwrap();
@@ -1589,6 +1605,7 @@ mod tests {
             totp_secret: None,
             totp_verified: false,
             devices: HashMap::new(),
+            linked_providers: Vec::new(),
         };
 
         let filter = parse_filter_expression(r#"email = "test@example.com""#).unwrap();
@@ -1619,6 +1636,7 @@ mod tests {
             totp_secret: None,
             totp_verified: false,
             devices: HashMap::new(),
+            linked_providers: Vec::new(),
         };
 
         let filter =
@@ -3214,12 +3232,14 @@ mod tests {
             "us-east-1",
         )));
         state.write().auth_events.push(AuthEvent {
+            event_id: Uuid::new_v4().to_string(),
             event_type: "SIGN_UP".to_string(),
             username: "test".to_string(),
             user_pool_id: "pool".to_string(),
             client_id: None,
             timestamp: Utc::now(),
             success: true,
+            feedback_value: None,
         });
         assert_eq!(state.read().auth_events.len(), 1);
         state.write().reset();
