@@ -14,6 +14,33 @@ use crate::state::{
     KinesisConsumer, KinesisRecord, KinesisShard, KinesisStream, SharedKinesisState,
 };
 
+/// Locate the index of an open shard by id, returning the caller-friendly
+/// `"Shard X not found or not open"` error when it's missing.
+fn find_open_shard_idx(shards: &[KinesisShard], shard_id: &str) -> Result<usize, AwsServiceError> {
+    shards
+        .iter()
+        .position(|s| s.shard_id == shard_id && s.is_open)
+        .ok_or_else(|| invalid_argument(format!("Shard {shard_id} not found or not open")))
+}
+
+/// Parse a shard's hash key range into `(start, end)` as `u128`. We
+/// silently fall back to 0 on parse errors to match the pre-split
+/// behaviour of the shard-management operations.
+fn shard_hash_range(shard: &KinesisShard) -> (u128, u128) {
+    let start = shard.starting_hash_key.parse().unwrap_or(0);
+    let end = shard.ending_hash_key.parse().unwrap_or(0);
+    (start, end)
+}
+
+/// Allocate the next `shardId-NNNNNNNNNNNN` in this stream's monotonic
+/// counter. Advances `next_shard_index`, so only call it when you are
+/// about to push a new shard.
+fn next_shard_id(stream: &mut KinesisStream) -> String {
+    let id = format!("shardId-{:012}", stream.next_shard_index);
+    stream.next_shard_index += 1;
+    id
+}
+
 const SUPPORTED_ACTIONS: &[&str] = &[
     "AddTagsToStream",
     "CreateStream",
@@ -1232,38 +1259,11 @@ impl KinesisService {
                 "ShardToMerge and AdjacentShardToMerge must be different shards",
             ));
         }
-        let shard1_idx = stream
-            .shards
-            .iter()
-            .position(|s| s.shard_id == shard_to_merge && s.is_open)
-            .ok_or_else(|| {
-                invalid_argument(format!("Shard {shard_to_merge} not found or not open"))
-            })?;
-        let shard2_idx = stream
-            .shards
-            .iter()
-            .position(|s| s.shard_id == adjacent_shard && s.is_open)
-            .ok_or_else(|| {
-                invalid_argument(format!("Shard {adjacent_shard} not found or not open"))
-            })?;
+        let shard1_idx = find_open_shard_idx(&stream.shards, shard_to_merge)?;
+        let shard2_idx = find_open_shard_idx(&stream.shards, adjacent_shard)?;
 
-        // Verify shards are adjacent
-        let end1: u128 = stream.shards[shard1_idx]
-            .ending_hash_key
-            .parse()
-            .unwrap_or(0);
-        let start2: u128 = stream.shards[shard2_idx]
-            .starting_hash_key
-            .parse()
-            .unwrap_or(0);
-        let end2: u128 = stream.shards[shard2_idx]
-            .ending_hash_key
-            .parse()
-            .unwrap_or(0);
-        let start1: u128 = stream.shards[shard1_idx]
-            .starting_hash_key
-            .parse()
-            .unwrap_or(0);
+        let (start1, end1) = shard_hash_range(&stream.shards[shard1_idx]);
+        let (start2, end2) = shard_hash_range(&stream.shards[shard2_idx]);
         let adj1 = end1.checked_add(1) == Some(start2);
         let adj2 = end2.checked_add(1) == Some(start1);
         if !adj1 && !adj2 {
@@ -1278,8 +1278,7 @@ impl KinesisService {
         stream.shards[shard1_idx].is_open = false;
         stream.shards[shard2_idx].is_open = false;
 
-        let new_id = format!("shardId-{:012}", stream.next_shard_index);
-        stream.next_shard_index += 1;
+        let new_id = next_shard_id(stream);
         stream.shards.push(KinesisShard {
             shard_id: new_id,
             starting_hash_key: starting.to_string(),
@@ -1317,22 +1316,9 @@ impl KinesisService {
             .get_mut(&stream_name)
             .ok_or_else(|| stream_not_found(&account_id, &stream_name))?;
 
-        let shard_idx = stream
-            .shards
-            .iter()
-            .position(|s| s.shard_id == shard_to_split && s.is_open)
-            .ok_or_else(|| {
-                invalid_argument(format!("Shard {shard_to_split} not found or not open"))
-            })?;
+        let shard_idx = find_open_shard_idx(&stream.shards, shard_to_split)?;
 
-        let old_starting: u128 = stream.shards[shard_idx]
-            .starting_hash_key
-            .parse()
-            .unwrap_or(0);
-        let old_ending: u128 = stream.shards[shard_idx]
-            .ending_hash_key
-            .parse()
-            .unwrap_or(MAX_HASH_KEY);
+        let (old_starting, old_ending) = shard_hash_range(&stream.shards[shard_idx]);
         let split_point: u128 = new_starting_hash_key
             .parse()
             .map_err(|_| invalid_argument("NewStartingHashKey must be a valid number"))?;
@@ -1345,10 +1331,8 @@ impl KinesisService {
 
         stream.shards[shard_idx].is_open = false;
 
-        let id1 = format!("shardId-{:012}", stream.next_shard_index);
-        stream.next_shard_index += 1;
-        let id2 = format!("shardId-{:012}", stream.next_shard_index);
-        stream.next_shard_index += 1;
+        let id1 = next_shard_id(stream);
+        let id2 = next_shard_id(stream);
 
         stream.shards.push(KinesisShard {
             shard_id: id1,
@@ -1422,8 +1406,7 @@ impl KinesisService {
             } else {
                 (MAX_HASH_KEY / count) * (idx + 1)
             };
-            let new_id = format!("shardId-{:012}", stream.next_shard_index);
-            stream.next_shard_index += 1;
+            let new_id = next_shard_id(stream);
             stream.shards.push(KinesisShard {
                 shard_id: new_id,
                 starting_hash_key: starting.to_string(),
