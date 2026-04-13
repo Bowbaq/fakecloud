@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, HashMap};
 
 use fakecloud_persistence::{
-    AclGrantSnapshot, BucketMeta, BucketSnapshot, LoadedMpu, LoadedObject, LoadedPart, MpuInit,
-    ObjectMeta, S3StateSnapshot, UploadPartMeta,
+    AclGrantSnapshot, AclSnapshot, BucketMeta, BucketSnapshot, InventorySnapshot, LoadedMpu,
+    LoadedObject, LoadedPart, MpuInit, ObjectMeta, S3StateSnapshot, TagsSnapshot, UploadPartMeta,
 };
 
 use crate::state::{AclGrant, MultipartUpload, S3Bucket, S3Object, S3State, UploadPart};
@@ -164,7 +164,11 @@ pub fn multipart_upload_from_loaded(lm: LoadedMpu) -> MultipartUpload {
     }
 }
 
-pub fn s3_bucket_from_snapshot(name: &str, snap: BucketSnapshot, default_region: &str) -> S3Bucket {
+pub fn s3_bucket_from_snapshot(
+    name: &str,
+    snap: BucketSnapshot,
+    default_region: &str,
+) -> Result<S3Bucket, String> {
     let BucketSnapshot {
         meta,
         objects,
@@ -215,8 +219,6 @@ pub fn s3_bucket_from_snapshot(name: &str, snap: BucketSnapshot, default_region:
         b.multipart_uploads
             .insert(upload_id, multipart_upload_from_loaded(lm));
     }
-    // Subresources are stored as raw pass-through strings on the service side;
-    // fold any present into the matching Option<String> field.
     for (fname, text) in subresources {
         match fname.as_str() {
             "lifecycle.toml" => b.lifecycle_config = Some(text),
@@ -230,24 +232,51 @@ pub fn s3_bucket_from_snapshot(name: &str, snap: BucketSnapshot, default_region:
             "replication.toml" => b.replication_config = Some(text),
             "ownership.toml" => b.ownership_controls = Some(text),
             "encryption.toml" => b.encryption_config = Some(text),
-            // tags.toml, acl.toml, inventory.toml, accelerate.toml, versioning.toml
-            // are covered by BucketMeta (versioning/accelerate) or are pre-existing
-            // phase-2 holes (tags, acl_grants, inventory) with empty payloads today.
+            "tags.toml" => {
+                if text.trim().is_empty() {
+                    continue;
+                }
+                let snap: TagsSnapshot = toml::from_str(&text).map_err(|e| {
+                    format!("failed to parse tags.toml for bucket {name}: {e}")
+                })?;
+                b.tags = snap.tags;
+            }
+            "acl.toml" => {
+                if text.trim().is_empty() {
+                    continue;
+                }
+                let snap: AclSnapshot = toml::from_str(&text).map_err(|e| {
+                    format!("failed to parse acl.toml for bucket {name}: {e}")
+                })?;
+                if !snap.owner_id.is_empty() {
+                    b.acl_owner_id = snap.owner_id;
+                }
+                b.acl_grants = snap.grants.iter().map(acl_grant_from_snapshot).collect();
+            }
+            "inventory.toml" => {
+                if text.trim().is_empty() {
+                    continue;
+                }
+                let snap: InventorySnapshot = toml::from_str(&text).map_err(|e| {
+                    format!("failed to parse inventory.toml for bucket {name}: {e}")
+                })?;
+                b.inventory_configs = snap.configs;
+            }
             _ => {}
         }
     }
-    b
+    Ok(b)
 }
 
 pub fn hydrate_s3_state(
     snapshot: S3StateSnapshot,
     account_id: &str,
     region: &str,
-) -> S3State {
+) -> Result<S3State, String> {
     let mut state = S3State::new(account_id, region);
     for (name, snap) in snapshot.buckets {
-        let bucket = s3_bucket_from_snapshot(&name, snap, region);
+        let bucket = s3_bucket_from_snapshot(&name, snap, region)?;
         state.buckets.insert(name, bucket);
     }
-    state
+    Ok(state)
 }

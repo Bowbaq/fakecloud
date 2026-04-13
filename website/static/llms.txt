@@ -18,7 +18,8 @@
 ## Usage
 
 - [Quick start](https://fakecloud.dev#quickstart): Run `fakecloud` then point any AWS SDK at `http://localhost:4566`
-- [Configuration](https://github.com/faiscadev/fakecloud#configuration): CLI flags and environment variables (--addr, --region, --account-id, --log-level)
+- [Configuration](https://github.com/faiscadev/fakecloud#configuration): CLI flags and environment variables (--addr, --region, --account-id, --log-level, --storage-mode, --data-path, --body-cache-size)
+- [Persistence](https://github.com/faiscadev/fakecloud#persistence): opt-in disk persistence for S3 via --storage-mode=persistent
 - [Health check](https://github.com/faiscadev/fakecloud#health-check): `curl http://localhost:4566/_fakecloud/health`
 
 ## Supported Services

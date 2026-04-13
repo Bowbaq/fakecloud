@@ -491,11 +491,17 @@ async fn main() {
                     let bucket_count = snapshot.buckets.len();
                     let object_count: usize =
                         snapshot.buckets.values().map(|b| b.objects.len()).sum();
-                    let hydrated = fakecloud_s3::persistence::hydrate_s3_state(
+                    let hydrated = match fakecloud_s3::persistence::hydrate_s3_state(
                         snapshot,
                         &cli.account_id,
                         &cli.region,
-                    );
+                    ) {
+                        Ok(h) => h,
+                        Err(err) => {
+                            tracing::error!(error = %err, "failed to hydrate s3 persistence snapshot");
+                            std::process::exit(1);
+                        }
+                    };
                     *s3_state.write() = hydrated;
                     tracing::info!(
                         buckets = bucket_count,

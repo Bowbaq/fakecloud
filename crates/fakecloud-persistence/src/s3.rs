@@ -87,6 +87,26 @@ pub struct AclGrantSnapshot {
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct TagsSnapshot {
+    #[serde(default)]
+    pub tags: HashMap<String, String>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct AclSnapshot {
+    #[serde(default)]
+    pub owner_id: String,
+    #[serde(default)]
+    pub grants: Vec<AclGrantSnapshot>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct InventorySnapshot {
+    #[serde(default)]
+    pub configs: HashMap<String, String>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct ObjectMeta {
     #[serde(default)]
     pub key: String,
@@ -1812,6 +1832,130 @@ mod disk_tests {
         };
         assert_eq!(std::fs::read(&path).unwrap(), expected);
         assert!(!store2.mpu_dir("b", "up").exists());
+    }
+
+    #[test]
+    fn tags_snapshot_roundtrip_via_store() {
+        let tmp = TempDir::new().unwrap();
+        let store = new_store(&tmp);
+        store
+            .put_bucket_meta(
+                "b",
+                &BucketMeta {
+                    name: "b".to_string(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let mut tags = HashMap::new();
+        tags.insert("env".to_string(), "prod".to_string());
+        tags.insert("team".to_string(), "s3".to_string());
+        let snap = TagsSnapshot { tags: tags.clone() };
+        let payload = toml::to_string(&snap).unwrap();
+        store
+            .put_bucket_subresource("b", BucketSubresource::Tags, &payload)
+            .unwrap();
+        let loaded = store.load().unwrap();
+        let text = loaded
+            .buckets
+            .get("b")
+            .unwrap()
+            .subresources
+            .get("tags.toml")
+            .cloned()
+            .unwrap();
+        let decoded: TagsSnapshot = toml::from_str(&text).unwrap();
+        assert_eq!(decoded.tags, tags);
+    }
+
+    #[test]
+    fn acl_snapshot_roundtrip_via_store() {
+        let tmp = TempDir::new().unwrap();
+        let store = new_store(&tmp);
+        store
+            .put_bucket_meta(
+                "b",
+                &BucketMeta {
+                    name: "b".to_string(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let snap = AclSnapshot {
+            owner_id: "owner-abc".to_string(),
+            grants: vec![
+                AclGrantSnapshot {
+                    grantee_type: "CanonicalUser".to_string(),
+                    grantee_id: Some("owner-abc".to_string()),
+                    grantee_display_name: Some("owner".to_string()),
+                    grantee_uri: None,
+                    permission: "FULL_CONTROL".to_string(),
+                },
+                AclGrantSnapshot {
+                    grantee_type: "Group".to_string(),
+                    grantee_id: None,
+                    grantee_display_name: None,
+                    grantee_uri: Some(
+                        "http://acs.amazonaws.com/groups/global/AllUsers".to_string(),
+                    ),
+                    permission: "READ".to_string(),
+                },
+            ],
+        };
+        let payload = toml::to_string(&snap).unwrap();
+        store
+            .put_bucket_subresource("b", BucketSubresource::Acl, &payload)
+            .unwrap();
+        let loaded = store.load().unwrap();
+        let text = loaded
+            .buckets
+            .get("b")
+            .unwrap()
+            .subresources
+            .get("acl.toml")
+            .cloned()
+            .unwrap();
+        let decoded: AclSnapshot = toml::from_str(&text).unwrap();
+        assert_eq!(decoded.owner_id, "owner-abc");
+        assert_eq!(decoded.grants.len(), 2);
+        assert_eq!(decoded.grants[0].permission, "FULL_CONTROL");
+        assert_eq!(decoded.grants[1].grantee_type, "Group");
+    }
+
+    #[test]
+    fn inventory_snapshot_roundtrip_via_store() {
+        let tmp = TempDir::new().unwrap();
+        let store = new_store(&tmp);
+        store
+            .put_bucket_meta(
+                "b",
+                &BucketMeta {
+                    name: "b".to_string(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let mut configs = HashMap::new();
+        configs.insert("inv-1".to_string(), "<InventoryConfiguration id=\"inv-1\"/>".to_string());
+        configs.insert("inv-2".to_string(), "<InventoryConfiguration id=\"inv-2\"/>".to_string());
+        let snap = InventorySnapshot {
+            configs: configs.clone(),
+        };
+        let payload = toml::to_string(&snap).unwrap();
+        store
+            .put_bucket_subresource("b", BucketSubresource::Inventory, &payload)
+            .unwrap();
+        let loaded = store.load().unwrap();
+        let text = loaded
+            .buckets
+            .get("b")
+            .unwrap()
+            .subresources
+            .get("inventory.toml")
+            .cloned()
+            .unwrap();
+        let decoded: InventorySnapshot = toml::from_str(&text).unwrap();
+        assert_eq!(decoded.configs, configs);
     }
 
     #[test]

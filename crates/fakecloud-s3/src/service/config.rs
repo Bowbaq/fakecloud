@@ -2,7 +2,9 @@ use http::{HeaderMap, StatusCode};
 
 use bytes::Bytes;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
-use fakecloud_persistence::BucketSubresource;
+use fakecloud_persistence::{
+    AclGrantSnapshot, AclSnapshot, BucketSubresource, InventorySnapshot, TagsSnapshot,
+};
 
 use crate::inventory;
 use crate::persistence::bucket_meta_snapshot;
@@ -694,9 +696,13 @@ impl S3Service {
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
         b.tags = tags.into_iter().collect();
+        let snap = TagsSnapshot {
+            tags: b.tags.clone(),
+        };
+        let payload = toml::to_string(&snap).unwrap_or_default();
         let _ = self
             .store
-            .put_bucket_subresource(bucket, BucketSubresource::Tags, "");
+            .put_bucket_subresource(bucket, BucketSubresource::Tags, &payload);
         Ok(AwsResponse {
             status: StatusCode::NO_CONTENT,
             content_type: "application/xml".to_string(),
@@ -771,10 +777,14 @@ impl S3Service {
             b.acl_grants = grants;
         }
 
-        // TODO(phase-4): serialize ACL grants to TOML for DiskS3Store.
+        let snap = AclSnapshot {
+            owner_id: b.acl_owner_id.clone(),
+            grants: b.acl_grants.iter().map(AclGrantSnapshot::from).collect(),
+        };
+        let payload = toml::to_string(&snap).unwrap_or_default();
         let _ = self
             .store
-            .put_bucket_subresource(bucket, BucketSubresource::Acl, "");
+            .put_bucket_subresource(bucket, BucketSubresource::Acl, &payload);
         Ok(AwsResponse {
             status: StatusCode::OK,
             content_type: "application/xml".to_string(),
@@ -983,18 +993,21 @@ impl S3Service {
         let inv_id = extract_xml_value(&body_str, "Id")
             .or_else(|| req.query_params.get("id").cloned())
             .unwrap_or_default();
-        {
+        let payload = {
             let mut state = self.state.write();
             let b = state
                 .buckets
                 .get_mut(bucket)
                 .ok_or_else(|| no_such_bucket(bucket))?;
             b.inventory_configs.insert(inv_id.clone(), body_str);
-        }
-        // TODO(phase-4): serialize inventory_configs map to TOML for DiskS3Store.
+            let snap = InventorySnapshot {
+                configs: b.inventory_configs.clone(),
+            };
+            toml::to_string(&snap).unwrap_or_default()
+        };
         let _ = self
             .store
-            .put_bucket_subresource(bucket, BucketSubresource::Inventory, "");
+            .put_bucket_subresource(bucket, BucketSubresource::Inventory, &payload);
         // Generate the inventory report immediately so tests can verify it
         inventory::generate_inventory_report(&self.state, bucket, &inv_id);
         Ok(empty_response(StatusCode::OK))
@@ -1059,9 +1072,19 @@ impl S3Service {
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
         b.inventory_configs.remove(&inv_id);
-        let _ = self
-            .store
-            .delete_bucket_subresource(bucket, BucketSubresource::Inventory);
+        if b.inventory_configs.is_empty() {
+            let _ = self
+                .store
+                .delete_bucket_subresource(bucket, BucketSubresource::Inventory);
+        } else {
+            let snap = InventorySnapshot {
+                configs: b.inventory_configs.clone(),
+            };
+            let payload = toml::to_string(&snap).unwrap_or_default();
+            let _ = self
+                .store
+                .put_bucket_subresource(bucket, BucketSubresource::Inventory, &payload);
+        }
         Ok(empty_response(StatusCode::NO_CONTENT))
     }
 }
