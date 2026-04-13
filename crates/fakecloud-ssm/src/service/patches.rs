@@ -16,115 +16,12 @@ impl SsmService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let body = req.json_body();
-        let name = body["Name"]
-            .as_str()
-            .ok_or_else(|| missing("Name"))?
-            .to_string();
-        validate_string_length("Name", &name, 3, 128)?;
-        validate_optional_enum(
-            "OperatingSystem",
-            body["OperatingSystem"].as_str(),
-            &[
-                "WINDOWS",
-                "AMAZON_LINUX",
-                "AMAZON_LINUX_2",
-                "AMAZON_LINUX_2022",
-                "UBUNTU",
-                "REDHAT_ENTERPRISE_LINUX",
-                "SUSE",
-                "CENTOS",
-                "ORACLE_LINUX",
-                "DEBIAN",
-                "MACOS",
-                "RASPBIAN",
-                "ROCKY_LINUX",
-                "ALMA_LINUX",
-                "AMAZON_LINUX_2023",
-            ],
-        )?;
-        let operating_system = body["OperatingSystem"]
-            .as_str()
-            .unwrap_or("WINDOWS")
-            .to_string();
-        validate_optional_string_length("Description", body["Description"].as_str(), 1, 1024)?;
-        validate_optional_enum(
-            "ApprovedPatchesComplianceLevel",
-            body["ApprovedPatchesComplianceLevel"].as_str(),
-            &[
-                "CRITICAL",
-                "HIGH",
-                "MEDIUM",
-                "LOW",
-                "INFORMATIONAL",
-                "UNSPECIFIED",
-            ],
-        )?;
-        validate_optional_enum(
-            "RejectedPatchesAction",
-            body["RejectedPatchesAction"].as_str(),
-            &["ALLOW_AS_DEPENDENCY", "BLOCK"],
-        )?;
-        validate_optional_enum(
-            "AvailableSecurityUpdatesComplianceStatus",
-            body["AvailableSecurityUpdatesComplianceStatus"].as_str(),
-            &["COMPLIANT", "NON_COMPLIANT"],
-        )?;
-        validate_optional_string_length("ClientToken", body["ClientToken"].as_str(), 1, 64)?;
-        let description = body["Description"].as_str().map(|s| s.to_string());
-        let approval_rules = body.get("ApprovalRules").cloned();
-        let approved_patches: Vec<String> = body["ApprovedPatches"]
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let rejected_patches: Vec<String> = body["RejectedPatches"]
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let approved_patches_compliance_level = body["ApprovedPatchesComplianceLevel"]
-            .as_str()
-            .unwrap_or("UNSPECIFIED")
-            .to_string();
-        let rejected_patches_action = body["RejectedPatchesAction"]
-            .as_str()
-            .unwrap_or("ALLOW_AS_DEPENDENCY")
-            .to_string();
-        let global_filters = body.get("GlobalFilters").cloned();
-        let sources: Vec<Value> = body["Sources"].as_array().cloned().unwrap_or_default();
-        let approved_patches_enable_non_security = body["ApprovedPatchesEnableNonSecurity"]
-            .as_bool()
-            .unwrap_or(false);
-        let tags: HashMap<String, String> = body["Tags"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|t| {
-                        let k = t["Key"].as_str()?;
-                        let v = t["Value"].as_str()?;
-                        Some((k.to_string(), v.to_string()))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let available_security_updates_compliance_status = body
-            ["AvailableSecurityUpdatesComplianceStatus"]
-            .as_str()
-            .map(|s| s.to_string());
-        let client_token = body["ClientToken"].as_str().map(|s| s.to_string());
+        let input = CreatePatchBaselineInput::from_body(&req.json_body())?;
 
         let mut state = self.state.write();
 
         // Idempotency: if a baseline with the same ClientToken already exists, return it
-        if let Some(ref token) = client_token {
+        if let Some(ref token) = input.client_token {
             if let Some(existing) = state
                 .patch_baselines
                 .values()
@@ -141,20 +38,21 @@ impl SsmService {
 
         let pb = PatchBaseline {
             id: baseline_id.clone(),
-            name,
-            operating_system,
-            description,
-            approval_rules,
-            approved_patches,
-            rejected_patches,
-            tags,
-            approved_patches_compliance_level,
-            rejected_patches_action,
-            global_filters,
-            sources,
-            approved_patches_enable_non_security,
-            available_security_updates_compliance_status,
-            client_token,
+            name: input.name,
+            operating_system: input.operating_system,
+            description: input.description,
+            approval_rules: input.approval_rules,
+            approved_patches: input.approved_patches,
+            rejected_patches: input.rejected_patches,
+            tags: input.tags,
+            approved_patches_compliance_level: input.approved_patches_compliance_level,
+            rejected_patches_action: input.rejected_patches_action,
+            global_filters: input.global_filters,
+            sources: input.sources,
+            approved_patches_enable_non_security: input.approved_patches_enable_non_security,
+            available_security_updates_compliance_status: input
+                .available_security_updates_compliance_status,
+            client_token: input.client_token,
         };
 
         state.patch_baselines.insert(baseline_id.clone(), pb);
@@ -842,6 +740,139 @@ impl SsmService {
         let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 100)?;
         Ok(AwsResponse::ok_json(json!({ "Patches": [] })))
+    }
+}
+
+/// Parsed + validated inputs for `CreatePatchBaseline`.
+struct CreatePatchBaselineInput {
+    name: String,
+    operating_system: String,
+    description: Option<String>,
+    approval_rules: Option<Value>,
+    approved_patches: Vec<String>,
+    rejected_patches: Vec<String>,
+    approved_patches_compliance_level: String,
+    rejected_patches_action: String,
+    global_filters: Option<Value>,
+    sources: Vec<Value>,
+    approved_patches_enable_non_security: bool,
+    available_security_updates_compliance_status: Option<String>,
+    client_token: Option<String>,
+    tags: HashMap<String, String>,
+}
+
+impl CreatePatchBaselineInput {
+    fn from_body(body: &Value) -> Result<Self, AwsServiceError> {
+        let name = body["Name"]
+            .as_str()
+            .ok_or_else(|| missing("Name"))?
+            .to_string();
+        validate_string_length("Name", &name, 3, 128)?;
+        validate_optional_enum(
+            "OperatingSystem",
+            body["OperatingSystem"].as_str(),
+            &[
+                "WINDOWS",
+                "AMAZON_LINUX",
+                "AMAZON_LINUX_2",
+                "AMAZON_LINUX_2022",
+                "UBUNTU",
+                "REDHAT_ENTERPRISE_LINUX",
+                "SUSE",
+                "CENTOS",
+                "ORACLE_LINUX",
+                "DEBIAN",
+                "MACOS",
+                "RASPBIAN",
+                "ROCKY_LINUX",
+                "ALMA_LINUX",
+                "AMAZON_LINUX_2023",
+            ],
+        )?;
+        validate_optional_string_length("Description", body["Description"].as_str(), 1, 1024)?;
+        validate_optional_enum(
+            "ApprovedPatchesComplianceLevel",
+            body["ApprovedPatchesComplianceLevel"].as_str(),
+            &[
+                "CRITICAL",
+                "HIGH",
+                "MEDIUM",
+                "LOW",
+                "INFORMATIONAL",
+                "UNSPECIFIED",
+            ],
+        )?;
+        validate_optional_enum(
+            "RejectedPatchesAction",
+            body["RejectedPatchesAction"].as_str(),
+            &["ALLOW_AS_DEPENDENCY", "BLOCK"],
+        )?;
+        validate_optional_enum(
+            "AvailableSecurityUpdatesComplianceStatus",
+            body["AvailableSecurityUpdatesComplianceStatus"].as_str(),
+            &["COMPLIANT", "NON_COMPLIANT"],
+        )?;
+        validate_optional_string_length("ClientToken", body["ClientToken"].as_str(), 1, 64)?;
+
+        let approved_patches: Vec<String> = body["ApprovedPatches"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let rejected_patches: Vec<String> = body["RejectedPatches"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let tags: HashMap<String, String> = body["Tags"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|t| {
+                        let k = t["Key"].as_str()?;
+                        let v = t["Value"].as_str()?;
+                        Some((k.to_string(), v.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(Self {
+            name,
+            operating_system: body["OperatingSystem"]
+                .as_str()
+                .unwrap_or("WINDOWS")
+                .to_string(),
+            description: body["Description"].as_str().map(|s| s.to_string()),
+            approval_rules: body.get("ApprovalRules").cloned(),
+            approved_patches,
+            rejected_patches,
+            approved_patches_compliance_level: body["ApprovedPatchesComplianceLevel"]
+                .as_str()
+                .unwrap_or("UNSPECIFIED")
+                .to_string(),
+            rejected_patches_action: body["RejectedPatchesAction"]
+                .as_str()
+                .unwrap_or("ALLOW_AS_DEPENDENCY")
+                .to_string(),
+            global_filters: body.get("GlobalFilters").cloned(),
+            sources: body["Sources"].as_array().cloned().unwrap_or_default(),
+            approved_patches_enable_non_security: body["ApprovedPatchesEnableNonSecurity"]
+                .as_bool()
+                .unwrap_or(false),
+            available_security_updates_compliance_status: body
+                ["AvailableSecurityUpdatesComplianceStatus"]
+                .as_str()
+                .map(|s| s.to_string()),
+            client_token: body["ClientToken"].as_str().map(|s| s.to_string()),
+            tags,
+        })
     }
 }
 
