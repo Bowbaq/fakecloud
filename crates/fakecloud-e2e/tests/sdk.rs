@@ -7,6 +7,7 @@ use aws_sdk_dynamodb::types::{
 };
 use aws_sdk_eventbridge::types::PutEventsRequestEntry;
 use aws_sdk_sesv2::types::{Body, Content, Destination, EmailContent, Message};
+use fakecloud_sdk::types::{BedrockFaultRule, BedrockResponseRule};
 use fakecloud_sdk::FakeCloud;
 use helpers::TestServer;
 
@@ -577,6 +578,73 @@ async fn sdk_eventbridge_get_history() {
         .find(|e| e.source == "sdk.test")
         .expect("should find sdk.test event");
     assert_eq!(event.detail_type, "TestEvent");
+}
+
+// ── Bedrock ────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn sdk_bedrock_response_rules_roundtrip() {
+    let server = TestServer::start().await;
+    let fc = FakeCloud::new(server.endpoint());
+
+    let model_id = "anthropic.claude-3-haiku-20240307-v1:0";
+    let rules = vec![
+        BedrockResponseRule {
+            prompt_contains: Some("spam:".to_string()),
+            response: r#"{"label":"spam"}"#.to_string(),
+        },
+        BedrockResponseRule {
+            prompt_contains: None,
+            response: r#"{"label":"ham"}"#.to_string(),
+        },
+    ];
+
+    let set = fc
+        .bedrock()
+        .set_response_rules(model_id, &rules)
+        .await
+        .expect("set response rules");
+    assert_eq!(set.status, "ok");
+    assert_eq!(set.model_id, model_id);
+
+    let cleared = fc
+        .bedrock()
+        .clear_response_rules(model_id)
+        .await
+        .expect("clear response rules");
+    assert_eq!(cleared.status, "ok");
+}
+
+#[tokio::test]
+async fn sdk_bedrock_faults_roundtrip() {
+    let server = TestServer::start().await;
+    let fc = FakeCloud::new(server.endpoint());
+
+    let rule = BedrockFaultRule {
+        error_type: "ThrottlingException".to_string(),
+        message: Some("Rate exceeded".to_string()),
+        http_status: Some(429),
+        count: Some(2),
+        operation: Some("InvokeModel".to_string()),
+        ..Default::default()
+    };
+
+    let queued = fc.bedrock().queue_fault(&rule).await.expect("queue fault");
+    assert_eq!(queued.status, "ok");
+
+    let listed = fc.bedrock().get_faults().await.expect("get faults");
+    assert_eq!(listed.faults.len(), 1);
+    let f = &listed.faults[0];
+    assert_eq!(f.error_type, "ThrottlingException");
+    assert_eq!(f.remaining, 2);
+    assert_eq!(f.operation.as_deref(), Some("InvokeModel"));
+    assert!(f.model_id.is_none());
+
+    let cleared = fc.bedrock().clear_faults().await.expect("clear faults");
+    assert_eq!(cleared.status, "ok");
+
+    let after = fc.bedrock().get_faults().await.expect("get faults after");
+    assert!(after.faults.is_empty());
 }
 
 // ── SecretsManager ─────────────────────────────────────────────────

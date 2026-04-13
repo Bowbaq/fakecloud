@@ -90,6 +90,55 @@ Access via properties on the main client:
 | `elasticache` | ElastiCache | `get_clusters()`, `get_replication_groups()`, `get_serverless_caches()` |
 | `stepfunctions` | Step Functions | `get_executions()` |
 | `apigatewayv2` | API Gateway v2 | `get_requests()` |
+| `bedrock` | Bedrock Runtime | `get_invocations()`, `set_model_response(model_id, text)`, `set_response_rules(model_id, rules)`, `clear_response_rules(model_id)`, `queue_fault(rule)`, `get_faults()`, `clear_faults()` |
+
+### Testing Bedrock-calling code end-to-end
+
+```python
+from fakecloud import FakeCloudSync
+from fakecloud.types import BedrockResponseRule, BedrockFaultRule
+
+fc = FakeCloudSync()
+model_id = "anthropic.claude-3-haiku-20240307-v1:0"
+
+
+def test_classifier_branches_on_spam_vs_ham():
+    fc.reset()
+    fc.bedrock.set_response_rules(
+        model_id,
+        [
+            BedrockResponseRule(prompt_contains="buy now", response='{"label":"spam"}'),
+            BedrockResponseRule(prompt_contains=None, response='{"label":"ham"}'),
+        ],
+    )
+
+    classify("hello friend")           # user code that calls Bedrock
+    classify("buy now cheap pills")
+
+    invocations = fc.bedrock.get_invocations().invocations
+    assert len(invocations) == 2
+    assert "ham" in invocations[0].output
+    assert "spam" in invocations[1].output
+
+
+def test_retries_on_throttling():
+    fc.reset()
+    fc.bedrock.queue_fault(
+        BedrockFaultRule(
+            error_type="ThrottlingException",
+            message="Rate exceeded",
+            http_status=429,
+            count=1,  # only the first call faults; the retry succeeds
+        )
+    )
+
+    classify("hello")
+
+    invocations = fc.bedrock.get_invocations().invocations
+    assert len(invocations) == 2
+    assert "ThrottlingException" in (invocations[0].error or "")
+    assert invocations[1].error is None
+```
 
 ### Error handling
 

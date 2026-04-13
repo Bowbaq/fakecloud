@@ -437,10 +437,12 @@ type StepFunctionsExecutionsResponse struct {
 
 // BedrockInvocation represents a recorded Bedrock model invocation.
 type BedrockInvocation struct {
-	ModelID   string `json:"modelId"`
-	Input     string `json:"input"`
-	Output    string `json:"output"`
-	Timestamp string `json:"timestamp"`
+	ModelID   string  `json:"modelId"`
+	Input     string  `json:"input"`
+	Output    string  `json:"output"`
+	Timestamp string  `json:"timestamp"`
+	// Error is non-nil for calls that were faulted via QueueFault.
+	Error *string `json:"error"`
 }
 
 // BedrockInvocationsResponse contains recorded Bedrock invocations.
@@ -452,6 +454,44 @@ type BedrockInvocationsResponse struct {
 type BedrockModelResponseConfig struct {
 	Status  string `json:"status"`
 	ModelID string `json:"modelId"`
+}
+
+// BedrockResponseRule is one prompt-conditional response rule for a model.
+// PromptContains is an optional substring; if nil or empty, the rule matches any prompt.
+type BedrockResponseRule struct {
+	PromptContains *string `json:"promptContains"`
+	Response       string  `json:"response"`
+}
+
+// BedrockFaultRule configures a fault to inject on Bedrock runtime calls.
+// Zero-value fields are omitted from the wire request, letting the server apply its defaults.
+type BedrockFaultRule struct {
+	ErrorType  string `json:"errorType"`
+	Message    string `json:"message,omitempty"`
+	HTTPStatus int    `json:"httpStatus,omitempty"`
+	Count      int    `json:"count,omitempty"`
+	ModelID    string `json:"modelId,omitempty"`
+	Operation  string `json:"operation,omitempty"`
+}
+
+// BedrockFaultRuleState is the server-side view of a queued fault rule.
+type BedrockFaultRuleState struct {
+	ErrorType  string  `json:"errorType"`
+	Message    string  `json:"message"`
+	HTTPStatus int     `json:"httpStatus"`
+	Remaining  int     `json:"remaining"`
+	ModelID    *string `json:"modelId"`
+	Operation  *string `json:"operation"`
+}
+
+// BedrockFaultsResponse is the list-faults response body.
+type BedrockFaultsResponse struct {
+	Faults []BedrockFaultRuleState `json:"faults"`
+}
+
+// BedrockStatusResponse is a generic {status: "ok"} body.
+type BedrockStatusResponse struct {
+	Status string `json:"status"`
 }
 
 // ── API Gateway v2 ─────────────────────────────────────────────────

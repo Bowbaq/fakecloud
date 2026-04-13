@@ -548,6 +548,9 @@ pub struct BedrockInvocation {
     pub input: String,
     pub output: String,
     pub timestamp: String,
+    /// Error detail for faulted calls, or `None` on success.
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -561,4 +564,59 @@ pub struct BedrockInvocationsResponse {
 pub struct BedrockModelResponseConfig {
     pub status: String,
     pub model_id: String,
+}
+
+/// One rule in a per-model response rule list.
+///
+/// `prompt_contains` is a substring that must appear in the prompt for this
+/// rule to match. `None` or an empty string matches any prompt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BedrockResponseRule {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_contains: Option<String>,
+    pub response: String,
+}
+
+/// Configuration for a fault to inject on Bedrock runtime calls.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct BedrockFaultRule {
+    pub error_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation: Option<String>,
+}
+
+/// Server-side view of a queued fault rule.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BedrockFaultRuleState {
+    pub error_type: String,
+    pub message: String,
+    pub http_status: u16,
+    pub remaining: u32,
+    #[serde(default)]
+    pub model_id: Option<String>,
+    #[serde(default)]
+    pub operation: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BedrockFaultsResponse {
+    pub faults: Vec<BedrockFaultRuleState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BedrockStatusResponse {
+    pub status: String,
 }

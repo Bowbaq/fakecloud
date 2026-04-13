@@ -388,6 +388,8 @@ export interface BedrockInvocation {
   input: string;
   output: string;
   timestamp: string;
+  /** Error detail for faulted calls, or null on success. */
+  error: string | null;
 }
 
 export interface BedrockInvocationsResponse {
@@ -397,6 +399,41 @@ export interface BedrockInvocationsResponse {
 export interface BedrockModelResponseConfig {
   status: string;
   modelId: string;
+}
+
+export interface BedrockResponseRule {
+  /** Substring that must appear in the prompt for this rule to match. Null/empty matches any prompt. */
+  promptContains?: string | null;
+  response: string;
+}
+
+export interface BedrockFaultRule {
+  errorType: string;
+  message?: string;
+  httpStatus?: number;
+  /** Number of calls this rule will fault before being consumed. Defaults to 1 server-side. */
+  count?: number;
+  /** Optional model filter. */
+  modelId?: string;
+  /** Optional operation filter: "InvokeModel" | "Converse" | "InvokeModelWithResponseStream" | "ConverseStream". */
+  operation?: string;
+}
+
+export interface BedrockFaultRuleState {
+  errorType: string;
+  message: string;
+  httpStatus: number;
+  remaining: number;
+  modelId: string | null;
+  operation: string | null;
+}
+
+export interface BedrockFaultsResponse {
+  faults: BedrockFaultRuleState[];
+}
+
+export interface BedrockStatusResponse {
+  status: string;
 }
 
 // ── API Gateway v2 ──────────────────────────────────────────────────

@@ -144,6 +144,14 @@ func (fc *FakeCloud) doPost(ctx context.Context, path string, body interface{}, 
 	return fc.do(req, out)
 }
 
+func (fc *FakeCloud) doDelete(ctx context.Context, path string, out interface{}) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, fc.BaseURL+path, nil)
+	if err != nil {
+		return err
+	}
+	return fc.do(req, out)
+}
+
 func (fc *FakeCloud) do(req *http.Request, out interface{}) error {
 	resp, err := fc.client.Do(req)
 	if err != nil {

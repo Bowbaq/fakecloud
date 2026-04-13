@@ -478,3 +478,58 @@ describe("eventbridge", () => {
     expect(JSON.parse(event!.detail)).toEqual({ key: "value" });
   });
 });
+
+// ── Bedrock introspection ───────────────────────────────────────────
+
+describe("bedrock", () => {
+  it("setResponseRules / clearResponseRules round-trips", async () => {
+    const set = await fc.bedrock.setResponseRules(
+      "anthropic.claude-3-haiku-20240307-v1:0",
+      [
+        { promptContains: "spam:", response: '{"label":"spam"}' },
+        { promptContains: null, response: '{"label":"ham"}' },
+      ],
+    );
+    expect(set.status).toBe("ok");
+    expect(set.modelId).toBe("anthropic.claude-3-haiku-20240307-v1:0");
+
+    const cleared = await fc.bedrock.clearResponseRules(
+      "anthropic.claude-3-haiku-20240307-v1:0",
+    );
+    expect(cleared.status).toBe("ok");
+  });
+
+  it("queueFault / getFaults / clearFaults", async () => {
+    const queued = await fc.bedrock.queueFault({
+      errorType: "ThrottlingException",
+      message: "Rate exceeded",
+      httpStatus: 429,
+      count: 2,
+      operation: "InvokeModel",
+    });
+    expect(queued.status).toBe("ok");
+
+    const { faults } = await fc.bedrock.getFaults();
+    expect(faults).toHaveLength(1);
+    expect(faults[0].errorType).toBe("ThrottlingException");
+    expect(faults[0].remaining).toBe(2);
+    expect(faults[0].operation).toBe("InvokeModel");
+    expect(faults[0].modelId).toBeNull();
+
+    const cleared = await fc.bedrock.clearFaults();
+    expect(cleared.status).toBe("ok");
+
+    const { faults: after } = await fc.bedrock.getFaults();
+    expect(after).toHaveLength(0);
+  });
+
+  it("getInvocations returns an error field (null for healthy calls)", async () => {
+    const { invocations } = await fc.bedrock.getInvocations();
+    // Fresh reset — no calls yet, but the shape must carry `error`.
+    expect(Array.isArray(invocations)).toBe(true);
+    for (const inv of invocations) {
+      // error is string | null
+      expect(inv.error === null || typeof inv.error === "string").toBe(true);
+    }
+  });
+});

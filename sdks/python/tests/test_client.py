@@ -15,9 +15,12 @@ import time
 
 import boto3
 import pytest
+from botocore.config import Config as BotocoreConfig
 
 from fakecloud import FakeCloudSync
 from fakecloud.types import (
+    BedrockFaultRule,
+    BedrockResponseRule,
     ConfirmSubscriptionRequest,
     ConfirmUserRequest,
     ExpireTokensRequest,
@@ -356,6 +359,103 @@ def test_events_history(fc: FakeCloudSync, fakecloud_url: str) -> None:
     assert event.bus_name == "default"
 
 
+# ── Bedrock introspection ────────────────────────────────────────────
+
+
+def test_bedrock_response_rules_roundtrip(
+    fc: FakeCloudSync, fakecloud_url: str
+) -> None:
+    model_id = "anthropic.claude-3-haiku-20240307-v1:0"
+    cfg = fc.bedrock.set_response_rules(
+        model_id,
+        [
+            BedrockResponseRule(prompt_contains="spam:", response='{"label":"spam"}'),
+            BedrockResponseRule(prompt_contains=None, response='{"label":"ham"}'),
+        ],
+    )
+    assert cfg.status == "ok"
+    assert cfg.model_id == model_id
+
+    cleared = fc.bedrock.clear_response_rules(model_id)
+    assert cleared.status == "ok"
+
+
+def test_bedrock_faults_roundtrip(fc: FakeCloudSync, fakecloud_url: str) -> None:
+    queued = fc.bedrock.queue_fault(
+        BedrockFaultRule(
+            error_type="ThrottlingException",
+            message="Rate exceeded",
+            http_status=429,
+            count=2,
+            operation="InvokeModel",
+        )
+    )
+    assert queued.status == "ok"
+
+    listed = fc.bedrock.get_faults()
+    assert len(listed.faults) == 1
+    assert listed.faults[0].error_type == "ThrottlingException"
+    assert listed.faults[0].remaining == 2
+    assert listed.faults[0].operation == "InvokeModel"
+    assert listed.faults[0].model_id is None
+
+    cleared = fc.bedrock.clear_faults()
+    assert cleared.status == "ok"
+    assert fc.bedrock.get_faults().faults == []
+
+
+def test_bedrock_invocation_decodes_error_field(
+    fc: FakeCloudSync, fakecloud_url: str
+) -> None:
+    """End-to-end coverage: inject a fault, make a Bedrock call via boto3,
+    then confirm the SDK decodes the populated `error` field on the faulted
+    invocation and `None` on the successful one.
+    """
+    bedrock = boto3.client(
+        "bedrock-runtime",
+        **_boto_kwargs(fakecloud_url),
+        config=BotocoreConfig(retries={"max_attempts": 1, "mode": "standard"}),
+    )
+    model_id = "anthropic.claude-3-haiku-20240307-v1:0"
+
+    fc.bedrock.queue_fault(
+        BedrockFaultRule(
+            error_type="ThrottlingException",
+            message="Rate exceeded",
+            http_status=429,
+            count=1,
+        )
+    )
+
+    body = json.dumps(
+        {
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "hello"}],
+        }
+    )
+
+    # First call faults
+    try:
+        bedrock.invoke_model(modelId=model_id, body=body)
+    except Exception:
+        pass
+
+    # Second call succeeds
+    bedrock.invoke_model(modelId=model_id, body=body)
+
+    # boto3 may auto-retry 429s so the exact count depends on retry config;
+    # the property we care about is that the SDK decodes both a populated
+    # `error` (on the faulted call) and `None` (on any successful call).
+    invs = fc.bedrock.get_invocations().invocations
+    assert len(invs) >= 2
+    faulted = [i for i in invs if i.error is not None]
+    succeeded = [i for i in invs if i.error is None]
+    assert len(faulted) >= 1
+    assert len(succeeded) >= 1
+    assert "ThrottlingException" in faulted[0].error  # type: ignore[operator]
+
+
 # ── Unit tests for serialization logic ────────────────────────────────
 
 
@@ -401,6 +501,35 @@ def test_expire_tokens_request_to_dict_empty() -> None:
     req = ExpireTokensRequest()
     d = req.to_dict()
     assert d == {}
+
+
+def test_bedrock_response_rule_to_dict() -> None:
+    rule = BedrockResponseRule(prompt_contains="spam", response="x")
+    assert rule.to_dict() == {"promptContains": "spam", "response": "x"}
+
+
+def test_bedrock_fault_rule_to_dict_minimal() -> None:
+    rule = BedrockFaultRule(error_type="ThrottlingException")
+    assert rule.to_dict() == {"errorType": "ThrottlingException"}
+
+
+def test_bedrock_fault_rule_to_dict_full() -> None:
+    rule = BedrockFaultRule(
+        error_type="ValidationException",
+        message="bad input",
+        http_status=400,
+        count=3,
+        model_id="anthropic.claude-3-haiku-20240307-v1:0",
+        operation="Converse",
+    )
+    assert rule.to_dict() == {
+        "errorType": "ValidationException",
+        "message": "bad input",
+        "httpStatus": 400,
+        "count": 3,
+        "modelId": "anthropic.claude-3-haiku-20240307-v1:0",
+        "operation": "Converse",
+    }
 
 
 def test_trailing_slash_stripped() -> None:

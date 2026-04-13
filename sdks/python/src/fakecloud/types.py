@@ -860,6 +860,7 @@ class BedrockInvocation:
     input: str
     output: str
     timestamp: str
+    error: Optional[str] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> BedrockInvocation:
@@ -889,6 +890,85 @@ class BedrockModelResponseConfig:
     def from_dict(cls, data: Dict[str, Any]) -> BedrockModelResponseConfig:
         d = _convert_keys(data)
         return cls(**d)
+
+
+@dataclass
+class BedrockResponseRule:
+    """One rule in a per-model response rule list.
+
+    ``prompt_contains`` is a substring that must appear in the prompt for this
+    rule to match. ``None`` (or an empty string) matches any prompt.
+    """
+
+    response: str
+    prompt_contains: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "promptContains": self.prompt_contains,
+            "response": self.response,
+        }
+
+
+@dataclass
+class BedrockFaultRule:
+    """Configuration for a fault to inject on Bedrock runtime calls."""
+
+    error_type: str
+    message: Optional[str] = None
+    http_status: Optional[int] = None
+    count: Optional[int] = None
+    model_id: Optional[str] = None
+    operation: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        d: Dict[str, Any] = {"errorType": self.error_type}
+        if self.message is not None:
+            d["message"] = self.message
+        if self.http_status is not None:
+            d["httpStatus"] = self.http_status
+        if self.count is not None:
+            d["count"] = self.count
+        if self.model_id is not None:
+            d["modelId"] = self.model_id
+        if self.operation is not None:
+            d["operation"] = self.operation
+        return d
+
+
+@dataclass
+class BedrockFaultRuleState:
+    error_type: str
+    message: str
+    http_status: int
+    remaining: int
+    model_id: Optional[str] = None
+    operation: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> BedrockFaultRuleState:
+        d = _convert_keys(data)
+        return cls(**d)
+
+
+@dataclass
+class BedrockFaultsResponse:
+    faults: List[BedrockFaultRuleState]
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> BedrockFaultsResponse:
+        return cls(
+            faults=[BedrockFaultRuleState.from_dict(f) for f in data.get("faults", [])],
+        )
+
+
+@dataclass
+class BedrockStatusResponse:
+    status: str
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> BedrockStatusResponse:
+        return cls(status=data.get("status", ""))
 
 
 # ── API Gateway v2 ──────────────────────────────────────────────────────
