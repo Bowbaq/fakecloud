@@ -74,12 +74,9 @@ impl S3Service {
         if let Some(b2) = state.buckets.get(bucket) {
             if let Some(obj) = b2.objects.get(key) {
                 let meta = object_meta_snapshot(obj);
-                let _ = self.store.put_object_meta(
-                    bucket,
-                    key,
-                    meta.version_id.as_deref(),
-                    &meta,
-                );
+                let _ = self
+                    .store
+                    .put_object_meta(bucket, key, meta.version_id.as_deref(), &meta);
             }
         }
         Ok(empty_response(StatusCode::OK))
@@ -175,12 +172,9 @@ impl S3Service {
         if let Some(b2) = state.buckets.get(bucket) {
             if let Some(obj) = b2.objects.get(key) {
                 let meta = object_meta_snapshot(obj);
-                let _ = self.store.put_object_meta(
-                    bucket,
-                    key,
-                    meta.version_id.as_deref(),
-                    &meta,
-                );
+                let _ = self
+                    .store
+                    .put_object_meta(bucket, key, meta.version_id.as_deref(), &meta);
             }
         }
         Ok(empty_response(StatusCode::OK))

@@ -19,7 +19,7 @@ impl From<StorageModeArg> for StorageMode {
     }
 }
 
-const DEFAULT_BODY_CACHE_BYTES: u64 = 256 * 1024 * 1024;
+const DEFAULT_S3_CACHE_BYTES: u64 = 256 * 1024 * 1024;
 
 #[derive(Parser)]
 #[command(name = "fakecloud")]
@@ -56,10 +56,10 @@ pub(crate) struct Cli {
     #[arg(long, env = "FAKECLOUD_DATA_PATH")]
     pub data_path: Option<PathBuf>,
 
-    /// Byte-sized LRU cache for object bodies in persistent mode. Plain bytes,
+    /// In-memory LRU cache for S3 object bodies in persistent mode. Plain bytes,
     /// no SI/IEC suffix parsing. Default 256 MiB.
-    #[arg(long, default_value_t = DEFAULT_BODY_CACHE_BYTES, env = "FAKECLOUD_BODY_CACHE_SIZE")]
-    pub body_cache_size: u64,
+    #[arg(long, default_value_t = DEFAULT_S3_CACHE_BYTES, env = "FAKECLOUD_S3_CACHE_SIZE")]
+    pub s3_cache_size: u64,
 }
 
 impl Cli {
@@ -83,7 +83,7 @@ impl Cli {
         let config = PersistenceConfig {
             mode,
             data_path: self.data_path.clone(),
-            body_cache_bytes: self.body_cache_size,
+            s3_cache_bytes: self.s3_cache_size,
         };
         config.validate()?;
         Ok(config)

@@ -40,9 +40,9 @@ impl S3Service {
             body_str
         };
         b.encryption_config = Some(normalized.clone());
-        let _ = self
-            .store
-            .put_bucket_subresource(bucket, BucketSubresource::Encryption, &normalized);
+        let _ =
+            self.store
+                .put_bucket_subresource(bucket, BucketSubresource::Encryption, &normalized);
         Ok(empty_response(StatusCode::OK))
     }
 
@@ -104,11 +104,9 @@ impl S3Service {
             .ok_or_else(|| no_such_bucket(bucket))?;
         if has_rules {
             b.lifecycle_config = Some(body_str.clone());
-            let _ = self.store.put_bucket_subresource(
-                bucket,
-                BucketSubresource::Lifecycle,
-                &body_str,
-            );
+            let _ =
+                self.store
+                    .put_bucket_subresource(bucket, BucketSubresource::Lifecycle, &body_str);
         } else {
             b.lifecycle_config = None;
             let _ = self
@@ -322,11 +320,9 @@ impl S3Service {
         b.notification_config = Some(normalized.clone());
         let meta = bucket_meta_snapshot(b);
         let _ = self.store.put_bucket_meta(bucket, &meta);
-        let _ = self.store.put_bucket_subresource(
-            bucket,
-            BucketSubresource::Notification,
-            &normalized,
-        );
+        let _ =
+            self.store
+                .put_bucket_subresource(bucket, BucketSubresource::Notification, &normalized);
         Ok(empty_response(StatusCode::OK))
     }
 
@@ -637,11 +633,9 @@ impl S3Service {
         }
 
         b.object_lock_config = Some(body_str.clone());
-        let _ = self.store.put_bucket_subresource(
-            bucket,
-            BucketSubresource::ObjectLock,
-            &body_str,
-        );
+        let _ = self
+            .store
+            .put_bucket_subresource(bucket, BucketSubresource::ObjectLock, &body_str);
         Ok(empty_response(StatusCode::OK))
     }
 
@@ -885,11 +879,9 @@ impl S3Service {
 
         let normalized = normalize_replication_xml(&body_str);
         b.replication_config = Some(normalized.clone());
-        let _ = self.store.put_bucket_subresource(
-            bucket,
-            BucketSubresource::Replication,
-            &normalized,
-        );
+        let _ =
+            self.store
+                .put_bucket_subresource(bucket, BucketSubresource::Replication, &normalized);
         Ok(empty_response(StatusCode::OK))
     }
 
@@ -1081,9 +1073,9 @@ impl S3Service {
                 configs: b.inventory_configs.clone(),
             };
             let payload = toml::to_string(&snap).unwrap_or_default();
-            let _ = self
-                .store
-                .put_bucket_subresource(bucket, BucketSubresource::Inventory, &payload);
+            let _ =
+                self.store
+                    .put_bucket_subresource(bucket, BucketSubresource::Inventory, &payload);
         }
         Ok(empty_response(StatusCode::NO_CONTENT))
     }

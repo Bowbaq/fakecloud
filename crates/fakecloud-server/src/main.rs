@@ -61,32 +61,30 @@ async fn main() {
             tracing_subscriber::EnvFilter::try_new(&cli.log_level)
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
+        .with_writer(std::io::stderr)
         .init();
 
     let persistence_config = match cli.persistence_config() {
         Ok(cfg) => cfg,
-        Err(err) => {
-            tracing::error!(error = %err, "invalid persistence configuration");
-            std::process::exit(1);
-        }
+        Err(err) => fatal_exit(format_args!("invalid persistence configuration: {err}")),
     };
 
     if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
         if let Some(ref data_path) = persistence_config.data_path {
             if let Err(err) = std::fs::create_dir_all(data_path) {
-                tracing::error!(
-                    error = %err,
-                    path = %data_path.display(),
-                    "failed to create persistence data directory",
-                );
-                std::process::exit(1);
+                fatal_exit(format_args!(
+                    "failed to create persistence data directory {}: {err}",
+                    data_path.display()
+                ));
             }
             if let Err(err) = fakecloud_persistence::version::ensure_version_file(
                 data_path,
                 env!("CARGO_PKG_VERSION"),
             ) {
-                tracing::error!(error = %err, "persistence version file check failed");
-                std::process::exit(1);
+                fatal_exit(format_args!(
+                    "persistence version file check failed at {}/fakecloud.version.toml: {err}",
+                    data_path.display()
+                ));
             }
         }
     }
@@ -479,14 +477,18 @@ async fn main() {
                 .clone();
             let s3_root = data_path.join("s3");
             if let Err(err) = std::fs::create_dir_all(&s3_root) {
-                tracing::error!(error = %err, path = %s3_root.display(), "failed to create s3 persistence dir");
-                std::process::exit(1);
+                fatal_exit(format_args!(
+                    "failed to create s3 persistence dir {}: {err}",
+                    s3_root.display()
+                ));
             }
             let cache = Arc::new(fakecloud_persistence::cache::BodyCache::new(
-                persistence_config.body_cache_bytes,
+                persistence_config.s3_cache_bytes,
             ));
             let disk = fakecloud_persistence::s3::DiskS3Store::new(s3_root, cache);
-            match <fakecloud_persistence::s3::DiskS3Store as fakecloud_persistence::S3Store>::load(&disk) {
+            match <fakecloud_persistence::s3::DiskS3Store as fakecloud_persistence::S3Store>::load(
+                &disk,
+            ) {
                 Ok(snapshot) => {
                     let bucket_count = snapshot.buckets.len();
                     let object_count: usize =
@@ -497,10 +499,9 @@ async fn main() {
                         &cli.region,
                     ) {
                         Ok(h) => h,
-                        Err(err) => {
-                            tracing::error!(error = %err, "failed to hydrate s3 persistence snapshot");
-                            std::process::exit(1);
-                        }
+                        Err(err) => fatal_exit(format_args!(
+                            "failed to hydrate s3 persistence snapshot: {err}"
+                        )),
                     };
                     *s3_state.write() = hydrated;
                     tracing::info!(
@@ -509,10 +510,9 @@ async fn main() {
                         "loaded s3 persistence snapshot",
                     );
                 }
-                Err(err) => {
-                    tracing::error!(error = %err, "failed to load s3 persistence snapshot");
-                    std::process::exit(1);
-                }
+                Err(err) => fatal_exit(format_args!(
+                    "failed to load s3 persistence snapshot: {err}"
+                )),
             }
             Arc::new(disk)
         }
@@ -1640,4 +1640,13 @@ async fn shutdown_signal() {
         .await
         .expect("failed to install Ctrl+C handler");
     tracing::info!("shutting down");
+}
+
+/// Emit a fatal error through the tracing pipeline, flush stderr so the
+/// message survives `process::exit`, and terminate with code 1.
+fn fatal_exit(args: std::fmt::Arguments<'_>) -> ! {
+    use std::io::Write;
+    tracing::error!("{args}");
+    let _ = std::io::stderr().flush();
+    std::process::exit(1);
 }

@@ -59,7 +59,11 @@ async fn persistence_round_trip_objects_with_metadata() {
 
     let objects: Vec<(&str, Vec<u8>, &str)> = vec![
         ("plain.txt", b"hello world".to_vec(), "text/plain"),
-        ("binary.bin", vec![0u8, 1, 2, 3, 255, 254, 253], "application/octet-stream"),
+        (
+            "binary.bin",
+            vec![0u8, 1, 2, 3, 255, 254, 253],
+            "application/octet-stream",
+        ),
         ("doc.json", br#"{"ok":true}"#.to_vec(), "application/json"),
         ("big.txt", vec![b'x'; 64 * 1024], "text/plain"),
         ("tagged.txt", b"tagged".to_vec(), "text/plain"),
@@ -109,7 +113,10 @@ async fn persistence_round_trip_objects_with_metadata() {
             .unwrap();
         assert_eq!(head.content_type(), Some(*ct), "content-type for {}", key);
         let meta = head.metadata().unwrap();
-        assert_eq!(meta.get("custom").map(String::as_str), Some(&*format!("value-{}", i)));
+        assert_eq!(
+            meta.get("custom").map(String::as_str),
+            Some(&*format!("value-{}", i))
+        );
 
         let get = client
             .get_object()
@@ -129,7 +136,9 @@ async fn persistence_round_trip_objects_with_metadata() {
             .await
             .unwrap();
         let tag_set = tags.tag_set();
-        assert!(tag_set.iter().any(|t| t.key() == "env" && t.value() == "prod"));
+        assert!(tag_set
+            .iter()
+            .any(|t| t.key() == "env" && t.value() == "prod"));
     }
 
     let legal = client
@@ -247,14 +256,14 @@ async fn persistence_multipart_resume_and_complete() {
 
     let mut completed: Vec<CompletedPart> = Vec::new();
 
-    for idx in 0..3 {
+    for (idx, body) in parts.iter().enumerate().take(3) {
         let resp = client
             .upload_part()
             .bucket("mpu-bucket")
             .key("resumable.bin")
             .upload_id(&upload_id)
             .part_number((idx + 1) as i32)
-            .body(ByteStream::from(parts[idx].clone()))
+            .body(ByteStream::from(body.clone()))
             .send()
             .await
             .unwrap();
@@ -269,14 +278,14 @@ async fn persistence_multipart_resume_and_complete() {
     server.restart().await;
     let client = server.s3_client().await;
 
-    for idx in 3..5 {
+    for (idx, body) in parts.iter().enumerate().take(5).skip(3) {
         let resp = client
             .upload_part()
             .bucket("mpu-bucket")
             .key("resumable.bin")
             .upload_id(&upload_id)
             .part_number((idx + 1) as i32)
-            .body(ByteStream::from(parts[idx].clone()))
+            .body(ByteStream::from(body.clone()))
             .send()
             .await
             .unwrap();
@@ -344,7 +353,10 @@ async fn persistence_multipart_abort_clears_state() {
             .key("aborted.bin")
             .upload_id(&upload_id)
             .part_number(n)
-            .body(ByteStream::from(pseudo_random_bytes(n as u64, 5 * 1024 * 1024 + 32)))
+            .body(ByteStream::from(pseudo_random_bytes(
+                n as u64,
+                5 * 1024 * 1024 + 32,
+            )))
             .send()
             .await
             .unwrap();
@@ -676,16 +688,15 @@ async fn persistence_version_file_mismatch_fails_loudly() {
 
     let data_arg = tmp.path().display().to_string();
     let (status, stderr) = run_until_exit(
-        &[
-            "--storage-mode",
-            "persistent",
-            "--data-path",
-            &data_arg,
-        ],
+        &["--storage-mode", "persistent", "--data-path", &data_arg],
         &[("FAKECLOUD_CONTAINER_CLI", "false")],
         Duration::from_secs(10),
     );
-    assert!(!status.success(), "expected non-zero exit, got {:?}", status);
+    assert!(
+        !status.success(),
+        "expected non-zero exit, got {:?}",
+        status
+    );
     assert!(
         stderr.contains("fakecloud.version.toml")
             || stderr.contains("format_version")
@@ -714,7 +725,11 @@ async fn persistence_body_cache_small_and_large_objects() {
     let big = pseudo_random_bytes(2, 3 * 1024 * 1024);
     let tiny = pseudo_random_bytes(3, 512 * 1024);
 
-    for (key, body) in [("small.bin", &small), ("big.bin", &big), ("tiny.bin", &tiny)] {
+    for (key, body) in [
+        ("small.bin", &small),
+        ("big.bin", &big),
+        ("tiny.bin", &tiny),
+    ] {
         client
             .put_object()
             .bucket("cache-bucket")
@@ -728,7 +743,11 @@ async fn persistence_body_cache_small_and_large_objects() {
     server.restart().await;
     let client = server.s3_client().await;
 
-    for (key, expected) in [("small.bin", &small), ("big.bin", &big), ("tiny.bin", &tiny)] {
+    for (key, expected) in [
+        ("small.bin", &small),
+        ("big.bin", &big),
+        ("tiny.bin", &tiny),
+    ] {
         let get = client
             .get_object()
             .bucket("cache-bucket")
@@ -740,4 +759,3 @@ async fn persistence_body_cache_small_and_large_objects() {
         assert_eq!(sha256(&got), sha256(expected), "body mismatch for {}", key);
     }
 }
-

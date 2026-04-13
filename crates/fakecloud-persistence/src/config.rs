@@ -2,24 +2,19 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum StorageMode {
+    #[default]
     Memory,
     Persistent,
-}
-
-impl Default for StorageMode {
-    fn default() -> Self {
-        StorageMode::Memory
-    }
 }
 
 #[derive(Clone, Debug)]
 pub struct PersistenceConfig {
     pub mode: StorageMode,
     pub data_path: Option<PathBuf>,
-    pub body_cache_bytes: u64,
+    pub s3_cache_bytes: u64,
 }
 
 impl PersistenceConfig {
@@ -27,7 +22,7 @@ impl PersistenceConfig {
         Self {
             mode: StorageMode::Memory,
             data_path: None,
-            body_cache_bytes: 0,
+            s3_cache_bytes: 0,
         }
     }
 
@@ -35,7 +30,7 @@ impl PersistenceConfig {
         Self {
             mode: StorageMode::Persistent,
             data_path: Some(path),
-            body_cache_bytes: cache_bytes,
+            s3_cache_bytes: cache_bytes,
         }
     }
 
@@ -44,14 +39,14 @@ impl PersistenceConfig {
             StorageMode::Persistent => {
                 if self.data_path.is_none() {
                     return Err(
-                        "--storage-mode=persistent requires --data-path to be set".to_string(),
+                        "--storage-mode=persistent requires --data-path to be set".to_string()
                     );
                 }
             }
             StorageMode::Memory => {
                 if self.data_path.is_some() {
                     return Err(
-                        "--data-path is only valid with --storage-mode=persistent".to_string(),
+                        "--data-path is only valid with --storage-mode=persistent".to_string()
                     );
                 }
             }

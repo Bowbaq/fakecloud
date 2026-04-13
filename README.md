@@ -221,7 +221,7 @@ fakecloud is configured via CLI flags or environment variables.
 | `--log-level`        | `FAKECLOUD_LOG`             | `info`             | Log level (trace, debug, info, warn, error)                                              |
 | `--storage-mode`     | `FAKECLOUD_STORAGE_MODE`    | `memory`           | `memory` (default, all state in RAM) or `persistent` (mirror S3 state to `--data-path`)  |
 | `--data-path`        | `FAKECLOUD_DATA_PATH`       | —                  | Directory to persist state to. Required when `--storage-mode=persistent`.                |
-| `--body-cache-size`  | `FAKECLOUD_BODY_CACHE_SIZE` | `268435456`        | Byte-sized LRU cache for object bodies in persistent mode. Default 256 MiB.              |
+| `--s3-cache-size`    | `FAKECLOUD_S3_CACHE_SIZE`   | `268435456`        | In-memory LRU cache for S3 object bodies in persistent mode. Default 256 MiB.            |
 |                      | `FAKECLOUD_CONTAINER_CLI`   | auto-detect        | Container CLI to use (`docker` or `podman`)                                              |
 
 ```sh
@@ -261,7 +261,7 @@ migration — the intent is that you either keep using the binary that wrote
 the directory or start from an empty data path.
 
 Object bodies are streamed straight to disk in persistent mode, not held in
-RAM. A bounded LRU cache (`--body-cache-size`, default 256 MiB) keeps recently
+RAM. A bounded LRU cache (`--s3-cache-size`, default 256 MiB) keeps recently
 read bodies available for fast re-reads. Objects larger than `cache-size / 2`
 bypass the cache on both read and write, so a single large upload cannot
 evict the entire working set.

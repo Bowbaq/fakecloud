@@ -1513,6 +1513,7 @@ impl S3Service {
             }
             let dm_id = Uuid::new_v4().to_string();
             let marker = make_delete_marker(key, &dm_id);
+            let marker_meta = object_meta_snapshot(&marker);
             b.object_versions
                 .entry(key.to_string())
                 .or_default()
@@ -1521,6 +1522,13 @@ impl S3Service {
             resp_headers.insert("x-amz-version-id", dm_id.parse().unwrap());
             resp_headers.insert("x-amz-delete-marker", "true".parse().unwrap());
             let _ = self.store.delete_object(bucket, key, None);
+            let _ = self.store.put_object(
+                bucket,
+                key,
+                Some(dm_id.as_str()),
+                BodySource::Bytes(Bytes::new()),
+                &marker_meta,
+            );
 
             // Notification for delete
             let notification_config = b.notification_config.clone();

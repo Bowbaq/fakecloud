@@ -293,11 +293,7 @@ pub trait S3Store: Send + Sync {
         kind: BucketSubresource,
         payload: &str,
     ) -> StoreResult<()>;
-    fn delete_bucket_subresource(
-        &self,
-        bucket: &str,
-        kind: BucketSubresource,
-    ) -> StoreResult<()>;
+    fn delete_bucket_subresource(&self, bucket: &str, kind: BucketSubresource) -> StoreResult<()>;
     fn delete_bucket(&self, bucket: &str) -> StoreResult<()>;
 
     fn put_object(
@@ -315,12 +311,7 @@ pub trait S3Store: Send + Sync {
         version: Option<&str>,
         meta: &ObjectMeta,
     ) -> StoreResult<()>;
-    fn delete_object(
-        &self,
-        bucket: &str,
-        key: &str,
-        version: Option<&str>,
-    ) -> StoreResult<()>;
+    fn delete_object(&self, bucket: &str, key: &str, version: Option<&str>) -> StoreResult<()>;
     fn open_object_body(&self, body: &BodyRef) -> StoreResult<Bytes>;
 
     fn mpu_create(&self, bucket: &str, upload_id: &str, init: &MpuInit) -> StoreResult<()>;
@@ -406,12 +397,7 @@ impl S3Store for MemoryS3Store {
     ) -> StoreResult<()> {
         Ok(())
     }
-    fn delete_object(
-        &self,
-        _bucket: &str,
-        _key: &str,
-        _version: Option<&str>,
-    ) -> StoreResult<()> {
+    fn delete_object(&self, _bucket: &str, _key: &str, _version: Option<&str>) -> StoreResult<()> {
         Ok(())
     }
     fn open_object_body(&self, body: &BodyRef) -> StoreResult<Bytes> {
@@ -679,16 +665,15 @@ impl S3Store for DiskS3Store {
                         continue;
                     }
                     let init_text = std::fs::read_to_string(&init_path)?;
-                    let init: MpuInit = toml::from_str(&init_text)
-                        .map_err(|e| StoreError::Serde(e.to_string()))?;
+                    let init: MpuInit =
+                        toml::from_str(&init_text).map_err(|e| StoreError::Serde(e.to_string()))?;
                     let mut loaded_parts: BTreeMap<u32, LoadedPart> = BTreeMap::new();
                     let parts_dir = upload_dir.join("parts");
                     if parts_dir.exists() {
                         for part_entry in std::fs::read_dir(&parts_dir)? {
                             let part_entry = part_entry?;
                             let path = part_entry.path();
-                            let Some(fname) = path.file_name().and_then(|s| s.to_str())
-                            else {
+                            let Some(fname) = path.file_name().and_then(|s| s.to_str()) else {
                                 continue;
                             };
                             if !fname.ends_with(".toml") {
@@ -762,12 +747,10 @@ impl S3Store for DiskS3Store {
         Ok(())
     }
 
-    fn delete_bucket_subresource(
-        &self,
-        bucket: &str,
-        kind: BucketSubresource,
-    ) -> StoreResult<()> {
-        let path = self.bucket_dir(bucket).join(Self::subresource_filename(kind));
+    fn delete_bucket_subresource(&self, bucket: &str, kind: BucketSubresource) -> StoreResult<()> {
+        let path = self
+            .bucket_dir(bucket)
+            .join(Self::subresource_filename(kind));
         match std::fs::remove_file(&path) {
             Ok(_) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -855,12 +838,7 @@ impl S3Store for DiskS3Store {
         Ok(())
     }
 
-    fn delete_object(
-        &self,
-        bucket: &str,
-        key: &str,
-        version: Option<&str>,
-    ) -> StoreResult<()> {
+    fn delete_object(&self, bucket: &str, key: &str, version: Option<&str>) -> StoreResult<()> {
         let (dir, bin_path, toml_path) = self.object_paths(bucket, key, version);
         for p in [&bin_path, &toml_path] {
             match std::fs::remove_file(p) {
@@ -889,11 +867,8 @@ impl S3Store for DiskS3Store {
                 path,
                 size: _,
             } => {
-                let body_key = crate::cache::BodyKey::new(
-                    bucket.clone(),
-                    key.clone(),
-                    version.clone(),
-                );
+                let body_key =
+                    crate::cache::BodyKey::new(bucket.clone(), key.clone(), version.clone());
                 if let Some(bytes) = self.cache.get(&body_key) {
                     return Ok(bytes);
                 }
@@ -1121,7 +1096,10 @@ mod disk_tests {
         DiskS3Store::new(tmp.path().to_path_buf(), cache)
     }
 
-    fn new_store_with_cache(tmp: &TempDir, cap: u64) -> (DiskS3Store, Arc<crate::cache::BodyCache>) {
+    fn new_store_with_cache(
+        tmp: &TempDir,
+        cap: u64,
+    ) -> (DiskS3Store, Arc<crate::cache::BodyCache>) {
         let cache = Arc::new(crate::cache::BodyCache::new(cap));
         (
             DiskS3Store::new(tmp.path().to_path_buf(), cache.clone()),
@@ -1162,10 +1140,13 @@ mod disk_tests {
         let tmp = TempDir::new().unwrap();
         let store = new_store(&tmp);
         store
-            .put_bucket_meta("b", &BucketMeta {
-                name: "b".to_string(),
-                ..Default::default()
-            })
+            .put_bucket_meta(
+                "b",
+                &BucketMeta {
+                    name: "b".to_string(),
+                    ..Default::default()
+                },
+            )
             .unwrap();
         let variants = [
             BucketSubresource::Tags,
@@ -1186,8 +1167,12 @@ mod disk_tests {
             BucketSubresource::Accelerate,
         ];
         for v in variants {
-            store.put_bucket_subresource("b", v, "payload=true").unwrap();
-            let file = store.bucket_dir("b").join(DiskS3Store::subresource_filename(v));
+            store
+                .put_bucket_subresource("b", v, "payload=true")
+                .unwrap();
+            let file = store
+                .bucket_dir("b")
+                .join(DiskS3Store::subresource_filename(v));
             assert!(file.exists(), "{:?}", v);
             assert_eq!(std::fs::read_to_string(&file).unwrap(), "payload=true");
         }
@@ -1198,10 +1183,13 @@ mod disk_tests {
         let tmp = TempDir::new().unwrap();
         let store = new_store(&tmp);
         store
-            .put_bucket_meta("b", &BucketMeta {
-                name: "b".to_string(),
-                ..Default::default()
-            })
+            .put_bucket_meta(
+                "b",
+                &BucketMeta {
+                    name: "b".to_string(),
+                    ..Default::default()
+                },
+            )
             .unwrap();
         store
             .put_bucket_subresource("b", BucketSubresource::Tags, "x=1")
@@ -1222,10 +1210,13 @@ mod disk_tests {
         let tmp = TempDir::new().unwrap();
         let store = new_store(&tmp);
         store
-            .put_bucket_meta("b", &BucketMeta {
-                name: "b".to_string(),
-                ..Default::default()
-            })
+            .put_bucket_meta(
+                "b",
+                &BucketMeta {
+                    name: "b".to_string(),
+                    ..Default::default()
+                },
+            )
             .unwrap();
         let data = Bytes::from_static(b"hello world");
         let meta = sample_meta("k1", data.len() as u64);
@@ -1233,7 +1224,13 @@ mod disk_tests {
             .put_object("b", "k1", None, BodySource::Bytes(data.clone()), &meta)
             .unwrap();
         match &body_ref {
-            BodyRef::Disk { bucket, key, size, path, .. } => {
+            BodyRef::Disk {
+                bucket,
+                key,
+                size,
+                path,
+                ..
+            } => {
                 assert_eq!(bucket, "b");
                 assert_eq!(key, "k1");
                 assert_eq!(*size, data.len() as u64);
@@ -1252,10 +1249,13 @@ mod disk_tests {
         let tmp = TempDir::new().unwrap();
         let store = new_store(&tmp);
         store
-            .put_bucket_meta("b", &BucketMeta {
-                name: "b".to_string(),
-                ..Default::default()
-            })
+            .put_bucket_meta(
+                "b",
+                &BucketMeta {
+                    name: "b".to_string(),
+                    ..Default::default()
+                },
+            )
             .unwrap();
         let src = tmp.path().join("src.bin");
         std::fs::write(&src, b"file-body").unwrap();
@@ -1275,10 +1275,13 @@ mod disk_tests {
         let tmp = TempDir::new().unwrap();
         let store = new_store(&tmp);
         store
-            .put_bucket_meta("b", &BucketMeta {
-                name: "b".to_string(),
-                ..Default::default()
-            })
+            .put_bucket_meta(
+                "b",
+                &BucketMeta {
+                    name: "b".to_string(),
+                    ..Default::default()
+                },
+            )
             .unwrap();
         let data = Bytes::from_static(b"abc");
         let mut meta = sample_meta("k", 3);
@@ -1300,10 +1303,13 @@ mod disk_tests {
         let tmp = TempDir::new().unwrap();
         let (store, cache) = new_store_with_cache(&tmp, 1024 * 1024);
         store
-            .put_bucket_meta("b", &BucketMeta {
-                name: "b".to_string(),
-                ..Default::default()
-            })
+            .put_bucket_meta(
+                "b",
+                &BucketMeta {
+                    name: "b".to_string(),
+                    ..Default::default()
+                },
+            )
             .unwrap();
         let data = Bytes::from_static(b"bye");
         let meta = sample_meta("k", 3);
@@ -1325,10 +1331,13 @@ mod disk_tests {
         let tmp = TempDir::new().unwrap();
         let (store, cache) = new_store_with_cache(&tmp, 1024 * 1024);
         store
-            .put_bucket_meta("b", &BucketMeta {
-                name: "b".to_string(),
-                ..Default::default()
-            })
+            .put_bucket_meta(
+                "b",
+                &BucketMeta {
+                    name: "b".to_string(),
+                    ..Default::default()
+                },
+            )
             .unwrap();
         let data = Bytes::from_static(b"payload");
         let meta = sample_meta("k", data.len() as u64);
@@ -1353,10 +1362,13 @@ mod disk_tests {
         // capacity 1024 → single-object cap 512. Use 800-byte body.
         let (store, cache) = new_store_with_cache(&tmp, 1024);
         store
-            .put_bucket_meta("b", &BucketMeta {
-                name: "b".to_string(),
-                ..Default::default()
-            })
+            .put_bucket_meta(
+                "b",
+                &BucketMeta {
+                    name: "b".to_string(),
+                    ..Default::default()
+                },
+            )
             .unwrap();
         let data = Bytes::from(vec![7u8; 800]);
         let meta = sample_meta("big", 800);
@@ -1384,10 +1396,13 @@ mod disk_tests {
         let tmp = TempDir::new().unwrap();
         let store = new_store(&tmp);
         store
-            .put_bucket_meta("b", &BucketMeta {
-                name: "b".to_string(),
-                ..Default::default()
-            })
+            .put_bucket_meta(
+                "b",
+                &BucketMeta {
+                    name: "b".to_string(),
+                    ..Default::default()
+                },
+            )
             .unwrap();
         let data = Bytes::from_static(b"x");
         let meta = sample_meta("k", 1);
@@ -1409,10 +1424,13 @@ mod disk_tests {
         let tmp = TempDir::new().unwrap();
         let store = new_store(&tmp);
         store
-            .put_bucket_meta("b", &BucketMeta {
-                name: "b".to_string(),
-                ..Default::default()
-            })
+            .put_bucket_meta(
+                "b",
+                &BucketMeta {
+                    name: "b".to_string(),
+                    ..Default::default()
+                },
+            )
             .unwrap();
         store
             .put_bucket_subresource("b", BucketSubresource::Lifecycle, "<Lifecycle/>")
@@ -1451,11 +1469,14 @@ mod disk_tests {
         let tmp = TempDir::new().unwrap();
         let store = new_store(&tmp);
         store
-            .put_bucket_meta("b", &BucketMeta {
-                name: "b".to_string(),
-                versioning: Some("Enabled".to_string()),
-                ..Default::default()
-            })
+            .put_bucket_meta(
+                "b",
+                &BucketMeta {
+                    name: "b".to_string(),
+                    versioning: Some("Enabled".to_string()),
+                    ..Default::default()
+                },
+            )
             .unwrap();
         let base = chrono::Utc::now();
         for (i, (vid, body)) in [("v1", "one"), ("v2", "two"), ("v3", "three")]
@@ -1495,11 +1516,14 @@ mod disk_tests {
         let tmp = TempDir::new().unwrap();
         let store = new_store(&tmp);
         store
-            .put_bucket_meta("b", &BucketMeta {
-                name: "b".to_string(),
-                versioning: Some("Enabled".to_string()),
-                ..Default::default()
-            })
+            .put_bucket_meta(
+                "b",
+                &BucketMeta {
+                    name: "b".to_string(),
+                    versioning: Some("Enabled".to_string()),
+                    ..Default::default()
+                },
+            )
             .unwrap();
         let mut m = sample_meta("k", 0);
         m.version_id = Some("dm1".to_string());
@@ -1533,21 +1557,33 @@ mod disk_tests {
         let tmp = TempDir::new().unwrap();
         let store = new_store(&tmp);
         store
-            .put_bucket_meta("a", &BucketMeta {
-                name: "a".to_string(),
-                ..Default::default()
-            })
+            .put_bucket_meta(
+                "a",
+                &BucketMeta {
+                    name: "a".to_string(),
+                    ..Default::default()
+                },
+            )
             .unwrap();
         store
-            .put_bucket_meta("b", &BucketMeta {
-                name: "b".to_string(),
-                versioning: Some("Enabled".to_string()),
-                ..Default::default()
-            })
+            .put_bucket_meta(
+                "b",
+                &BucketMeta {
+                    name: "b".to_string(),
+                    versioning: Some("Enabled".to_string()),
+                    ..Default::default()
+                },
+            )
             .unwrap();
         let ma = sample_meta("only", 3);
         store
-            .put_object("a", "only", None, BodySource::Bytes(Bytes::from_static(b"aaa")), &ma)
+            .put_object(
+                "a",
+                "only",
+                None,
+                BodySource::Bytes(Bytes::from_static(b"aaa")),
+                &ma,
+            )
             .unwrap();
         let base = chrono::Utc::now();
         for (i, vid) in ["v1", "v2"].iter().enumerate() {
@@ -1590,10 +1626,13 @@ mod disk_tests {
         let tmp = TempDir::new().unwrap();
         let store = new_store(&tmp);
         store
-            .put_bucket_meta("b", &BucketMeta {
-                name: "b".to_string(),
-                ..Default::default()
-            })
+            .put_bucket_meta(
+                "b",
+                &BucketMeta {
+                    name: "b".to_string(),
+                    ..Default::default()
+                },
+            )
             .unwrap();
         let init = sample_mpu_init("up1", "k1");
         store.mpu_create("b", "up1", &init).unwrap();
@@ -1610,12 +1649,17 @@ mod disk_tests {
         let tmp = TempDir::new().unwrap();
         let store = new_store(&tmp);
         store
-            .put_bucket_meta("b", &BucketMeta {
-                name: "b".to_string(),
-                ..Default::default()
-            })
+            .put_bucket_meta(
+                "b",
+                &BucketMeta {
+                    name: "b".to_string(),
+                    ..Default::default()
+                },
+            )
             .unwrap();
-        store.mpu_create("b", "up", &sample_mpu_init("up", "k")).unwrap();
+        store
+            .mpu_create("b", "up", &sample_mpu_init("up", "k"))
+            .unwrap();
         let bodies = [
             Bytes::from_static(b"part-one"),
             Bytes::from_static(b"part-two-longer"),
@@ -1624,7 +1668,13 @@ mod disk_tests {
         for (i, body) in bodies.iter().enumerate() {
             let n = (i + 1) as u32;
             store
-                .mpu_put_part("b", "up", n, BodySource::Bytes(body.clone()), &format!("et{}", n))
+                .mpu_put_part(
+                    "b",
+                    "up",
+                    n,
+                    BodySource::Bytes(body.clone()),
+                    &format!("et{}", n),
+                )
                 .unwrap();
         }
         let loaded = store.load().unwrap();
@@ -1652,12 +1702,17 @@ mod disk_tests {
         let tmp = TempDir::new().unwrap();
         let store = new_store(&tmp);
         store
-            .put_bucket_meta("b", &BucketMeta {
-                name: "b".to_string(),
-                ..Default::default()
-            })
+            .put_bucket_meta(
+                "b",
+                &BucketMeta {
+                    name: "b".to_string(),
+                    ..Default::default()
+                },
+            )
             .unwrap();
-        store.mpu_create("b", "up", &sample_mpu_init("up", "k")).unwrap();
+        store
+            .mpu_create("b", "up", &sample_mpu_init("up", "k"))
+            .unwrap();
         store
             .mpu_put_part(
                 "b",
@@ -1681,12 +1736,17 @@ mod disk_tests {
         let tmp = TempDir::new().unwrap();
         let store = new_store(&tmp);
         store
-            .put_bucket_meta("b", &BucketMeta {
-                name: "b".to_string(),
-                ..Default::default()
-            })
+            .put_bucket_meta(
+                "b",
+                &BucketMeta {
+                    name: "b".to_string(),
+                    ..Default::default()
+                },
+            )
             .unwrap();
-        store.mpu_create("b", "up", &sample_mpu_init("up", "k")).unwrap();
+        store
+            .mpu_create("b", "up", &sample_mpu_init("up", "k"))
+            .unwrap();
         let body = Bytes::from_static(b"only-part-bytes");
         store
             .mpu_put_part("b", "up", 1, BodySource::Bytes(body.clone()), "et")
@@ -1708,12 +1768,17 @@ mod disk_tests {
         let tmp = TempDir::new().unwrap();
         let store = new_store(&tmp);
         store
-            .put_bucket_meta("b", &BucketMeta {
-                name: "b".to_string(),
-                ..Default::default()
-            })
+            .put_bucket_meta(
+                "b",
+                &BucketMeta {
+                    name: "b".to_string(),
+                    ..Default::default()
+                },
+            )
             .unwrap();
-        store.mpu_create("b", "up", &sample_mpu_init("up", "k")).unwrap();
+        store
+            .mpu_create("b", "up", &sample_mpu_init("up", "k"))
+            .unwrap();
         let p1 = Bytes::from_static(b"AAAA");
         let p2 = Bytes::from_static(b"BBBBBB");
         let p3 = Bytes::from_static(b"CC");
@@ -1744,12 +1809,17 @@ mod disk_tests {
         let tmp = TempDir::new().unwrap();
         let store = new_store(&tmp);
         store
-            .put_bucket_meta("b", &BucketMeta {
-                name: "b".to_string(),
-                ..Default::default()
-            })
+            .put_bucket_meta(
+                "b",
+                &BucketMeta {
+                    name: "b".to_string(),
+                    ..Default::default()
+                },
+            )
             .unwrap();
-        store.mpu_create("b", "up", &sample_mpu_init("up", "k")).unwrap();
+        store
+            .mpu_create("b", "up", &sample_mpu_init("up", "k"))
+            .unwrap();
 
         // 3 parts of ~1 MiB each (kept small so tests stay fast but still
         // exercise the BodySource::File + streaming concat path).
@@ -1762,13 +1832,7 @@ mod disk_tests {
             std::fs::write(&src, &data).unwrap();
             expected.extend_from_slice(&data);
             store
-                .mpu_put_part(
-                    "b",
-                    "up",
-                    (i + 1) as u32,
-                    BodySource::File(src),
-                    "et",
-                )
+                .mpu_put_part("b", "up", (i + 1) as u32, BodySource::File(src), "et")
                 .unwrap();
         }
         let meta = sample_meta("k", expected.len() as u64);
@@ -1791,12 +1855,17 @@ mod disk_tests {
         let tmp = TempDir::new().unwrap();
         let store = new_store(&tmp);
         store
-            .put_bucket_meta("b", &BucketMeta {
-                name: "b".to_string(),
-                ..Default::default()
-            })
+            .put_bucket_meta(
+                "b",
+                &BucketMeta {
+                    name: "b".to_string(),
+                    ..Default::default()
+                },
+            )
             .unwrap();
-        store.mpu_create("b", "up", &sample_mpu_init("up", "k")).unwrap();
+        store
+            .mpu_create("b", "up", &sample_mpu_init("up", "k"))
+            .unwrap();
         let p1 = Bytes::from_static(b"hello-");
         let p2 = Bytes::from_static(b"world-");
         store
@@ -1936,8 +2005,14 @@ mod disk_tests {
             )
             .unwrap();
         let mut configs = HashMap::new();
-        configs.insert("inv-1".to_string(), "<InventoryConfiguration id=\"inv-1\"/>".to_string());
-        configs.insert("inv-2".to_string(), "<InventoryConfiguration id=\"inv-2\"/>".to_string());
+        configs.insert(
+            "inv-1".to_string(),
+            "<InventoryConfiguration id=\"inv-1\"/>".to_string(),
+        );
+        configs.insert(
+            "inv-2".to_string(),
+            "<InventoryConfiguration id=\"inv-2\"/>".to_string(),
+        );
         let snap = InventorySnapshot {
             configs: configs.clone(),
         };
@@ -1964,10 +2039,13 @@ mod disk_tests {
         let store = new_store(&tmp);
         // Bucket meta with no versioning field set.
         store
-            .put_bucket_meta("b", &BucketMeta {
-                name: "b".to_string(),
-                ..Default::default()
-            })
+            .put_bucket_meta(
+                "b",
+                &BucketMeta {
+                    name: "b".to_string(),
+                    ..Default::default()
+                },
+            )
             .unwrap();
         // Legacy sidecar: a bare versioning.toml with "Enabled".
         let path = store.bucket_dir("b").join("versioning.toml");

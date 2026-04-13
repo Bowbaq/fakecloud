@@ -110,7 +110,11 @@ pub fn s3_object_from_loaded(lo: LoadedObject) -> S3Object {
         metadata: meta.metadata,
         storage_class: meta.storage_class,
         tags: meta.tags,
-        acl_grants: meta.acl_grants.iter().map(acl_grant_from_snapshot).collect(),
+        acl_grants: meta
+            .acl_grants
+            .iter()
+            .map(acl_grant_from_snapshot)
+            .collect(),
         acl_owner_id: meta.acl_owner_id,
         parts_count: meta.parts_count,
         part_sizes: meta.part_sizes,
@@ -159,7 +163,11 @@ pub fn multipart_upload_from_loaded(lm: LoadedMpu) -> MultipartUpload {
         sse_algorithm: init.sse_algorithm,
         sse_kms_key_id: init.sse_kms_key_id,
         tagging: init.tagging,
-        acl_grants: init.acl_grants.iter().map(acl_grant_from_snapshot).collect(),
+        acl_grants: init
+            .acl_grants
+            .iter()
+            .map(acl_grant_from_snapshot)
+            .collect(),
         checksum_algorithm: init.checksum_algorithm,
     }
 }
@@ -236,18 +244,16 @@ pub fn s3_bucket_from_snapshot(
                 if text.trim().is_empty() {
                     continue;
                 }
-                let snap: TagsSnapshot = toml::from_str(&text).map_err(|e| {
-                    format!("failed to parse tags.toml for bucket {name}: {e}")
-                })?;
+                let snap: TagsSnapshot = toml::from_str(&text)
+                    .map_err(|e| format!("failed to parse tags.toml for bucket {name}: {e}"))?;
                 b.tags = snap.tags;
             }
             "acl.toml" => {
                 if text.trim().is_empty() {
                     continue;
                 }
-                let snap: AclSnapshot = toml::from_str(&text).map_err(|e| {
-                    format!("failed to parse acl.toml for bucket {name}: {e}")
-                })?;
+                let snap: AclSnapshot = toml::from_str(&text)
+                    .map_err(|e| format!("failed to parse acl.toml for bucket {name}: {e}"))?;
                 if !snap.owner_id.is_empty() {
                     b.acl_owner_id = snap.owner_id;
                 }

@@ -12,7 +12,7 @@ Opt-in disk persistence for S3 via `--storage-mode=persistent --data-path=<dir>`
 Buckets, objects, versions, delete markers, multipart uploads (resumable across
 restarts), and every bucket subresource are written to disk on every mutation
 and reloaded on startup. Object bodies stream straight to disk with a bounded
-LRU cache (`--body-cache-size`, default 256 MiB) so a single large upload can
+LRU cache (`--s3-cache-size`, default 256 MiB) so a single large upload can
 never pull the entire working set into RAM. Memory mode stays the default and
 is unchanged. Follow-up: extend persistence to DynamoDB, SQS, and the other
 stateful services.

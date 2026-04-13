@@ -157,12 +157,9 @@ impl S3Service {
         if let Some(b2) = state.buckets.get(bucket) {
             if let Some(obj) = b2.objects.get(key) {
                 let meta = object_meta_snapshot(obj);
-                let _ = self.store.put_object_meta(
-                    bucket,
-                    key,
-                    meta.version_id.as_deref(),
-                    &meta,
-                );
+                let _ = self
+                    .store
+                    .put_object_meta(bucket, key, meta.version_id.as_deref(), &meta);
             }
         }
         Ok(AwsResponse {
@@ -188,12 +185,9 @@ impl S3Service {
         let obj = b.objects.get_mut(key).ok_or_else(|| no_such_key(key))?;
         obj.tags.clear();
         let meta = object_meta_snapshot(obj);
-        let _ = self.store.put_object_meta(
-            bucket,
-            key,
-            meta.version_id.as_deref(),
-            &meta,
-        );
+        let _ = self
+            .store
+            .put_object_meta(bucket, key, meta.version_id.as_deref(), &meta);
         Ok(AwsResponse {
             status: StatusCode::NO_CONTENT,
             content_type: "application/xml".to_string(),

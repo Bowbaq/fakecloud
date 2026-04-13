@@ -54,7 +54,7 @@ pub fn escape_key_segment(segment: &str) -> String {
     let digest = hasher.finalize();
     let hex: String = digest
         .iter()
-        .take((HASH_SUFFIX_HEX + 1) / 2)
+        .take(HASH_SUFFIX_HEX.div_ceil(2))
         .map(|b| format!("{:02x}", b))
         .collect();
     let hex = &hex[..HASH_SUFFIX_HEX];
@@ -85,7 +85,7 @@ mod tests {
     #[test]
     fn unicode() {
         let out = escape_key_segment("日本語");
-        assert!(out.chars().all(|c| c.is_ascii()));
+        assert!(out.is_ascii());
         assert!(out.contains('%'));
     }
 

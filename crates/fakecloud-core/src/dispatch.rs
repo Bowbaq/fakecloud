@@ -19,7 +19,7 @@ pub async fn dispatch(
     let request_id = uuid::Uuid::new_v4().to_string();
 
     let (parts, body) = request.into_parts();
-    let body_bytes = match axum::body::to_bytes(body, 10 * 1024 * 1024).await {
+    let body_bytes = match axum::body::to_bytes(body, 5 * 1024 * 1024 * 1024).await {
         Ok(b) => b,
         Err(_) => {
             return build_error_response(

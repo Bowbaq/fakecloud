@@ -525,13 +525,9 @@ impl S3Service {
         b.multipart_uploads.remove(upload_id);
         if let Some(o) = b.objects.get(key) {
             let meta = object_meta_snapshot(o);
-            let _ = self.store.mpu_complete(
-                bucket,
-                upload_id,
-                key,
-                meta.version_id.as_deref(),
-                &meta,
-            );
+            let _ =
+                self.store
+                    .mpu_complete(bucket, upload_id, key, meta.version_id.as_deref(), &meta);
             // TODO(phase-4): mpu_complete should consume the part files; for memory
             // mode we also ensure the put_object seam is exercised.
             let _ = self.store.put_object(

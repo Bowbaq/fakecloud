@@ -68,7 +68,7 @@ fakecloud listens at `http://localhost:4566`.
 | `--log-level` | `FAKECLOUD_LOG` | `info` | Log level (trace, debug, info, warn, error) |
 | `--storage-mode` | `FAKECLOUD_STORAGE_MODE` | `memory` | `memory` (default) or `persistent` (mirror S3 state to `--data-path`) |
 | `--data-path` | `FAKECLOUD_DATA_PATH` | — | Directory to persist state to. Required when `--storage-mode=persistent`. |
-| `--body-cache-size` | `FAKECLOUD_BODY_CACHE_SIZE` | `268435456` | Byte-sized LRU cache for object bodies in persistent mode. Default 256 MiB. |
+| `--s3-cache-size` | `FAKECLOUD_S3_CACHE_SIZE` | `268435456` | In-memory LRU cache for S3 object bodies in persistent mode. Default 256 MiB. |
 
 ### Persistence
 
@@ -84,7 +84,7 @@ startup and continue to operate exactly as in memory mode.
 
 The data directory is guarded by `fakecloud.version.toml`. A format mismatch
 fails startup loudly — there is no auto-migration. Object bodies stream
-straight to disk; a bounded LRU (`--body-cache-size`, default 256 MiB) caches
+straight to disk; a bounded LRU (`--s3-cache-size`, default 256 MiB) caches
 recent reads, and objects larger than `cache-size / 2` bypass the cache so a
 single large upload cannot evict everything. `/_fakecloud/s3/notifications`
 is intentionally in-memory only.

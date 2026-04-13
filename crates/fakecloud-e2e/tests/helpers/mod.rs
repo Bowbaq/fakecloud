@@ -36,10 +36,7 @@ impl TestServer {
         Self::start_persistent_with_cache(data_path, None).await
     }
 
-    pub async fn start_persistent_with_cache(
-        data_path: &Path,
-        body_cache_size: Option<u64>,
-    ) -> Self {
+    pub async fn start_persistent_with_cache(data_path: &Path, s3_cache_size: Option<u64>) -> Self {
         let data_path_str = data_path.display().to_string();
         let mut args: Vec<String> = vec![
             "--storage-mode".to_string(),
@@ -47,8 +44,8 @@ impl TestServer {
             "--data-path".to_string(),
             data_path_str,
         ];
-        if let Some(size) = body_cache_size {
-            args.push("--body-cache-size".to_string());
+        if let Some(size) = s3_cache_size {
+            args.push("--s3-cache-size".to_string());
             args.push(size.to_string());
         }
         let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -77,8 +74,7 @@ impl TestServer {
             .iter()
             .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
             .collect();
-        let extra_args_owned: Vec<String> =
-            extra_args.iter().map(|s| (*s).to_string()).collect();
+        let extra_args_owned: Vec<String> = extra_args.iter().map(|s| (*s).to_string()).collect();
 
         for _ in 0..3 {
             let port = find_available_port();
@@ -200,7 +196,6 @@ pub fn data_path_for(dir: &tempfile::TempDir) -> PathBuf {
 
 #[allow(dead_code)]
 impl TestServer {
-
     pub fn endpoint(&self) -> &str {
         &self.endpoint
     }
