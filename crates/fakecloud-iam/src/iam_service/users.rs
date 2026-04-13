@@ -5,7 +5,7 @@ use fakecloud_aws::arn::Arn;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 use fakecloud_core::validation::*;
 
-use crate::state::{IamAccessKey, IamUser, SigningCertificate, SshPublicKey};
+use crate::state::{IamAccessKey, IamState, IamUser, SigningCertificate, SshPublicKey};
 use crate::xml_responses;
 
 use super::{
@@ -14,6 +14,120 @@ use super::{
 };
 
 use fakecloud_aws::xml::xml_escape;
+
+/// Reject deletion of a user that still has dependent resources attached.
+///
+/// AWS surfaces a specific `DeleteConflict` per dependency type with the
+/// remediation hint baked into the message. We mirror those messages so SDK
+/// callers see the same diagnostic.
+fn ensure_user_can_be_deleted(state: &IamState, user_name: &str) -> Result<(), AwsServiceError> {
+    if state
+        .access_keys
+        .get(user_name)
+        .is_some_and(|k| !k.is_empty())
+    {
+        return Err(AwsServiceError::aws_error(
+            StatusCode::CONFLICT,
+            "DeleteConflict",
+            "Cannot delete entity, must delete access keys first.".to_string(),
+        ));
+    }
+
+    if state
+        .groups
+        .values()
+        .any(|g| g.members.contains(&user_name.to_string()))
+    {
+        return Err(AwsServiceError::aws_error(
+            StatusCode::CONFLICT,
+            "DeleteConflict",
+            "Cannot delete entity, must remove user from group first.".to_string(),
+        ));
+    }
+
+    if state
+        .user_policies
+        .get(user_name)
+        .is_some_and(|p| !p.is_empty())
+    {
+        return Err(AwsServiceError::aws_error(
+            StatusCode::CONFLICT,
+            "DeleteConflict",
+            "Cannot delete entity, must detach all policies first.".to_string(),
+        ));
+    }
+
+    if state
+        .user_inline_policies
+        .get(user_name)
+        .is_some_and(|p| !p.is_empty())
+    {
+        return Err(AwsServiceError::aws_error(
+            StatusCode::CONFLICT,
+            "DeleteConflict",
+            "Cannot delete entity, must delete policies first.".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+/// Resolve which user a `CreateAccessKey` request applies to. AWS allows
+/// `UserName` to be omitted, in which case the operation falls back to the
+/// caller's own identity (looked up via the credential's access key id).
+fn resolve_create_access_key_target(
+    state: &IamState,
+    req: &AwsRequest,
+) -> Result<String, AwsServiceError> {
+    if let Some(name) = req.query_params.get("UserName") {
+        return Ok(name.clone());
+    }
+
+    let access_key_id = req.access_key_id.as_deref().unwrap_or("");
+    state
+        .access_keys
+        .iter()
+        .find_map(|(user, keys)| {
+            keys.iter()
+                .any(|k| k.access_key_id == access_key_id)
+                .then(|| user.clone())
+        })
+        .ok_or_else(|| {
+            AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "MissingParameter",
+                "The request must contain the parameter UserName".to_string(),
+            )
+        })
+}
+
+/// Move every keyed-by-username state map (access keys, policies, login
+/// profiles, group memberships) from `old_name` to `new_name` so that a
+/// rename produces a consistent state. The user record itself is rewritten
+/// by `update_user` before this runs.
+fn rename_user_references(state: &mut IamState, old_name: &str, new_name: &str) {
+    if let Some(keys) = state.access_keys.remove(old_name) {
+        state.access_keys.insert(new_name.to_string(), keys);
+    }
+    if let Some(policies) = state.user_policies.remove(old_name) {
+        state.user_policies.insert(new_name.to_string(), policies);
+    }
+    if let Some(policies) = state.user_inline_policies.remove(old_name) {
+        state
+            .user_inline_policies
+            .insert(new_name.to_string(), policies);
+    }
+    if let Some(profile) = state.login_profiles.remove(old_name) {
+        state.login_profiles.insert(new_name.to_string(), profile);
+    }
+    for group in state.groups.values_mut() {
+        for member in group.members.iter_mut() {
+            if member == old_name {
+                *member = new_name.to_string();
+            }
+        }
+    }
+}
 
 // ========= User operations =========
 
@@ -128,60 +242,7 @@ impl IamService {
             ));
         }
 
-        // Check for access keys
-        if state
-            .access_keys
-            .get(&user_name)
-            .map(|k| !k.is_empty())
-            .unwrap_or(false)
-        {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::CONFLICT,
-                "DeleteConflict",
-                "Cannot delete entity, must delete access keys first.".to_string(),
-            ));
-        }
-
-        // Check for group membership
-        let in_groups = state
-            .groups
-            .values()
-            .any(|g| g.members.contains(&user_name));
-        if in_groups {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::CONFLICT,
-                "DeleteConflict",
-                "Cannot delete entity, must remove user from group first.".to_string(),
-            ));
-        }
-
-        // Check for attached managed policies
-        if state
-            .user_policies
-            .get(&user_name)
-            .map(|p| !p.is_empty())
-            .unwrap_or(false)
-        {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::CONFLICT,
-                "DeleteConflict",
-                "Cannot delete entity, must detach all policies first.".to_string(),
-            ));
-        }
-
-        // Check for inline policies
-        if state
-            .user_inline_policies
-            .get(&user_name)
-            .map(|p| !p.is_empty())
-            .unwrap_or(false)
-        {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::CONFLICT,
-                "DeleteConflict",
-                "Cannot delete entity, must delete policies first.".to_string(),
-            ));
-        }
+        ensure_user_can_be_deleted(&state, &user_name)?;
 
         state.users.remove(&user_name);
         state.access_keys.remove(&user_name);
@@ -270,33 +331,8 @@ impl IamService {
         state.users.remove(&user_name);
         state.users.insert(actual_new_name.clone(), user);
 
-        // Update references
         if actual_new_name != user_name {
-            if let Some(keys) = state.access_keys.remove(&user_name) {
-                state.access_keys.insert(actual_new_name.clone(), keys);
-            }
-            if let Some(policies) = state.user_policies.remove(&user_name) {
-                state
-                    .user_policies
-                    .insert(actual_new_name.clone(), policies);
-            }
-            if let Some(policies) = state.user_inline_policies.remove(&user_name) {
-                state
-                    .user_inline_policies
-                    .insert(actual_new_name.clone(), policies);
-            }
-            if let Some(profile) = state.login_profiles.remove(&user_name) {
-                state
-                    .login_profiles
-                    .insert(actual_new_name.clone(), profile);
-            }
-            for group in state.groups.values_mut() {
-                for member in group.members.iter_mut() {
-                    if member == &user_name {
-                        *member = actual_new_name.clone();
-                    }
-                }
-            }
+            rename_user_references(&mut state, &user_name, &actual_new_name);
         }
 
         let xml = empty_response("UpdateUser", &req.request_id);
@@ -397,31 +433,7 @@ impl IamService {
         )?;
         let mut state = self.state.write();
 
-        // UserName is optional; if not specified, infer from the caller's access key
-        let user_name = match req.query_params.get("UserName") {
-            Some(name) => name.clone(),
-            None => {
-                // Look up user by access key ID from the request credentials
-                let access_key_id = req.access_key_id.as_deref().unwrap_or("");
-                state
-                    .access_keys
-                    .iter()
-                    .find_map(|(user, keys)| {
-                        if keys.iter().any(|k| k.access_key_id == access_key_id) {
-                            Some(user.clone())
-                        } else {
-                            None
-                        }
-                    })
-                    .ok_or_else(|| {
-                        AwsServiceError::aws_error(
-                            StatusCode::BAD_REQUEST,
-                            "MissingParameter",
-                            "The request must contain the parameter UserName".to_string(),
-                        )
-                    })?
-            }
-        };
+        let user_name = resolve_create_access_key_target(&state, req)?;
 
         if !state.users.contains_key(&user_name) {
             return Err(AwsServiceError::aws_error(
@@ -431,7 +443,6 @@ impl IamService {
             ));
         }
 
-        // Check access key limit (max 2 per user)
         let existing_count = state
             .access_keys
             .get(&user_name)
