@@ -193,13 +193,28 @@ fn find_binary() -> String {
 }
 
 async fn wait_for_port(child: &mut Child, port: u16) -> bool {
+    // Two-stage readiness: (1) TCP connect succeeds, (2) an HTTP request
+    // actually reaches an axum handler. A successful TCP connect only
+    // proves the kernel accepted SYNs into fakecloud's listen queue — it
+    // does not prove axum has reached `serve().await` and installed the
+    // request handlers. Tests that hit the server immediately after a
+    // bare TCP connect occasionally saw ConnectionRefused / EOF mid-flight.
     let addr = format!("127.0.0.1:{port}");
+    let health_url = format!("http://127.0.0.1:{port}/");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_millis(500))
+        .build()
+        .expect("build reqwest client");
+
     for _ in 0..300 {
-        if std::net::TcpStream::connect(&addr).is_ok() {
-            return true;
-        }
         if child.try_wait().ok().flatten().is_some() {
             return false;
+        }
+        if std::net::TcpStream::connect(&addr).is_ok() {
+            // Any HTTP response (including 4xx) proves axum is serving.
+            if client.get(&health_url).send().await.is_ok() {
+                return true;
+            }
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }

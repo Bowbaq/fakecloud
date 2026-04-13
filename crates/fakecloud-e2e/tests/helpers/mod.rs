@@ -327,16 +327,28 @@ fn cli_available(cli: &str) -> bool {
 }
 
 async fn wait_for_port(child: &mut Child, port: u16) -> bool {
+    // Two-stage readiness: (1) TCP connect succeeds, (2) an HTTP request
+    // actually reaches an axum handler. A bare TCP connect only proves
+    // the kernel accepted SYNs into fakecloud's listen queue — it does
+    // not prove axum has reached `serve().await` and installed request
+    // handlers. Tests that hit the server immediately after a bare TCP
+    // connect occasionally saw ConnectionRefused / EOF mid-flight.
     let loopback = format!("127.0.0.1:{port}");
     let wildcard = format!("0.0.0.0:{port}");
+    let health_url = format!("http://127.0.0.1:{port}/");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_millis(500))
+        .build()
+        .expect("build reqwest client");
+
     for _ in 0..300 {
-        if std::net::TcpStream::connect(&loopback).is_ok()
-            || std::net::TcpStream::connect(&wildcard).is_ok()
-        {
-            return true;
-        }
         if child.try_wait().ok().flatten().is_some() {
             return false;
+        }
+        let tcp_ok = std::net::TcpStream::connect(&loopback).is_ok()
+            || std::net::TcpStream::connect(&wildcard).is_ok();
+        if tcp_ok && client.get(&health_url).send().await.is_ok() {
+            return true;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
