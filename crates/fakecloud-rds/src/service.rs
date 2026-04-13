@@ -1108,41 +1108,19 @@ impl RdsService {
             return Err(runtime_error_to_service_error(e));
         }
 
-        let mut state = self.state.write();
-
-        let instance = DbInstance {
-            db_instance_identifier: db_instance_identifier.clone(),
+        let instance = build_restored_instance(
+            &db_instance_identifier,
             db_instance_arn,
-            db_instance_class: "db.t3.micro".to_string(),
-            engine: snapshot.engine.clone(),
-            engine_version: snapshot.engine_version.clone(),
-            db_instance_status: "available".to_string(),
-            master_username: snapshot.master_username.clone(),
-            db_name: snapshot.db_name.clone(),
-            endpoint_address: "127.0.0.1".to_string(),
-            port: i32::from(running.host_port),
-            allocated_storage: snapshot.allocated_storage,
-            publicly_accessible: true,
-            deletion_protection: false,
-            created_at,
             dbi_resource_id,
-            master_user_password: snapshot.master_user_password.clone(),
-            container_id: running.container_id,
-            host_port: running.host_port,
-            tags: Vec::new(),
-            read_replica_source_db_instance_identifier: None,
-            read_replica_db_instance_identifiers: Vec::new(),
+            created_at,
             vpc_security_group_ids,
-            db_parameter_group_name: None,
-            backup_retention_period: 1,
-            preferred_backup_window: "03:00-04:00".to_string(),
-            latest_restorable_time: Some(created_at),
-            option_group_name: None,
-            multi_az: false,
-            pending_modified_values: None,
-        };
+            &snapshot,
+            &running,
+        );
 
-        state.finish_instance_creation(instance.clone());
+        self.state
+            .write()
+            .finish_instance_creation(instance.clone());
 
         Ok(AwsResponse::xml(
             StatusCode::OK,
@@ -2096,6 +2074,51 @@ fn filter_orderable_options(
 /// source instance's physical attributes and binding the replica's
 /// identifier, ARN, resource id, container id and host port.
 #[allow(clippy::too_many_arguments)]
+/// Build a `DbInstance` from a restored snapshot. Copies the physical
+/// attributes off the snapshot and binds the new instance's identifier,
+/// ARN, resource id, container id and host port.
+fn build_restored_instance(
+    db_instance_identifier: &str,
+    db_instance_arn: String,
+    dbi_resource_id: String,
+    created_at: chrono::DateTime<Utc>,
+    vpc_security_group_ids: Vec<String>,
+    snapshot: &DbSnapshot,
+    running: &crate::runtime::RunningDbContainer,
+) -> DbInstance {
+    DbInstance {
+        db_instance_identifier: db_instance_identifier.to_string(),
+        db_instance_arn,
+        db_instance_class: "db.t3.micro".to_string(),
+        engine: snapshot.engine.clone(),
+        engine_version: snapshot.engine_version.clone(),
+        db_instance_status: "available".to_string(),
+        master_username: snapshot.master_username.clone(),
+        db_name: snapshot.db_name.clone(),
+        endpoint_address: "127.0.0.1".to_string(),
+        port: i32::from(running.host_port),
+        allocated_storage: snapshot.allocated_storage,
+        publicly_accessible: true,
+        deletion_protection: false,
+        created_at,
+        dbi_resource_id,
+        master_user_password: snapshot.master_user_password.clone(),
+        container_id: running.container_id.clone(),
+        host_port: running.host_port,
+        tags: Vec::new(),
+        read_replica_source_db_instance_identifier: None,
+        read_replica_db_instance_identifiers: Vec::new(),
+        vpc_security_group_ids,
+        db_parameter_group_name: None,
+        backup_retention_period: 1,
+        preferred_backup_window: "03:00-04:00".to_string(),
+        latest_restorable_time: Some(created_at),
+        option_group_name: None,
+        multi_az: false,
+        pending_modified_values: None,
+    }
+}
+
 fn build_read_replica_instance(
     db_instance_identifier: &str,
     db_instance_arn: String,
