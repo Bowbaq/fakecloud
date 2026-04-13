@@ -41,52 +41,45 @@ impl LambdaService {
     ///   GET    /2015-03-31/event-source-mappings             -> ListEventSourceMappings
     ///   GET    /2015-03-31/event-source-mappings/{uuid}      -> GetEventSourceMapping
     ///   DELETE /2015-03-31/event-source-mappings/{uuid}      -> DeleteEventSourceMapping
-    fn resolve_action(req: &AwsRequest) -> Option<(&str, Option<String>)> {
+    fn resolve_action(req: &AwsRequest) -> Option<(&'static str, Option<String>)> {
         let segs = &req.path_segments;
-        if segs.is_empty() {
+        if segs.is_empty() || segs[0] != "2015-03-31" {
             return None;
         }
 
-        // Expect first segment to be "2015-03-31"
-        if segs[0] != "2015-03-31" {
-            return None;
-        }
+        // Second segment is the collection (`functions` /
+        // `event-source-mappings`); third is the resource name when
+        // present. Bind the resource name once so the match arms don't
+        // each repeat `segs[2].clone()`.
+        let collection = segs.get(1).map(|s| s.as_str());
+        let resource = segs.get(2).map(|s| s.to_string());
 
-        match (&req.method, segs.len()) {
+        let action = match (
+            &req.method,
+            segs.len(),
+            collection,
+            segs.get(3).map(|s| s.as_str()),
+        ) {
             // /2015-03-31/functions
-            (&Method::POST, 2) if segs[1] == "functions" => Some(("CreateFunction", None)),
-            (&Method::GET, 2) if segs[1] == "functions" => Some(("ListFunctions", None)),
+            (&Method::POST, 2, Some("functions"), _) => "CreateFunction",
+            (&Method::GET, 2, Some("functions"), _) => "ListFunctions",
             // /2015-03-31/functions/{name}
-            (&Method::GET, 3) if segs[1] == "functions" => {
-                Some(("GetFunction", Some(segs[2].clone())))
-            }
-            (&Method::DELETE, 3) if segs[1] == "functions" => {
-                Some(("DeleteFunction", Some(segs[2].clone())))
-            }
+            (&Method::GET, 3, Some("functions"), _) => "GetFunction",
+            (&Method::DELETE, 3, Some("functions"), _) => "DeleteFunction",
             // /2015-03-31/functions/{name}/invocations
-            (&Method::POST, 4) if segs[1] == "functions" && segs[3] == "invocations" => {
-                Some(("Invoke", Some(segs[2].clone())))
-            }
+            (&Method::POST, 4, Some("functions"), Some("invocations")) => "Invoke",
             // /2015-03-31/functions/{name}/versions
-            (&Method::POST, 4) if segs[1] == "functions" && segs[3] == "versions" => {
-                Some(("PublishVersion", Some(segs[2].clone())))
-            }
+            (&Method::POST, 4, Some("functions"), Some("versions")) => "PublishVersion",
             // /2015-03-31/event-source-mappings
-            (&Method::POST, 2) if segs[1] == "event-source-mappings" => {
-                Some(("CreateEventSourceMapping", None))
-            }
-            (&Method::GET, 2) if segs[1] == "event-source-mappings" => {
-                Some(("ListEventSourceMappings", None))
-            }
+            (&Method::POST, 2, Some("event-source-mappings"), _) => "CreateEventSourceMapping",
+            (&Method::GET, 2, Some("event-source-mappings"), _) => "ListEventSourceMappings",
             // /2015-03-31/event-source-mappings/{uuid}
-            (&Method::GET, 3) if segs[1] == "event-source-mappings" => {
-                Some(("GetEventSourceMapping", Some(segs[2].clone())))
-            }
-            (&Method::DELETE, 3) if segs[1] == "event-source-mappings" => {
-                Some(("DeleteEventSourceMapping", Some(segs[2].clone())))
-            }
-            _ => None,
-        }
+            (&Method::GET, 3, Some("event-source-mappings"), _) => "GetEventSourceMapping",
+            (&Method::DELETE, 3, Some("event-source-mappings"), _) => "DeleteEventSourceMapping",
+            _ => return None,
+        };
+
+        Some((action, resource))
     }
 
     fn create_function(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
