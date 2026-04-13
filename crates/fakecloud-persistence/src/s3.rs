@@ -717,22 +717,20 @@ impl S3Store for DiskS3Store {
                             let part_meta: UploadPartMeta = toml::from_str(&toml_text)
                                 .map_err(|e| StoreError::Serde(e.to_string()))?;
                             let bin_path = parts_dir.join(format!("{}.bin", part_number));
-                            let (body, size) = if bin_path.exists() {
-                                let sz = std::fs::metadata(&bin_path)?.len();
-                                (
-                                    BodyRef::Disk {
-                                        bucket: meta.name.clone(),
-                                        key: format!("__mpu__/{}", init.upload_id),
-                                        version: Some(format!("part-{}", part_number)),
-                                        path: bin_path,
-                                        size: sz,
-                                    },
-                                    sz,
-                                )
-                            } else {
-                                (BodyRef::Memory(Bytes::new()), 0u64)
+                            if !bin_path.exists() {
+                                return Err(StoreError::Other(format!(
+                                    "missing multipart part body file: {}",
+                                    bin_path.display()
+                                )));
+                            }
+                            let sz = std::fs::metadata(&bin_path)?.len();
+                            let body = BodyRef::Disk {
+                                bucket: meta.name.clone(),
+                                key: format!("__mpu__/{}", init.upload_id),
+                                version: Some(format!("part-{}", part_number)),
+                                path: bin_path,
+                                size: sz,
                             };
-                            let _ = size;
                             loaded_parts.insert(
                                 part_number,
                                 LoadedPart {

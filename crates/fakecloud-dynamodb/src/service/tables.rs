@@ -1010,48 +1010,57 @@ impl DynamoDbService {
                 // Persist through the S3 store (Disk in persistent mode,
                 // Memory otherwise) so the export survives restart and the
                 // in-memory runtime body is whatever the store returns.
-                let body_ref = if let Some(ref store) = self.s3_store {
-                    match store.put_object(
-                        s3_bucket,
-                        &s3_key,
-                        None,
-                        fakecloud_persistence::BodySource::Bytes(body_bytes.clone()),
-                        &meta,
-                    ) {
-                        Ok(bref) => bref,
-                        Err(err) => {
-                            tracing::error!(
-                                bucket = %s3_bucket,
-                                key = %s3_key,
-                                error = %err,
-                                "DynamoDB export: failed to persist result object via store",
-                            );
-                            fakecloud_persistence::BodyRef::Memory(body_bytes.clone())
+                let body_ref_result: Result<fakecloud_persistence::BodyRef, String> =
+                    if let Some(ref store) = self.s3_store {
+                        store
+                            .put_object(
+                                s3_bucket,
+                                &s3_key,
+                                None,
+                                fakecloud_persistence::BodySource::Bytes(body_bytes.clone()),
+                                &meta,
+                            )
+                            .map_err(|err| {
+                                tracing::error!(
+                                    bucket = %s3_bucket,
+                                    key = %s3_key,
+                                    error = %err,
+                                    "DynamoDB export: failed to persist result object via store",
+                                );
+                                format!("failed to persist export artifact: {err}")
+                            })
+                    } else {
+                        Ok(fakecloud_persistence::BodyRef::Memory(body_bytes.clone()))
+                    };
+                match body_ref_result {
+                    Ok(body_ref) => {
+                        let mut s3 = s3_state.write();
+                        if let Some(bucket) = s3.buckets.get_mut(s3_bucket) {
+                            let obj = fakecloud_s3::state::S3Object {
+                                key: s3_key.clone(),
+                                body: body_ref,
+                                content_type: "application/json".to_string(),
+                                etag,
+                                size: data_size as u64,
+                                last_modified: now,
+                                storage_class: "STANDARD".to_string(),
+                                ..Default::default()
+                            };
+                            bucket.objects.insert(s3_key, obj);
+                        } else {
+                            // Raced with concurrent DeleteBucket between our
+                            // check and the write guard. The store write
+                            // already happened, so we have an orphan on
+                            // disk — best we can do is mark the export
+                            // failed and let the operator reconcile.
+                            export_failed = true;
+                            failure_reason = format!("S3 bucket does not exist: {s3_bucket}");
                         }
                     }
-                } else {
-                    fakecloud_persistence::BodyRef::Memory(body_bytes.clone())
-                };
-                let mut s3 = s3_state.write();
-                if let Some(bucket) = s3.buckets.get_mut(s3_bucket) {
-                    let obj = fakecloud_s3::state::S3Object {
-                        key: s3_key.clone(),
-                        body: body_ref,
-                        content_type: "application/json".to_string(),
-                        etag,
-                        size: data_size as u64,
-                        last_modified: now,
-                        storage_class: "STANDARD".to_string(),
-                        ..Default::default()
-                    };
-                    bucket.objects.insert(s3_key, obj);
-                } else {
-                    // Raced with concurrent DeleteBucket between our check
-                    // and the write guard. Treat as failure; nothing has been
-                    // written to disk because the store call is nested inside
-                    // the contains_key branch.
-                    export_failed = true;
-                    failure_reason = format!("S3 bucket does not exist: {s3_bucket}");
+                    Err(reason) => {
+                        export_failed = true;
+                        failure_reason = reason;
+                    }
                 }
             }
         }

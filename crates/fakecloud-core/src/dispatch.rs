@@ -170,6 +170,11 @@ pub async fn dispatch(
                 builder = builder.header("content-type", &resp.content_type);
             }
 
+            let has_content_length = resp
+                .headers
+                .iter()
+                .any(|(k, _)| k.as_str().eq_ignore_ascii_case("content-length"));
+
             for (k, v) in &resp.headers {
                 builder = builder.header(k, v);
             }
@@ -179,10 +184,10 @@ pub async fn dispatch(
                 ResponseBody::File { file, size } => {
                     let stream = tokio_util::io::ReaderStream::new(file);
                     let body = Body::from_stream(stream);
-                    builder
-                        .header("content-length", size.to_string())
-                        .body(body)
-                        .unwrap()
+                    if !has_content_length {
+                        builder = builder.header("content-length", size.to_string());
+                    }
+                    builder.body(body).unwrap()
                 }
             }
         }
