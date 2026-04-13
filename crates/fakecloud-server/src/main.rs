@@ -957,12 +957,15 @@ async fn main() {
                 move |axum::Json(body): axum::Json<types::FireRuleRequest>| async move {
                     let bus_name = body.bus_name.as_deref().unwrap_or("default");
 
+                    let ctx = fakecloud_eventbridge::simulation::FireRuleContext {
+                        state: &es,
+                        delivery: &delivery,
+                        lambda_state: &lambda_state,
+                        logs_state: &logs_state,
+                        container_runtime: &container_runtime,
+                    };
                     match fakecloud_eventbridge::simulation::fire_rule(
-                        &es,
-                        &delivery,
-                        &lambda_state,
-                        &logs_state,
-                        &container_runtime,
+                        &ctx,
                         bus_name,
                         &body.rule_name,
                     ) {

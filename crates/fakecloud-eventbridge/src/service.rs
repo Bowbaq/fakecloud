@@ -2928,49 +2928,12 @@ impl EventBridgeService {
     // ─── Replay Operations ──────────────────────────────────────────────
 
     fn start_replay(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = req.json_body();
-        validate_required("ReplayName", &body["ReplayName"])?;
-        let name = body["ReplayName"]
-            .as_str()
-            .ok_or_else(|| missing("ReplayName"))?
-            .to_string();
-        validate_string_length("replayName", &name, 1, 64)?;
-        validate_optional_string_length("description", body["Description"].as_str(), 0, 512)?;
-        validate_required("EventSourceArn", &body["EventSourceArn"])?;
-        let description = body["Description"].as_str().map(|s| s.to_string());
-        let event_source_arn = body["EventSourceArn"]
-            .as_str()
-            .ok_or_else(|| missing("EventSourceArn"))?
-            .to_string();
-        validate_string_length("eventSourceArn", &event_source_arn, 1, 1600)?;
-        validate_required("EventStartTime", &body["EventStartTime"])?;
-        validate_required("EventEndTime", &body["EventEndTime"])?;
-        validate_required("Destination", &body["Destination"])?;
-        let destination = body["Destination"].clone();
-        let event_start_time_f = body["EventStartTime"].as_f64();
-        let event_end_time_f = body["EventEndTime"].as_f64();
-
-        let event_start_time = event_start_time_f
-            .and_then(|f| DateTime::from_timestamp(f as i64, 0))
-            .unwrap_or_else(Utc::now);
-        let event_end_time = event_end_time_f
-            .and_then(|f| DateTime::from_timestamp(f as i64, 0))
-            .unwrap_or_else(Utc::now);
-
-        // Validate destination ARN
-        let dest_arn = destination["Arn"].as_str().unwrap_or("");
-        if !dest_arn.contains(":event-bus/") {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ValidationException",
-                "Parameter Destination.Arn is not valid. Reason: Must contain an event bus ARN.",
-            ));
-        }
+        let input = StartReplayInput::from_body(&req.json_body())?;
 
         let mut state = self.state.write();
 
-        // Validate event bus exists
-        let bus_name = state.resolve_bus_name(dest_arn);
+        // Validate event bus + archive, in the order the real service validates them.
+        let bus_name = state.resolve_bus_name(&input.destination_arn);
         if !state.buses.contains_key(&bus_name) {
             return Err(AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -2979,23 +2942,20 @@ impl EventBridgeService {
             ));
         }
 
-        // Validate archive exists
-        let archive_name = event_source_arn
+        let archive_name = input
+            .event_source_arn
             .rsplit_once("archive/")
             .map(|(_, n)| n.to_string())
             .unwrap_or_default();
-        if !state.archives.contains_key(&archive_name) {
-            return Err(AwsServiceError::aws_error(
+        let archive = state.archives.get(&archive_name).ok_or_else(|| {
+            AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
                 "ValidationException",
                 format!(
                     "Parameter EventSourceArn is not valid. Reason: Archive {archive_name} does not exist."
                 ),
-            ));
-        }
-
-        // Validate archive bus matches destination bus
-        let archive = state.archives.get(&archive_name).unwrap();
+            )
+        })?;
         let archive_bus = state.resolve_bus_name(&archive.event_source_arn);
         if archive_bus != bus_name {
             return Err(AwsServiceError::aws_error(
@@ -3005,8 +2965,7 @@ impl EventBridgeService {
             ));
         }
 
-        // Validate end time after start time
-        if event_end_time <= event_start_time {
+        if input.event_end_time <= input.event_start_time {
             return Err(AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
                 "ValidationException",
@@ -3014,76 +2973,46 @@ impl EventBridgeService {
             ));
         }
 
-        // Check duplicate
-        if state.replays.contains_key(&name) {
+        if state.replays.contains_key(&input.name) {
             return Err(AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
                 "ResourceAlreadyExistsException",
-                format!("Replay {name} already exists."),
+                format!("Replay {} already exists.", input.name),
             ));
         }
 
         let now = Utc::now();
         let arn = format!(
             "arn:aws:events:{}:{}:replay/{}",
-            req.region, state.account_id, name
+            req.region, state.account_id, input.name
         );
 
-        // Collect archived events within the replay time range
-        let archive = state.archives.get(&archive_name).unwrap();
-        let replay_events: Vec<PutEvent> = archive
-            .events
-            .iter()
-            .filter(|e| e.time >= event_start_time && e.time < event_end_time)
-            .cloned()
-            .collect();
-
-        // Find matching rules and their targets for each replayed event
-        let mut events_to_deliver: Vec<(PutEvent, Vec<EventTarget>)> = Vec::new();
-
-        for event in &replay_events {
-            let matching_targets: Vec<EventTarget> = state
-                .rules
-                .values()
-                .filter(|r| {
-                    r.event_bus_name == bus_name
-                        && r.state == "ENABLED"
-                        && matches_pattern(
-                            r.event_pattern.as_deref(),
-                            &event.source,
-                            &event.detail_type,
-                            &event.detail,
-                            &req.account_id,
-                            &req.region,
-                            &event.resources,
-                        )
-                })
-                .flat_map(|r| r.targets.clone())
-                .collect();
-
-            if !matching_targets.is_empty() {
-                events_to_deliver.push((event.clone(), matching_targets));
-            }
-        }
+        let events_to_deliver = collect_replay_events_with_targets(
+            &state,
+            &archive_name,
+            &bus_name,
+            input.event_start_time,
+            input.event_end_time,
+            &req.account_id,
+            &req.region,
+        );
 
         let replay = Replay {
-            name: name.clone(),
+            name: input.name.clone(),
             arn: arn.clone(),
-            description,
-            event_source_arn,
-            destination,
-            event_start_time,
-            event_end_time,
+            description: input.description,
+            event_source_arn: input.event_source_arn,
+            destination: input.destination,
+            event_start_time: input.event_start_time,
+            event_end_time: input.event_end_time,
             state: "COMPLETED".to_string(),
             replay_start_time: now,
             replay_end_time: Some(now),
         };
-        state.replays.insert(name, replay);
+        state.replays.insert(input.name, replay);
 
-        // Drop the lock before delivering
         drop(state);
 
-        // Deliver replayed events to targets (same logic as PutEvents)
         for (event, targets) in events_to_deliver {
             let detail_value: Value = serde_json::from_str(&event.detail).unwrap_or(json!({}));
             let event_json = json!({
@@ -3101,99 +3030,7 @@ impl EventBridgeService {
             let event_str = event_json.to_string();
 
             for target in targets {
-                let target_arn = &target.arn;
-                let body_str = if let Some(ref transformer) = target.input_transformer {
-                    apply_input_transformer(transformer, &event_json)
-                } else if let Some(ref input) = target.input {
-                    input.clone()
-                } else if let Some(ref input_path) = target.input_path {
-                    resolve_json_path(&event_json, input_path)
-                        .map(|v| v.to_string())
-                        .unwrap_or_else(|| event_str.clone())
-                } else {
-                    event_str.clone()
-                };
-
-                if target_arn.contains(":sqs:") {
-                    let group_id = target
-                        .sqs_parameters
-                        .as_ref()
-                        .and_then(|p| p["MessageGroupId"].as_str())
-                        .map(|s| s.to_string());
-                    if group_id.is_some() {
-                        self.delivery.send_to_sqs_with_attrs(
-                            target_arn,
-                            &body_str,
-                            &HashMap::new(),
-                            group_id.as_deref(),
-                            None,
-                        );
-                    } else {
-                        self.delivery
-                            .send_to_sqs(target_arn, &body_str, &HashMap::new());
-                    }
-                } else if target_arn.contains(":sns:") {
-                    self.delivery
-                        .publish_to_sns(target_arn, &body_str, Some(&event.detail_type));
-                } else if target_arn.contains(":lambda:") {
-                    let mut state = self.state.write();
-                    state
-                        .lambda_invocations
-                        .push(crate::state::LambdaInvocation {
-                            function_arn: target_arn.clone(),
-                            payload: body_str.clone(),
-                            timestamp: Utc::now(),
-                        });
-                    drop(state);
-                    if let Some(ref ls) = self.lambda_state {
-                        ls.write().invocations.push(LambdaInvocation {
-                            function_arn: target_arn.clone(),
-                            payload: body_str.clone(),
-                            timestamp: Utc::now(),
-                            source: "aws:events".to_string(),
-                        });
-                    }
-                    invoke_lambda_async(
-                        &self.container_runtime,
-                        &self.lambda_state,
-                        target_arn,
-                        &body_str,
-                    );
-                } else if target_arn.contains(":logs:") {
-                    let mut state = self.state.write();
-                    state.log_deliveries.push(crate::state::LogDelivery {
-                        log_group_arn: target_arn.clone(),
-                        payload: body_str.clone(),
-                        timestamp: Utc::now(),
-                    });
-                    drop(state);
-                    if let Some(ref log_state) = self.logs_state {
-                        deliver_to_logs(log_state, target_arn, &body_str, Utc::now());
-                    }
-                } else if target_arn.contains(":states:") {
-                    self.delivery
-                        .start_stepfunctions_execution(target_arn, &body_str);
-                    let mut state = self.state.write();
-                    state
-                        .step_function_executions
-                        .push(crate::state::StepFunctionExecution {
-                            state_machine_arn: target_arn.clone(),
-                            payload: body_str.clone(),
-                            timestamp: Utc::now(),
-                        });
-                } else if target_arn.starts_with("https://") || target_arn.starts_with("http://") {
-                    let url = target_arn.clone();
-                    let payload = body_str.clone();
-                    tokio::spawn(async move {
-                        let client = reqwest::Client::new();
-                        let _ = client
-                            .post(&url)
-                            .header("Content-Type", "application/json")
-                            .body(payload)
-                            .send()
-                            .await;
-                    });
-                }
+                self.deliver_replay_event_to_target(&target, &event, &event_json, &event_str);
             }
         }
 
@@ -3202,6 +3039,108 @@ impl EventBridgeService {
             "ReplayStartTime": now.timestamp() as f64,
             "State": "STARTING",
         })))
+    }
+
+    fn deliver_replay_event_to_target(
+        &self,
+        target: &EventTarget,
+        event: &PutEvent,
+        event_json: &Value,
+        event_str: &str,
+    ) {
+        let target_arn = &target.arn;
+        let body_str = if let Some(ref transformer) = target.input_transformer {
+            apply_input_transformer(transformer, event_json)
+        } else if let Some(ref input) = target.input {
+            input.clone()
+        } else if let Some(ref input_path) = target.input_path {
+            resolve_json_path(event_json, input_path)
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| event_str.to_string())
+        } else {
+            event_str.to_string()
+        };
+
+        if target_arn.contains(":sqs:") {
+            let group_id = target
+                .sqs_parameters
+                .as_ref()
+                .and_then(|p| p["MessageGroupId"].as_str())
+                .map(|s| s.to_string());
+            if group_id.is_some() {
+                self.delivery.send_to_sqs_with_attrs(
+                    target_arn,
+                    &body_str,
+                    &HashMap::new(),
+                    group_id.as_deref(),
+                    None,
+                );
+            } else {
+                self.delivery
+                    .send_to_sqs(target_arn, &body_str, &HashMap::new());
+            }
+        } else if target_arn.contains(":sns:") {
+            self.delivery
+                .publish_to_sns(target_arn, &body_str, Some(&event.detail_type));
+        } else if target_arn.contains(":lambda:") {
+            let mut state = self.state.write();
+            state
+                .lambda_invocations
+                .push(crate::state::LambdaInvocation {
+                    function_arn: target_arn.clone(),
+                    payload: body_str.clone(),
+                    timestamp: Utc::now(),
+                });
+            drop(state);
+            if let Some(ref ls) = self.lambda_state {
+                ls.write().invocations.push(LambdaInvocation {
+                    function_arn: target_arn.clone(),
+                    payload: body_str.clone(),
+                    timestamp: Utc::now(),
+                    source: "aws:events".to_string(),
+                });
+            }
+            invoke_lambda_async(
+                &self.container_runtime,
+                &self.lambda_state,
+                target_arn,
+                &body_str,
+            );
+        } else if target_arn.contains(":logs:") {
+            let mut state = self.state.write();
+            state.log_deliveries.push(crate::state::LogDelivery {
+                log_group_arn: target_arn.clone(),
+                payload: body_str.clone(),
+                timestamp: Utc::now(),
+            });
+            drop(state);
+            if let Some(ref log_state) = self.logs_state {
+                deliver_to_logs(log_state, target_arn, &body_str, Utc::now());
+            }
+        } else if target_arn.contains(":states:") {
+            self.delivery
+                .start_stepfunctions_execution(target_arn, &body_str);
+            let mut state = self.state.write();
+            state
+                .step_function_executions
+                .push(crate::state::StepFunctionExecution {
+                    state_machine_arn: target_arn.clone(),
+                    payload: body_str.clone(),
+                    timestamp: Utc::now(),
+                });
+        } else if target_arn.starts_with("https://") || target_arn.starts_with("http://") {
+            let url = target_arn.clone();
+            let payload = body_str.clone();
+            tokio::spawn(async move {
+                let client = reqwest::Client::new();
+                let _ = client
+                    .post(&url)
+                    .header("Content-Type", "application/json")
+                    .body(payload)
+                    .send()
+                    .await;
+            });
+        }
     }
 
     fn describe_replay(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
@@ -3677,6 +3616,121 @@ fn archive_matching_event(
             archive.events.push(event.clone());
         }
     }
+}
+
+/// Parsed + validated inputs for `StartReplay`.
+struct StartReplayInput {
+    name: String,
+    description: Option<String>,
+    event_source_arn: String,
+    destination: Value,
+    destination_arn: String,
+    event_start_time: DateTime<Utc>,
+    event_end_time: DateTime<Utc>,
+}
+
+impl StartReplayInput {
+    fn from_body(body: &Value) -> Result<Self, AwsServiceError> {
+        validate_required("ReplayName", &body["ReplayName"])?;
+        let name = body["ReplayName"]
+            .as_str()
+            .ok_or_else(|| missing("ReplayName"))?
+            .to_string();
+        validate_string_length("replayName", &name, 1, 64)?;
+        validate_optional_string_length("description", body["Description"].as_str(), 0, 512)?;
+        validate_required("EventSourceArn", &body["EventSourceArn"])?;
+        let description = body["Description"].as_str().map(|s| s.to_string());
+        let event_source_arn = body["EventSourceArn"]
+            .as_str()
+            .ok_or_else(|| missing("EventSourceArn"))?
+            .to_string();
+        validate_string_length("eventSourceArn", &event_source_arn, 1, 1600)?;
+        validate_required("EventStartTime", &body["EventStartTime"])?;
+        validate_required("EventEndTime", &body["EventEndTime"])?;
+        validate_required("Destination", &body["Destination"])?;
+        let destination = body["Destination"].clone();
+
+        let event_start_time = body["EventStartTime"]
+            .as_f64()
+            .and_then(|f| DateTime::from_timestamp(f as i64, 0))
+            .unwrap_or_else(Utc::now);
+        let event_end_time = body["EventEndTime"]
+            .as_f64()
+            .and_then(|f| DateTime::from_timestamp(f as i64, 0))
+            .unwrap_or_else(Utc::now);
+
+        let destination_arn = destination["Arn"].as_str().unwrap_or("").to_string();
+        if !destination_arn.contains(":event-bus/") {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "ValidationException",
+                "Parameter Destination.Arn is not valid. Reason: Must contain an event bus ARN.",
+            ));
+        }
+
+        Ok(Self {
+            name,
+            description,
+            event_source_arn,
+            destination,
+            destination_arn,
+            event_start_time,
+            event_end_time,
+        })
+    }
+}
+
+/// Walk the named archive, filter events into the replay window, then
+/// fan out each event against rules on `bus_name` to collect its
+/// matching targets. Returns only events that matched at least one
+/// target.
+#[allow(clippy::too_many_arguments)]
+fn collect_replay_events_with_targets(
+    state: &crate::state::EventBridgeState,
+    archive_name: &str,
+    bus_name: &str,
+    event_start_time: DateTime<Utc>,
+    event_end_time: DateTime<Utc>,
+    account_id: &str,
+    region: &str,
+) -> Vec<(PutEvent, Vec<EventTarget>)> {
+    let Some(archive) = state.archives.get(archive_name) else {
+        return Vec::new();
+    };
+
+    let replay_events: Vec<PutEvent> = archive
+        .events
+        .iter()
+        .filter(|e| e.time >= event_start_time && e.time < event_end_time)
+        .cloned()
+        .collect();
+
+    let mut events_to_deliver: Vec<(PutEvent, Vec<EventTarget>)> = Vec::new();
+    for event in replay_events {
+        let matching_targets: Vec<EventTarget> = state
+            .rules
+            .values()
+            .filter(|r| {
+                r.event_bus_name == bus_name
+                    && r.state == "ENABLED"
+                    && matches_pattern(
+                        r.event_pattern.as_deref(),
+                        &event.source,
+                        &event.detail_type,
+                        &event.detail,
+                        account_id,
+                        region,
+                        &event.resources,
+                    )
+            })
+            .flat_map(|r| r.targets.clone())
+            .collect();
+
+        if !matching_targets.is_empty() {
+            events_to_deliver.push((event, matching_targets));
+        }
+    }
+    events_to_deliver
 }
 
 fn matches_numeric(numeric_arr: &Value, event_value: &Value) -> bool {

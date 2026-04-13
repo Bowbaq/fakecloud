@@ -19,20 +19,33 @@ pub struct FiredTarget {
     pub arn: String,
 }
 
+/// Borrowed context passed to `fire_rule` — all the surrounding state
+/// it needs to deliver to the different target protocols. Bundled so
+/// the callers don't have to thread five positional args through.
+pub struct FireRuleContext<'a> {
+    pub state: &'a SharedEventBridgeState,
+    pub delivery: &'a Arc<DeliveryBus>,
+    pub lambda_state: &'a Option<SharedLambdaState>,
+    pub logs_state: &'a Option<SharedLogsState>,
+    pub container_runtime: &'a Option<Arc<fakecloud_lambda::runtime::ContainerRuntime>>,
+}
+
 /// Fire a specific rule by bus name and rule name, delivering to all its
 /// targets regardless of the rule's enabled/disabled state.
 ///
 /// Returns `Ok(targets)` with the list of targets that were delivered to,
 /// or `Err(message)` if the bus or rule doesn't exist.
 pub fn fire_rule(
-    state: &SharedEventBridgeState,
-    delivery: &Arc<DeliveryBus>,
-    lambda_state: &Option<SharedLambdaState>,
-    logs_state: &Option<SharedLogsState>,
-    container_runtime: &Option<Arc<fakecloud_lambda::runtime::ContainerRuntime>>,
+    ctx: &FireRuleContext<'_>,
     bus_name: &str,
     rule_name: &str,
 ) -> Result<Vec<FiredTarget>, String> {
+    let state = ctx.state;
+    let delivery = ctx.delivery;
+    let lambda_state = ctx.lambda_state;
+    let logs_state = ctx.logs_state;
+    let container_runtime = ctx.container_runtime;
+
     let (targets, account_id, region) = {
         let state = state.read();
 
@@ -262,7 +275,14 @@ mod tests {
             }],
         );
 
-        let result = fire_rule(&state, &delivery, &None, &None, &None, "default", "my-rule");
+        let ctx = FireRuleContext {
+            state: &state,
+            delivery: &delivery,
+            lambda_state: &None,
+            logs_state: &None,
+            container_runtime: &None,
+        };
+        let result = fire_rule(&ctx, "default", "my-rule");
         let targets = result.unwrap();
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].target_type, "sqs");
@@ -281,15 +301,14 @@ mod tests {
         let state = make_state();
         let delivery = Arc::new(DeliveryBus::new());
 
-        let result = fire_rule(
-            &state,
-            &delivery,
-            &None,
-            &None,
-            &None,
-            "default",
-            "no-such-rule",
-        );
+        let ctx = FireRuleContext {
+            state: &state,
+            delivery: &delivery,
+            lambda_state: &None,
+            logs_state: &None,
+            container_runtime: &None,
+        };
+        let result = fire_rule(&ctx, "default", "no-such-rule");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not found"));
     }
@@ -314,15 +333,14 @@ mod tests {
             }],
         );
 
-        let result = fire_rule(
-            &state,
-            &delivery,
-            &None,
-            &None,
-            &None,
-            "default",
-            "disabled-rule",
-        );
+        let ctx = FireRuleContext {
+            state: &state,
+            delivery: &delivery,
+            lambda_state: &None,
+            logs_state: &None,
+            container_runtime: &None,
+        };
+        let result = fire_rule(&ctx, "default", "disabled-rule");
         // Simulation overrides disabled state
         let targets = result.unwrap();
         assert_eq!(targets.len(), 1);
