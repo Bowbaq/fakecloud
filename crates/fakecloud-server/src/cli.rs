@@ -1,4 +1,25 @@
-use clap::Parser;
+use std::path::PathBuf;
+
+use clap::{Parser, ValueEnum};
+use fakecloud_persistence::{PersistenceConfig, StorageMode};
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+#[clap(rename_all = "lowercase")]
+pub(crate) enum StorageModeArg {
+    Memory,
+    Persistent,
+}
+
+impl From<StorageModeArg> for StorageMode {
+    fn from(value: StorageModeArg) -> Self {
+        match value {
+            StorageModeArg::Memory => StorageMode::Memory,
+            StorageModeArg::Persistent => StorageMode::Persistent,
+        }
+    }
+}
+
+const DEFAULT_BODY_CACHE_BYTES: u64 = 256 * 1024 * 1024;
 
 #[derive(Parser)]
 #[command(name = "fakecloud")]
@@ -20,6 +41,25 @@ pub(crate) struct Cli {
     /// Log level (trace, debug, info, warn, error)
     #[arg(long, default_value = "info", env = "FAKECLOUD_LOG")]
     pub log_level: String,
+
+    /// Storage mode. `memory` (default) keeps all state in RAM; `persistent`
+    /// mirrors supported services to `--data-path` on disk.
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = StorageModeArg::Memory,
+        env = "FAKECLOUD_STORAGE_MODE",
+    )]
+    pub storage_mode: StorageModeArg,
+
+    /// Directory to persist state to. Required when `--storage-mode=persistent`.
+    #[arg(long, env = "FAKECLOUD_DATA_PATH")]
+    pub data_path: Option<PathBuf>,
+
+    /// Byte-sized LRU cache for object bodies in persistent mode. Plain bytes,
+    /// no SI/IEC suffix parsing. Default 256 MiB.
+    #[arg(long, default_value_t = DEFAULT_BODY_CACHE_BYTES, env = "FAKECLOUD_BODY_CACHE_SIZE")]
+    pub body_cache_size: u64,
 }
 
 impl Cli {
@@ -36,5 +76,16 @@ impl Cli {
             host
         };
         format!("http://{host}:{port}")
+    }
+
+    pub fn persistence_config(&self) -> Result<PersistenceConfig, String> {
+        let mode: StorageMode = self.storage_mode.into();
+        let config = PersistenceConfig {
+            mode,
+            data_path: self.data_path.clone(),
+            body_cache_bytes: self.body_cache_size,
+        };
+        config.validate()?;
+        Ok(config)
     }
 }

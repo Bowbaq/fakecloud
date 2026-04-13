@@ -1,5 +1,6 @@
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
+use fakecloud_persistence::BodyRef;
 use parking_lot::RwLock;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -17,7 +18,7 @@ pub struct AclGrant {
 #[derive(Debug, Clone, Default)]
 pub struct S3Object {
     pub key: String,
-    pub data: Bytes,
+    pub body: BodyRef,
     pub content_type: String,
     pub etag: String,
     pub size: u64,
@@ -61,7 +62,7 @@ pub struct S3Object {
 #[derive(Debug, Clone)]
 pub struct UploadPart {
     pub part_number: u32,
-    pub data: Bytes,
+    pub body: BodyRef,
     pub etag: String,
     pub size: u64,
     pub last_modified: DateTime<Utc>,
@@ -192,3 +193,20 @@ impl S3State {
 }
 
 pub type SharedS3State = Arc<RwLock<S3State>>;
+
+/// Read the bytes referenced by a [`BodyRef`]. In memory mode this is the
+/// stored buffer directly; the Disk arm is a complete seam for Phase 4+.
+pub fn read_body_bytes(body: &BodyRef) -> Bytes {
+    match body {
+        BodyRef::Memory(b) => b.clone(),
+        BodyRef::Disk { .. } => {
+            // TODO(phase-4): route through S3Store::open_object_body.
+            panic!("Disk-backed BodyRef not supported in memory mode")
+        }
+    }
+}
+
+/// Construct a memory-backed [`BodyRef`] from [`Bytes`].
+pub fn memory_body(bytes: Bytes) -> BodyRef {
+    BodyRef::Memory(bytes)
+}

@@ -94,7 +94,7 @@ mod tests {
     fn make_object(key: &str, age_days: i64) -> S3Object {
         S3Object {
             key: key.to_string(),
-            data: Bytes::from("test"),
+            body: crate::state::memory_body(Bytes::from("test")),
             content_type: "application/octet-stream".to_string(),
             etag: "\"abc\"".to_string(),
             size: 4,

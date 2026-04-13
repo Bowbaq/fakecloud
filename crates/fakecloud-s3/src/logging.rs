@@ -109,7 +109,7 @@ pub fn maybe_write_access_log(
 
     let log_object = S3Object {
         key: log_key.clone(),
-        data,
+        body: crate::state::memory_body(data),
         content_type: "text/plain".to_string(),
         etag,
         size,

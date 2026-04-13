@@ -3,6 +3,7 @@ use http::{HeaderMap, StatusCode};
 use bytes::Bytes;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 
+use crate::persistence::bucket_meta_snapshot;
 use crate::state::S3Bucket;
 
 use super::{
@@ -174,7 +175,9 @@ impl S3Service {
             ));
         }
 
+        let meta = bucket_meta_snapshot(&b);
         state.buckets.insert(bucket.to_string(), b);
+        let _ = self.store.put_bucket_meta(bucket, &meta);
 
         let mut headers = HeaderMap::new();
         headers.insert("location", format!("/{bucket}").parse().unwrap());
@@ -212,6 +215,7 @@ impl S3Service {
             ));
         }
         state.buckets.remove(bucket);
+        let _ = self.store.delete_bucket(bucket);
         Ok(AwsResponse {
             status: StatusCode::NO_CONTENT,
             content_type: "application/xml".to_string(),

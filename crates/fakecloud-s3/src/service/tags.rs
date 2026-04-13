@@ -3,6 +3,8 @@ use http::{HeaderMap, StatusCode};
 use bytes::Bytes;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 
+use crate::persistence::object_meta_snapshot;
+
 use super::{
     no_such_bucket, no_such_key, no_such_key_with_detail, parse_tagging_xml, s3_xml, xml_escape,
     S3Service,
@@ -151,6 +153,18 @@ impl S3Service {
             }
         }
 
+        // TODO(phase-4): snapshot-after-mutation for object tagging.
+        if let Some(b2) = state.buckets.get(bucket) {
+            if let Some(obj) = b2.objects.get(key) {
+                let meta = object_meta_snapshot(obj);
+                let _ = self.store.put_object_meta(
+                    bucket,
+                    key,
+                    meta.version_id.as_deref(),
+                    &meta,
+                );
+            }
+        }
         Ok(AwsResponse {
             status: StatusCode::OK,
             content_type: "application/xml".to_string(),
@@ -173,6 +187,13 @@ impl S3Service {
             .ok_or_else(|| no_such_bucket(bucket))?;
         let obj = b.objects.get_mut(key).ok_or_else(|| no_such_key(key))?;
         obj.tags.clear();
+        let meta = object_meta_snapshot(obj);
+        let _ = self.store.put_object_meta(
+            bucket,
+            key,
+            meta.version_id.as_deref(),
+            &meta,
+        );
         Ok(AwsResponse {
             status: StatusCode::NO_CONTENT,
             content_type: "application/xml".to_string(),

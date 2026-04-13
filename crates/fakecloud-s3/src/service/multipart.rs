@@ -4,6 +4,9 @@ use http::{HeaderMap, StatusCode};
 
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 
+use fakecloud_persistence::BodySource;
+
+use crate::persistence::{mpu_init_snapshot, object_meta_snapshot, upload_part_meta_snapshot};
 use crate::state::{MultipartUpload, S3Object, UploadPart};
 
 use md5::{Digest, Md5};
@@ -102,7 +105,9 @@ impl S3Service {
             acl_grants,
             checksum_algorithm,
         };
+        let init_snapshot = mpu_init_snapshot(&upload);
         b.multipart_uploads.insert(upload_id.clone(), upload);
+        let _ = self.store.mpu_create(bucket, &upload_id, &init_snapshot);
 
         let mut headers = HeaderMap::new();
         if let Some(algo) = &sse_algorithm {
@@ -178,12 +183,20 @@ impl S3Service {
 
         let part = UploadPart {
             part_number: pn,
-            data: data.clone(),
+            body: crate::state::memory_body(data.clone()),
             etag: etag.clone(),
             size: data.len() as u64,
             last_modified: Utc::now(),
         };
+        let _ = upload_part_meta_snapshot(&part);
         upload.parts.insert(pn, part);
+        let _ = self.store.mpu_put_part(
+            bucket,
+            upload_id,
+            pn,
+            BodySource::Bytes(data.clone()),
+            &etag,
+        );
 
         let mut headers = HeaderMap::new();
         headers.insert("etag", format!("\"{etag}\"").parse().unwrap());
@@ -266,18 +279,19 @@ impl S3Service {
                     .ok_or_else(|| no_such_key(src_key))?
             };
 
+            let src_bytes = crate::state::read_body_bytes(&src_obj.body);
             if let Some(range_str) = copy_range {
                 let range_part = range_str.strip_prefix("bytes=").unwrap_or(range_str);
                 if let Some((start_str, end_str)) = range_part.split_once('-') {
                     let start: usize = start_str.parse().unwrap_or(0);
-                    let end: usize = end_str.parse().unwrap_or(src_obj.data.len() - 1);
-                    let end = std::cmp::min(end + 1, src_obj.data.len());
-                    src_obj.data.slice(start..end)
+                    let end: usize = end_str.parse().unwrap_or(src_bytes.len() - 1);
+                    let end = std::cmp::min(end + 1, src_bytes.len());
+                    src_bytes.slice(start..end)
                 } else {
-                    src_obj.data.clone()
+                    src_bytes.clone()
                 }
             } else {
-                src_obj.data.clone()
+                src_bytes.clone()
             }
         };
 
@@ -295,14 +309,22 @@ impl S3Service {
             return Err(no_such_upload(upload_id));
         }
 
+        let store_body = src_data.clone();
         let part = UploadPart {
             part_number: part_number as u32,
-            data: src_data,
+            body: crate::state::memory_body(src_data),
             etag: etag.clone(),
             size: data_len,
             last_modified: Utc::now(),
         };
         upload.parts.insert(part_number as u32, part);
+        let _ = self.store.mpu_put_part(
+            bucket,
+            upload_id,
+            part_number as u32,
+            BodySource::Bytes(store_body),
+            &etag,
+        );
 
         let body = format!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
@@ -418,7 +440,7 @@ impl S3Service {
                     break; // skip last part
                 }
                 if let Some(part) = upload.parts.get(part_num) {
-                    if part.data.len() < MIN_PART_SIZE {
+                    if part.size < MIN_PART_SIZE as u64 {
                         return Err(AwsServiceError::aws_error(
                             StatusCode::BAD_REQUEST,
                             "EntityTooSmall",
@@ -449,10 +471,11 @@ impl S3Service {
                     "One or more of the specified parts could not be found. The part may not have been uploaded, or the specified entity tag may not have matched the part's entity tag.",
                 ));
             }
-            combined_data.extend_from_slice(&part.data);
-            let part_md5 = Md5::digest(&part.data);
+            let part_bytes = crate::state::read_body_bytes(&part.body);
+            combined_data.extend_from_slice(&part_bytes);
+            let part_md5 = Md5::digest(&part_bytes);
             md5_digests.extend_from_slice(&part_md5);
-            part_sizes.push((*part_num, part.data.len() as u64));
+            part_sizes.push((*part_num, part_bytes.len() as u64));
         }
 
         // Multipart ETag: MD5(concat(part_md5_digests))-N
@@ -463,6 +486,7 @@ impl S3Service {
             .as_deref()
             .map(|algo| compute_checksum(algo, &combined_data));
         let data = Bytes::from(combined_data);
+        let store_body = data.clone();
 
         let tags = if let Some(ref tagging) = upload.tagging {
             parse_url_encoded_tags(tagging).into_iter().collect()
@@ -479,7 +503,7 @@ impl S3Service {
         let obj = S3Object {
             key: key.to_string(),
             size: data.len() as u64,
-            data,
+            body: crate::state::memory_body(data),
             content_type: upload.content_type.clone(),
             etag: etag.clone(),
             last_modified: Utc::now(),
@@ -499,6 +523,25 @@ impl S3Service {
         };
         b.objects.insert(key.to_string(), obj);
         b.multipart_uploads.remove(upload_id);
+        if let Some(o) = b.objects.get(key) {
+            let meta = object_meta_snapshot(o);
+            let _ = self.store.mpu_complete(
+                bucket,
+                upload_id,
+                key,
+                meta.version_id.as_deref(),
+                &meta,
+            );
+            // TODO(phase-4): mpu_complete should consume the part files; for memory
+            // mode we also ensure the put_object seam is exercised.
+            let _ = self.store.put_object(
+                bucket,
+                key,
+                meta.version_id.as_deref(),
+                BodySource::Bytes(store_body.clone()),
+                &meta,
+            );
+        }
 
         let mut headers = HeaderMap::new();
         if let Some(vid) = &version_id {
@@ -556,6 +599,7 @@ impl S3Service {
             _ => {}
         }
         b.multipart_uploads.remove(upload_id);
+        let _ = self.store.mpu_abort(bucket, upload_id);
 
         Ok(AwsResponse {
             status: StatusCode::NO_CONTENT,

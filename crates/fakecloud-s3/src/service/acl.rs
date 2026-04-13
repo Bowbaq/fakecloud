@@ -3,6 +3,8 @@ use http::{HeaderMap, StatusCode};
 use bytes::Bytes;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 
+use crate::persistence::object_meta_snapshot;
+
 use super::{
     build_acl_xml, canned_acl_grants_for_object, no_such_bucket, no_such_key, parse_acl_xml,
     parse_grant_headers, s3_xml, S3Service,
@@ -67,6 +69,8 @@ impl S3Service {
             }
         }
 
+        let meta = object_meta_snapshot(obj);
+        let _ = self.store.put_object_meta(bucket, key, meta.version_id.as_deref(), &meta);
         Ok(AwsResponse {
             status: StatusCode::OK,
             content_type: "application/xml".to_string(),

@@ -2,8 +2,10 @@ use http::{HeaderMap, StatusCode};
 
 use bytes::Bytes;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
+use fakecloud_persistence::BucketSubresource;
 
 use crate::inventory;
+use crate::persistence::bucket_meta_snapshot;
 
 use super::{
     build_acl_xml, canned_acl_grants, empty_response, extract_xml_value, no_such_bucket,
@@ -35,7 +37,10 @@ impl S3Service {
         } else {
             body_str
         };
-        b.encryption_config = Some(normalized);
+        b.encryption_config = Some(normalized.clone());
+        let _ = self
+            .store
+            .put_bucket_subresource(bucket, BucketSubresource::Encryption, &normalized);
         Ok(empty_response(StatusCode::OK))
     }
 
@@ -69,6 +74,9 @@ impl S3Service {
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
         b.encryption_config = None;
+        let _ = self
+            .store
+            .delete_bucket_subresource(bucket, BucketSubresource::Encryption);
         Ok(empty_response(StatusCode::NO_CONTENT))
     }
 
@@ -93,9 +101,17 @@ impl S3Service {
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
         if has_rules {
-            b.lifecycle_config = Some(body_str);
+            b.lifecycle_config = Some(body_str.clone());
+            let _ = self.store.put_bucket_subresource(
+                bucket,
+                BucketSubresource::Lifecycle,
+                &body_str,
+            );
         } else {
             b.lifecycle_config = None;
+            let _ = self
+                .store
+                .delete_bucket_subresource(bucket, BucketSubresource::Lifecycle);
         }
         Ok(empty_response(StatusCode::OK))
     }
@@ -130,6 +146,9 @@ impl S3Service {
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
         b.lifecycle_config = None;
+        let _ = self
+            .store
+            .delete_bucket_subresource(bucket, BucketSubresource::Lifecycle);
         Ok(empty_response(StatusCode::NO_CONTENT))
     }
 
@@ -153,7 +172,10 @@ impl S3Service {
             .buckets
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
-        b.policy = Some(body_str);
+        b.policy = Some(body_str.clone());
+        let _ = self
+            .store
+            .put_bucket_subresource(bucket, BucketSubresource::Policy, &body_str);
         Ok(empty_response(StatusCode::NO_CONTENT))
     }
 
@@ -189,6 +211,9 @@ impl S3Service {
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
         b.policy = None;
+        let _ = self
+            .store
+            .delete_bucket_subresource(bucket, BucketSubresource::Policy);
         Ok(empty_response(StatusCode::NO_CONTENT))
     }
 
@@ -238,7 +263,10 @@ impl S3Service {
             .buckets
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
-        b.cors_config = Some(body_str);
+        b.cors_config = Some(body_str.clone());
+        let _ = self
+            .store
+            .put_bucket_subresource(bucket, BucketSubresource::Cors, &body_str);
         Ok(empty_response(StatusCode::OK))
     }
 
@@ -266,6 +294,9 @@ impl S3Service {
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
         b.cors_config = None;
+        let _ = self
+            .store
+            .delete_bucket_subresource(bucket, BucketSubresource::Cors);
         Ok(empty_response(StatusCode::NO_CONTENT))
     }
 
@@ -286,7 +317,14 @@ impl S3Service {
         b.eventbridge_enabled = body_str.contains("<EventBridgeConfiguration");
         // Auto-generate Id for each configuration element if missing
         let normalized = normalize_notification_ids(&body_str);
-        b.notification_config = Some(normalized);
+        b.notification_config = Some(normalized.clone());
+        let meta = bucket_meta_snapshot(b);
+        let _ = self.store.put_bucket_meta(bucket, &meta);
+        let _ = self.store.put_bucket_subresource(
+            bucket,
+            BucketSubresource::Notification,
+            &normalized,
+        );
         Ok(empty_response(StatusCode::OK))
     }
 
@@ -328,7 +366,10 @@ impl S3Service {
             .buckets
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
-        b.logging_config = Some(body_str);
+        b.logging_config = Some(body_str.clone());
+        let _ = self
+            .store
+            .put_bucket_subresource(bucket, BucketSubresource::Logging, &body_str);
         Ok(empty_response(StatusCode::OK))
     }
 
@@ -361,7 +402,10 @@ impl S3Service {
             .buckets
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
-        b.website_config = Some(body_str);
+        b.website_config = Some(body_str.clone());
+        let _ = self
+            .store
+            .put_bucket_subresource(bucket, BucketSubresource::Website, &body_str);
         Ok(empty_response(StatusCode::OK))
     }
 
@@ -392,6 +436,9 @@ impl S3Service {
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
         b.website_config = None;
+        let _ = self
+            .store
+            .delete_bucket_subresource(bucket, BucketSubresource::Website);
         Ok(empty_response(StatusCode::NO_CONTENT))
     }
 
@@ -431,6 +478,8 @@ impl S3Service {
             return Ok(empty_response(StatusCode::OK));
         }
         b.accelerate_status = status;
+        let meta = bucket_meta_snapshot(b);
+        let _ = self.store.put_bucket_meta(bucket, &meta);
         Ok(empty_response(StatusCode::OK))
     }
 
@@ -481,7 +530,12 @@ impl S3Service {
             .buckets
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
-        b.public_access_block = Some(body_str);
+        b.public_access_block = Some(body_str.clone());
+        let _ = self.store.put_bucket_subresource(
+            bucket,
+            BucketSubresource::PublicAccessBlock,
+            &body_str,
+        );
         Ok(empty_response(StatusCode::OK))
     }
 
@@ -532,6 +586,9 @@ impl S3Service {
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
         b.public_access_block = None;
+        let _ = self
+            .store
+            .delete_bucket_subresource(bucket, BucketSubresource::PublicAccessBlock);
         Ok(empty_response(StatusCode::NO_CONTENT))
     }
 
@@ -577,7 +634,12 @@ impl S3Service {
             ));
         }
 
-        b.object_lock_config = Some(body_str);
+        b.object_lock_config = Some(body_str.clone());
+        let _ = self.store.put_bucket_subresource(
+            bucket,
+            BucketSubresource::ObjectLock,
+            &body_str,
+        );
         Ok(empty_response(StatusCode::OK))
     }
 
@@ -632,6 +694,9 @@ impl S3Service {
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
         b.tags = tags.into_iter().collect();
+        let _ = self
+            .store
+            .put_bucket_subresource(bucket, BucketSubresource::Tags, "");
         Ok(AwsResponse {
             status: StatusCode::NO_CONTENT,
             content_type: "application/xml".to_string(),
@@ -651,6 +716,9 @@ impl S3Service {
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
         b.tags.clear();
+        let _ = self
+            .store
+            .delete_bucket_subresource(bucket, BucketSubresource::Tags);
         Ok(AwsResponse {
             status: StatusCode::NO_CONTENT,
             content_type: "application/xml".to_string(),
@@ -703,6 +771,10 @@ impl S3Service {
             b.acl_grants = grants;
         }
 
+        // TODO(phase-4): serialize ACL grants to TOML for DiskS3Store.
+        let _ = self
+            .store
+            .put_bucket_subresource(bucket, BucketSubresource::Acl, "");
         Ok(AwsResponse {
             status: StatusCode::OK,
             content_type: "application/xml".to_string(),
@@ -729,6 +801,8 @@ impl S3Service {
         if status_val == "Enabled" || status_val == "Suspended" {
             b.versioning = Some(status_val);
         }
+        let meta = bucket_meta_snapshot(b);
+        let _ = self.store.put_bucket_meta(bucket, &meta);
         Ok(AwsResponse {
             status: StatusCode::OK,
             content_type: "application/xml".to_string(),
@@ -799,7 +873,13 @@ impl S3Service {
             ));
         }
 
-        b.replication_config = Some(normalize_replication_xml(&body_str));
+        let normalized = normalize_replication_xml(&body_str);
+        b.replication_config = Some(normalized.clone());
+        let _ = self.store.put_bucket_subresource(
+            bucket,
+            BucketSubresource::Replication,
+            &normalized,
+        );
         Ok(empty_response(StatusCode::OK))
     }
 
@@ -833,6 +913,9 @@ impl S3Service {
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
         b.replication_config = None;
+        let _ = self
+            .store
+            .delete_bucket_subresource(bucket, BucketSubresource::Replication);
         Ok(empty_response(StatusCode::NO_CONTENT))
     }
 
@@ -847,7 +930,10 @@ impl S3Service {
             .buckets
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
-        b.ownership_controls = Some(body_str);
+        b.ownership_controls = Some(body_str.clone());
+        let _ = self
+            .store
+            .put_bucket_subresource(bucket, BucketSubresource::Ownership, &body_str);
         Ok(empty_response(StatusCode::OK))
     }
 
@@ -881,6 +967,9 @@ impl S3Service {
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
         b.ownership_controls = None;
+        let _ = self
+            .store
+            .delete_bucket_subresource(bucket, BucketSubresource::Ownership);
         Ok(empty_response(StatusCode::NO_CONTENT))
     }
 
@@ -902,6 +991,10 @@ impl S3Service {
                 .ok_or_else(|| no_such_bucket(bucket))?;
             b.inventory_configs.insert(inv_id.clone(), body_str);
         }
+        // TODO(phase-4): serialize inventory_configs map to TOML for DiskS3Store.
+        let _ = self
+            .store
+            .put_bucket_subresource(bucket, BucketSubresource::Inventory, "");
         // Generate the inventory report immediately so tests can verify it
         inventory::generate_inventory_report(&self.state, bucket, &inv_id);
         Ok(empty_response(StatusCode::OK))
@@ -966,6 +1059,9 @@ impl S3Service {
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
         b.inventory_configs.remove(&inv_id);
+        let _ = self
+            .store
+            .delete_bucket_subresource(bucket, BucketSubresource::Inventory);
         Ok(empty_response(StatusCode::NO_CONTENT))
     }
 }

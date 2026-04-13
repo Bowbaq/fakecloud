@@ -994,7 +994,7 @@ impl DynamoDbService {
                 let etag = uuid::Uuid::new_v4().to_string().replace('-', "");
                 let obj = fakecloud_s3::state::S3Object {
                     key: s3_key.clone(),
-                    data: bytes::Bytes::from(json_lines),
+                    body: fakecloud_persistence::BodyRef::Memory(bytes::Bytes::from(json_lines)),
                     content_type: "application/json".to_string(),
                     etag,
                     size: data_size as u64,
@@ -1171,7 +1171,8 @@ impl DynamoDbService {
                 if !prefix.is_empty() && !key.starts_with(&prefix) {
                     continue;
                 }
-                let data = std::str::from_utf8(&obj.data).unwrap_or("");
+                let obj_bytes = fakecloud_s3::state::read_body_bytes(&obj.body);
+                let data = std::str::from_utf8(&obj_bytes).unwrap_or("");
                 processed_size_bytes += obj.size as i64;
                 for line in data.lines() {
                     let line = line.trim();

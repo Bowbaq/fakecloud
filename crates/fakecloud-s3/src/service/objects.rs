@@ -5,6 +5,9 @@ use uuid::Uuid;
 
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 
+use fakecloud_persistence::BodySource;
+
+use crate::persistence::object_meta_snapshot;
 use crate::state::{AclGrant, S3Object};
 
 use super::{
@@ -918,10 +921,11 @@ impl S3Service {
             }
         }
 
+        let store_body_bytes = data.clone();
         let obj = S3Object {
             key: key.to_string(),
             size: data.len() as u64,
-            data,
+            body: crate::state::memory_body(data),
             content_type,
             etag: etag.clone(),
             last_modified: Utc::now(),
@@ -989,6 +993,19 @@ impl S3Service {
 
             // Replicate object if replication is configured on the source bucket
             replicate_object(&mut state, bucket, key);
+
+            if let Some(b2) = state.buckets.get(bucket) {
+                if let Some(o) = b2.objects.get(key) {
+                    let meta = object_meta_snapshot(o);
+                    let _ = self.store.put_object(
+                        bucket,
+                        key,
+                        meta.version_id.as_deref(),
+                        BodySource::Bytes(store_body_bytes.clone()),
+                        &meta,
+                    );
+                }
+            }
         } // write lock dropped
 
         // --- Response phase: build response headers ---
@@ -1093,6 +1110,7 @@ impl S3Service {
 
         // Conditional checks
         check_get_conditionals(req, obj)?;
+        let obj_bytes = crate::state::read_body_bytes(&obj.body);
         let total_size = obj.size as usize;
         let mut headers = HeaderMap::new();
         headers.insert("etag", format!("\"{}\"", obj.etag).parse().unwrap());
@@ -1186,7 +1204,7 @@ impl S3Service {
                             "content-length",
                             (end - start + 1).to_string().parse().unwrap(),
                         );
-                        response_body = obj.data.slice(start..=end);
+                        response_body = obj_bytes.slice(start..=end);
                         response_status = StatusCode::PARTIAL_CONTENT;
                         is_range_request = true;
                     }
@@ -1203,12 +1221,12 @@ impl S3Service {
                     }
                     RangeResult::Ignored => {
                         headers.insert("content-length", total_size.to_string().parse().unwrap());
-                        response_body = obj.data.clone();
+                        response_body = obj_bytes.clone();
                     }
                 }
             } else {
                 headers.insert("content-length", total_size.to_string().parse().unwrap());
-                response_body = obj.data.clone();
+                response_body = obj_bytes.clone();
             }
         } else if let Some(part_num_str) = req.query_params.get("partNumber") {
             if let Ok(part_num) = part_num_str.parse::<u32>() {
@@ -1245,15 +1263,15 @@ impl S3Service {
                         .unwrap(),
                 );
                 headers.insert("content-length", part_size.to_string().parse().unwrap());
-                response_body = obj.data.slice(part_start..part_start + part_size);
+                response_body = obj_bytes.slice(part_start..part_start + part_size);
                 response_status = StatusCode::PARTIAL_CONTENT;
             } else {
                 headers.insert("content-length", total_size.to_string().parse().unwrap());
-                response_body = obj.data.clone();
+                response_body = obj_bytes.clone();
             }
         } else {
             headers.insert("content-length", total_size.to_string().parse().unwrap());
-            response_body = obj.data.clone();
+            response_body = obj_bytes.clone();
         }
         // Only include checksum headers for full (non-range) responses
         if !is_range_request {
@@ -1454,6 +1472,7 @@ impl S3Service {
             if is_dm {
                 resp_headers.insert("x-amz-delete-marker", "true".parse().unwrap());
             }
+            let _ = self.store.delete_object(bucket, key, Some(vid.as_str()));
             return Ok(AwsResponse {
                 status: StatusCode::NO_CONTENT,
                 content_type: "application/xml".to_string(),
@@ -1501,6 +1520,7 @@ impl S3Service {
             b.objects.insert(key.to_string(), marker);
             resp_headers.insert("x-amz-version-id", dm_id.parse().unwrap());
             resp_headers.insert("x-amz-delete-marker", "true".parse().unwrap());
+            let _ = self.store.delete_object(bucket, key, None);
 
             // Notification for delete
             let notification_config = b.notification_config.clone();
@@ -1538,6 +1558,7 @@ impl S3Service {
         let obj_key = key.to_string();
 
         b.objects.remove(key);
+        let _ = self.store.delete_object(bucket, key, None);
         drop(state);
 
         // Deliver S3 event notifications
@@ -2040,8 +2061,9 @@ impl S3Service {
         });
 
         // Checksum: compute new if algorithm specified, or copy from source
+        let src_bytes = crate::state::read_body_bytes(&src_obj.body);
         let (new_checksum_algo, new_checksum_val) = if let Some(ref algo) = checksum_algorithm {
-            let val = compute_checksum(algo, &src_obj.data);
+            let val = compute_checksum(algo, &src_bytes);
             (Some(algo.clone()), Some(val))
         } else if src_obj.checksum_algorithm.is_some() {
             (
@@ -2074,7 +2096,7 @@ impl S3Service {
 
         let dest_obj = S3Object {
             key: dest_key.to_string(),
-            data: src_obj.data,
+            body: src_obj.body,
             size: src_obj.size,
             etag: etag.clone(),
             last_modified,
@@ -2106,6 +2128,16 @@ impl S3Service {
                 .push(dest_obj.clone());
         }
         db.objects.insert(dest_key.to_string(), dest_obj);
+        if let Some(o) = db.objects.get(dest_key) {
+            let meta = object_meta_snapshot(o);
+            let _ = self.store.put_object(
+                dest_bucket,
+                dest_key,
+                meta.version_id.as_deref(),
+                BodySource::Bytes(src_bytes.clone()),
+                &meta,
+            );
+        }
 
         let mut response_headers = HeaderMap::new();
         if let Some(vid) = &version_id {
@@ -2294,6 +2326,7 @@ impl S3Service {
                         b.object_versions.remove(key);
                     }
                 }
+                let _ = self.store.delete_object(bucket, key, Some(vid.as_str()));
                 deleted_xml.push_str(&format!(
                     "<Deleted><Key>{}</Key><VersionId>{}</VersionId></Deleted>",
                     xml_escape(key),
@@ -2307,12 +2340,14 @@ impl S3Service {
                     .or_default()
                     .push(marker.clone());
                 b.objects.insert(key.to_string(), marker);
+                let _ = self.store.delete_object(bucket, key, None);
                 deleted_xml.push_str(&format!(
                     "<Deleted><Key>{}</Key><DeleteMarker>true</DeleteMarker><DeleteMarkerVersionId>{}</DeleteMarkerVersionId></Deleted>",
                     xml_escape(key), dm_id,
                 ));
             } else {
                 b.objects.remove(key);
+                let _ = self.store.delete_object(bucket, key, None);
                 deleted_xml.push_str(&format!(
                     "<Deleted><Key>{}</Key></Deleted>",
                     xml_escape(key)
@@ -2457,6 +2492,10 @@ impl S3Service {
             .to_string();
         obj.restore_ongoing = Some(false);
         obj.restore_expiry = Some(expiry);
+        let meta = object_meta_snapshot(obj);
+        let _ = self
+            .store
+            .put_object_meta(bucket, key, meta.version_id.as_deref(), &meta);
         Ok(AwsResponse {
             status,
             content_type: "application/xml".to_string(),

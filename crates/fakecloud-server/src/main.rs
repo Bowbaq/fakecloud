@@ -63,6 +63,34 @@ async fn main() {
         )
         .init();
 
+    let persistence_config = match cli.persistence_config() {
+        Ok(cfg) => cfg,
+        Err(err) => {
+            tracing::error!(error = %err, "invalid persistence configuration");
+            std::process::exit(1);
+        }
+    };
+
+    if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
+        if let Some(ref data_path) = persistence_config.data_path {
+            if let Err(err) = std::fs::create_dir_all(data_path) {
+                tracing::error!(
+                    error = %err,
+                    path = %data_path.display(),
+                    "failed to create persistence data directory",
+                );
+                std::process::exit(1);
+            }
+            if let Err(err) = fakecloud_persistence::version::ensure_version_file(
+                data_path,
+                env!("CARGO_PKG_VERSION"),
+            ) {
+                tracing::error!(error = %err, "persistence version file check failed");
+                std::process::exit(1);
+            }
+        }
+    }
+
     let endpoint_url = cli.endpoint_url();
 
     // Shared state
@@ -350,6 +378,32 @@ async fn main() {
     };
 
     // Register services
+    if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
+        for service in [
+            "cloudformation",
+            "sqs",
+            "sns",
+            "events",
+            "iam",
+            "sts",
+            "ssm",
+            "dynamodb",
+            "lambda",
+            "secretsmanager",
+            "logs",
+            "kms",
+            "ses",
+            "cognito-idp",
+            "kinesis",
+            "rds",
+            "elasticache",
+            "states",
+            "apigatewayv2",
+            "bedrock",
+        ] {
+            fakecloud_persistence::warn_unsupported(service);
+        }
+    }
     let mut registry = ServiceRegistry::new();
     registry.register(Arc::new(CloudFormationService::new(
         cloudformation_state,
@@ -416,8 +470,11 @@ async fn main() {
     ));
     registry.register(Arc::new(LogsService::new(logs_state, delivery_for_logs)));
     registry.register(Arc::new(KmsService::new(kms_state.clone())));
+    // TODO(phase-4): swap in DiskS3Store when mode == Persistent.
+    let s3_store: Arc<dyn fakecloud_persistence::S3Store> =
+        Arc::new(fakecloud_persistence::s3::MemoryS3Store::new());
     registry.register(Arc::new(
-        S3Service::new(s3_state.clone(), delivery_for_s3).with_kms(kms_state),
+        S3Service::with_store(s3_state.clone(), delivery_for_s3, s3_store).with_kms(kms_state),
     ));
     // SES delivery bus (event fanout to SNS topics and EventBridge buses)
     let eb_delivery_for_ses = Arc::new(
@@ -674,7 +731,7 @@ async fn main() {
                                 let etag = format!("\"{:x}\"", md5::Md5::digest(&data));
                                 let obj = fakecloud_s3::state::S3Object {
                                     key: key.clone(),
-                                    data,
+                                    body: fakecloud_persistence::BodyRef::Memory(data),
                                     content_type: "text/plain".to_string(),
                                     etag,
                                     size,

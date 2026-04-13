@@ -3,6 +3,8 @@ use http::StatusCode;
 use chrono::{DateTime, Utc};
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 
+use crate::persistence::object_meta_snapshot;
+
 use super::{
     empty_response, extract_xml_value, no_such_bucket, no_such_key, resolve_object, s3_xml,
     xml_escape, S3Service,
@@ -69,6 +71,17 @@ impl S3Service {
             }
         }
 
+        if let Some(b2) = state.buckets.get(bucket) {
+            if let Some(obj) = b2.objects.get(key) {
+                let meta = object_meta_snapshot(obj);
+                let _ = self.store.put_object_meta(
+                    bucket,
+                    key,
+                    meta.version_id.as_deref(),
+                    &meta,
+                );
+            }
+        }
         Ok(empty_response(StatusCode::OK))
     }
 
@@ -159,6 +172,17 @@ impl S3Service {
             }
         }
 
+        if let Some(b2) = state.buckets.get(bucket) {
+            if let Some(obj) = b2.objects.get(key) {
+                let meta = object_meta_snapshot(obj);
+                let _ = self.store.put_object_meta(
+                    bucket,
+                    key,
+                    meta.version_id.as_deref(),
+                    &meta,
+                );
+            }
+        }
         Ok(empty_response(StatusCode::OK))
     }
 

@@ -9,6 +9,7 @@ use md5::{Digest, Md5};
 use fakecloud_core::delivery::DeliveryBus;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
 use fakecloud_kms::state::SharedKmsState;
+use fakecloud_persistence::{MemoryS3Store, S3Store};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
@@ -44,14 +45,25 @@ pub struct S3Service {
     state: SharedS3State,
     delivery: Arc<DeliveryBus>,
     kms_state: Option<SharedKmsState>,
+    #[allow(dead_code)]
+    store: Arc<dyn S3Store>,
 }
 
 impl S3Service {
     pub fn new(state: SharedS3State, delivery: Arc<DeliveryBus>) -> Self {
+        Self::with_store(state, delivery, Arc::new(MemoryS3Store::new()))
+    }
+
+    pub fn with_store(
+        state: SharedS3State,
+        delivery: Arc<DeliveryBus>,
+        store: Arc<dyn S3Store>,
+    ) -> Self {
         Self {
             state,
             delivery,
             kms_state: None,
+            store,
         }
     }
 
@@ -1996,7 +2008,7 @@ mod tests {
         // Helper to create a minimal S3Object
         let make_obj = |key: &str, vid: Option<&str>| crate::state::S3Object {
             key: key.to_string(),
-            data: Bytes::from_static(b"x"),
+            body: crate::state::memory_body(Bytes::from_static(b"x")),
             content_type: "text/plain".to_string(),
             etag: "\"abc\"".to_string(),
             size: 1,
@@ -2088,7 +2100,7 @@ mod tests {
         );
         let obj = S3Object {
             key: "test-key".to_string(),
-            data: Bytes::from_static(b"hello"),
+            body: crate::state::memory_body(Bytes::from_static(b"hello")),
             content_type: "text/plain".to_string(),
             etag: "abc".to_string(),
             size: 5,
@@ -2113,7 +2125,10 @@ mod tests {
             .objects
             .get("test-key");
         assert!(dest_obj.is_some());
-        assert_eq!(dest_obj.unwrap().data, Bytes::from_static(b"hello"));
+        assert_eq!(
+            crate::state::read_body_bytes(&dest_obj.unwrap().body),
+            Bytes::from_static(b"hello")
+        );
     }
 
     #[test]
