@@ -45,3 +45,5 @@ base64 = { workspace = true }
 flate2 = { workspace = true }
 zip = { workspace = true }
 fakecloud-sdk = { path = "../fakecloud-sdk" }
+tempfile = { workspace = true }
+sha2 = { workspace = true }

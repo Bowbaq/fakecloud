@@ -654,7 +654,7 @@ mod tests {
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::CREATED);
 
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["FunctionName"], "my-func");
         assert_eq!(body["Runtime"], "python3.12");
 
@@ -662,7 +662,7 @@ mod tests {
         let req = make_request(Method::GET, "/2015-03-31/functions/my-func", "");
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Configuration"]["FunctionName"], "my-func");
     }
 
@@ -762,7 +762,7 @@ mod tests {
 
         let req = make_request(Method::GET, "/2015-03-31/functions", "");
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Functions"].as_array().unwrap().len(), 2);
     }
 
@@ -799,13 +799,13 @@ mod tests {
         );
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::ACCEPTED);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let uuid = body["UUID"].as_str().unwrap().to_string();
 
         // List mappings
         let req = make_request(Method::GET, "/2015-03-31/event-source-mappings", "");
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["EventSourceMappings"].as_array().unwrap().len(), 1);
 
         // Delete mapping

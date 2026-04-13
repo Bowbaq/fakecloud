@@ -3,6 +3,7 @@ use http::{HeaderMap, StatusCode};
 use bytes::Bytes;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 
+use crate::persistence::bucket_meta_snapshot;
 use crate::state::S3Bucket;
 
 use super::{
@@ -129,7 +130,7 @@ impl S3Service {
                 return Ok(AwsResponse {
                     status: StatusCode::OK,
                     content_type: "application/xml".to_string(),
-                    body: Bytes::new(),
+                    body: Bytes::new().into(),
                     headers,
                 });
             }
@@ -174,7 +175,11 @@ impl S3Service {
             ));
         }
 
+        let meta = bucket_meta_snapshot(&b);
         state.buckets.insert(bucket.to_string(), b);
+        self.store
+            .put_bucket_meta(bucket, &meta)
+            .map_err(super::persistence_error)?;
 
         let mut headers = HeaderMap::new();
         headers.insert("location", format!("/{bucket}").parse().unwrap());
@@ -185,7 +190,7 @@ impl S3Service {
         Ok(AwsResponse {
             status: StatusCode::OK,
             content_type: "application/xml".to_string(),
-            body: Bytes::new(),
+            body: Bytes::new().into(),
             headers,
         })
     }
@@ -212,10 +217,13 @@ impl S3Service {
             ));
         }
         state.buckets.remove(bucket);
+        self.store
+            .delete_bucket(bucket)
+            .map_err(super::persistence_error)?;
         Ok(AwsResponse {
             status: StatusCode::NO_CONTENT,
             content_type: "application/xml".to_string(),
-            body: Bytes::new(),
+            body: Bytes::new().into(),
             headers: HeaderMap::new(),
         })
     }
@@ -232,7 +240,7 @@ impl S3Service {
         Ok(AwsResponse {
             status: StatusCode::OK,
             content_type: "application/xml".to_string(),
-            body: Bytes::new(),
+            body: Bytes::new().into(),
             headers: HeaderMap::new(),
         })
     }

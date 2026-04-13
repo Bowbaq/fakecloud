@@ -211,7 +211,8 @@ pub(crate) fn parse_replication_rules(xml: &str) -> Vec<ReplicationRule> {
 }
 
 /// Replicate an object to destination buckets based on replication configuration.
-/// Called after storing an object in a bucket that has replication enabled.
+/// Kept for tests only; production paths use [`replicate_through_store`].
+#[cfg(test)]
 pub(crate) fn replicate_object(state: &mut crate::state::S3State, source_bucket: &str, key: &str) {
     let replication_config = match state.buckets.get(source_bucket) {
         Some(b) => match &b.replication_config {
@@ -256,6 +257,127 @@ pub(crate) fn replicate_object(state: &mut crate::state::S3State, source_bucket:
             dest_bucket.objects.insert(key.to_string(), replica);
         }
     }
+}
+
+/// Replicate an object to destination buckets AND persist the replica through
+/// the S3 store so disk-mode restarts see it. Called from PutObject/CopyObject
+/// write paths. Replaces the in-memory BodyRef of each replica with the one
+/// returned by `put_object` (Disk in persistent mode, Memory otherwise).
+pub(crate) fn replicate_through_store(
+    state: &mut crate::state::S3State,
+    store: &std::sync::Arc<dyn fakecloud_persistence::S3Store>,
+    source_bucket: &str,
+    key: &str,
+) -> fakecloud_persistence::StoreResult<()> {
+    let replication_config = match state.buckets.get(source_bucket) {
+        Some(b) => match &b.replication_config {
+            Some(config) => config.clone(),
+            None => return Ok(()),
+        },
+        None => return Ok(()),
+    };
+
+    let rules = parse_replication_rules(&replication_config);
+    let src_obj = match state
+        .buckets
+        .get(source_bucket)
+        .and_then(|b| b.objects.get(key))
+    {
+        Some(obj) => obj.clone(),
+        None => return Ok(()),
+    };
+
+    // For disk-backed sources, hold only the path and stream the source file
+    // directly to each replica via FileCopy. For memory sources, read once.
+    let src_disk_path: Option<std::path::PathBuf> = match &src_obj.body {
+        fakecloud_persistence::BodyRef::Disk { path, .. } => Some(path.clone()),
+        fakecloud_persistence::BodyRef::Memory(_) => None,
+    };
+    let src_bytes_opt: Option<bytes::Bytes> = if src_disk_path.is_none() {
+        Some(
+            state
+                .read_body(&src_obj.body)
+                .map_err(fakecloud_persistence::StoreError::Io)?,
+        )
+    } else {
+        None
+    };
+
+    for rule in &rules {
+        if rule.status != "Enabled" {
+            continue;
+        }
+        if !key.starts_with(&rule.prefix) {
+            continue;
+        }
+        let dest_bucket_name = rule.dest_bucket.clone();
+        let dest_versioning_enabled;
+        let (dest_version_id, dest_meta) = {
+            let Some(dest_bucket) = state.buckets.get_mut(&dest_bucket_name) else {
+                continue;
+            };
+            dest_versioning_enabled = dest_bucket.versioning.as_deref() == Some("Enabled");
+            let mut replica = src_obj.clone();
+            replica.storage_class = "STANDARD".to_string();
+            // Seed the runtime replica body from whatever we have handy; it
+            // is overwritten after `put_object` returns the canonical ref.
+            let seed_body = match (&src_disk_path, &src_bytes_opt) {
+                (Some(_), _) => src_obj.body.clone(),
+                (None, Some(b)) => crate::state::memory_body(b.clone()),
+                (None, None) => src_obj.body.clone(),
+            };
+            if dest_versioning_enabled {
+                let vid = uuid::Uuid::new_v4().to_string();
+                replica.version_id = Some(vid.clone());
+                replica.body = seed_body;
+                dest_bucket
+                    .object_versions
+                    .entry(key.to_string())
+                    .or_default()
+                    .push(replica.clone());
+                dest_bucket.objects.insert(key.to_string(), replica.clone());
+                (
+                    Some(vid),
+                    crate::persistence::object_meta_snapshot(&replica),
+                )
+            } else {
+                replica.version_id = None;
+                replica.body = seed_body;
+                dest_bucket.objects.insert(key.to_string(), replica.clone());
+                (None, crate::persistence::object_meta_snapshot(&replica))
+            }
+        };
+
+        let body_source = match (&src_disk_path, &src_bytes_opt) {
+            (Some(path), _) => fakecloud_persistence::BodySource::FileCopy(path.clone()),
+            (None, Some(b)) => fakecloud_persistence::BodySource::Bytes(b.clone()),
+            (None, None) => fakecloud_persistence::BodySource::Bytes(bytes::Bytes::new()),
+        };
+        let returned = store.put_object(
+            &dest_bucket_name,
+            key,
+            dest_version_id.as_deref(),
+            body_source,
+            &dest_meta,
+        )?;
+        if let Some(dest_bucket) = state.buckets.get_mut(&dest_bucket_name) {
+            if let Some(o) = dest_bucket.objects.get_mut(key) {
+                o.body = returned.clone();
+            }
+            // Only rewrite the version-history entry when the destination
+            // bucket actually has versioning enabled. For Suspended or
+            // unversioned buckets the replica was only stored as the current
+            // object; rewriting stale history would corrupt it.
+            if dest_versioning_enabled {
+                if let Some(versions) = dest_bucket.object_versions.get_mut(key) {
+                    if let Some(last) = versions.last_mut() {
+                        last.body = returned;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Build an S3 event notification JSON payload.

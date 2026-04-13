@@ -1,4 +1,5 @@
 use std::net::TcpListener;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::Duration;
 
@@ -13,6 +14,9 @@ pub struct TestServer {
     port: u16,
     endpoint: String,
     container_cli: String,
+    extra_args: Vec<String>,
+    env_vars: Vec<(String, String)>,
+    log_level: String,
 }
 
 #[allow(dead_code)]
@@ -24,6 +28,33 @@ impl TestServer {
 
     /// Start with extra environment variables passed to the server process.
     pub async fn start_with_env(env: &[(&str, &str)]) -> Self {
+        Self::start_full(env, &[]).await
+    }
+
+    /// Start fakecloud in persistent mode with the given data directory.
+    pub async fn start_persistent(data_path: &Path) -> Self {
+        Self::start_persistent_with_cache(data_path, None).await
+    }
+
+    pub async fn start_persistent_with_cache(data_path: &Path, s3_cache_size: Option<u64>) -> Self {
+        let data_path_str = data_path.display().to_string();
+        let mut args: Vec<String> = vec![
+            "--storage-mode".to_string(),
+            "persistent".to_string(),
+            "--data-path".to_string(),
+            data_path_str,
+        ];
+        if let Some(size) = s3_cache_size {
+            args.push("--s3-cache-size".to_string());
+            args.push(size.to_string());
+        }
+        let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        Self::start_full(&[("FAKECLOUD_CONTAINER_CLI", "false")], &arg_refs).await
+    }
+
+    /// Full form — extra env vars + extra CLI args. Used internally by
+    /// the specialised `start_*` helpers.
+    pub async fn start_full(env: &[(&str, &str)], extra_args: &[&str]) -> Self {
         let bin = find_binary();
 
         let container_cli = env
@@ -39,20 +70,26 @@ impl TestServer {
             .or_else(|| std::env::var("FAKECLOUD_TEST_LOG_LEVEL").ok())
             .unwrap_or_else(|| "warn".to_string());
 
+        let env_vars: Vec<(String, String)> = env
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect();
+        let extra_args_owned: Vec<String> = extra_args.iter().map(|s| (*s).to_string()).collect();
+
         for _ in 0..3 {
             let port = find_available_port();
             let endpoint = format!("http://127.0.0.1:{port}");
 
             let mut cmd = Command::new(&bin);
             cmd.arg("--addr")
-                // Bind to 0.0.0.0 so Lambda containers can reach the server via Docker bridge
                 .arg(format!("0.0.0.0:{port}"))
                 .arg("--log-level")
                 .arg(&log_level)
+                .args(&extra_args_owned)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
 
-            for (key, value) in env {
+            for (key, value) in &env_vars {
                 cmd.env(key, value);
             }
 
@@ -64,6 +101,9 @@ impl TestServer {
                     port,
                     endpoint,
                     container_cli,
+                    extra_args: extra_args_owned,
+                    env_vars,
+                    log_level,
                 };
             }
 
@@ -74,6 +114,88 @@ impl TestServer {
         panic!("fakecloud failed to start after 3 attempts");
     }
 
+    /// Kill the current child and respawn with the same extra args/env.
+    /// Allocates a new port because the previous one may still be in TIME_WAIT.
+    pub async fn restart(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        let bin = find_binary();
+        for _ in 0..5 {
+            let port = find_available_port();
+            let endpoint = format!("http://127.0.0.1:{port}");
+            let mut cmd = Command::new(&bin);
+            cmd.arg("--addr")
+                .arg(format!("0.0.0.0:{port}"))
+                .arg("--log-level")
+                .arg(&self.log_level)
+                .args(&self.extra_args)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            for (key, value) in &self.env_vars {
+                cmd.env(key, value);
+            }
+            let mut child = cmd.spawn().expect("failed to respawn fakecloud");
+            if wait_for_port(&mut child, port).await {
+                self.child = Some(child);
+                self.port = port;
+                self.endpoint = endpoint;
+                return;
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        panic!("fakecloud failed to restart");
+    }
+}
+
+/// Run fakecloud once and collect its exit status + stderr output.
+/// For tests that deliberately cause the server to fail at boot.
+#[allow(dead_code)]
+pub fn run_until_exit(
+    extra_args: &[&str],
+    env: &[(&str, &str)],
+    timeout: Duration,
+) -> (std::process::ExitStatus, String) {
+    let bin = find_binary();
+    let port = find_available_port();
+    let mut cmd = Command::new(&bin);
+    cmd.arg("--addr")
+        .arg(format!("127.0.0.1:{port}"))
+        .arg("--log-level")
+        .arg("warn")
+        .args(extra_args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let mut child = cmd.spawn().expect("failed to spawn fakecloud");
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait().expect("try_wait") {
+            let output = child.wait_with_output().expect("wait_with_output");
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            return (status, stderr);
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let output = child.wait_with_output().expect("wait_with_output");
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            return (output.status, stderr);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[allow(dead_code)]
+pub fn data_path_for(dir: &tempfile::TempDir) -> PathBuf {
+    dir.path().to_path_buf()
+}
+
+#[allow(dead_code)]
+impl TestServer {
     pub fn endpoint(&self) -> &str {
         &self.endpoint
     }

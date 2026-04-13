@@ -2217,13 +2217,13 @@ mod tests {
         );
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Name"], "test/secret");
         assert!(body["ARN"].as_str().unwrap().contains("test/secret"));
 
         let req = make_request("GetSecretValue", r#"{"SecretId": "test/secret"}"#);
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["SecretString"], "mysecretvalue");
     }
 
@@ -2234,7 +2234,7 @@ mod tests {
 
         let req = make_request("CreateSecret", r#"{"Name": "empty-secret"}"#);
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Name"], "empty-secret");
         assert!(body.get("VersionId").is_none());
     }
@@ -2255,13 +2255,13 @@ mod tests {
             r#"{"SecretId": "versioned", "SecretString": "v2"}"#,
         );
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Name"], "versioned");
 
         // Get should return v2
         let req = make_request("GetSecretValue", r#"{"SecretId": "versioned"}"#);
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["SecretString"], "v2");
     }
 
@@ -2279,7 +2279,7 @@ mod tests {
         // Delete (soft)
         let req = make_request("DeleteSecret", r#"{"SecretId": "deleteme"}"#);
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["DeletionDate"].as_f64().is_some());
 
         // GetSecretValue should fail
@@ -2294,7 +2294,7 @@ mod tests {
         // GetSecretValue should work again
         let req = make_request("GetSecretValue", r#"{"SecretId": "deleteme"}"#);
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["SecretString"], "value");
     }
 
@@ -2313,7 +2313,7 @@ mod tests {
 
         let req = make_request("ListSecrets", "{}");
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["SecretList"].as_array().unwrap().len(), 3);
     }
 
@@ -2336,7 +2336,7 @@ mod tests {
 
         let req = make_request("DescribeSecret", r#"{"SecretId": "tagged"}"#);
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let tags = body["Tags"].as_array().unwrap();
         assert!(tags
             .iter()
@@ -2350,7 +2350,7 @@ mod tests {
 
         let req = make_request("DescribeSecret", r#"{"SecretId": "tagged"}"#);
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         // Tags should be empty list after untagging all (but key present since tags were set)
         assert_eq!(body["Tags"].as_array().unwrap().len(), 0);
     }
@@ -2362,7 +2362,7 @@ mod tests {
 
         let req = make_request("GetRandomPassword", "{}");
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["RandomPassword"].as_str().unwrap().len(), 32);
     }
 
@@ -2376,7 +2376,7 @@ mod tests {
             r#"{"Name": "repl-secret", "SecretString": "val"}"#,
         );
         let resp = svc.handle(req).await.unwrap();
-        let create_body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let create_body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let expected_arn = create_body["ARN"].as_str().unwrap();
 
         for action in &[
@@ -2386,7 +2386,7 @@ mod tests {
         ] {
             let req = make_request(action, r#"{"SecretId": "repl-secret"}"#);
             let resp = svc.handle(req).await.unwrap();
-            let body: Value = serde_json::from_slice(&resp.body).unwrap();
+            let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
             assert_eq!(
                 body["ARN"].as_str().unwrap(),
                 expected_arn,
@@ -2481,7 +2481,7 @@ mod tests {
         let req = make_request("RotateSecret", &body.to_string());
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let resp_body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let resp_body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(resp_body["VersionId"], token);
 
         // Verify AWSPENDING version exists
@@ -2637,7 +2637,7 @@ mod tests {
         let req = make_request("CancelRotateSecret", r#"{"SecretId": "cancel-rot"}"#);
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Name"], "cancel-rot");
 
         // Verify rotation is disabled
@@ -2680,7 +2680,7 @@ mod tests {
         });
         let req = make_request("BatchGetSecretValue", &body.to_string());
         let resp = svc.handle(req).await.unwrap();
-        let resp_body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let resp_body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
 
         let values = resp_body["SecretValues"].as_array().unwrap();
         assert_eq!(values.len(), 3);
@@ -2711,7 +2711,7 @@ mod tests {
         });
         let req = make_request("BatchGetSecretValue", &body.to_string());
         let resp = svc.handle(req).await.unwrap();
-        let resp_body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let resp_body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
 
         let values = resp_body["SecretValues"].as_array().unwrap();
         assert_eq!(values.len(), 1);
@@ -2743,7 +2743,7 @@ mod tests {
         let req = make_request("UpdateSecret", &body.to_string());
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let resp_body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let resp_body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(resp_body["Name"], "updatable");
         // No VersionId since no new value was provided
         assert!(resp_body.get("VersionId").is_none());
@@ -2751,7 +2751,7 @@ mod tests {
         // Describe to verify changes
         let req = make_request("DescribeSecret", r#"{"SecretId": "updatable"}"#);
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Description"], "new desc");
         assert_eq!(
             body["KmsKeyId"],
@@ -2777,13 +2777,13 @@ mod tests {
         });
         let req = make_request("UpdateSecret", &body.to_string());
         let resp = svc.handle(req).await.unwrap();
-        let resp_body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let resp_body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(resp_body["VersionId"].as_str().is_some());
 
         // Get should return new value
         let req = make_request("GetSecretValue", r#"{"SecretId": "upd-val"}"#);
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["SecretString"], "new-value");
     }
 
@@ -2794,7 +2794,7 @@ mod tests {
 
         let req = make_request("GetRandomPassword", r#"{"PasswordLength": 64}"#);
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["RandomPassword"].as_str().unwrap().len(), 64);
     }
 
@@ -2808,7 +2808,7 @@ mod tests {
             r#"{"PasswordLength": 100, "ExcludeCharacters": "abc123"}"#,
         );
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let password = body["RandomPassword"].as_str().unwrap();
         assert_eq!(password.len(), 100);
         assert!(!password.contains('a'));
@@ -2834,7 +2834,7 @@ mod tests {
         });
         let req = make_request("GetRandomPassword", &body.to_string());
         let resp = svc.handle(req).await.unwrap();
-        let resp_body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let resp_body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let password = resp_body["RandomPassword"].as_str().unwrap();
         assert_eq!(password.len(), 50);
         assert!(password.chars().all(|c| c.is_ascii_lowercase()));
@@ -2972,7 +2972,7 @@ mod tests {
         });
         let req = make_request("ValidateResourcePolicy", &body.to_string());
         let resp = svc.handle(req).await.unwrap();
-        let resp_body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let resp_body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(resp_body["PolicyValidationPassed"], true);
         assert_eq!(resp_body["ValidationErrors"].as_array().unwrap().len(), 0);
     }
@@ -3000,7 +3000,7 @@ mod tests {
         // Get policy (should be empty initially)
         let req = make_request("GetResourcePolicy", r#"{"SecretId": "policy-secret"}"#);
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Name"], "policy-secret");
         assert!(body.get("ResourcePolicy").is_none());
 
@@ -3017,7 +3017,7 @@ mod tests {
         // Get policy (should have it now)
         let req = make_request("GetResourcePolicy", r#"{"SecretId": "policy-secret"}"#);
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["ResourcePolicy"], policy);
 
         // Delete policy
@@ -3028,7 +3028,7 @@ mod tests {
         // Get again (should be gone)
         let req = make_request("GetResourcePolicy", r#"{"SecretId": "policy-secret"}"#);
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body.get("ResourcePolicy").is_none());
     }
 
@@ -3052,7 +3052,7 @@ mod tests {
         });
         let req = make_request("BatchGetSecretValue", &body.to_string());
         let resp = svc.handle(req).await.unwrap();
-        let resp_body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let resp_body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
 
         // Should have 0 values and 1 error
         assert_eq!(resp_body["SecretValues"].as_array().unwrap().len(), 0);

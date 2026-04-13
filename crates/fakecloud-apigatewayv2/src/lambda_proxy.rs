@@ -214,7 +214,7 @@ fn parse_lambda_response(response: serde_json::Value) -> Result<AwsResponse, Aws
         status: status_code,
         content_type,
         headers,
-        body,
+        body: body.into(),
     })
 }
 
@@ -279,8 +279,8 @@ mod tests {
         assert_eq!(result.status, StatusCode::OK);
         assert_eq!(result.content_type, "application/json");
         assert_eq!(
-            result.body,
-            Bytes::from(br#"{"message":"success"}"#.to_vec())
+            result.body.expect_bytes(),
+            br#"{"message":"success"}"#.as_slice()
         );
     }
 
@@ -296,6 +296,6 @@ mod tests {
         let result = parse_lambda_response(response).unwrap();
 
         assert_eq!(result.status, StatusCode::OK);
-        assert_eq!(result.body, Bytes::from(b"binary data".to_vec()));
+        assert_eq!(result.body.expect_bytes(), b"binary data".as_slice());
     }
 }

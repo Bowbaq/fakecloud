@@ -285,12 +285,12 @@ mod tests {
             }),
         );
         let resp = svc.create_export_task(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let task_id = body["taskId"].as_str().unwrap();
 
         let req = make_request("DescribeExportTasks", json!({ "taskId": task_id }));
         let resp = svc.describe_export_tasks(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let task = &body["exportTasks"][0];
         assert_eq!(task["taskName"].as_str().unwrap(), "my-export");
         assert_eq!(task["logStreamNamePrefix"].as_str().unwrap(), "web-");
@@ -311,12 +311,12 @@ mod tests {
             }),
         );
         let resp = svc.create_export_task(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let task_id = body["taskId"].as_str().unwrap();
 
         let req = make_request("DescribeExportTasks", json!({ "taskId": task_id }));
         let resp = svc.describe_export_tasks(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let task = &body["exportTasks"][0];
         assert!(task.get("taskName").is_none() || task["taskName"].is_null());
         assert!(task.get("logStreamNamePrefix").is_none() || task["logStreamNamePrefix"].is_null());
@@ -357,13 +357,13 @@ mod tests {
             }),
         );
         let resp = svc.create_export_task(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let task_id = body["taskId"].as_str().unwrap();
 
         // Verify task is COMPLETED
         let req = make_request("DescribeExportTasks", json!({ "taskId": task_id }));
         let resp = svc.describe_export_tasks(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["exportTasks"][0]["status"]["code"].as_str().unwrap(),
             "COMPLETED"
@@ -375,7 +375,7 @@ mod tests {
             json!({ "keyPrefix": "my-export-bucket/logs" }),
         );
         let resp = svc.get_exported_data(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let entries = body["entries"].as_array().unwrap();
         assert_eq!(entries.len(), 1, "Should have one export entry");
         let data = entries[0]["data"].as_str().unwrap();
@@ -430,7 +430,7 @@ mod tests {
             json!({ "keyPrefix": "filtered-bucket/prefix" }),
         );
         let resp = svc.get_exported_data(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let entries = body["entries"].as_array().unwrap();
         assert_eq!(entries.len(), 1);
         let data = entries[0]["data"].as_str().unwrap();

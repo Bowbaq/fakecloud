@@ -33,11 +33,95 @@ impl AwsRequest {
     }
 }
 
+/// A response body. Most handlers return [`ResponseBody::Bytes`] built from
+/// an in-memory [`Bytes`] buffer; the [`File`](ResponseBody::File) variant
+/// exists so large disk-backed objects can be streamed straight from the
+/// filesystem to the HTTP body without being materialized into RAM. The file
+/// handle is opened by the service handler while it still holds the
+/// per-bucket read guard, so the reader sees a consistent inode even if a
+/// concurrent PUT/DELETE renames or unlinks the path before dispatch streams
+/// the body.
+#[derive(Debug)]
+pub enum ResponseBody {
+    Bytes(Bytes),
+    File { file: tokio::fs::File, size: u64 },
+}
+
+impl ResponseBody {
+    pub fn len(&self) -> u64 {
+        match self {
+            ResponseBody::Bytes(b) => b.len() as u64,
+            ResponseBody::File { size, .. } => *size,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Accessor that returns the bytes of a `Bytes` variant and panics for
+    /// `File`. Used by tests and by callers that know the response was built
+    /// from an in-memory buffer (JSON handlers, cross-service glue).
+    pub fn expect_bytes(&self) -> &[u8] {
+        match self {
+            ResponseBody::Bytes(b) => b,
+            ResponseBody::File { .. } => {
+                panic!("expect_bytes called on ResponseBody::File")
+            }
+        }
+    }
+}
+
+impl Default for ResponseBody {
+    fn default() -> Self {
+        ResponseBody::Bytes(Bytes::new())
+    }
+}
+
+impl From<Bytes> for ResponseBody {
+    fn from(b: Bytes) -> Self {
+        ResponseBody::Bytes(b)
+    }
+}
+
+impl From<Vec<u8>> for ResponseBody {
+    fn from(v: Vec<u8>) -> Self {
+        ResponseBody::Bytes(Bytes::from(v))
+    }
+}
+
+impl From<&'static [u8]> for ResponseBody {
+    fn from(s: &'static [u8]) -> Self {
+        ResponseBody::Bytes(Bytes::from_static(s))
+    }
+}
+
+impl From<String> for ResponseBody {
+    fn from(s: String) -> Self {
+        ResponseBody::Bytes(Bytes::from(s))
+    }
+}
+
+impl From<&'static str> for ResponseBody {
+    fn from(s: &'static str) -> Self {
+        ResponseBody::Bytes(Bytes::from_static(s.as_bytes()))
+    }
+}
+
+impl PartialEq<Bytes> for ResponseBody {
+    fn eq(&self, other: &Bytes) -> bool {
+        match self {
+            ResponseBody::Bytes(b) => b == other,
+            ResponseBody::File { .. } => false,
+        }
+    }
+}
+
 /// A response from a service handler.
 pub struct AwsResponse {
     pub status: StatusCode,
     pub content_type: String,
-    pub body: Bytes,
+    pub body: ResponseBody,
     pub headers: HeaderMap,
 }
 
@@ -46,7 +130,7 @@ impl AwsResponse {
         Self {
             status,
             content_type: "text/xml".to_string(),
-            body: body.into(),
+            body: ResponseBody::Bytes(body.into()),
             headers: HeaderMap::new(),
         }
     }
@@ -55,7 +139,7 @@ impl AwsResponse {
         Self {
             status,
             content_type: "application/x-amz-json-1.1".to_string(),
-            body: body.into(),
+            body: ResponseBody::Bytes(body.into()),
             headers: HeaderMap::new(),
         }
     }

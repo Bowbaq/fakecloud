@@ -1,0 +1,22 @@
+[package]
+name = "fakecloud-persistence"
+description = "Opt-in disk persistence primitives for FakeCloud services"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+version.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+bytes = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+percent-encoding = { workspace = true }
+sha2 = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

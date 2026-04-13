@@ -4403,7 +4403,7 @@ mod tests {
 
         let req = make_request("ListConnections", json!({}));
         let resp = svc.list_connections(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Connections"].as_array().unwrap().len(), 3);
         assert!(body["NextToken"].is_null());
     }
@@ -4417,7 +4417,7 @@ mod tests {
 
         let req = make_request("ListConnections", json!({ "NamePrefix": "prod-" }));
         let resp = svc.list_connections(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let names: Vec<&str> = body["Connections"]
             .as_array()
             .unwrap()
@@ -4449,7 +4449,7 @@ mod tests {
             json!({ "ConnectionState": "AUTHORIZED" }),
         );
         let resp = svc.list_connections(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let conns = body["Connections"].as_array().unwrap();
         assert_eq!(conns.len(), 1);
         assert_eq!(conns[0]["Name"].as_str().unwrap(), "conn-a");
@@ -4465,7 +4465,7 @@ mod tests {
         // First page: limit 2
         let req = make_request("ListConnections", json!({ "Limit": 2 }));
         let resp = svc.list_connections(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Connections"].as_array().unwrap().len(), 2);
         let token = body["NextToken"].as_str().unwrap();
         assert_eq!(token, "2");
@@ -4473,7 +4473,7 @@ mod tests {
         // Second page
         let req = make_request("ListConnections", json!({ "Limit": 2, "NextToken": token }));
         let resp = svc.list_connections(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Connections"].as_array().unwrap().len(), 2);
         let token = body["NextToken"].as_str().unwrap();
         assert_eq!(token, "4");
@@ -4481,7 +4481,7 @@ mod tests {
         // Third page (only 1 remaining)
         let req = make_request("ListConnections", json!({ "Limit": 2, "NextToken": token }));
         let resp = svc.list_connections(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Connections"].as_array().unwrap().len(), 1);
         assert!(body["NextToken"].is_null());
     }
@@ -4499,7 +4499,7 @@ mod tests {
             json!({ "NamePrefix": "prod-", "Limit": 2 }),
         );
         let resp = svc.list_connections(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Connections"].as_array().unwrap().len(), 2);
         assert!(body["NextToken"].as_str().is_some());
     }
@@ -4515,7 +4515,7 @@ mod tests {
 
         let req = make_request("ListApiDestinations", json!({}));
         let resp = svc.list_api_destinations(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["ApiDestinations"].as_array().unwrap().len(), 2);
         assert!(body["NextToken"].is_null());
     }
@@ -4530,7 +4530,7 @@ mod tests {
 
         let req = make_request("ListApiDestinations", json!({ "NamePrefix": "prod-" }));
         let resp = svc.list_api_destinations(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let names: Vec<&str> = body["ApiDestinations"]
             .as_array()
             .unwrap()
@@ -4560,7 +4560,7 @@ mod tests {
             json!({ "ConnectionArn": conn_a_arn }),
         );
         let resp = svc.list_api_destinations(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let names: Vec<&str> = body["ApiDestinations"]
             .as_array()
             .unwrap()
@@ -4583,7 +4583,7 @@ mod tests {
         // First page
         let req = make_request("ListApiDestinations", json!({ "Limit": 2 }));
         let resp = svc.list_api_destinations(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["ApiDestinations"].as_array().unwrap().len(), 2);
         let token = body["NextToken"].as_str().unwrap();
         assert_eq!(token, "2");
@@ -4594,7 +4594,7 @@ mod tests {
             json!({ "Limit": 2, "NextToken": token }),
         );
         let resp = svc.list_api_destinations(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["ApiDestinations"].as_array().unwrap().len(), 2);
         let token = body["NextToken"].as_str().unwrap();
         assert_eq!(token, "4");
@@ -4605,7 +4605,7 @@ mod tests {
             json!({ "Limit": 2, "NextToken": token }),
         );
         let resp = svc.list_api_destinations(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["ApiDestinations"].as_array().unwrap().len(), 1);
         assert!(body["NextToken"].is_null());
     }
@@ -4628,7 +4628,7 @@ mod tests {
         // First page: limit 2
         let req = make_request("ListEventBuses", json!({ "Limit": 2 }));
         let resp = svc.list_event_buses(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["EventBuses"].as_array().unwrap().len(), 2);
         let token = body["NextToken"].as_str().unwrap();
         assert_eq!(token, "2");
@@ -4636,7 +4636,7 @@ mod tests {
         // Second page
         let req = make_request("ListEventBuses", json!({ "Limit": 2, "NextToken": token }));
         let resp = svc.list_event_buses(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["EventBuses"].as_array().unwrap().len(), 2);
         let token = body["NextToken"].as_str().unwrap();
         assert_eq!(token, "4");
@@ -4644,7 +4644,7 @@ mod tests {
         // Third page (only 1 remaining)
         let req = make_request("ListEventBuses", json!({ "Limit": 2, "NextToken": token }));
         let resp = svc.list_event_buses(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["EventBuses"].as_array().unwrap().len(), 1);
         assert!(body["NextToken"].is_null());
     }
@@ -4657,7 +4657,7 @@ mod tests {
 
         let req = make_request("ListEventBuses", json!({}));
         let resp = svc.list_event_buses(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         // default + 2 custom = 3
         assert_eq!(body["EventBuses"].as_array().unwrap().len(), 3);
         assert!(body["NextToken"].is_null());
@@ -4682,7 +4682,7 @@ mod tests {
             }),
         );
         let resp = svc.put_events(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(
             !body.as_object().unwrap().contains_key("EndpointId"),
             "EndpointId should never be in the PutEvents response"
@@ -4713,7 +4713,7 @@ mod tests {
         // First page: limit 2
         let req = make_request("ListArchives", json!({ "Limit": 2 }));
         let resp = svc.list_archives(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Archives"].as_array().unwrap().len(), 2);
         let token = body["NextToken"].as_str().unwrap();
         assert_eq!(token, "2");
@@ -4721,7 +4721,7 @@ mod tests {
         // Second page
         let req = make_request("ListArchives", json!({ "Limit": 2, "NextToken": token }));
         let resp = svc.list_archives(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Archives"].as_array().unwrap().len(), 2);
         let token = body["NextToken"].as_str().unwrap();
         assert_eq!(token, "4");
@@ -4729,7 +4729,7 @@ mod tests {
         // Third page (only 1 remaining)
         let req = make_request("ListArchives", json!({ "Limit": 2, "NextToken": token }));
         let resp = svc.list_archives(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Archives"].as_array().unwrap().len(), 1);
         assert!(body["NextToken"].is_null());
     }
@@ -4773,7 +4773,7 @@ mod tests {
         // First page: limit 2
         let req = make_request("ListReplays", json!({ "Limit": 2 }));
         let resp = svc.list_replays(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Replays"].as_array().unwrap().len(), 2);
         let token = body["NextToken"].as_str().unwrap();
         assert_eq!(token, "2");
@@ -4781,7 +4781,7 @@ mod tests {
         // Second page
         let req = make_request("ListReplays", json!({ "Limit": 2, "NextToken": token }));
         let resp = svc.list_replays(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Replays"].as_array().unwrap().len(), 2);
         let token = body["NextToken"].as_str().unwrap();
         assert_eq!(token, "4");
@@ -4789,7 +4789,7 @@ mod tests {
         // Third page (only 1 remaining)
         let req = make_request("ListReplays", json!({ "Limit": 2, "NextToken": token }));
         let resp = svc.list_replays(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Replays"].as_array().unwrap().len(), 1);
         assert!(body["NextToken"].is_null());
     }
@@ -4819,7 +4819,7 @@ mod tests {
             }),
         );
         let resp = svc.test_event_pattern(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Result"], true);
     }
 
@@ -4834,7 +4834,7 @@ mod tests {
             }),
         );
         let resp = svc.test_event_pattern(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Result"], false);
     }
 
@@ -4849,7 +4849,7 @@ mod tests {
             }),
         );
         let resp = svc.test_event_pattern(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Result"], true);
     }
 
@@ -4865,13 +4865,13 @@ mod tests {
             json!({ "Name": "my-bus", "Description": "Updated desc" }),
         );
         let resp = svc.update_event_bus(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Name"], "my-bus");
 
         // Verify via describe
         let req = make_request("DescribeEventBus", json!({ "Name": "my-bus" }));
         let resp = svc.describe_event_bus(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Description"], "Updated desc");
     }
 
@@ -4914,7 +4914,7 @@ mod tests {
         // Describe
         let req = make_request("DescribeEndpoint", json!({ "Name": "my-endpoint" }));
         let resp = svc.describe_endpoint(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Name"], "my-endpoint");
         assert_eq!(body["State"], "ACTIVE");
         assert!(body["EndpointId"].as_str().unwrap().contains("my-endpoint"));
@@ -4937,7 +4937,7 @@ mod tests {
         // List all
         let req = make_request("ListEndpoints", json!({}));
         let resp = svc.list_endpoints(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Endpoints"].as_array().unwrap().len(), 2);
 
         // Update
@@ -4946,13 +4946,13 @@ mod tests {
             json!({ "Name": "ep-alpha", "Description": "updated" }),
         );
         let resp = svc.update_endpoint(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Name"], "ep-alpha");
 
         // Verify description
         let req = make_request("DescribeEndpoint", json!({ "Name": "ep-alpha" }));
         let resp = svc.describe_endpoint(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Description"], "updated");
     }
 
@@ -4980,7 +4980,7 @@ mod tests {
 
         let req = make_request("DeauthorizeConnection", json!({ "Name": "deauth-conn" }));
         let resp = svc.deauthorize_connection(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["ConnectionState"], "DEAUTHORIZING");
         assert!(body["ConnectionArn"]
             .as_str()
@@ -4990,7 +4990,7 @@ mod tests {
         // Verify via describe
         let req = make_request("DescribeConnection", json!({ "Name": "deauth-conn" }));
         let resp = svc.describe_connection(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["ConnectionState"], "DEAUTHORIZING");
     }
 
@@ -5020,13 +5020,13 @@ mod tests {
             json!({ "Name": "partner/test" }),
         );
         let resp = svc.describe_partner_event_source(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Name"], "partner/test");
 
         // List
         let req = make_request("ListPartnerEventSources", json!({"NamePrefix": "partner/"}));
         let resp = svc.list_partner_event_sources(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["PartnerEventSources"].as_array().unwrap().len(), 1);
 
         // ListPartnerEventSourceAccounts
@@ -5035,7 +5035,7 @@ mod tests {
             json!({ "EventSourceName": "partner/test" }),
         );
         let resp = svc.list_partner_event_source_accounts(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["PartnerEventSourceAccounts"].as_array().unwrap().len(),
             1
@@ -5044,14 +5044,14 @@ mod tests {
         // DescribeEventSource
         let req = make_request("DescribeEventSource", json!({ "Name": "partner/test" }));
         let resp = svc.describe_event_source(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Name"], "partner/test");
         assert_eq!(body["State"], "ACTIVE");
 
         // ListEventSources
         let req = make_request("ListEventSources", json!({}));
         let resp = svc.list_event_sources(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["EventSources"].as_array().unwrap().len(), 1);
 
         // Delete
@@ -5169,7 +5169,7 @@ mod tests {
             }),
         );
         let resp = svc.put_partner_events(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["FailedEntryCount"], 0);
         assert_eq!(body["Entries"].as_array().unwrap().len(), 1);
         assert!(body["Entries"][0]["EventId"].as_str().is_some());
@@ -5274,7 +5274,7 @@ mod tests {
             }),
         );
         let resp = svc.put_events(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["FailedEntryCount"], 0);
 
         // Verify archive has 2 events
@@ -5311,7 +5311,7 @@ mod tests {
             }),
         );
         let resp = svc.start_replay(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["State"], "STARTING");
 
         // Verify the replay delivered events to SQS
@@ -5477,7 +5477,7 @@ mod tests {
             }),
         );
         let resp = svc.put_events(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["FailedEntryCount"], 0);
         assert_eq!(body["Entries"].as_array().unwrap().len(), 1);
         assert!(body["Entries"][0]["EventId"].as_str().is_some());

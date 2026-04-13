@@ -2,8 +2,12 @@ use http::{HeaderMap, StatusCode};
 
 use bytes::Bytes;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
+use fakecloud_persistence::{
+    AclGrantSnapshot, AclSnapshot, BucketSubresource, InventorySnapshot, TagsSnapshot,
+};
 
 use crate::inventory;
+use crate::persistence::bucket_meta_snapshot;
 
 use super::{
     build_acl_xml, canned_acl_grants, empty_response, extract_xml_value, no_such_bucket,
@@ -35,7 +39,10 @@ impl S3Service {
         } else {
             body_str
         };
-        b.encryption_config = Some(normalized);
+        b.encryption_config = Some(normalized.clone());
+        self.store
+            .put_bucket_subresource(bucket, BucketSubresource::Encryption, &normalized)
+            .map_err(super::persistence_error)?;
         Ok(empty_response(StatusCode::OK))
     }
 
@@ -69,6 +76,9 @@ impl S3Service {
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
         b.encryption_config = None;
+        self.store
+            .delete_bucket_subresource(bucket, BucketSubresource::Encryption)
+            .map_err(super::persistence_error)?;
         Ok(empty_response(StatusCode::NO_CONTENT))
     }
 
@@ -93,9 +103,15 @@ impl S3Service {
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
         if has_rules {
-            b.lifecycle_config = Some(body_str);
+            b.lifecycle_config = Some(body_str.clone());
+            self.store
+                .put_bucket_subresource(bucket, BucketSubresource::Lifecycle, &body_str)
+                .map_err(super::persistence_error)?;
         } else {
             b.lifecycle_config = None;
+            self.store
+                .delete_bucket_subresource(bucket, BucketSubresource::Lifecycle)
+                .map_err(super::persistence_error)?;
         }
         Ok(empty_response(StatusCode::OK))
     }
@@ -130,6 +146,9 @@ impl S3Service {
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
         b.lifecycle_config = None;
+        self.store
+            .delete_bucket_subresource(bucket, BucketSubresource::Lifecycle)
+            .map_err(super::persistence_error)?;
         Ok(empty_response(StatusCode::NO_CONTENT))
     }
 
@@ -153,7 +172,10 @@ impl S3Service {
             .buckets
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
-        b.policy = Some(body_str);
+        b.policy = Some(body_str.clone());
+        self.store
+            .put_bucket_subresource(bucket, BucketSubresource::Policy, &body_str)
+            .map_err(super::persistence_error)?;
         Ok(empty_response(StatusCode::NO_CONTENT))
     }
 
@@ -167,7 +189,7 @@ impl S3Service {
             Some(policy) => Ok(AwsResponse {
                 status: StatusCode::OK,
                 content_type: "application/json".to_string(),
-                body: Bytes::from(policy.clone()),
+                body: Bytes::from(policy.clone()).into(),
                 headers: HeaderMap::new(),
             }),
             None => Err(AwsServiceError::aws_error_with_fields(
@@ -189,6 +211,9 @@ impl S3Service {
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
         b.policy = None;
+        self.store
+            .delete_bucket_subresource(bucket, BucketSubresource::Policy)
+            .map_err(super::persistence_error)?;
         Ok(empty_response(StatusCode::NO_CONTENT))
     }
 
@@ -238,7 +263,10 @@ impl S3Service {
             .buckets
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
-        b.cors_config = Some(body_str);
+        b.cors_config = Some(body_str.clone());
+        self.store
+            .put_bucket_subresource(bucket, BucketSubresource::Cors, &body_str)
+            .map_err(super::persistence_error)?;
         Ok(empty_response(StatusCode::OK))
     }
 
@@ -266,6 +294,9 @@ impl S3Service {
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
         b.cors_config = None;
+        self.store
+            .delete_bucket_subresource(bucket, BucketSubresource::Cors)
+            .map_err(super::persistence_error)?;
         Ok(empty_response(StatusCode::NO_CONTENT))
     }
 
@@ -286,7 +317,14 @@ impl S3Service {
         b.eventbridge_enabled = body_str.contains("<EventBridgeConfiguration");
         // Auto-generate Id for each configuration element if missing
         let normalized = normalize_notification_ids(&body_str);
-        b.notification_config = Some(normalized);
+        b.notification_config = Some(normalized.clone());
+        let meta = bucket_meta_snapshot(b);
+        self.store
+            .put_bucket_meta(bucket, &meta)
+            .map_err(super::persistence_error)?;
+        self.store
+            .put_bucket_subresource(bucket, BucketSubresource::Notification, &normalized)
+            .map_err(super::persistence_error)?;
         Ok(empty_response(StatusCode::OK))
     }
 
@@ -328,7 +366,10 @@ impl S3Service {
             .buckets
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
-        b.logging_config = Some(body_str);
+        b.logging_config = Some(body_str.clone());
+        self.store
+            .put_bucket_subresource(bucket, BucketSubresource::Logging, &body_str)
+            .map_err(super::persistence_error)?;
         Ok(empty_response(StatusCode::OK))
     }
 
@@ -361,7 +402,10 @@ impl S3Service {
             .buckets
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
-        b.website_config = Some(body_str);
+        b.website_config = Some(body_str.clone());
+        self.store
+            .put_bucket_subresource(bucket, BucketSubresource::Website, &body_str)
+            .map_err(super::persistence_error)?;
         Ok(empty_response(StatusCode::OK))
     }
 
@@ -392,6 +436,9 @@ impl S3Service {
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
         b.website_config = None;
+        self.store
+            .delete_bucket_subresource(bucket, BucketSubresource::Website)
+            .map_err(super::persistence_error)?;
         Ok(empty_response(StatusCode::NO_CONTENT))
     }
 
@@ -431,6 +478,10 @@ impl S3Service {
             return Ok(empty_response(StatusCode::OK));
         }
         b.accelerate_status = status;
+        let meta = bucket_meta_snapshot(b);
+        self.store
+            .put_bucket_meta(bucket, &meta)
+            .map_err(super::persistence_error)?;
         Ok(empty_response(StatusCode::OK))
     }
 
@@ -481,7 +532,10 @@ impl S3Service {
             .buckets
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
-        b.public_access_block = Some(body_str);
+        b.public_access_block = Some(body_str.clone());
+        self.store
+            .put_bucket_subresource(bucket, BucketSubresource::PublicAccessBlock, &body_str)
+            .map_err(super::persistence_error)?;
         Ok(empty_response(StatusCode::OK))
     }
 
@@ -532,6 +586,9 @@ impl S3Service {
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
         b.public_access_block = None;
+        self.store
+            .delete_bucket_subresource(bucket, BucketSubresource::PublicAccessBlock)
+            .map_err(super::persistence_error)?;
         Ok(empty_response(StatusCode::NO_CONTENT))
     }
 
@@ -577,7 +634,10 @@ impl S3Service {
             ));
         }
 
-        b.object_lock_config = Some(body_str);
+        b.object_lock_config = Some(body_str.clone());
+        self.store
+            .put_bucket_subresource(bucket, BucketSubresource::ObjectLock, &body_str)
+            .map_err(super::persistence_error)?;
         Ok(empty_response(StatusCode::OK))
     }
 
@@ -632,10 +692,17 @@ impl S3Service {
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
         b.tags = tags.into_iter().collect();
+        let snap = TagsSnapshot {
+            tags: b.tags.clone(),
+        };
+        let payload = toml::to_string(&snap).unwrap_or_default();
+        self.store
+            .put_bucket_subresource(bucket, BucketSubresource::Tags, &payload)
+            .map_err(super::persistence_error)?;
         Ok(AwsResponse {
             status: StatusCode::NO_CONTENT,
             content_type: "application/xml".to_string(),
-            body: Bytes::new(),
+            body: Bytes::new().into(),
             headers: HeaderMap::new(),
         })
     }
@@ -651,10 +718,13 @@ impl S3Service {
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
         b.tags.clear();
+        self.store
+            .delete_bucket_subresource(bucket, BucketSubresource::Tags)
+            .map_err(super::persistence_error)?;
         Ok(AwsResponse {
             status: StatusCode::NO_CONTENT,
             content_type: "application/xml".to_string(),
-            body: Bytes::new(),
+            body: Bytes::new().into(),
             headers: HeaderMap::new(),
         })
     }
@@ -703,10 +773,18 @@ impl S3Service {
             b.acl_grants = grants;
         }
 
+        let snap = AclSnapshot {
+            owner_id: b.acl_owner_id.clone(),
+            grants: b.acl_grants.iter().map(AclGrantSnapshot::from).collect(),
+        };
+        let payload = toml::to_string(&snap).unwrap_or_default();
+        self.store
+            .put_bucket_subresource(bucket, BucketSubresource::Acl, &payload)
+            .map_err(super::persistence_error)?;
         Ok(AwsResponse {
             status: StatusCode::OK,
             content_type: "application/xml".to_string(),
-            body: Bytes::new(),
+            body: Bytes::new().into(),
             headers: HeaderMap::new(),
         })
     }
@@ -729,10 +807,14 @@ impl S3Service {
         if status_val == "Enabled" || status_val == "Suspended" {
             b.versioning = Some(status_val);
         }
+        let meta = bucket_meta_snapshot(b);
+        self.store
+            .put_bucket_meta(bucket, &meta)
+            .map_err(super::persistence_error)?;
         Ok(AwsResponse {
             status: StatusCode::OK,
             content_type: "application/xml".to_string(),
-            body: Bytes::new(),
+            body: Bytes::new().into(),
             headers: HeaderMap::new(),
         })
     }
@@ -799,7 +881,11 @@ impl S3Service {
             ));
         }
 
-        b.replication_config = Some(normalize_replication_xml(&body_str));
+        let normalized = normalize_replication_xml(&body_str);
+        b.replication_config = Some(normalized.clone());
+        self.store
+            .put_bucket_subresource(bucket, BucketSubresource::Replication, &normalized)
+            .map_err(super::persistence_error)?;
         Ok(empty_response(StatusCode::OK))
     }
 
@@ -833,6 +919,9 @@ impl S3Service {
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
         b.replication_config = None;
+        self.store
+            .delete_bucket_subresource(bucket, BucketSubresource::Replication)
+            .map_err(super::persistence_error)?;
         Ok(empty_response(StatusCode::NO_CONTENT))
     }
 
@@ -847,7 +936,10 @@ impl S3Service {
             .buckets
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
-        b.ownership_controls = Some(body_str);
+        b.ownership_controls = Some(body_str.clone());
+        self.store
+            .put_bucket_subresource(bucket, BucketSubresource::Ownership, &body_str)
+            .map_err(super::persistence_error)?;
         Ok(empty_response(StatusCode::OK))
     }
 
@@ -881,6 +973,9 @@ impl S3Service {
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
         b.ownership_controls = None;
+        self.store
+            .delete_bucket_subresource(bucket, BucketSubresource::Ownership)
+            .map_err(super::persistence_error)?;
         Ok(empty_response(StatusCode::NO_CONTENT))
     }
 
@@ -894,14 +989,21 @@ impl S3Service {
         let inv_id = extract_xml_value(&body_str, "Id")
             .or_else(|| req.query_params.get("id").cloned())
             .unwrap_or_default();
-        {
+        let payload = {
             let mut state = self.state.write();
             let b = state
                 .buckets
                 .get_mut(bucket)
                 .ok_or_else(|| no_such_bucket(bucket))?;
             b.inventory_configs.insert(inv_id.clone(), body_str);
-        }
+            let snap = InventorySnapshot {
+                configs: b.inventory_configs.clone(),
+            };
+            toml::to_string(&snap).unwrap_or_default()
+        };
+        self.store
+            .put_bucket_subresource(bucket, BucketSubresource::Inventory, &payload)
+            .map_err(super::persistence_error)?;
         // Generate the inventory report immediately so tests can verify it
         inventory::generate_inventory_report(&self.state, bucket, &inv_id);
         Ok(empty_response(StatusCode::OK))
@@ -966,6 +1068,19 @@ impl S3Service {
             .get_mut(bucket)
             .ok_or_else(|| no_such_bucket(bucket))?;
         b.inventory_configs.remove(&inv_id);
+        if b.inventory_configs.is_empty() {
+            self.store
+                .delete_bucket_subresource(bucket, BucketSubresource::Inventory)
+                .map_err(super::persistence_error)?;
+        } else {
+            let snap = InventorySnapshot {
+                configs: b.inventory_configs.clone(),
+            };
+            let payload = toml::to_string(&snap).unwrap_or_default();
+            self.store
+                .put_bucket_subresource(bucket, BucketSubresource::Inventory, &payload)
+                .map_err(super::persistence_error)?;
+        }
         Ok(empty_response(StatusCode::NO_CONTENT))
     }
 }

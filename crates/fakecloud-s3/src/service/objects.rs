@@ -3,8 +3,11 @@ use chrono::{DateTime, Utc};
 use http::{HeaderMap, StatusCode};
 use uuid::Uuid;
 
-use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
+use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError, ResponseBody};
 
+use fakecloud_persistence::BodySource;
+
+use crate::persistence::object_meta_snapshot;
 use crate::state::{AclGrant, S3Object};
 
 use super::{
@@ -12,7 +15,7 @@ use super::{
     check_object_lock_for_overwrite, compute_checksum, compute_md5, deliver_notifications,
     etag_matches, extract_user_metadata, extract_xml_value, is_frozen, is_valid_storage_class,
     make_delete_marker, no_such_bucket, no_such_key, parse_delete_objects_xml, parse_grant_headers,
-    parse_range_header, parse_url_encoded_tags, precondition_failed, replicate_object,
+    parse_range_header, parse_url_encoded_tags, precondition_failed, replicate_through_store,
     resolve_object, s3_xml, url_encode_s3_key, xml_escape, RangeResult, S3Service,
 };
 
@@ -918,10 +921,15 @@ impl S3Service {
             }
         }
 
+        let store_body_bytes = data.clone();
         let obj = S3Object {
             key: key.to_string(),
             size: data.len() as u64,
-            data,
+            body: crate::state::memory_body(data),
+            // The runtime body is replaced below with the BodyRef returned
+            // from self.store.put_object — for memory mode this is still a
+            // Memory variant; for persistent mode it points at the freshly
+            // written .bin file so we don't double-buffer in RAM.
             content_type,
             etag: etag.clone(),
             last_modified: Utc::now(),
@@ -987,8 +995,40 @@ impl S3Service {
             }
             b.objects.insert(key.to_string(), obj);
 
-            // Replicate object if replication is configured on the source bucket
-            replicate_object(&mut state, bucket, key);
+            // Snapshot + persist + rewrite runtime body to the returned BodyRef.
+            let meta_version = {
+                let b2 = state
+                    .buckets
+                    .get(bucket)
+                    .ok_or_else(|| no_such_bucket(bucket))?;
+                let o = b2.objects.get(key).ok_or_else(|| no_such_key(key))?;
+                object_meta_snapshot(o)
+            };
+            let returned_body = self
+                .store
+                .put_object(
+                    bucket,
+                    key,
+                    meta_version.version_id.as_deref(),
+                    BodySource::Bytes(store_body_bytes.clone()),
+                    &meta_version,
+                )
+                .map_err(super::persistence_error)?;
+            if let Some(b2) = state.buckets.get_mut(bucket) {
+                if let Some(o) = b2.objects.get_mut(key) {
+                    o.body = returned_body.clone();
+                }
+                if versioning_enabled {
+                    if let Some(versions) = b2.object_versions.get_mut(key) {
+                        if let Some(last) = versions.last_mut() {
+                            last.body = returned_body;
+                        }
+                    }
+                }
+            }
+            // Replicate (in-memory copy) then persist replicas via the store.
+            replicate_through_store(&mut state, &self.store, bucket, key)
+                .map_err(super::persistence_error)?;
         } // write lock dropped
 
         // --- Response phase: build response headers ---
@@ -1054,7 +1094,7 @@ impl S3Service {
         Ok(AwsResponse {
             status: StatusCode::OK,
             content_type: String::new(),
-            body: Bytes::new(),
+            body: Bytes::new().into(),
             headers,
         })
     }
@@ -1172,7 +1212,7 @@ impl S3Service {
             headers.insert("x-amz-restore", rv.parse().unwrap());
         }
         let mut response_status = StatusCode::OK;
-        let response_body;
+        let response_body: fakecloud_core::service::ResponseBody;
         let mut is_range_request = false;
         if let Some(range_str) = req.headers.get("range").and_then(|v| v.to_str().ok()) {
             if let Some(rr) = parse_range_header(range_str, total_size) {
@@ -1182,11 +1222,12 @@ impl S3Service {
                             "content-range",
                             format!("bytes {start}-{end}/{total_size}").parse().unwrap(),
                         );
-                        headers.insert(
-                            "content-length",
-                            (end - start + 1).to_string().parse().unwrap(),
-                        );
-                        response_body = obj.data.slice(start..=end);
+                        let len = (end - start + 1) as u64;
+                        headers.insert("content-length", len.to_string().parse().unwrap());
+                        response_body = state
+                            .read_body_range(&obj.body, start as u64, len)
+                            .map_err(super::io_to_aws)?
+                            .into();
                         response_status = StatusCode::PARTIAL_CONTENT;
                         is_range_request = true;
                     }
@@ -1203,12 +1244,12 @@ impl S3Service {
                     }
                     RangeResult::Ignored => {
                         headers.insert("content-length", total_size.to_string().parse().unwrap());
-                        response_body = obj.data.clone();
+                        response_body = full_body_response(&state, &obj.body)?;
                     }
                 }
             } else {
                 headers.insert("content-length", total_size.to_string().parse().unwrap());
-                response_body = obj.data.clone();
+                response_body = full_body_response(&state, &obj.body)?;
             }
         } else if let Some(part_num_str) = req.query_params.get("partNumber") {
             if let Ok(part_num) = part_num_str.parse::<u32>() {
@@ -1245,15 +1286,18 @@ impl S3Service {
                         .unwrap(),
                 );
                 headers.insert("content-length", part_size.to_string().parse().unwrap());
-                response_body = obj.data.slice(part_start..part_start + part_size);
+                response_body = state
+                    .read_body_range(&obj.body, part_start as u64, part_size as u64)
+                    .map_err(super::io_to_aws)?
+                    .into();
                 response_status = StatusCode::PARTIAL_CONTENT;
             } else {
                 headers.insert("content-length", total_size.to_string().parse().unwrap());
-                response_body = obj.data.clone();
+                response_body = full_body_response(&state, &obj.body)?;
             }
         } else {
             headers.insert("content-length", total_size.to_string().parse().unwrap());
-            response_body = obj.data.clone();
+            response_body = full_body_response(&state, &obj.body)?;
         }
         // Only include checksum headers for full (non-range) responses
         if !is_range_request {
@@ -1454,10 +1498,13 @@ impl S3Service {
             if is_dm {
                 resp_headers.insert("x-amz-delete-marker", "true".parse().unwrap());
             }
+            self.store
+                .delete_object(bucket, key, Some(vid.as_str()))
+                .map_err(super::persistence_error)?;
             return Ok(AwsResponse {
                 status: StatusCode::NO_CONTENT,
                 content_type: "application/xml".to_string(),
-                body: Bytes::new(),
+                body: Bytes::new().into(),
                 headers: resp_headers,
             });
         }
@@ -1494,6 +1541,7 @@ impl S3Service {
             }
             let dm_id = Uuid::new_v4().to_string();
             let marker = make_delete_marker(key, &dm_id);
+            let marker_meta = object_meta_snapshot(&marker);
             b.object_versions
                 .entry(key.to_string())
                 .or_default()
@@ -1501,6 +1549,18 @@ impl S3Service {
             b.objects.insert(key.to_string(), marker);
             resp_headers.insert("x-amz-version-id", dm_id.parse().unwrap());
             resp_headers.insert("x-amz-delete-marker", "true".parse().unwrap());
+            self.store
+                .delete_object(bucket, key, None)
+                .map_err(super::persistence_error)?;
+            self.store
+                .put_object(
+                    bucket,
+                    key,
+                    Some(dm_id.as_str()),
+                    BodySource::Bytes(Bytes::new()),
+                    &marker_meta,
+                )
+                .map_err(super::persistence_error)?;
 
             // Notification for delete
             let notification_config = b.notification_config.clone();
@@ -1527,7 +1587,7 @@ impl S3Service {
             return Ok(AwsResponse {
                 status: StatusCode::NO_CONTENT,
                 content_type: "application/xml".to_string(),
-                body: Bytes::new(),
+                body: Bytes::new().into(),
                 headers: resp_headers,
             });
         }
@@ -1538,6 +1598,9 @@ impl S3Service {
         let obj_key = key.to_string();
 
         b.objects.remove(key);
+        self.store
+            .delete_object(bucket, key, None)
+            .map_err(super::persistence_error)?;
         drop(state);
 
         // Deliver S3 event notifications
@@ -1560,7 +1623,7 @@ impl S3Service {
         Ok(AwsResponse {
             status: StatusCode::NO_CONTENT,
             content_type: "application/xml".to_string(),
-            body: Bytes::new(),
+            body: Bytes::new().into(),
             headers: HeaderMap::new(),
         })
     }
@@ -1588,7 +1651,7 @@ impl S3Service {
                 return Ok(AwsResponse {
                     status: StatusCode::METHOD_NOT_ALLOWED,
                     content_type: "application/xml".to_string(),
-                    body: Bytes::new(),
+                    body: Bytes::new().into(),
                     headers,
                 });
             }
@@ -1600,7 +1663,7 @@ impl S3Service {
             return Ok(AwsResponse {
                 status: StatusCode::NOT_FOUND,
                 content_type: "application/xml".to_string(),
-                body: Bytes::new(),
+                body: Bytes::new().into(),
                 headers,
             });
         }
@@ -1765,7 +1828,7 @@ impl S3Service {
         Ok(AwsResponse {
             status: response_status,
             content_type: obj.content_type.clone(),
-            body: Bytes::new(),
+            body: Bytes::new().into(),
             headers,
         })
     }
@@ -2040,8 +2103,9 @@ impl S3Service {
         });
 
         // Checksum: compute new if algorithm specified, or copy from source
+        let src_bytes = state.read_body(&src_obj.body).map_err(super::io_to_aws)?;
         let (new_checksum_algo, new_checksum_val) = if let Some(ref algo) = checksum_algorithm {
-            let val = compute_checksum(algo, &src_obj.data);
+            let val = compute_checksum(algo, &src_bytes);
             (Some(algo.clone()), Some(val))
         } else if src_obj.checksum_algorithm.is_some() {
             (
@@ -2074,7 +2138,11 @@ impl S3Service {
 
         let dest_obj = S3Object {
             key: dest_key.to_string(),
-            data: src_obj.data,
+            // Copy is an independent object — never inherit the source's
+            // disk-backed BodyRef (which would point at the source's file).
+            // The source bytes are read above; the destination's own on-disk
+            // file is written below via `self.store.put_object`.
+            body: crate::state::memory_body(src_bytes.clone()),
             size: src_obj.size,
             etag: etag.clone(),
             last_modified,
@@ -2106,6 +2174,41 @@ impl S3Service {
                 .push(dest_obj.clone());
         }
         db.objects.insert(dest_key.to_string(), dest_obj);
+        let dest_meta = {
+            let o = db
+                .objects
+                .get(dest_key)
+                .ok_or_else(|| no_such_key(dest_key))?;
+            object_meta_snapshot(o)
+        };
+        // Release the `db` borrow before the store call so we can re-borrow
+        // for the BodyRef rewrite and subsequent replication/notification
+        // work below.
+        let _ = db;
+        let dest_body_ref = self
+            .store
+            .put_object(
+                dest_bucket,
+                dest_key,
+                dest_meta.version_id.as_deref(),
+                BodySource::Bytes(src_bytes.clone()),
+                &dest_meta,
+            )
+            .map_err(super::persistence_error)?;
+        if let Some(db2) = state.buckets.get_mut(dest_bucket) {
+            if let Some(o) = db2.objects.get_mut(dest_key) {
+                o.body = dest_body_ref.clone();
+            }
+            if let Some(versions) = db2.object_versions.get_mut(dest_key) {
+                if let Some(last) = versions.last_mut() {
+                    last.body = dest_body_ref;
+                }
+            }
+        }
+        let db = state
+            .buckets
+            .get_mut(dest_bucket)
+            .ok_or_else(|| no_such_bucket(dest_bucket))?;
 
         let mut response_headers = HeaderMap::new();
         if let Some(vid) = &version_id {
@@ -2150,7 +2253,8 @@ impl S3Service {
         let region = state.region.clone();
 
         // Replicate object if replication is configured on the destination bucket
-        replicate_object(&mut state, dest_bucket, dest_key);
+        replicate_through_store(&mut state, &self.store, dest_bucket, dest_key)
+            .map_err(super::persistence_error)?;
 
         drop(state);
 
@@ -2294,6 +2398,9 @@ impl S3Service {
                         b.object_versions.remove(key);
                     }
                 }
+                self.store
+                    .delete_object(bucket, key, Some(vid.as_str()))
+                    .map_err(super::persistence_error)?;
                 deleted_xml.push_str(&format!(
                     "<Deleted><Key>{}</Key><VersionId>{}</VersionId></Deleted>",
                     xml_escape(key),
@@ -2307,12 +2414,18 @@ impl S3Service {
                     .or_default()
                     .push(marker.clone());
                 b.objects.insert(key.to_string(), marker);
+                self.store
+                    .delete_object(bucket, key, None)
+                    .map_err(super::persistence_error)?;
                 deleted_xml.push_str(&format!(
                     "<Deleted><Key>{}</Key><DeleteMarker>true</DeleteMarker><DeleteMarkerVersionId>{}</DeleteMarkerVersionId></Deleted>",
                     xml_escape(key), dm_id,
                 ));
             } else {
                 b.objects.remove(key);
+                self.store
+                    .delete_object(bucket, key, None)
+                    .map_err(super::persistence_error)?;
                 deleted_xml.push_str(&format!(
                     "<Deleted><Key>{}</Key></Deleted>",
                     xml_escape(key)
@@ -2457,11 +2570,42 @@ impl S3Service {
             .to_string();
         obj.restore_ongoing = Some(false);
         obj.restore_expiry = Some(expiry);
+        let meta = object_meta_snapshot(obj);
+        self.store
+            .put_object_meta(bucket, key, meta.version_id.as_deref(), &meta)
+            .map_err(super::persistence_error)?;
         Ok(AwsResponse {
             status,
             content_type: "application/xml".to_string(),
-            body: Bytes::new(),
+            body: Bytes::new().into(),
             headers: HeaderMap::new(),
         })
+    }
+}
+
+/// Build the response body for a full GetObject read. For memory-backed
+/// bodies this returns `ResponseBody::Bytes`; for disk-backed bodies it
+/// opens the file handle eagerly (while the caller still holds the per-state
+/// read guard) and returns `ResponseBody::File` so the dispatcher can stream
+/// the file directly into the HTTP response without materializing it in RAM.
+///
+/// Opening the handle inside the read guard is load-bearing: on unix an open
+/// fd keeps the old inode alive even after the path is renamed over or
+/// unlinked, so a concurrent PUT/DELETE that lands after we drop the guard
+/// cannot hand the reader a partial or swapped body.
+fn full_body_response(
+    state: &crate::state::S3State,
+    body: &fakecloud_persistence::BodyRef,
+) -> Result<ResponseBody, AwsServiceError> {
+    match body {
+        fakecloud_persistence::BodyRef::Memory(_) => {
+            let bytes = state.read_body(body).map_err(super::io_to_aws)?;
+            Ok(ResponseBody::Bytes(bytes))
+        }
+        fakecloud_persistence::BodyRef::Disk { path, size, .. } => {
+            let std_file = std::fs::File::open(path).map_err(super::io_to_aws)?;
+            let file = tokio::fs::File::from_std(std_file);
+            Ok(ResponseBody::File { file, size: *size })
+        }
     }
 }

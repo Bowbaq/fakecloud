@@ -987,25 +987,85 @@ impl DynamoDbService {
 
         // Write to S3 if we have access to S3 state
         let mut export_failed = false;
+        let mut failure_code = "";
         let mut failure_reason = String::new();
         if let Some(ref s3_state) = self.s3_state {
-            let mut s3 = s3_state.write();
-            if let Some(bucket) = s3.buckets.get_mut(s3_bucket) {
+            // Verify the target bucket exists before touching the store —
+            // otherwise we would orphan artifacts on disk under a bucket
+            // directory that no in-memory bucket references.
+            if !s3_state.read().buckets.contains_key(s3_bucket) {
+                export_failed = true;
+                failure_code = "S3NoSuchBucket";
+                failure_reason = format!("S3 bucket does not exist: {s3_bucket}");
+            } else {
+                let body_bytes = bytes::Bytes::from(json_lines);
                 let etag = uuid::Uuid::new_v4().to_string().replace('-', "");
-                let obj = fakecloud_s3::state::S3Object {
+                let meta = fakecloud_persistence::ObjectMeta {
                     key: s3_key.clone(),
-                    data: bytes::Bytes::from(json_lines),
                     content_type: "application/json".to_string(),
-                    etag,
+                    etag: etag.clone(),
                     size: data_size as u64,
                     last_modified: now,
                     storage_class: "STANDARD".to_string(),
                     ..Default::default()
                 };
-                bucket.objects.insert(s3_key, obj);
-            } else {
-                export_failed = true;
-                failure_reason = format!("S3 bucket does not exist: {s3_bucket}");
+                // Persist through the S3 store (Disk in persistent mode,
+                // Memory otherwise) so the export survives restart and the
+                // in-memory runtime body is whatever the store returns.
+                let body_ref_result: Result<fakecloud_persistence::BodyRef, String> =
+                    if let Some(ref store) = self.s3_store {
+                        store
+                            .put_object(
+                                s3_bucket,
+                                &s3_key,
+                                None,
+                                fakecloud_persistence::BodySource::Bytes(body_bytes.clone()),
+                                &meta,
+                            )
+                            .map_err(|err| {
+                                tracing::error!(
+                                    bucket = %s3_bucket,
+                                    key = %s3_key,
+                                    error = %err,
+                                    "DynamoDB export: failed to persist result object via store",
+                                );
+                                format!("failed to persist export artifact: {err}")
+                            })
+                    } else {
+                        Ok(fakecloud_persistence::BodyRef::Memory(body_bytes.clone()))
+                    };
+                match body_ref_result {
+                    Ok(body_ref) => {
+                        let mut s3 = s3_state.write();
+                        if let Some(bucket) = s3.buckets.get_mut(s3_bucket) {
+                            let obj = fakecloud_s3::state::S3Object {
+                                key: s3_key.clone(),
+                                body: body_ref,
+                                content_type: "application/json".to_string(),
+                                etag,
+                                size: data_size as u64,
+                                last_modified: now,
+                                storage_class: "STANDARD".to_string(),
+                                ..Default::default()
+                            };
+                            bucket.objects.insert(s3_key, obj);
+                        } else {
+                            // Raced with concurrent DeleteBucket between our
+                            // check and the write guard. The store write
+                            // already happened, so we have an orphan on
+                            // disk — best we can do is mark the export
+                            // failed and let the operator reconcile.
+                            export_failed = true;
+                            failure_code = "S3NoSuchBucket";
+                            failure_reason = format!("S3 bucket does not exist: {s3_bucket}");
+                        }
+                    }
+                    Err(reason) => {
+                        export_failed = true;
+                        failure_code = "InternalServerError";
+                        failure_reason = reason;
+                    }
+                }
             }
         }
 
@@ -1044,7 +1104,7 @@ impl DynamoDbService {
             }
         });
         if export_failed {
-            response["ExportDescription"]["FailureCode"] = json!("S3NoSuchBucket");
+            response["ExportDescription"]["FailureCode"] = json!(failure_code);
             response["ExportDescription"]["FailureMessage"] = json!(failure_reason);
         }
         Self::ok_json(response)
@@ -1171,7 +1231,14 @@ impl DynamoDbService {
                 if !prefix.is_empty() && !key.starts_with(&prefix) {
                     continue;
                 }
-                let data = std::str::from_utf8(&obj.data).unwrap_or("");
+                let obj_bytes = s3.read_body(&obj.body).map_err(|e| {
+                    AwsServiceError::aws_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "InternalServerError",
+                        format!("failed to read S3 object body for import: {e}"),
+                    )
+                })?;
+                let data = std::str::from_utf8(&obj_bytes).unwrap_or("");
                 processed_size_bytes += obj.size as i64;
                 for line in data.lines() {
                     let line = line.trim();

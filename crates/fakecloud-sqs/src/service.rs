@@ -2974,7 +2974,7 @@ mod tests {
     fn create_queue(svc: &SqsService, name: &str) -> String {
         let req = make_request("CreateQueue", json!({ "QueueName": name }));
         let resp = svc.create_queue(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         body["QueueUrl"].as_str().unwrap().to_string()
     }
 
@@ -2984,7 +2984,7 @@ mod tests {
             json!({ "QueueUrl": queue_url, "MessageBody": body_text }),
         );
         let resp = svc.send_message(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         body["MessageId"].as_str().unwrap().to_string()
     }
 
@@ -3002,7 +3002,7 @@ mod tests {
             .build()
             .unwrap();
         let resp = rt.block_on(svc.receive_message(&req)).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         body["Messages"].as_array().cloned().unwrap_or_default()
     }
 
@@ -3052,7 +3052,7 @@ mod tests {
         let url = create_queue(&svc, "lookup-queue");
         let req = make_request("GetQueueUrl", json!({ "QueueName": "lookup-queue" }));
         let resp = svc.get_queue_url(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["QueueUrl"].as_str().unwrap(), url);
     }
 
@@ -3084,7 +3084,7 @@ mod tests {
 
         let req = make_request("ListQueues", json!({}));
         let resp = svc.list_queues(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let urls = body["QueueUrls"].as_array().unwrap();
         assert_eq!(urls.len(), 3);
     }
@@ -3098,7 +3098,7 @@ mod tests {
 
         let req = make_request("ListQueues", json!({ "QueueNamePrefix": "prod-" }));
         let resp = svc.list_queues(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let urls = body["QueueUrls"].as_array().unwrap();
         assert_eq!(urls.len(), 2);
         for u in urls {
@@ -3115,7 +3115,7 @@ mod tests {
 
         let req = make_request("ListQueues", json!({ "MaxResults": 2 }));
         let resp = svc.list_queues(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let urls = body["QueueUrls"].as_array().unwrap();
         assert_eq!(urls.len(), 2);
         assert!(body["NextToken"].as_str().is_some());
@@ -3124,7 +3124,7 @@ mod tests {
         let token = body["NextToken"].as_str().unwrap();
         let req2 = make_request("ListQueues", json!({ "MaxResults": 2, "NextToken": token }));
         let resp2 = svc.list_queues(&req2).unwrap();
-        let body2: Value = serde_json::from_slice(&resp2.body).unwrap();
+        let body2: Value = serde_json::from_slice(resp2.body.expect_bytes()).unwrap();
         let urls2 = body2["QueueUrls"].as_array().unwrap();
         assert_eq!(urls2.len(), 2);
 
@@ -3135,7 +3135,7 @@ mod tests {
             json!({ "MaxResults": 2, "NextToken": token2 }),
         );
         let resp3 = svc.list_queues(&req3).unwrap();
-        let body3: Value = serde_json::from_slice(&resp3.body).unwrap();
+        let body3: Value = serde_json::from_slice(resp3.body.expect_bytes()).unwrap();
         let urls3 = body3["QueueUrls"].as_array().unwrap();
         assert_eq!(urls3.len(), 1);
         assert!(body3["NextToken"].is_null());
@@ -3165,7 +3165,7 @@ mod tests {
             json!({ "QueueUrl": url, "MessageBody": "test" }),
         );
         let resp = svc.send_message(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["MD5OfMessageBody"].as_str().is_some());
         assert!(body["MessageId"].as_str().is_some());
     }
@@ -3209,7 +3209,7 @@ mod tests {
             .build()
             .unwrap();
         let resp = rt.block_on(svc.receive_message(&req)).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let receipt = body["Messages"][0]["ReceiptHandle"]
             .as_str()
             .unwrap()
@@ -3257,7 +3257,7 @@ mod tests {
             }),
         );
         let resp = svc.send_message_batch(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let successful = body["Successful"].as_array().unwrap();
         assert_eq!(successful.len(), 3);
 
@@ -3326,7 +3326,7 @@ mod tests {
             .build()
             .unwrap();
         let resp = rt.block_on(svc.receive_message(&req)).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let receipt = body["Messages"][0]["ReceiptHandle"]
             .as_str()
             .unwrap()
@@ -3379,7 +3379,7 @@ mod tests {
             }),
         );
         let resp = svc.get_queue_attributes(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let attrs = body["Attributes"].as_object().unwrap();
 
         assert_eq!(attrs["VisibilityTimeout"].as_str().unwrap(), "30");
@@ -3400,7 +3400,7 @@ mod tests {
             }),
         );
         let resp = svc.get_queue_attributes(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let attrs = body["Attributes"].as_object().unwrap();
 
         assert!(attrs.contains_key("VisibilityTimeout"));
@@ -3430,7 +3430,7 @@ mod tests {
             }),
         );
         let resp = svc.get_queue_attributes(&get_req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let attrs = body["Attributes"].as_object().unwrap();
         assert_eq!(attrs["VisibilityTimeout"].as_str().unwrap(), "60");
         assert_eq!(attrs["DelaySeconds"].as_str().unwrap(), "10");
@@ -3451,7 +3451,7 @@ mod tests {
             }),
         );
         let resp = svc.get_queue_attributes(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["Attributes"]["ApproximateNumberOfMessages"]
                 .as_str()
@@ -3491,7 +3491,7 @@ mod tests {
             }),
         );
         let resp = svc.get_queue_attributes(&get_req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let attrs = body["Attributes"].as_object().unwrap();
         assert!(!attrs.contains_key("Policy"));
     }
@@ -3541,7 +3541,7 @@ mod tests {
 
         let list_req = make_request("ListQueueTags", json!({ "QueueUrl": url }));
         let resp = svc.list_queue_tags(&list_req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let tags = body["Tags"].as_object().unwrap();
         assert_eq!(tags["env"].as_str().unwrap(), "prod");
         assert_eq!(tags["team"].as_str().unwrap(), "backend");
@@ -3572,7 +3572,7 @@ mod tests {
 
         let list_req = make_request("ListQueueTags", json!({ "QueueUrl": url }));
         let resp = svc.list_queue_tags(&list_req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let tags = body["Tags"].as_object().unwrap();
         assert_eq!(tags.len(), 1);
         assert_eq!(tags["team"].as_str().unwrap(), "backend");
@@ -3591,7 +3591,7 @@ mod tests {
 
         let list_req = make_request("ListQueueTags", json!({ "QueueUrl": url }));
         let resp = svc.list_queue_tags(&list_req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let tags = body["Tags"].as_object().unwrap();
         assert_eq!(tags.len(), 2);
         assert_eq!(tags["a"].as_str().unwrap(), "1");
@@ -3612,7 +3612,7 @@ mod tests {
         let url = create_queue(&svc, "no-tags-queue");
         let req = make_request("ListQueueTags", json!({ "QueueUrl": url }));
         let resp = svc.list_queue_tags(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let tags = body["Tags"].as_object().unwrap();
         assert!(tags.is_empty());
     }
@@ -3630,12 +3630,12 @@ mod tests {
             }),
         );
         let resp = svc.create_queue(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let url = body["QueueUrl"].as_str().unwrap();
 
         let list_req = make_request("ListQueueTags", json!({ "QueueUrl": url }));
         let resp = svc.list_queue_tags(&list_req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Tags"]["env"].as_str().unwrap(), "test");
     }
 
@@ -3650,7 +3650,7 @@ mod tests {
             }),
         );
         let resp = svc.create_queue(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let url = body["QueueUrl"].as_str().unwrap();
 
         let get_req = make_request(
@@ -3661,7 +3661,7 @@ mod tests {
             }),
         );
         let resp = svc.get_queue_attributes(&get_req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["Attributes"]["VisibilityTimeout"].as_str().unwrap(),
             "45"
@@ -3684,7 +3684,7 @@ mod tests {
             }),
         );
         let resp = svc.get_queue_attributes(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Attributes"]["FifoQueue"].as_str().unwrap(), "true");
     }
 
@@ -3737,7 +3737,7 @@ mod tests {
             }),
         );
         let resp = svc.send_message(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["MD5OfMessageAttributes"].as_str().is_some());
     }
 
@@ -3775,7 +3775,7 @@ mod tests {
             }),
         );
         let resp = svc.get_queue_attributes(&attr_req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let attrs = body["Attributes"].as_object().unwrap();
         assert_eq!(attrs["ApproximateNumberOfMessages"].as_str().unwrap(), "0");
         assert_eq!(

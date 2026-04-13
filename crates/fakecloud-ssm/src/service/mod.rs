@@ -472,7 +472,7 @@ mod tests {
             }),
         );
         let resp = svc.send_command(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         body["Command"]["CommandId"].as_str().unwrap().to_string()
     }
 
@@ -489,7 +489,7 @@ mod tests {
         // First page: MaxResults=1
         let req = make_request("ListCommands", json!({ "MaxResults": 1 }));
         let resp = svc.list_commands(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Commands"].as_array().unwrap().len(), 1);
         let token = body["NextToken"].as_str().unwrap();
 
@@ -499,7 +499,7 @@ mod tests {
             json!({ "MaxResults": 1, "NextToken": token }),
         );
         let resp = svc.list_commands(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Commands"].as_array().unwrap().len(), 1);
         let token = body["NextToken"].as_str().unwrap();
 
@@ -509,7 +509,7 @@ mod tests {
             json!({ "MaxResults": 1, "NextToken": token }),
         );
         let resp = svc.list_commands(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Commands"].as_array().unwrap().len(), 1);
         assert!(body.get("NextToken").is_none() || body["NextToken"].is_null());
     }
@@ -540,7 +540,7 @@ mod tests {
             }),
         );
         let resp = svc.send_command(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let cmd = &body["Command"];
 
         // These fields are not part of the Smithy Command output shape
@@ -585,7 +585,7 @@ mod tests {
         // First page: MaxResults=10 (minimum allowed)
         let req = make_request("DescribeMaintenanceWindows", json!({ "MaxResults": 10 }));
         let resp = svc.describe_maintenance_windows(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["WindowIdentities"].as_array().unwrap().len(), 10);
         let token = body["NextToken"].as_str().unwrap();
 
@@ -595,7 +595,7 @@ mod tests {
             json!({ "MaxResults": 10, "NextToken": token }),
         );
         let resp = svc.describe_maintenance_windows(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["WindowIdentities"].as_array().unwrap().len(), 1);
         assert!(body.get("NextToken").is_none() || body["NextToken"].is_null());
     }
@@ -617,7 +617,7 @@ mod tests {
             }),
         );
         let resp = svc.create_association(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let assoc_id = body["AssociationDescription"]["AssociationId"]
             .as_str()
             .unwrap()
@@ -630,7 +630,7 @@ mod tests {
         // Describe
         let req = make_request("DescribeAssociation", json!({ "AssociationId": assoc_id }));
         let resp = svc.describe_association(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["AssociationDescription"]["AssociationName"]
                 .as_str()
@@ -641,7 +641,7 @@ mod tests {
         // List
         let req = make_request("ListAssociations", json!({}));
         let resp = svc.list_associations(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Associations"].as_array().unwrap().len(), 1);
 
         // Update
@@ -653,7 +653,7 @@ mod tests {
             }),
         );
         let resp = svc.update_association(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["AssociationDescription"]["AssociationName"]
                 .as_str()
@@ -667,7 +667,7 @@ mod tests {
             json!({ "AssociationId": assoc_id }),
         );
         let resp = svc.list_association_versions(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["AssociationVersions"].as_array().unwrap().len(), 2);
 
         // Delete
@@ -692,7 +692,7 @@ mod tests {
             }),
         );
         let resp = svc.create_association_batch(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Successful"].as_array().unwrap().len(), 2);
         assert!(body["Failed"].as_array().unwrap().is_empty());
     }
@@ -723,13 +723,13 @@ mod tests {
             }),
         );
         let resp = svc.create_ops_item(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let ops_item_id = body["OpsItemId"].as_str().unwrap().to_string();
 
         // Get
         let req = make_request("GetOpsItem", json!({ "OpsItemId": ops_item_id }));
         let resp = svc.get_ops_item(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["OpsItem"]["Title"].as_str().unwrap(), "Test OpsItem");
         assert_eq!(body["OpsItem"]["Status"].as_str().unwrap(), "Open");
 
@@ -747,7 +747,7 @@ mod tests {
         // Verify update
         let req = make_request("GetOpsItem", json!({ "OpsItemId": ops_item_id }));
         let resp = svc.get_ops_item(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["OpsItem"]["Title"].as_str().unwrap(),
             "Updated OpsItem"
@@ -757,7 +757,7 @@ mod tests {
         // Describe
         let req = make_request("DescribeOpsItems", json!({}));
         let resp = svc.describe_ops_items(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["OpsItemSummaries"].as_array().unwrap().len(), 1);
 
         // Delete
@@ -785,7 +785,7 @@ mod tests {
             }),
         );
         let resp = svc.put_resource_policy(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let policy_id = body["PolicyId"].as_str().unwrap().to_string();
         let policy_hash = body["PolicyHash"].as_str().unwrap().to_string();
 
@@ -795,7 +795,7 @@ mod tests {
             json!({ "ResourceArn": resource_arn }),
         );
         let resp = svc.get_resource_policies(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Policies"].as_array().unwrap().len(), 1);
 
         // Delete
@@ -815,7 +815,7 @@ mod tests {
             json!({ "ResourceArn": resource_arn }),
         );
         let resp = svc.get_resource_policies(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["Policies"].as_array().unwrap().is_empty());
     }
 
@@ -829,7 +829,7 @@ mod tests {
             json!({ "Target": "i-1234567890abcdef0" }),
         );
         let resp = svc.get_connection_status(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Status"].as_str().unwrap(), "connected");
     }
 
@@ -841,7 +841,7 @@ mod tests {
             json!({ "CalendarNames": ["arn:aws:ssm:us-east-1:123456789012:document/cal"] }),
         );
         let resp = svc.get_calendar_state(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["State"].as_str().unwrap(), "OPEN");
     }
 
@@ -855,7 +855,7 @@ mod tests {
             json!({ "SettingId": "/ssm/parameter-store/high-throughput-enabled" }),
         );
         let resp = svc.get_service_setting(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["ServiceSetting"]["Status"].as_str().unwrap(),
             "Default"
@@ -877,7 +877,7 @@ mod tests {
             json!({ "SettingId": "/ssm/parameter-store/high-throughput-enabled" }),
         );
         let resp = svc.get_service_setting(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["ServiceSetting"]["Status"].as_str().unwrap(),
             "Customized"
@@ -900,7 +900,7 @@ mod tests {
             json!({ "SettingId": "/ssm/parameter-store/high-throughput-enabled" }),
         );
         let resp = svc.get_service_setting(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["ServiceSetting"]["Status"].as_str().unwrap(),
             "Default"
@@ -925,7 +925,7 @@ mod tests {
         // List versions
         let req = make_request("ListDocumentVersions", json!({ "Name": "TestDocVer" }));
         let resp = svc.list_document_versions(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(!body["DocumentVersions"].as_array().unwrap().is_empty());
     }
 
@@ -937,7 +937,7 @@ mod tests {
             json!({ "PatchGroup": "test-group" }),
         );
         let resp = svc.describe_patch_group_state(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Instances"].as_i64().unwrap(), 0);
     }
 
@@ -949,7 +949,7 @@ mod tests {
             json!({ "OperatingSystem": "WINDOWS" }),
         );
         let resp = svc.get_default_patch_baseline(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["BaselineId"].is_string());
     }
 
@@ -958,7 +958,7 @@ mod tests {
         let svc = make_service();
         let req = make_request("DescribeAvailablePatches", json!({}));
         let resp = svc.describe_available_patches(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["Patches"].as_array().unwrap().is_empty());
     }
 
@@ -970,7 +970,7 @@ mod tests {
             json!({ "OperatingSystem": "WINDOWS", "Property": "PRODUCT" }),
         );
         let resp = svc.describe_patch_properties(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["Properties"].as_array().unwrap().is_empty());
     }
 
@@ -1001,7 +1001,7 @@ mod tests {
         // GetInventory
         let req = make_request("GetInventory", json!({}));
         let resp = svc.get_inventory(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Entities"].as_array().unwrap().len(), 1);
         assert_eq!(
             body["Entities"][0]["Id"].as_str().unwrap(),
@@ -1017,26 +1017,26 @@ mod tests {
             }),
         );
         let resp = svc.list_inventory_entries(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Entries"].as_array().unwrap().len(), 2);
         assert_eq!(body["TypeName"].as_str().unwrap(), "AWS:Application");
 
         // GetInventorySchema
         let req = make_request("GetInventorySchema", json!({}));
         let resp = svc.get_inventory_schema(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(!body["Schemas"].as_array().unwrap().is_empty());
 
         // DeleteInventory
         let req = make_request("DeleteInventory", json!({ "TypeName": "AWS:Application" }));
         let resp = svc.delete_inventory(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["DeletionId"].is_string());
 
         // DescribeInventoryDeletions
         let req = make_request("DescribeInventoryDeletions", json!({}));
         let resp = svc.describe_inventory_deletions(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["InventoryDeletions"].as_array().unwrap().len(), 1);
 
         // Verify inventory deleted
@@ -1048,7 +1048,7 @@ mod tests {
             }),
         );
         let resp = svc.list_inventory_entries(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["Entries"].as_array().unwrap().is_empty());
     }
 
@@ -1089,19 +1089,19 @@ mod tests {
         // ListComplianceItems
         let req = make_request("ListComplianceItems", json!({}));
         let resp = svc.list_compliance_items(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["ComplianceItems"].as_array().unwrap().len(), 2);
 
         // ListComplianceSummaries
         let req = make_request("ListComplianceSummaries", json!({}));
         let resp = svc.list_compliance_summaries(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["ComplianceSummaryItems"].as_array().unwrap().len(), 1);
 
         // ListResourceComplianceSummaries
         let req = make_request("ListResourceComplianceSummaries", json!({}));
         let resp = svc.list_resource_compliance_summaries(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["ResourceComplianceSummaryItems"]
                 .as_array()
@@ -1126,7 +1126,7 @@ mod tests {
             }),
         );
         let resp = svc.create_maintenance_window(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let window_id = body["WindowId"].as_str().unwrap().to_string();
 
         // Register target
@@ -1140,7 +1140,7 @@ mod tests {
             }),
         );
         let resp = svc.register_target_with_maintenance_window(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let target_id = body["WindowTargetId"].as_str().unwrap().to_string();
 
         // Register task
@@ -1155,7 +1155,7 @@ mod tests {
             }),
         );
         let resp = svc.register_task_with_maintenance_window(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let task_id = body["WindowTaskId"].as_str().unwrap().to_string();
 
         (window_id, target_id, task_id)
@@ -1176,7 +1176,7 @@ mod tests {
             }),
         );
         let resp = svc.update_maintenance_window_target(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Name"].as_str().unwrap(), "updated-target");
 
         // Get task
@@ -1188,7 +1188,7 @@ mod tests {
             }),
         );
         let resp = svc.get_maintenance_window_task(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["TaskArn"].as_str().unwrap(), "AWS-RunShellScript");
         assert_eq!(body["Name"].as_str().unwrap(), "test-task");
 
@@ -1203,7 +1203,7 @@ mod tests {
             }),
         );
         let resp = svc.update_maintenance_window_task(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Name"].as_str().unwrap(), "updated-task");
         assert_eq!(body["MaxConcurrency"].as_str().unwrap(), "10");
     }
@@ -1258,7 +1258,7 @@ mod tests {
             json!({ "WindowId": window_id }),
         );
         let resp = svc.describe_maintenance_window_executions(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["WindowExecutions"].as_array().unwrap().len(), 1);
 
         // GetMaintenanceWindowExecution
@@ -1267,7 +1267,7 @@ mod tests {
             json!({ "WindowExecutionId": exec_id }),
         );
         let resp = svc.get_maintenance_window_execution(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Status"].as_str().unwrap(), "IN_PROGRESS");
 
         // DescribeMaintenanceWindowExecutionTasks
@@ -1278,7 +1278,7 @@ mod tests {
         let resp = svc
             .describe_maintenance_window_execution_tasks(&req)
             .unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["WindowExecutionTaskIdentities"]
                 .as_array()
@@ -1296,7 +1296,7 @@ mod tests {
             }),
         );
         let resp = svc.get_maintenance_window_execution_task(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["TaskArn"].as_str().unwrap(), "AWS-RunShellScript");
 
         // DescribeMaintenanceWindowExecutionTaskInvocations
@@ -1310,7 +1310,7 @@ mod tests {
         let resp = svc
             .describe_maintenance_window_execution_task_invocations(&req)
             .unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["WindowExecutionTaskInvocationIdentities"]
                 .as_array()
@@ -1331,7 +1331,7 @@ mod tests {
         let resp = svc
             .get_maintenance_window_execution_task_invocation(&req)
             .unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["ExecutionId"].as_str().unwrap(), "cmd-001");
 
         // CancelMaintenanceWindowExecution
@@ -1340,13 +1340,13 @@ mod tests {
             json!({ "WindowExecutionId": exec_id }),
         );
         let resp = svc.cancel_maintenance_window_execution(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["WindowExecutionId"].as_str().unwrap(), exec_id);
 
         // DescribeMaintenanceWindowSchedule
         let req = make_request("DescribeMaintenanceWindowSchedule", json!({}));
         let resp = svc.describe_maintenance_window_schedule(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["ScheduledWindowExecutions"]
             .as_array()
             .unwrap()
@@ -1361,7 +1361,7 @@ mod tests {
             }),
         );
         let resp = svc.describe_maintenance_windows_for_target(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["WindowIdentities"].as_array().unwrap().len(), 1);
     }
 
@@ -1381,7 +1381,7 @@ mod tests {
             }),
         );
         let resp = svc.create_patch_baseline(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let baseline_id = body["BaselineId"].as_str().unwrap().to_string();
 
         // Update
@@ -1395,7 +1395,7 @@ mod tests {
             }),
         );
         let resp = svc.update_patch_baseline(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Name"].as_str().unwrap(), "updated-baseline");
         assert_eq!(body["Description"].as_str().unwrap(), "updated description");
         assert_eq!(body["ApprovedPatches"].as_array().unwrap().len(), 2);
@@ -1424,7 +1424,7 @@ mod tests {
         // List
         let req = make_request("ListResourceDataSync", json!({}));
         let resp = svc.list_resource_data_sync(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["ResourceDataSyncItems"].as_array().unwrap().len(), 1);
         assert_eq!(
             body["ResourceDataSyncItems"][0]["SyncName"]
@@ -1454,7 +1454,7 @@ mod tests {
         // Verify deleted
         let req = make_request("ListResourceDataSync", json!({}));
         let resp = svc.list_resource_data_sync(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["ResourceDataSyncItems"].as_array().unwrap().is_empty());
     }
 
@@ -1468,7 +1468,7 @@ mod tests {
             json!({ "InstanceIds": ["i-001"] }),
         );
         let resp = svc.describe_instance_patch_states(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["InstancePatchStates"].as_array().unwrap().is_empty());
     }
 
@@ -1477,7 +1477,7 @@ mod tests {
         let svc = make_service();
         let req = make_request("DescribeInstancePatches", json!({ "InstanceId": "i-001" }));
         let resp = svc.describe_instance_patches(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["Patches"].as_array().unwrap().is_empty());
     }
 
@@ -1491,7 +1491,7 @@ mod tests {
         let resp = svc
             .describe_effective_patches_for_patch_baseline(&req)
             .unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["EffectivePatches"].as_array().unwrap().is_empty());
     }
 
@@ -1500,7 +1500,7 @@ mod tests {
         let svc = make_service();
         let req = make_request("GetOpsSummary", json!({}));
         let resp = svc.get_ops_summary(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["Entities"].as_array().unwrap().is_empty());
     }
 
@@ -1515,7 +1515,7 @@ mod tests {
             json!({ "Title": "Test", "Source": "test", "Description": "test desc" }),
         );
         let resp = svc.create_ops_item(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let ops_item_id = body["OpsItemId"].as_str().unwrap().to_string();
 
         // Associate
@@ -1529,7 +1529,7 @@ mod tests {
             }),
         );
         let resp = svc.associate_ops_item_related_item(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let assoc_id = body["AssociationId"].as_str().unwrap().to_string();
 
         // List
@@ -1538,7 +1538,7 @@ mod tests {
             json!({ "OpsItemId": ops_item_id }),
         );
         let resp = svc.list_ops_item_related_items(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Summaries"].as_array().unwrap().len(), 1);
 
         // Disassociate
@@ -1554,7 +1554,7 @@ mod tests {
         let svc = make_service();
         let req = make_request("ListOpsItemEvents", json!({}));
         let resp = svc.list_ops_item_events(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["Summaries"].as_array().unwrap().is_empty());
     }
 
@@ -1573,13 +1573,13 @@ mod tests {
             }),
         );
         let resp = svc.create_ops_metadata(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let arn = body["OpsMetadataArn"].as_str().unwrap().to_string();
 
         // Get
         let req = make_request("GetOpsMetadata", json!({ "OpsMetadataArn": arn }));
         let resp = svc.get_ops_metadata(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["ResourceId"].as_str().unwrap(), "test-resource");
 
         // Update
@@ -1595,7 +1595,7 @@ mod tests {
         // List
         let req = make_request("ListOpsMetadata", json!({}));
         let resp = svc.list_ops_metadata(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["OpsMetadataList"].as_array().unwrap().len(), 1);
 
         // Delete
@@ -1615,7 +1615,7 @@ mod tests {
             json!({ "DocumentName": "AWS-RunShellScript" }),
         );
         let resp = svc.start_automation_execution(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let exec_id = body["AutomationExecutionId"].as_str().unwrap().to_string();
 
         // Get
@@ -1624,7 +1624,7 @@ mod tests {
             json!({ "AutomationExecutionId": exec_id }),
         );
         let resp = svc.get_automation_execution(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["AutomationExecution"]["AutomationExecutionStatus"]
                 .as_str()
@@ -1635,7 +1635,7 @@ mod tests {
         // Describe
         let req = make_request("DescribeAutomationExecutions", json!({}));
         let resp = svc.describe_automation_executions(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["AutomationExecutionMetadataList"]
                 .as_array()
@@ -1650,7 +1650,7 @@ mod tests {
             json!({ "AutomationExecutionId": exec_id }),
         );
         let resp = svc.describe_automation_step_executions(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["StepExecutions"].as_array().unwrap().is_empty());
 
         // Signal
@@ -1679,7 +1679,7 @@ mod tests {
             }),
         );
         let resp = svc.start_change_request_execution(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["AutomationExecutionId"].as_str().is_some());
     }
 
@@ -1692,7 +1692,7 @@ mod tests {
             json!({ "DocumentName": "AWS-RunShellScript" }),
         );
         let resp = svc.start_execution_preview(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let preview_id = body["ExecutionPreviewId"].as_str().unwrap().to_string();
 
         let req = make_request(
@@ -1700,7 +1700,7 @@ mod tests {
             json!({ "ExecutionPreviewId": preview_id }),
         );
         let resp = svc.get_execution_preview(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Status"].as_str().unwrap(), "Success");
     }
 
@@ -1713,20 +1713,20 @@ mod tests {
         // Start
         let req = make_request("StartSession", json!({ "Target": "i-001" }));
         let resp = svc.start_session(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let session_id = body["SessionId"].as_str().unwrap().to_string();
         assert!(body["TokenValue"].as_str().is_some());
 
         // Resume
         let req = make_request("ResumeSession", json!({ "SessionId": session_id }));
         let resp = svc.resume_session(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["SessionId"].as_str().unwrap(), session_id);
 
         // Describe (Active)
         let req = make_request("DescribeSessions", json!({ "State": "Active" }));
         let resp = svc.describe_sessions(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Sessions"].as_array().unwrap().len(), 1);
 
         // Terminate
@@ -1736,7 +1736,7 @@ mod tests {
         // Describe (History)
         let req = make_request("DescribeSessions", json!({ "State": "History" }));
         let resp = svc.describe_sessions(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Sessions"].as_array().unwrap().len(), 1);
     }
 
@@ -1749,12 +1749,12 @@ mod tests {
             json!({ "Reason": "test", "Targets": [{"Key": "InstanceIds", "Values": ["i-001"]}] }),
         );
         let resp = svc.start_access_request(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let ar_id = body["AccessRequestId"].as_str().unwrap().to_string();
 
         let req = make_request("GetAccessToken", json!({ "AccessRequestId": ar_id }));
         let resp = svc.get_access_token(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["Credentials"]["AccessKeyId"].as_str().is_some());
         assert_eq!(body["AccessRequestStatus"].as_str(), Some("Approved"));
     }
@@ -1771,14 +1771,14 @@ mod tests {
             json!({ "IamRole": "SSMServiceRole", "Description": "test" }),
         );
         let resp = svc.create_activation(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let activation_id = body["ActivationId"].as_str().unwrap().to_string();
         assert!(body["ActivationCode"].as_str().is_some());
 
         // Describe
         let req = make_request("DescribeActivations", json!({}));
         let resp = svc.describe_activations(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["ActivationList"].as_array().unwrap().len(), 1);
 
         // Delete
@@ -1801,7 +1801,7 @@ mod tests {
         let svc = make_service();
         let req = make_request("DescribeInstanceInformation", json!({}));
         let resp = svc.describe_instance_information(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["InstanceInformationList"]
             .as_array()
             .unwrap()
@@ -1813,7 +1813,7 @@ mod tests {
         let svc = make_service();
         let req = make_request("DescribeInstanceProperties", json!({}));
         let resp = svc.describe_instance_properties(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["InstanceProperties"].as_array().unwrap().is_empty());
     }
 
@@ -1824,7 +1824,7 @@ mod tests {
         let svc = make_service();
         let req = make_request("ListNodes", json!({}));
         let resp = svc.list_nodes(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["Nodes"].as_array().unwrap().is_empty());
     }
 
@@ -1836,7 +1836,7 @@ mod tests {
             json!({ "Aggregators": [{"AggregatorType": "Count"}] }),
         );
         let resp = svc.list_nodes_summary(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["Summary"].as_array().unwrap().is_empty());
     }
 
@@ -1848,7 +1848,7 @@ mod tests {
             json!({ "InstanceId": "i-001" }),
         );
         let resp = svc.describe_effective_instance_associations(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["Associations"].as_array().unwrap().is_empty());
     }
 
@@ -1860,7 +1860,7 @@ mod tests {
             json!({ "InstanceId": "i-001" }),
         );
         let resp = svc.describe_instance_associations_status(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["InstanceAssociationStatusInfos"]
             .as_array()
             .unwrap()
@@ -1880,7 +1880,7 @@ mod tests {
             }),
         );
         let resp = svc.put_parameter(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         body["Version"].as_i64().unwrap()
     }
 
@@ -1902,14 +1902,14 @@ mod tests {
             }),
         );
         let resp = svc.label_parameter_version(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["InvalidLabels"].as_array().unwrap().is_empty());
         assert_eq!(body["ParameterVersion"].as_i64().unwrap(), 1);
 
         // Get parameter history — version 1 should have labels
         let req = make_request("GetParameterHistory", json!({ "Name": "/label/test" }));
         let resp = svc.get_parameter_history(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let params = body["Parameters"].as_array().unwrap();
         let v1 = params
             .iter()
@@ -1929,7 +1929,7 @@ mod tests {
             }),
         );
         let resp = svc.unlabel_parameter_version(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["InvalidLabels"].as_array().unwrap().is_empty());
         let removed = body["RemovedLabels"].as_array().unwrap();
         assert_eq!(removed.len(), 1);
@@ -1951,7 +1951,7 @@ mod tests {
             }),
         );
         let resp = svc.label_parameter_version(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["ParameterVersion"].as_i64().unwrap(), 2);
     }
 
@@ -1969,7 +1969,7 @@ mod tests {
             }),
         );
         let resp = svc.label_parameter_version(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let invalid = body["InvalidLabels"].as_array().unwrap();
         assert_eq!(invalid.len(), 1);
         assert_eq!(invalid[0].as_str().unwrap(), "aws-reserved");
@@ -2006,7 +2006,7 @@ mod tests {
             }),
         );
         let resp = svc.unlabel_parameter_version(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let invalid = body["InvalidLabels"].as_array().unwrap();
         assert_eq!(invalid.len(), 1);
         assert_eq!(invalid[0].as_str().unwrap(), "nonexistent");
@@ -2058,7 +2058,7 @@ mod tests {
             }),
         );
         let resp = svc.update_document(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let desc = &body["DocumentDescription"];
         assert_eq!(desc["DocumentVersion"].as_str().unwrap(), "2");
         assert_eq!(desc["VersionName"].as_str().unwrap(), "release-2");
@@ -2066,7 +2066,7 @@ mod tests {
         // List document versions
         let req = make_request("ListDocumentVersions", json!({ "Name": "TestDoc" }));
         let resp = svc.list_document_versions(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["DocumentVersions"].as_array().unwrap().len(), 2);
 
         // Update default version to 2
@@ -2078,13 +2078,13 @@ mod tests {
             }),
         );
         let resp = svc.update_document_default_version(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Description"]["DefaultVersion"].as_str().unwrap(), "2");
 
         // Verify describe_document now shows version 2 as default
         let req = make_request("DescribeDocument", json!({ "Name": "TestDoc" }));
         let resp = svc.describe_document(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Document"]["DefaultVersion"].as_str().unwrap(), "2");
     }
 
@@ -2130,7 +2130,7 @@ mod tests {
             }),
         );
         let resp = svc.describe_document_permission(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let ids = body["AccountIds"].as_array().unwrap();
         assert_eq!(ids.len(), 2);
 
@@ -2154,7 +2154,7 @@ mod tests {
             }),
         );
         let resp = svc.describe_document_permission(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let ids = body["AccountIds"].as_array().unwrap();
         assert_eq!(ids.len(), 1);
         assert_eq!(ids[0].as_str().unwrap(), "222222222222");
@@ -2190,7 +2190,7 @@ mod tests {
             json!({ "WindowId": window_id }),
         );
         let resp = svc.describe_maintenance_window_targets(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let targets = body["Targets"].as_array().unwrap();
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0]["Name"].as_str().unwrap(), "test-target");
@@ -2201,7 +2201,7 @@ mod tests {
             json!({ "WindowId": window_id }),
         );
         let resp = svc.describe_maintenance_window_tasks(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let tasks = body["Tasks"].as_array().unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0]["TaskArn"].as_str().unwrap(), "AWS-RunShellScript");
@@ -2220,7 +2220,7 @@ mod tests {
             }),
         );
         let resp = svc.create_patch_baseline(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         body["BaselineId"].as_str().unwrap().to_string()
     }
 
@@ -2232,7 +2232,7 @@ mod tests {
         // Get
         let req = make_request("GetPatchBaseline", json!({ "BaselineId": baseline_id }));
         let resp = svc.get_patch_baseline(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Name"].as_str().unwrap(), "get-del-baseline");
         assert_eq!(body["OperatingSystem"].as_str().unwrap(), "AMAZON_LINUX_2");
         assert_eq!(body["Description"].as_str().unwrap(), "test baseline");
@@ -2261,7 +2261,7 @@ mod tests {
             }),
         );
         let resp = svc.describe_patch_baselines(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let baselines = body["BaselineIdentities"].as_array().unwrap();
         assert_eq!(baselines.len(), 1);
         assert_eq!(
@@ -2284,7 +2284,7 @@ mod tests {
             }),
         );
         let resp = svc.register_patch_baseline_for_patch_group(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["PatchGroup"].as_str().unwrap(), "production");
 
         // Get patch baseline for group
@@ -2296,13 +2296,13 @@ mod tests {
             }),
         );
         let resp = svc.get_patch_baseline_for_patch_group(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["BaselineId"].as_str().unwrap(), baseline_id);
 
         // Describe patch groups
         let req = make_request("DescribePatchGroups", json!({}));
         let resp = svc.describe_patch_groups(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let mappings = body["Mappings"].as_array().unwrap();
         assert_eq!(mappings.len(), 1);
         assert_eq!(mappings[0]["PatchGroup"].as_str().unwrap(), "production");
@@ -2320,7 +2320,7 @@ mod tests {
         // Verify removed
         let req = make_request("DescribePatchGroups", json!({}));
         let resp = svc.describe_patch_groups(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["Mappings"].as_array().unwrap().is_empty());
     }
 
@@ -2346,7 +2346,7 @@ mod tests {
         // Patch groups should be cleaned up
         let req = make_request("DescribePatchGroups", json!({}));
         let resp = svc.describe_patch_groups(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["Mappings"].as_array().unwrap().is_empty());
     }
 
@@ -2365,7 +2365,7 @@ mod tests {
             }),
         );
         let resp = svc.get_command_invocation(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["CommandId"].as_str().unwrap(), cmd_id);
         assert_eq!(body["InstanceId"].as_str().unwrap(), "i-1234567890abcdef0");
         assert_eq!(body["Status"].as_str().unwrap(), "Success");
@@ -2395,7 +2395,7 @@ mod tests {
         // List all invocations
         let req = make_request("ListCommandInvocations", json!({}));
         let resp = svc.list_command_invocations(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let invocations = body["CommandInvocations"].as_array().unwrap();
         assert!(!invocations.is_empty());
         assert_eq!(invocations[0]["CommandId"].as_str().unwrap(), cmd_id);
@@ -2407,7 +2407,7 @@ mod tests {
         // Filter by CommandId
         let req = make_request("ListCommandInvocations", json!({ "CommandId": cmd_id }));
         let resp = svc.list_command_invocations(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["CommandInvocations"].as_array().unwrap().len(), 1);
     }
 }

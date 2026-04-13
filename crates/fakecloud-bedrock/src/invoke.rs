@@ -56,7 +56,7 @@ pub fn invoke_model(
     Ok(AwsResponse {
         status: StatusCode::OK,
         content_type: "application/json".to_string(),
-        body: bytes::Bytes::from(response_body),
+        body: bytes::Bytes::from(response_body).into(),
         headers,
     })
 }

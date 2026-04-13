@@ -406,7 +406,7 @@ mod tests {
             json!({ "queryDefinitionNamePrefix": "error" }),
         );
         let resp = svc.describe_query_definitions(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let defs = body["queryDefinitions"].as_array().unwrap();
         assert_eq!(defs.len(), 2);
         for d in defs {
@@ -428,7 +428,7 @@ mod tests {
 
         let req = make_request("DescribeQueryDefinitions", json!({}));
         let resp = svc.describe_query_definitions(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["queryDefinitions"].as_array().unwrap().len(), 3);
     }
 
@@ -447,13 +447,13 @@ mod tests {
             }),
         );
         let resp = svc.put_query_definition(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let qd_id = body["queryDefinitionId"].as_str().unwrap().to_string();
 
         // Describe
         let req = make_request("DescribeQueryDefinitions", json!({}));
         let resp = svc.describe_query_definitions(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let defs = body["queryDefinitions"].as_array().unwrap();
         assert_eq!(defs.len(), 1);
         assert_eq!(defs[0]["name"], "my-query");
@@ -465,13 +465,13 @@ mod tests {
             json!({ "queryDefinitionId": qd_id }),
         );
         let resp = svc.delete_query_definition(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["success"], true);
 
         // Verify gone
         let req = make_request("DescribeQueryDefinitions", json!({}));
         let resp = svc.describe_query_definitions(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["queryDefinitions"].as_array().unwrap().is_empty());
     }
 
@@ -483,7 +483,7 @@ mod tests {
             json!({ "queryDefinitionId": "nonexistent-id" }),
         );
         let resp = svc.delete_query_definition(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["success"], false);
     }
 
@@ -498,7 +498,7 @@ mod tests {
         let result = svc.stop_query(&req);
         // Either it errors or returns success: false — both are valid
         if let Ok(resp) = result {
-            let body: Value = serde_json::from_slice(&resp.body).unwrap();
+            let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
             // success should be false for a non-running query
             assert!(!body["success"].as_bool().unwrap_or(true));
         }

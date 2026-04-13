@@ -4344,7 +4344,7 @@ mod tests {
             ],
         );
         let resp = service.create_user(&req).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<UserId>testuser</UserId>"));
         assert!(body.contains("<Status>active</Status>"));
         assert!(body.contains("<CreateUserResponse"));
@@ -4386,7 +4386,7 @@ mod tests {
 
         let req = request("DescribeUsers", &[]);
         let resp = service.describe_users(&req).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<UserId>default</UserId>"));
     }
 
@@ -4399,7 +4399,7 @@ mod tests {
         let resp = service
             .describe_reserved_cache_nodes(&request("DescribeReservedCacheNodes", &[]))
             .unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<ReservedCacheNodes></ReservedCacheNodes>"));
     }
 
@@ -4426,7 +4426,7 @@ mod tests {
                 &[("ReservedCacheNodesOfferingId", "offering-b")],
             ))
             .unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<ReservedCacheNodeId>rcn-b</ReservedCacheNodeId>"));
         assert!(!body.contains("<ReservedCacheNodeId>rcn-a</ReservedCacheNodeId>"));
     }
@@ -4486,7 +4486,7 @@ mod tests {
                 &[("ProductDescription", "redis"), ("Duration", "3")],
             ))
             .unwrap();
-        let filtered_body = String::from_utf8(filtered.body.to_vec()).unwrap();
+        let filtered_body = String::from_utf8(filtered.body.expect_bytes().to_vec()).unwrap();
         assert!(filtered_body
             .contains("<ReservedCacheNodesOfferingId>offering-c</ReservedCacheNodesOfferingId>"));
         assert!(!filtered_body
@@ -4498,7 +4498,7 @@ mod tests {
                 &[("MaxRecords", "1")],
             ))
             .unwrap();
-        let paged_body = String::from_utf8(paged.body.to_vec()).unwrap();
+        let paged_body = String::from_utf8(paged.body.expect_bytes().to_vec()).unwrap();
         assert!(paged_body.contains("<Marker>1</Marker>"));
     }
 
@@ -4531,13 +4531,13 @@ mod tests {
             ],
         );
         let resp = service.create_user_group(&req).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<UserGroupId>mygroup</UserGroupId>"));
         assert!(body.contains("<member>default</member>"));
 
         let req = request("DescribeUserGroups", &[]);
         let resp = service.describe_user_groups(&req).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<UserGroupId>mygroup</UserGroupId>"));
     }
 
@@ -4572,7 +4572,7 @@ mod tests {
 
         let req = request("DeleteUserGroup", &[("UserGroupId", "delgroup")]);
         let resp = service.delete_user_group(&req).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<Status>deleting</Status>"));
 
         let req = request("DescribeUserGroups", &[("UserGroupId", "delgroup")]);
@@ -4643,7 +4643,7 @@ mod tests {
 
         let req = request("DescribeCacheClusters", &[]);
         let resp = service.describe_cache_clusters(&req).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<CacheClusterId>cluster-a</CacheClusterId>"));
         assert!(body.contains("<CacheClusterId>cluster-b</CacheClusterId>"));
         assert!(body.contains("<DescribeCacheClustersResponse"));
@@ -4686,7 +4686,7 @@ mod tests {
             ],
         );
         let resp = service.describe_cache_clusters(&req).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<CacheClusterId>nodeful-cluster</CacheClusterId>"));
         assert!(body.contains("<CacheNodes>"));
         assert!(body.contains("<CacheNodeId>0001</CacheNodeId>"));
@@ -4707,7 +4707,7 @@ mod tests {
 
         let req = request("DeleteCacheCluster", &[("CacheClusterId", "delete-me")]);
         let resp = service.delete_cache_cluster(&req).await.unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<CacheClusterStatus>deleting</CacheClusterStatus>"));
         assert!(body.contains("<DeleteCacheClusterResponse"));
         assert!(!service
@@ -4970,7 +4970,7 @@ mod tests {
         );
 
         let resp = service.create_global_replication_group(&req).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains(
             "<GlobalReplicationGroupDescription>global slice</GlobalReplicationGroupDescription>"
         ));
@@ -5004,7 +5004,7 @@ mod tests {
         );
 
         let resp = service.describe_global_replication_groups(&req).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains(
             "<GlobalReplicationGroupId>fc-us-east-1-global-a</GlobalReplicationGroupId>"
         ));
@@ -5028,7 +5028,7 @@ mod tests {
         );
 
         let resp = service.modify_global_replication_group(&req).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains(
             "<GlobalReplicationGroupDescription>updated</GlobalReplicationGroupDescription>"
         ));
@@ -5054,7 +5054,7 @@ mod tests {
         );
 
         let resp = service.delete_global_replication_group(&req).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<Status>deleting</Status>"));
 
         let state = service.state.read();
@@ -5075,7 +5075,7 @@ mod tests {
         );
 
         let resp = service.describe_replication_groups(&req).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<GlobalReplicationGroupInfo>"));
         assert!(body.contains(
             "<GlobalReplicationGroupId>fc-us-east-1-global-a</GlobalReplicationGroupId>"
@@ -5098,7 +5098,7 @@ mod tests {
         );
 
         let resp = service.failover_global_replication_group(&req).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<ReplicationGroupId>primary-rg</ReplicationGroupId>"));
         assert!(body.contains("<FailoverGlobalReplicationGroupResponse"));
     }
@@ -5116,7 +5116,7 @@ mod tests {
         );
 
         let resp = service.disassociate_global_replication_group(&req).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<ReplicationGroupId>primary-rg</ReplicationGroupId>"));
         assert!(body.contains("<DisassociateGlobalReplicationGroupResponse"));
     }
@@ -5132,7 +5132,7 @@ mod tests {
             ],
         );
         let resp = service.modify_replication_group(&req).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<Description>Updated description</Description>"));
         assert!(body.contains("<ModifyReplicationGroupResponse"));
     }
@@ -5151,7 +5151,7 @@ mod tests {
             ],
         );
         let resp = service.modify_replication_group(&req).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<CacheNodeType>cache.m5.large</CacheNodeType>"));
         assert!(body.contains("<AutomaticFailover>enabled</AutomaticFailover>"));
         assert!(body.contains("<SnapshotRetentionLimit>5</SnapshotRetentionLimit>"));
@@ -5282,7 +5282,7 @@ mod tests {
         let resp = service
             .describe_serverless_caches(&request("DescribeServerlessCaches", &[]))
             .unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<ServerlessCacheName>cache-a</ServerlessCacheName>"));
         assert!(body.contains("<ServerlessCacheName>cache-b</ServerlessCacheName>"));
     }
@@ -5302,7 +5302,7 @@ mod tests {
         );
 
         let resp = service.modify_serverless_cache(&req).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<Description>updated</Description>"));
         assert!(body.contains(
             "<SecurityGroupIds><SecurityGroupId>sg-999</SecurityGroupId></SecurityGroupIds>"
@@ -5377,7 +5377,7 @@ mod tests {
                 &[("ServerlessCacheName", "cache-a")],
             ))
             .unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<ServerlessCacheSnapshotName>snap-a</ServerlessCacheSnapshotName>"));
     }
 
@@ -5413,7 +5413,7 @@ mod tests {
                 &[("ServerlessCacheSnapshotName", "snap-a")],
             ))
             .unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<Status>deleting</Status>"));
         assert!(!service
             .state
@@ -5434,7 +5434,7 @@ mod tests {
             ],
         );
         let resp = service.increase_replica_count(&req).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<ClusterId>my-rg-001</ClusterId>"));
         assert!(body.contains("<ClusterId>my-rg-002</ClusterId>"));
         assert!(body.contains("<ClusterId>my-rg-003</ClusterId>"));
@@ -5483,7 +5483,7 @@ mod tests {
             ],
         );
         let resp = service.decrease_replica_count(&req).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<ClusterId>my-rg-001</ClusterId>"));
         assert!(body.contains("<ClusterId>my-rg-002</ClusterId>"));
         assert!(!body.contains("<ClusterId>my-rg-003</ClusterId>"));
@@ -5527,7 +5527,7 @@ mod tests {
             &[("ReplicationGroupId", "my-rg"), ("NodeGroupId", "0001")],
         );
         let resp = service.test_failover(&req).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<Status>available</Status>"));
         assert!(body.contains("<TestFailoverResponse"));
     }
@@ -5570,7 +5570,7 @@ mod tests {
             ],
         );
         let resp = service.create_snapshot(&req).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<SnapshotName>my-snap</SnapshotName>"));
         assert!(body.contains("<ReplicationGroupId>snap-rg</ReplicationGroupId>"));
         assert!(body.contains("<SnapshotStatus>available</SnapshotStatus>"));
@@ -5590,7 +5590,7 @@ mod tests {
             ],
         );
         let resp = service.create_snapshot(&req).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<ReplicationGroupId>cc-rg</ReplicationGroupId>"));
     }
 
@@ -5666,7 +5666,7 @@ mod tests {
         }
         let req = request("DescribeSnapshots", &[]);
         let resp = service.describe_snapshots(&req).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<SnapshotName>snap-a</SnapshotName>"));
         assert!(body.contains("<SnapshotName>snap-b</SnapshotName>"));
         assert!(body.contains("<DescribeSnapshotsResponse"));
@@ -5684,7 +5684,7 @@ mod tests {
         }
         let req = request("DescribeSnapshots", &[("SnapshotName", "snap-1")]);
         let resp = service.describe_snapshots(&req).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<SnapshotName>snap-1</SnapshotName>"));
         assert!(!body.contains("<SnapshotName>snap-2</SnapshotName>"));
     }
@@ -5703,13 +5703,13 @@ mod tests {
 
         let req = request("DescribeSnapshots", &[("ReplicationGroupId", "rg-a")]);
         let resp = service.describe_snapshots(&req).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<SnapshotName>rg-a-snap</SnapshotName>"));
 
         // Filter by non-matching group returns empty
         let req = request("DescribeSnapshots", &[("ReplicationGroupId", "rg-b")]);
         let resp = service.describe_snapshots(&req).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(!body.contains("<SnapshotName>"));
     }
 
@@ -5736,7 +5736,7 @@ mod tests {
 
         let req = request("DeleteSnapshot", &[("SnapshotName", "del-snap")]);
         let resp = service.delete_snapshot(&req).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<SnapshotStatus>deleting</SnapshotStatus>"));
         assert!(body.contains("<DeleteSnapshotResponse"));
 

@@ -111,7 +111,7 @@ pub fn generate_inventory_report(state: &SharedS3State, source_bucket: &str, con
 
     let report_object = S3Object {
         key: report_key.clone(),
-        data,
+        body: crate::state::memory_body(data),
         content_type: "text/csv".to_string(),
         etag,
         size,

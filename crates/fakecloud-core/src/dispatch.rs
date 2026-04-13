@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use crate::protocol::{self, AwsProtocol};
 use crate::registry::ServiceRegistry;
-use crate::service::AwsRequest;
+use crate::service::{AwsRequest, ResponseBody};
 
 /// The main dispatch handler. All HTTP requests come through here.
 pub async fn dispatch(
@@ -19,7 +19,13 @@ pub async fn dispatch(
     let request_id = uuid::Uuid::new_v4().to_string();
 
     let (parts, body) = request.into_parts();
-    let body_bytes = match axum::body::to_bytes(body, 10 * 1024 * 1024).await {
+    // TODO: plumb streaming request bodies end-to-end to remove the cap.
+    // 128 MiB comfortably covers every legitimate single-PutObject (AWS
+    // recommends multipart above ~100 MiB) and each multipart part is
+    // dispatched through here separately, so a 20 GiB upload stays under this
+    // limit per-request.
+    const MAX_BODY_BYTES: usize = 128 * 1024 * 1024;
+    let body_bytes = match axum::body::to_bytes(body, MAX_BODY_BYTES).await {
         Ok(b) => b,
         Err(_) => {
             return build_error_response(
@@ -164,11 +170,26 @@ pub async fn dispatch(
                 builder = builder.header("content-type", &resp.content_type);
             }
 
+            let has_content_length = resp
+                .headers
+                .iter()
+                .any(|(k, _)| k.as_str().eq_ignore_ascii_case("content-length"));
+
             for (k, v) in &resp.headers {
                 builder = builder.header(k, v);
             }
 
-            builder.body(Body::from(resp.body)).unwrap()
+            match resp.body {
+                ResponseBody::Bytes(b) => builder.body(Body::from(b)).unwrap(),
+                ResponseBody::File { file, size } => {
+                    let stream = tokio_util::io::ReaderStream::new(file);
+                    let body = Body::from_stream(stream);
+                    if !has_content_length {
+                        builder = builder.header("content-length", size.to_string());
+                    }
+                    builder.body(body).unwrap()
+                }
+            }
         }
         Err(err) => {
             tracing::warn!(

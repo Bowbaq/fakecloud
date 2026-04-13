@@ -3901,7 +3901,7 @@ mod tests {
     }
 
     fn response_body(result: &Result<AwsResponse, AwsServiceError>) -> String {
-        String::from_utf8(result.as_ref().unwrap().body.to_vec()).unwrap()
+        String::from_utf8(result.as_ref().unwrap().body.expect_bytes().to_vec()).unwrap()
     }
 
     // --- Subscribe / Unsubscribe / ListSubscriptions / ListSubscriptionsByTopic ---

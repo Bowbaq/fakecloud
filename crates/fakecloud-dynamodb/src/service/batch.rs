@@ -474,7 +474,8 @@ impl DynamoDbService {
 
             match execute_partiql_statement(&self.state, statement, &parameters) {
                 Ok(resp) => {
-                    let resp_body: Value = serde_json::from_slice(&resp.body).unwrap_or_default();
+                    let resp_body: Value =
+                        serde_json::from_slice(resp.body.expect_bytes()).unwrap_or_default();
                     responses.push(resp_body);
                 }
                 Err(e) => {
@@ -526,7 +527,8 @@ impl DynamoDbService {
 
             match execute_partiql_statement(&self.state, statement, &parameters) {
                 Ok(resp) => {
-                    let resp_body: Value = serde_json::from_slice(&resp.body).unwrap_or_default();
+                    let resp_body: Value =
+                        serde_json::from_slice(resp.body.expect_bytes()).unwrap_or_default();
                     results.push(Ok(resp_body));
                 }
                 Err(e) => {

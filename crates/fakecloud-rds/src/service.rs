@@ -2815,7 +2815,7 @@ mod tests {
         let request = request("DescribeDBEngineVersions", &[("Engine", "postgres")]);
 
         let response = service.handle(request).await.expect("response");
-        let body = String::from_utf8(response.body.to_vec()).expect("utf8");
+        let body = String::from_utf8(response.body.expect_bytes().to_vec()).expect("utf8");
 
         assert!(body.contains("<DescribeDBEngineVersionsResponse"));
         assert!(body.contains("<Engine>postgres</Engine>"));

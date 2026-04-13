@@ -1,8 +1,12 @@
+use std::sync::Arc;
+
 use bytes::Bytes;
 use chrono::Utc;
+use fakecloud_persistence::{BodySource, S3Store};
 use md5::{Digest, Md5};
 use uuid::Uuid;
 
+use crate::persistence::object_meta_snapshot;
 use crate::state::{S3Object, SharedS3State};
 use crate::xml_util::extract_tag;
 
@@ -70,6 +74,7 @@ pub fn format_access_log_entry(
 /// operation on a logging-enabled bucket produces a record.
 pub fn maybe_write_access_log(
     state: &SharedS3State,
+    store: &Arc<dyn S3Store>,
     source_bucket: &str,
     request: &AccessLogRequest<'_>,
 ) {
@@ -109,7 +114,7 @@ pub fn maybe_write_access_log(
 
     let log_object = S3Object {
         key: log_key.clone(),
-        data,
+        body: crate::state::memory_body(data.clone()),
         content_type: "text/plain".to_string(),
         etag,
         size,
@@ -118,9 +123,28 @@ pub fn maybe_write_access_log(
         ..Default::default()
     };
 
-    let mut st = state.write();
-    if let Some(target) = st.buckets.get_mut(&config.target_bucket) {
-        target.objects.insert(log_key, log_object);
+    let meta = object_meta_snapshot(&log_object);
+    {
+        let mut st = state.write();
+        if let Some(target) = st.buckets.get_mut(&config.target_bucket) {
+            target.objects.insert(log_key.clone(), log_object);
+        } else {
+            return;
+        }
+    }
+    if let Err(err) = store.put_object(
+        &config.target_bucket,
+        &log_key,
+        None,
+        BodySource::Bytes(data),
+        &meta,
+    ) {
+        tracing::error!(
+            bucket = %config.target_bucket,
+            key = %log_key,
+            error = %err,
+            "failed to persist S3 access log object via store"
+        );
     }
 }
 

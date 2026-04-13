@@ -3382,7 +3382,7 @@ mod tests {
     fn create_key(svc: &KmsService) -> String {
         let req = make_request("CreateKey", json!({}));
         let resp = svc.create_key(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         body["KeyMetadata"]["KeyId"].as_str().unwrap().to_string()
     }
 
@@ -3404,7 +3404,7 @@ mod tests {
             }
             let req = make_request("ListKeys", body);
             let resp = svc.list_keys(&req).unwrap();
-            let resp_body: Value = serde_json::from_slice(&resp.body).unwrap();
+            let resp_body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
 
             for key in resp_body["Keys"].as_array().unwrap() {
                 collected_ids.push(key["KeyId"].as_str().unwrap().to_string());
@@ -3469,7 +3469,7 @@ mod tests {
             }
             let req = make_request("ListRetirableGrants", body);
             let resp = svc.list_retirable_grants(&req).unwrap();
-            let resp_body: Value = serde_json::from_slice(&resp.body).unwrap();
+            let resp_body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
 
             for grant in resp_body["Grants"].as_array().unwrap() {
                 collected_ids.push(grant["GrantId"].as_str().unwrap().to_string());
@@ -3499,7 +3499,7 @@ mod tests {
     fn create_key_with_opts(svc: &KmsService, body: Value) -> String {
         let req = make_request("CreateKey", body);
         let resp = svc.create_key(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         body["KeyMetadata"]["KeyId"].as_str().unwrap().to_string()
     }
 
@@ -3513,7 +3513,7 @@ mod tests {
             json!({ "KeyId": key_id, "KeyPairSpec": "RSA_2048" }),
         );
         let resp = svc.generate_data_key_pair(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
 
         assert!(body["PublicKey"].as_str().is_some());
         assert!(body["PrivateKeyPlaintext"].as_str().is_some());
@@ -3547,7 +3547,7 @@ mod tests {
             json!({ "KeyId": key_id, "KeyPairSpec": "ECC_NIST_P256" }),
         );
         let resp = svc.generate_data_key_pair_without_plaintext(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
 
         assert!(body["PublicKey"].as_str().is_some());
         assert!(body["PrivateKeyCiphertextBlob"].as_str().is_some());
@@ -3576,7 +3576,7 @@ mod tests {
             }),
         );
         let resp = svc.derive_shared_secret(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
 
         assert!(body["SharedSecret"].as_str().is_some());
         assert!(body["KeyId"].as_str().unwrap().contains(":key/"));
@@ -3610,7 +3610,7 @@ mod tests {
             json!({ "KeyId": key_id, "WrappingAlgorithm": "RSAES_OAEP_SHA_256", "WrappingKeySpec": "RSA_2048" }),
         );
         let resp = svc.get_parameters_for_import(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
 
         assert!(body["ImportToken"].as_str().is_some());
         assert!(body["PublicKey"].as_str().is_some());
@@ -3741,7 +3741,7 @@ mod tests {
             }),
         );
         let resp = svc.create_custom_key_store(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let store_id = body["CustomKeyStoreId"].as_str().unwrap().to_string();
         assert!(store_id.starts_with("cks-"));
 
@@ -3751,7 +3751,7 @@ mod tests {
             json!({ "CustomKeyStoreId": store_id }),
         );
         let resp = svc.describe_custom_key_stores(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let stores = body["CustomKeyStores"].as_array().unwrap();
         assert_eq!(stores.len(), 1);
         assert_eq!(
@@ -3780,7 +3780,7 @@ mod tests {
             json!({ "CustomKeyStoreId": store_id }),
         );
         let resp = svc.describe_custom_key_stores(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["CustomKeyStores"][0]["ConnectionState"]
                 .as_str()
@@ -3818,7 +3818,7 @@ mod tests {
             json!({ "CustomKeyStoreId": store_id }),
         );
         let resp = svc.describe_custom_key_stores(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["CustomKeyStores"][0]["CustomKeyStoreName"]
                 .as_str()
@@ -3836,7 +3836,7 @@ mod tests {
         // Describe all should return empty
         let req = make_request("DescribeCustomKeyStores", json!({}));
         let resp = svc.describe_custom_key_stores(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["CustomKeyStores"].as_array().unwrap().is_empty());
     }
 
@@ -3912,7 +3912,7 @@ mod tests {
             json!({ "CustomKeyStoreName": "store-a" }),
         );
         let resp = svc.describe_custom_key_stores(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let stores = body["CustomKeyStores"].as_array().unwrap();
         assert_eq!(stores.len(), 1);
         assert_eq!(stores[0]["CustomKeyStoreName"].as_str().unwrap(), "store-a");
@@ -3933,7 +3933,7 @@ mod tests {
             json!({ "CustomKeyStoreName": "store-y" }),
         );
         let resp = svc.create_custom_key_store(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let store_y_id = body["CustomKeyStoreId"].as_str().unwrap().to_string();
 
         // Try to rename store-y to store-x
@@ -3969,12 +3969,12 @@ mod tests {
         );
 
         let resp1 = svc.derive_shared_secret(&req).unwrap();
-        let body1: Value = serde_json::from_slice(&resp1.body).unwrap();
+        let body1: Value = serde_json::from_slice(resp1.body.expect_bytes()).unwrap();
         let secret1 = body1["SharedSecret"].as_str().unwrap().to_string();
 
         // Same inputs must produce the same shared secret
         let resp2 = svc.derive_shared_secret(&req).unwrap();
-        let body2: Value = serde_json::from_slice(&resp2.body).unwrap();
+        let body2: Value = serde_json::from_slice(resp2.body.expect_bytes()).unwrap();
         let secret2 = body2["SharedSecret"].as_str().unwrap().to_string();
 
         assert_eq!(secret1, secret2, "DeriveSharedSecret must be deterministic");
@@ -3990,7 +3990,7 @@ mod tests {
             }),
         );
         let resp3 = svc.derive_shared_secret(&req2).unwrap();
-        let body3: Value = serde_json::from_slice(&resp3.body).unwrap();
+        let body3: Value = serde_json::from_slice(resp3.body.expect_bytes()).unwrap();
         let secret3 = body3["SharedSecret"].as_str().unwrap().to_string();
         assert_ne!(
             secret1, secret3,
@@ -4026,7 +4026,7 @@ mod tests {
             json!({ "KeyId": key_id, "Plaintext": plaintext_b64 }),
         );
         let resp = svc.encrypt(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let ciphertext = body["CiphertextBlob"].as_str().unwrap().to_string();
 
         // Verify ciphertext uses the imported envelope
@@ -4042,7 +4042,7 @@ mod tests {
         // Decrypt
         let req = make_request("Decrypt", json!({ "CiphertextBlob": ciphertext }));
         let resp = svc.decrypt(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let decrypted_b64 = body["Plaintext"].as_str().unwrap();
         let decrypted = base64::engine::general_purpose::STANDARD
             .decode(decrypted_b64)
@@ -4080,7 +4080,7 @@ mod tests {
                 json!({ "KeyId": key_id, "Plaintext": plaintext_b64 }),
             ))
             .unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let ciphertext = body["CiphertextBlob"].as_str().unwrap().to_string();
 
         // Delete imported material
@@ -4183,7 +4183,7 @@ mod tests {
             json!({ "KeyId": key_id, "PendingWindowInDays": 7 }),
         );
         let resp = svc.schedule_key_deletion(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["KeyState"].as_str().unwrap(), "PendingDeletion");
 
         // Verify key is pending deletion
@@ -4198,7 +4198,7 @@ mod tests {
         // Cancel deletion
         let req = make_request("CancelKeyDeletion", json!({ "KeyId": key_id }));
         let resp = svc.cancel_key_deletion(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["KeyId"].as_str().unwrap(), key_id);
 
         // Key should be disabled (not enabled) with no deletion date
@@ -4229,7 +4229,7 @@ mod tests {
         // Initially rotation is disabled
         let req = make_request("GetKeyRotationStatus", json!({ "KeyId": key_id }));
         let resp = svc.get_key_rotation_status(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(!body["KeyRotationEnabled"].as_bool().unwrap());
 
         // Enable rotation
@@ -4238,7 +4238,7 @@ mod tests {
 
         let req = make_request("GetKeyRotationStatus", json!({ "KeyId": key_id }));
         let resp = svc.get_key_rotation_status(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["KeyRotationEnabled"].as_bool().unwrap());
 
         // Disable rotation
@@ -4247,7 +4247,7 @@ mod tests {
 
         let req = make_request("GetKeyRotationStatus", json!({ "KeyId": key_id }));
         let resp = svc.get_key_rotation_status(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(!body["KeyRotationEnabled"].as_bool().unwrap());
     }
 
@@ -4259,13 +4259,13 @@ mod tests {
         // No rotations initially
         let req = make_request("ListKeyRotations", json!({ "KeyId": key_id }));
         let resp = svc.list_key_rotations(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["Rotations"].as_array().unwrap().is_empty());
 
         // Rotate on demand
         let req = make_request("RotateKeyOnDemand", json!({ "KeyId": key_id }));
         let resp = svc.rotate_key_on_demand(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["KeyId"].as_str().unwrap(), key_id);
 
         // Rotate again
@@ -4275,7 +4275,7 @@ mod tests {
         // List rotations
         let req = make_request("ListKeyRotations", json!({ "KeyId": key_id }));
         let resp = svc.list_key_rotations(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let rotations = body["Rotations"].as_array().unwrap();
         assert_eq!(rotations.len(), 2);
         assert_eq!(rotations[0]["RotationType"].as_str().unwrap(), "ON_DEMAND");
@@ -4291,7 +4291,7 @@ mod tests {
         // Get default policy
         let req = make_request("GetKeyPolicy", json!({ "KeyId": key_id }));
         let resp = svc.get_key_policy(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let policy_str = body["Policy"].as_str().unwrap();
         assert!(policy_str.contains("Enable IAM User Permissions"));
 
@@ -4306,13 +4306,13 @@ mod tests {
         // Get updated policy
         let req = make_request("GetKeyPolicy", json!({ "KeyId": key_id }));
         let resp = svc.get_key_policy(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Policy"].as_str().unwrap(), custom_policy);
 
         // List key policies always returns ["default"]
         let req = make_request("ListKeyPolicies", json!({ "KeyId": key_id }));
         let resp = svc.list_key_policies(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let names = body["PolicyNames"].as_array().unwrap();
         assert_eq!(names.len(), 1);
         assert_eq!(names[0].as_str().unwrap(), "default");
@@ -4334,7 +4334,7 @@ mod tests {
             }),
         );
         let resp = svc.create_grant(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let grant_id = body["GrantId"].as_str().unwrap().to_string();
         let grant_token = body["GrantToken"].as_str().unwrap().to_string();
         assert!(!grant_id.is_empty());
@@ -4343,7 +4343,7 @@ mod tests {
         // List grants
         let req = make_request("ListGrants", json!({ "KeyId": key_id }));
         let resp = svc.list_grants(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let grants = body["Grants"].as_array().unwrap();
         assert_eq!(grants.len(), 1);
         assert_eq!(grants[0]["GrantId"].as_str().unwrap(), grant_id);
@@ -4363,7 +4363,7 @@ mod tests {
         // List grants should be empty
         let req = make_request("ListGrants", json!({ "KeyId": key_id }));
         let resp = svc.list_grants(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["Grants"].as_array().unwrap().is_empty());
     }
 
@@ -4382,7 +4382,7 @@ mod tests {
             }),
         );
         let resp = svc.create_grant(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let grant_token = body["GrantToken"].as_str().unwrap().to_string();
 
         // Retire by token
@@ -4392,7 +4392,7 @@ mod tests {
         // Verify grant is gone
         let req = make_request("ListGrants", json!({ "KeyId": key_id }));
         let resp = svc.list_grants(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["Grants"].as_array().unwrap().is_empty());
     }
 
@@ -4410,7 +4410,7 @@ mod tests {
             }),
         );
         let resp = svc.create_grant(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let grant_id = body["GrantId"].as_str().unwrap().to_string();
 
         // Retire by key ID + grant ID
@@ -4423,7 +4423,7 @@ mod tests {
         // Verify grant is gone
         let req = make_request("ListGrants", json!({ "KeyId": key_id }));
         let resp = svc.list_grants(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["Grants"].as_array().unwrap().is_empty());
     }
 
@@ -4448,7 +4448,7 @@ mod tests {
             }),
         );
         let resp = svc.sign(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let signature = body["Signature"].as_str().unwrap().to_string();
         assert!(!signature.is_empty());
         assert_eq!(
@@ -4467,7 +4467,7 @@ mod tests {
             }),
         );
         let resp = svc.verify(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["SignatureValid"].as_bool().unwrap());
 
         // Verify with wrong signature should return false
@@ -4482,7 +4482,7 @@ mod tests {
             }),
         );
         let resp = svc.verify(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(!body["SignatureValid"].as_bool().unwrap());
     }
 
@@ -4504,7 +4504,7 @@ mod tests {
             }),
         );
         let resp = svc.sign(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["Signature"].as_str().is_some());
         assert_eq!(body["SigningAlgorithm"].as_str().unwrap(), "ECDSA_SHA_256");
     }
@@ -4533,7 +4533,7 @@ mod tests {
         for num_bytes in [1, 16, 32, 64, 256, 1024] {
             let req = make_request("GenerateRandom", json!({ "NumberOfBytes": num_bytes }));
             let resp = svc.generate_random(&req).unwrap();
-            let body: Value = serde_json::from_slice(&resp.body).unwrap();
+            let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
             let b64 = body["Plaintext"].as_str().unwrap();
             let decoded = base64::engine::general_purpose::STANDARD
                 .decode(b64)
@@ -4580,7 +4580,7 @@ mod tests {
             }),
         );
         let resp = svc.generate_mac(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let mac = body["Mac"].as_str().unwrap().to_string();
         assert!(!mac.is_empty());
 
@@ -4595,7 +4595,7 @@ mod tests {
             }),
         );
         let resp = svc.verify_mac(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["MacValid"].as_bool().unwrap());
     }
 
@@ -4653,7 +4653,7 @@ mod tests {
             json!({ "KeyId": key_a, "Plaintext": plaintext_b64 }),
         );
         let resp = svc.encrypt(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let ciphertext_a = body["CiphertextBlob"].as_str().unwrap().to_string();
 
         // Re-encrypt from key A to key B
@@ -4665,7 +4665,7 @@ mod tests {
             }),
         );
         let resp = svc.re_encrypt(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let ciphertext_b = body["CiphertextBlob"].as_str().unwrap().to_string();
         assert_ne!(ciphertext_a, ciphertext_b);
         assert!(body["KeyId"].as_str().unwrap().contains(&key_b));
@@ -4674,7 +4674,7 @@ mod tests {
         // Decrypt with key B (the ciphertext is self-describing in fakecloud)
         let req = make_request("Decrypt", json!({ "CiphertextBlob": ciphertext_b }));
         let resp = svc.decrypt(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let decrypted_b64 = body["Plaintext"].as_str().unwrap();
         let decrypted = base64::engine::general_purpose::STANDARD
             .decode(decrypted_b64)
@@ -4768,7 +4768,7 @@ mod tests {
 
         let req = make_request("GetPublicKey", json!({ "KeyId": key_id }));
         let resp = svc.get_public_key(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
 
         assert!(body["PublicKey"].as_str().is_some());
         assert_eq!(body["KeySpec"].as_str().unwrap(), "RSA_2048");
@@ -4784,7 +4784,7 @@ mod tests {
 
         let req = make_request("GetPublicKey", json!({ "KeyId": ecc_key_id }));
         let resp = svc.get_public_key(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["PublicKey"].as_str().is_some());
         assert_eq!(body["KeySpec"].as_str().unwrap(), "ECC_NIST_P256");
     }

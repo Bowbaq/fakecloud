@@ -1392,7 +1392,8 @@ mod tests {
         };
         let pool_resp = svc.create_user_pool(&create_pool_req).unwrap();
         let pool_json: Value =
-            serde_json::from_str(core::str::from_utf8(&pool_resp.body).unwrap()).unwrap();
+            serde_json::from_str(core::str::from_utf8(pool_resp.body.expect_bytes()).unwrap())
+                .unwrap();
         let pool_id = pool_json["UserPool"]["Id"].as_str().unwrap();
 
         // Create client without GenerateSecret
@@ -1420,7 +1421,7 @@ mod tests {
         };
         let resp = svc.create_user_pool_client(&req).unwrap();
         let resp_json: Value =
-            serde_json::from_str(core::str::from_utf8(&resp.body).unwrap()).unwrap();
+            serde_json::from_str(core::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
         assert!(resp_json["UserPoolClient"]["ClientSecret"].is_null());
     }
 
@@ -1451,7 +1452,8 @@ mod tests {
         };
         let pool_resp = svc.create_user_pool(&create_pool_req).unwrap();
         let pool_json: Value =
-            serde_json::from_str(core::str::from_utf8(&pool_resp.body).unwrap()).unwrap();
+            serde_json::from_str(core::str::from_utf8(pool_resp.body.expect_bytes()).unwrap())
+                .unwrap();
         let pool_id = pool_json["UserPool"]["Id"].as_str().unwrap();
 
         // Create client with GenerateSecret=true
@@ -1480,7 +1482,7 @@ mod tests {
         };
         let resp = svc.create_user_pool_client(&req).unwrap();
         let resp_json: Value =
-            serde_json::from_str(core::str::from_utf8(&resp.body).unwrap()).unwrap();
+            serde_json::from_str(core::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
         let secret = resp_json["UserPoolClient"]["ClientSecret"]
             .as_str()
             .unwrap();
@@ -1547,7 +1549,7 @@ mod tests {
         };
         let resp = svc.create_user_pool_client(&req).unwrap();
         let resp_json: Value =
-            serde_json::from_str(core::str::from_utf8(&resp.body).unwrap()).unwrap();
+            serde_json::from_str(core::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
         let client_id = resp_json["UserPoolClient"]["ClientId"]
             .as_str()
             .unwrap()
@@ -1740,7 +1742,8 @@ mod tests {
         };
         let pool_resp = svc.create_user_pool(&req).unwrap();
         let pool_json: Value =
-            serde_json::from_str(core::str::from_utf8(&pool_resp.body).unwrap()).unwrap();
+            serde_json::from_str(core::str::from_utf8(pool_resp.body.expect_bytes()).unwrap())
+                .unwrap();
         let pool_id = pool_json["UserPool"]["Id"].as_str().unwrap();
 
         // Admin create user
@@ -1768,7 +1771,7 @@ mod tests {
         };
         let resp = block_on(svc.admin_create_user(&req)).unwrap();
         let resp_json: Value =
-            serde_json::from_str(core::str::from_utf8(&resp.body).unwrap()).unwrap();
+            serde_json::from_str(core::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
 
         assert_eq!(
             resp_json["User"]["UserStatus"].as_str().unwrap(),
@@ -2036,7 +2039,7 @@ mod tests {
         };
         let resp = svc.create_user_pool(&create_pool_req).unwrap();
         let resp_json: Value =
-            serde_json::from_str(core::str::from_utf8(&resp.body).unwrap()).unwrap();
+            serde_json::from_str(core::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
         let pool_id = resp_json["UserPool"]["Id"].as_str().unwrap().to_string();
 
         // Create a group
@@ -2108,7 +2111,7 @@ mod tests {
         };
         let resp = svc.create_user_pool(&create_pool_req).unwrap();
         let resp_json: Value =
-            serde_json::from_str(core::str::from_utf8(&resp.body).unwrap()).unwrap();
+            serde_json::from_str(core::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
         let pool_id = resp_json["UserPool"]["Id"].as_str().unwrap().to_string();
 
         // Create a user
@@ -2257,7 +2260,8 @@ mod tests {
         };
         let pool_resp = svc.create_user_pool(&req).unwrap();
         let pool_json: Value =
-            serde_json::from_str(core::str::from_utf8(&pool_resp.body).unwrap()).unwrap();
+            serde_json::from_str(core::str::from_utf8(pool_resp.body.expect_bytes()).unwrap())
+                .unwrap();
         let pool_id = pool_json["UserPool"]["Id"].as_str().unwrap().to_string();
 
         // Create user
@@ -2323,7 +2327,7 @@ mod tests {
         };
         let resp = svc.get_user(&req).unwrap();
         let resp_json: Value =
-            serde_json::from_str(core::str::from_utf8(&resp.body).unwrap()).unwrap();
+            serde_json::from_str(core::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
         assert_eq!(resp_json["Username"], "selfuser");
 
         // GetUser with invalid token
@@ -2378,7 +2382,8 @@ mod tests {
         };
         let pool_resp = svc.create_user_pool(&req).unwrap();
         let pool_json: Value =
-            serde_json::from_str(core::str::from_utf8(&pool_resp.body).unwrap()).unwrap();
+            serde_json::from_str(core::str::from_utf8(pool_resp.body.expect_bytes()).unwrap())
+                .unwrap();
         let pool_id = pool_json["UserPool"]["Id"].as_str().unwrap().to_string();
 
         // Create user
@@ -2488,7 +2493,8 @@ mod tests {
         };
         let pool_resp = svc.create_user_pool(&req).unwrap();
         let pool_json: Value =
-            serde_json::from_str(core::str::from_utf8(&pool_resp.body).unwrap()).unwrap();
+            serde_json::from_str(core::str::from_utf8(pool_resp.body.expect_bytes()).unwrap())
+                .unwrap();
         let pool_id = pool_json["UserPool"]["Id"].as_str().unwrap().to_string();
 
         // Create user with email
@@ -2556,7 +2562,7 @@ mod tests {
         };
         let resp = svc.get_user_attribute_verification_code(&req).unwrap();
         let resp_json: Value =
-            serde_json::from_str(core::str::from_utf8(&resp.body).unwrap()).unwrap();
+            serde_json::from_str(core::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
         assert_eq!(resp_json["CodeDeliveryDetails"]["DeliveryMedium"], "EMAIL");
         assert_eq!(resp_json["CodeDeliveryDetails"]["AttributeName"], "email");
 
@@ -2712,7 +2718,7 @@ mod tests {
             access_key_id: None,
         };
         let pool_resp = svc.create_user_pool(&create_pool_req).unwrap();
-        let pool_body: Value = serde_json::from_slice(&pool_resp.body).unwrap();
+        let pool_body: Value = serde_json::from_slice(pool_resp.body.expect_bytes()).unwrap();
         let pool_id = pool_body["UserPool"]["Id"].as_str().unwrap().to_string();
 
         let create_user_req = AwsRequest {
@@ -2809,7 +2815,7 @@ mod tests {
         let svc = CognitoService::new(state);
         let req = make_req("CreateUserPool", r#"{"PoolName":"test"}"#);
         let resp = svc.create_user_pool(&req).unwrap();
-        let resp_body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let resp_body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let pool_id = resp_body["UserPool"]["Id"].as_str().unwrap().to_string();
         (svc, pool_id)
     }
@@ -3064,7 +3070,7 @@ mod tests {
         .unwrap();
         let req = make_req("AdminGetDevice", &body);
         let resp = svc.admin_get_device(&req).unwrap();
-        let resp_body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let resp_body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(resp_body["Device"]["DeviceKey"], "dev-key-1");
 
         // AdminForgetDevice
@@ -3099,7 +3105,7 @@ mod tests {
         let body = serde_json::to_string(&json!({"ResourceArn": arn})).unwrap();
         let req = make_req("ListTagsForResource", &body);
         let resp = svc.list_tags_for_resource(&req).unwrap();
-        let resp_body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let resp_body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(resp_body["Tags"]["env"], "test");
         assert_eq!(resp_body["Tags"]["team"], "core");
 
@@ -3116,7 +3122,7 @@ mod tests {
         let body = serde_json::to_string(&json!({"ResourceArn": arn})).unwrap();
         let req = make_req("ListTagsForResource", &body);
         let resp = svc.list_tags_for_resource(&req).unwrap();
-        let resp_body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let resp_body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(resp_body["Tags"]["env"], "test");
         assert!(resp_body["Tags"]["team"].is_null());
     }
@@ -3133,7 +3139,7 @@ mod tests {
         .unwrap();
         let req = make_req("CreateUserImportJob", &body);
         let resp = svc.create_user_import_job(&req).unwrap();
-        let resp_body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let resp_body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let job = &resp_body["UserImportJob"];
         assert_eq!(job["JobName"], "my-import");
         assert_eq!(job["Status"], "Created");
@@ -3149,7 +3155,7 @@ mod tests {
         .unwrap();
         let req = make_req("DescribeUserImportJob", &body);
         let resp = svc.describe_user_import_job(&req).unwrap();
-        let resp_body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let resp_body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(resp_body["UserImportJob"]["JobName"], "my-import");
 
         // List
@@ -3160,7 +3166,7 @@ mod tests {
         .unwrap();
         let req = make_req("ListUserImportJobs", &body);
         let resp = svc.list_user_import_jobs(&req).unwrap();
-        let resp_body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let resp_body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(resp_body["UserImportJobs"].as_array().unwrap().len(), 1);
     }
 
@@ -3175,7 +3181,7 @@ mod tests {
         // Create pool and client
         let req = make_req("CreateUserPool", r#"{"PoolName": "evpool"}"#);
         let resp = svc.create_user_pool(&req).unwrap();
-        let resp_body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let resp_body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let pool_id = resp_body["UserPool"]["Id"].as_str().unwrap().to_string();
 
         let body = serde_json::to_string(&json!({
@@ -3186,7 +3192,7 @@ mod tests {
         .unwrap();
         let req = make_req("CreateUserPoolClient", &body);
         let resp = svc.create_user_pool_client(&req).unwrap();
-        let resp_body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let resp_body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let client_id = resp_body["UserPoolClient"]["ClientId"]
             .as_str()
             .unwrap()
@@ -3222,7 +3228,7 @@ mod tests {
         // Create pool, client, user
         let req = make_req("CreateUserPool", r#"{"PoolName": "authpool"}"#);
         let resp = svc.create_user_pool(&req).unwrap();
-        let resp_body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let resp_body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let pool_id = resp_body["UserPool"]["Id"].as_str().unwrap().to_string();
 
         let body = serde_json::to_string(&json!({
@@ -3233,7 +3239,7 @@ mod tests {
         .unwrap();
         let req = make_req("CreateUserPoolClient", &body);
         let resp = svc.create_user_pool_client(&req).unwrap();
-        let resp_body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let resp_body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let client_id = resp_body["UserPoolClient"]["ClientId"]
             .as_str()
             .unwrap()
@@ -3322,7 +3328,7 @@ mod tests {
         // Create pool
         let req = make_req("CreateUserPool", r#"{"PoolName": "capool"}"#);
         let resp = svc.create_user_pool(&req).unwrap();
-        let resp_body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let resp_body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let pool_id = resp_body["UserPool"]["Id"].as_str().unwrap().to_string();
 
         // Create client WITHOUT ALLOW_CUSTOM_AUTH
@@ -3334,7 +3340,7 @@ mod tests {
         .unwrap();
         let req = make_req("CreateUserPoolClient", &body);
         let resp = svc.create_user_pool_client(&req).unwrap();
-        let resp_body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let resp_body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let client_id = resp_body["UserPoolClient"]["ClientId"]
             .as_str()
             .unwrap()
@@ -3369,7 +3375,7 @@ mod tests {
         // Create pool and client
         let req = make_req("CreateUserPool", r#"{"PoolName": "capool2"}"#);
         let resp = svc.create_user_pool(&req).unwrap();
-        let resp_body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let resp_body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let pool_id = resp_body["UserPool"]["Id"].as_str().unwrap().to_string();
 
         let body = serde_json::to_string(&json!({
@@ -3380,7 +3386,7 @@ mod tests {
         .unwrap();
         let req = make_req("CreateUserPoolClient", &body);
         let resp = svc.create_user_pool_client(&req).unwrap();
-        let resp_body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let resp_body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let client_id = resp_body["UserPoolClient"]["ClientId"]
             .as_str()
             .unwrap()
@@ -3440,7 +3446,7 @@ mod tests {
         // Create pool WITHOUT DefineAuthChallenge Lambda configured
         let req = make_req("CreateUserPool", r#"{"PoolName": "capool3"}"#);
         let resp = svc.create_user_pool(&req).unwrap();
-        let resp_body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let resp_body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let pool_id = resp_body["UserPool"]["Id"].as_str().unwrap().to_string();
 
         let body = serde_json::to_string(&json!({
@@ -3451,7 +3457,7 @@ mod tests {
         .unwrap();
         let req = make_req("CreateUserPoolClient", &body);
         let resp = svc.create_user_pool_client(&req).unwrap();
-        let resp_body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let resp_body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let client_id = resp_body["UserPoolClient"]["ClientId"]
             .as_str()
             .unwrap()
@@ -3506,7 +3512,7 @@ mod tests {
         // Create pool, client, and user so we get past user lookup
         let req = make_req("CreateUserPool", r#"{"PoolName": "ccpool"}"#);
         let resp = svc.create_user_pool(&req).unwrap();
-        let resp_body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let resp_body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let pool_id = resp_body["UserPool"]["Id"].as_str().unwrap().to_string();
 
         let body = serde_json::to_string(&json!({
@@ -3517,7 +3523,7 @@ mod tests {
         .unwrap();
         let req = make_req("CreateUserPoolClient", &body);
         let resp = svc.create_user_pool_client(&req).unwrap();
-        let resp_body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let resp_body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let client_id = resp_body["UserPoolClient"]["ClientId"]
             .as_str()
             .unwrap()
@@ -3589,7 +3595,7 @@ mod tests {
         // Create pool and client so we have valid IDs
         let req = make_req("CreateUserPool", r#"{"PoolName": "anspool"}"#);
         let resp = svc.create_user_pool(&req).unwrap();
-        let resp_body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let resp_body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let pool_id = resp_body["UserPool"]["Id"].as_str().unwrap().to_string();
 
         let body = serde_json::to_string(&json!({
@@ -3600,7 +3606,7 @@ mod tests {
         .unwrap();
         let req = make_req("CreateUserPoolClient", &body);
         let resp = svc.create_user_pool_client(&req).unwrap();
-        let resp_body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let resp_body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let client_id = resp_body["UserPoolClient"]["ClientId"]
             .as_str()
             .unwrap()

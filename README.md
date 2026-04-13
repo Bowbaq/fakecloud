@@ -213,19 +213,62 @@ integration tests:
 
 fakecloud is configured via CLI flags or environment variables.
 
-| Flag           | Env Var                   | Default        | Description                                 |
-| -------------- | ------------------------- | -------------- | ------------------------------------------- |
-| `--addr`       | `FAKECLOUD_ADDR`          | `0.0.0.0:4566` | Listen address and port                     |
-| `--region`     | `FAKECLOUD_REGION`        | `us-east-1`    | AWS region to advertise                     |
-| `--account-id` | `FAKECLOUD_ACCOUNT_ID`    | `123456789012` | AWS account ID                              |
-| `--log-level`  | `FAKECLOUD_LOG`           | `info`         | Log level (trace, debug, info, warn, error) |
-|                | `FAKECLOUD_CONTAINER_CLI` | auto-detect    | Container CLI to use (`docker` or `podman`) |
+| Flag                 | Env Var                     | Default            | Description                                                                              |
+| -------------------- | --------------------------- | ------------------ | ---------------------------------------------------------------------------------------- |
+| `--addr`             | `FAKECLOUD_ADDR`            | `0.0.0.0:4566`     | Listen address and port                                                                  |
+| `--region`           | `FAKECLOUD_REGION`          | `us-east-1`        | AWS region to advertise                                                                  |
+| `--account-id`       | `FAKECLOUD_ACCOUNT_ID`      | `123456789012`     | AWS account ID                                                                           |
+| `--log-level`        | `FAKECLOUD_LOG`             | `info`             | Log level (trace, debug, info, warn, error)                                              |
+| `--storage-mode`     | `FAKECLOUD_STORAGE_MODE`    | `memory`           | `memory` (default, all state in RAM) or `persistent` (mirror S3 state to `--data-path`)  |
+| `--data-path`        | `FAKECLOUD_DATA_PATH`       | —                  | Directory to persist state to. Required when `--storage-mode=persistent`.                |
+| `--s3-cache-size`    | `FAKECLOUD_S3_CACHE_SIZE`   | `268435456`        | In-memory LRU cache for S3 object bodies in persistent mode. Default 256 MiB.            |
+|                      | `FAKECLOUD_CONTAINER_CLI`   | auto-detect        | Container CLI to use (`docker` or `podman`)                                              |
 
 ```sh
 # Examples
 fakecloud --addr 127.0.0.1:5000 --log-level debug
 FAKECLOUD_LOG=trace cargo run --bin fakecloud
 ```
+
+## Persistence
+
+By default fakecloud keeps all state in memory: startup is instant, shutdown
+is a no-op, and tests can run in parallel without cross-contamination. Pass
+`--storage-mode=persistent --data-path=<dir>` to mirror supported services to
+disk and reload them on the next launch.
+
+```sh
+fakecloud --storage-mode persistent --data-path /var/lib/fakecloud
+```
+
+Supported services:
+
+- **S3** — buckets, objects, versions, delete markers, multipart uploads
+  (resumable across restarts), and all bucket subresources (tags, lifecycle,
+  CORS, policy, notification, logging, website, public access block, object
+  lock, replication, ownership, inventory, encryption, ACL, accelerate) are
+  written to disk on every mutation and reloaded on startup.
+- Every other service emits `persistence not yet supported, running in-memory`
+  at startup and continues to operate exactly as in memory mode. Your tests
+  do not break — you just don't get cross-restart durability for those
+  services yet.
+
+On startup fakecloud reads `<data-path>/fakecloud.version.toml`. The file
+records the on-disk format version and the fakecloud version that created the
+directory. If the format version does not match the running binary, startup
+fails with an actionable error that points at the file. There is no automatic
+migration — the intent is that you either keep using the binary that wrote
+the directory or start from an empty data path.
+
+Object bodies are streamed straight to disk in persistent mode, not held in
+RAM. A bounded LRU cache (`--s3-cache-size`, default 256 MiB) keeps recently
+read bodies available for fast re-reads. Objects larger than `cache-size / 2`
+bypass the cache on both read and write, so a single large upload cannot
+evict the entire working set.
+
+The `/_fakecloud/s3/notifications` introspection buffer is intentionally not
+persisted — it exists so tests can assert which events fired during the
+current run, not as a long-term audit log.
 
 ## Health Check
 

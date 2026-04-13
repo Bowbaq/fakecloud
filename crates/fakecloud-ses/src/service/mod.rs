@@ -978,21 +978,21 @@ mod tests {
         );
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["VerifiedForSendingStatus"], true);
         assert_eq!(body["IdentityType"], "EMAIL_ADDRESS");
 
         // List identities
         let req = make_request(Method::GET, "/v2/email/identities", "");
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["EmailIdentities"].as_array().unwrap().len(), 1);
 
         // Get identity
         let req = make_request(Method::GET, "/v2/email/identities/test%40example.com", "");
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["VerifiedForSendingStatus"], true);
         assert_eq!(body["DkimAttributes"]["Status"], "SUCCESS");
 
@@ -1022,7 +1022,7 @@ mod tests {
             r#"{"EmailIdentity": "example.com"}"#,
         );
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["IdentityType"], "DOMAIN");
     }
 
@@ -1064,7 +1064,7 @@ mod tests {
         // Get template
         let req = make_request(Method::GET, "/v2/email/templates/welcome", "");
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["TemplateName"], "welcome");
         assert_eq!(body["TemplateContent"]["Subject"], "Welcome");
 
@@ -1080,13 +1080,13 @@ mod tests {
         // Verify update
         let req = make_request(Method::GET, "/v2/email/templates/welcome", "");
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["TemplateContent"]["Subject"], "Updated Welcome");
 
         // List templates
         let req = make_request(Method::GET, "/v2/email/templates", "");
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["TemplatesMetadata"].as_array().unwrap().len(), 1);
 
         // Delete template
@@ -1126,7 +1126,7 @@ mod tests {
         );
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["MessageId"].as_str().is_some());
 
         // Verify stored
@@ -1145,7 +1145,7 @@ mod tests {
         let req = make_request(Method::GET, "/v2/email/account", "");
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["SendingEnabled"], true);
         assert!(body["SendQuota"]["Max24HourSend"].as_f64().unwrap() > 0.0);
     }
@@ -1168,13 +1168,13 @@ mod tests {
         let req = make_request(Method::GET, "/v2/email/configuration-sets/my-config", "");
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["ConfigurationSetName"], "my-config");
 
         // List
         let req = make_request(Method::GET, "/v2/email/configuration-sets", "");
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["ConfigurationSets"].as_array().unwrap().len(), 1);
 
         // Delete
@@ -1210,7 +1210,7 @@ mod tests {
         );
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["MessageId"].as_str().is_some());
 
         let s = state.read();
@@ -1324,7 +1324,7 @@ mod tests {
         );
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let results = body["BulkEmailEntryResults"].as_array().unwrap();
         assert_eq!(results.len(), 2);
         assert_eq!(results[0]["Status"], "SUCCESS");
@@ -1501,7 +1501,7 @@ mod tests {
         let req = make_request(Method::GET, "/v2/email/contact-lists/my-list", "{}");
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["ContactListName"], "my-list");
         assert_eq!(body["Description"], "Test list");
         assert_eq!(body["Topics"][0]["TopicName"], "newsletters");
@@ -1512,7 +1512,7 @@ mod tests {
         // List contact lists
         let req = make_request(Method::GET, "/v2/email/contact-lists", "{}");
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["ContactLists"].as_array().unwrap().len(), 1);
         assert_eq!(body["ContactLists"][0]["ContactListName"], "my-list");
 
@@ -1544,7 +1544,7 @@ mod tests {
         // Verify update
         let req = make_request(Method::GET, "/v2/email/contact-lists/my-list", "{}");
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Description"], "Updated description");
         assert_eq!(body["Topics"].as_array().unwrap().len(), 2);
 
@@ -1638,7 +1638,7 @@ mod tests {
         );
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["EmailAddress"], "user@example.com");
         assert_eq!(body["ContactListName"], "my-list");
         assert_eq!(body["UnsubscribeAll"], false);
@@ -1657,7 +1657,7 @@ mod tests {
             "{}",
         );
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Contacts"].as_array().unwrap().len(), 1);
         assert_eq!(body["Contacts"][0]["EmailAddress"], "user@example.com");
 
@@ -1682,7 +1682,7 @@ mod tests {
             "{}",
         );
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["UnsubscribeAll"], true);
         assert_eq!(body["TopicPreferences"][0]["SubscriptionStatus"], "OPT_OUT");
 
@@ -1834,7 +1834,7 @@ mod tests {
         );
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let tags = body["Tags"].as_array().unwrap();
         assert_eq!(tags.len(), 2);
     }
@@ -2011,7 +2011,7 @@ mod tests {
         );
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["SuppressedDestination"]["EmailAddress"],
             "bounce@example.com"
@@ -2024,7 +2024,7 @@ mod tests {
         // List suppressed destinations
         let req = make_request(Method::GET, "/v2/email/suppression/addresses", "");
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["SuppressedDestinationSummaries"]
                 .as_array()
@@ -2071,7 +2071,7 @@ mod tests {
             "",
         );
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["SuppressedDestination"]["Reason"], "COMPLAINT");
     }
 
@@ -2116,7 +2116,7 @@ mod tests {
             "",
         );
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["SuppressedDestination"]["Reason"], "COMPLAINT");
     }
 
@@ -2173,7 +2173,7 @@ mod tests {
         );
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let dests = body["EventDestinations"].as_array().unwrap();
         assert_eq!(dests.len(), 1);
         assert_eq!(dests[0]["Name"], "my-dest");
@@ -2206,7 +2206,7 @@ mod tests {
             "",
         );
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let dests = body["EventDestinations"].as_array().unwrap();
         assert_eq!(dests[0]["Enabled"], false);
         assert_eq!(dests[0]["MatchingEventTypes"], json!(["DELIVERY"]));
@@ -2227,7 +2227,7 @@ mod tests {
             "",
         );
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["EventDestinations"].as_array().unwrap().is_empty());
     }
 
@@ -2388,7 +2388,7 @@ mod tests {
         );
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["Policies"]["my-policy"].is_string());
         assert_eq!(body["Policies"]["my-policy"].as_str().unwrap(), policy_doc);
 
@@ -2412,7 +2412,7 @@ mod tests {
             "",
         );
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Policies"]["my-policy"].as_str().unwrap(), updated_doc);
 
         // Delete policy
@@ -2431,7 +2431,7 @@ mod tests {
             "",
         );
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["Policies"].as_object().unwrap().is_empty());
     }
 
@@ -2576,7 +2576,7 @@ mod tests {
         // Verify via GetEmailIdentity
         let req = make_request(Method::GET, "/v2/email/identities/example.com", "");
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["DkimAttributes"]["SigningEnabled"], false);
     }
 
@@ -2613,14 +2613,14 @@ mod tests {
         );
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["DkimStatus"], "SUCCESS");
         assert!(!body["DkimTokens"].as_array().unwrap().is_empty());
 
         // Verify stored
         let req = make_request(Method::GET, "/v2/email/identities/example.com", "");
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["DkimAttributes"]["SigningAttributesOrigin"],
             "EXTERNAL"
@@ -2649,7 +2649,7 @@ mod tests {
 
         let req = make_request(Method::GET, "/v2/email/identities/test%40example.com", "");
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["FeedbackForwardingStatus"], false);
     }
 
@@ -2675,7 +2675,7 @@ mod tests {
 
         let req = make_request(Method::GET, "/v2/email/identities/example.com", "");
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["MailFromAttributes"]["MailFromDomain"],
             "mail.example.com"
@@ -2708,7 +2708,7 @@ mod tests {
 
         let req = make_request(Method::GET, "/v2/email/identities/example.com", "");
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["ConfigurationSetName"], "my-config");
     }
 
@@ -2739,7 +2739,7 @@ mod tests {
         // Verify
         let req = make_request(Method::GET, "/v2/email/configuration-sets/test-config", "");
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["SendingOptions"]["SendingEnabled"], false);
     }
 
@@ -2779,7 +2779,7 @@ mod tests {
 
         let req = make_request(Method::GET, "/v2/email/configuration-sets/test-config", "");
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["DeliveryOptions"]["TlsPolicy"], "REQUIRE");
         assert_eq!(body["DeliveryOptions"]["SendingPoolName"], "my-pool");
     }
@@ -2806,7 +2806,7 @@ mod tests {
 
         let req = make_request(Method::GET, "/v2/email/configuration-sets/test-config", "");
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["TrackingOptions"]["CustomRedirectDomain"],
             "track.example.com"
@@ -2836,7 +2836,7 @@ mod tests {
 
         let req = make_request(Method::GET, "/v2/email/configuration-sets/test-config", "");
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let reasons = body["SuppressionOptions"]["SuppressedReasons"]
             .as_array()
             .unwrap();
@@ -2865,7 +2865,7 @@ mod tests {
 
         let req = make_request(Method::GET, "/v2/email/configuration-sets/test-config", "");
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["ReputationOptions"]["ReputationMetricsEnabled"], true);
     }
 
@@ -2891,7 +2891,7 @@ mod tests {
 
         let req = make_request(Method::GET, "/v2/email/configuration-sets/test-config", "");
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["VdmOptions"]["DashboardOptions"]["EngagementMetrics"],
             "ENABLED"
@@ -2920,7 +2920,7 @@ mod tests {
 
         let req = make_request(Method::GET, "/v2/email/configuration-sets/test-config", "");
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["ArchivingOptions"]["ArchiveArn"]
             .as_str()
             .unwrap()
@@ -2958,7 +2958,7 @@ mod tests {
         );
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["TemplateName"], "my-verification");
         assert_eq!(body["FromEmailAddress"], "noreply@example.com");
         assert_eq!(body["TemplateSubject"], "Verify your email");
@@ -2973,7 +2973,7 @@ mod tests {
             "",
         );
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["CustomVerificationEmailTemplates"]
                 .as_array()
@@ -2998,7 +2998,7 @@ mod tests {
             "",
         );
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["TemplateSubject"], "Updated subject");
 
         // Delete
@@ -3078,7 +3078,7 @@ mod tests {
         );
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["MessageId"].as_str().is_some());
 
         // Verify stored in sent_emails
@@ -3131,7 +3131,7 @@ mod tests {
         );
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let rendered = body["RenderedTemplate"].as_str().unwrap();
         assert!(rendered.contains("Subject: Hello Alice"));
         assert!(rendered.contains("Welcome, Alice!"));
@@ -3189,7 +3189,7 @@ mod tests {
         // List pools
         let req = make_request(Method::GET, "/v2/email/dedicated-ip-pools", "");
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["DedicatedIpPools"].as_array().unwrap().len(), 1);
 
         // Duplicate
@@ -3239,7 +3239,7 @@ mod tests {
             },
         );
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let ips = body["DedicatedIps"].as_array().unwrap();
         assert_eq!(ips.len(), 3);
         assert_eq!(ips[0]["WarmupStatus"], "NOT_APPLICABLE");
@@ -3270,7 +3270,7 @@ mod tests {
         let req = make_request(Method::GET, "/v2/email/dedicated-ips/198.51.100.1", "");
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["DedicatedIp"]["PoolName"], "pool-a");
 
         // Move IP to pool-b
@@ -3285,7 +3285,7 @@ mod tests {
         // Verify it moved
         let req = make_request(Method::GET, "/v2/email/dedicated-ips/198.51.100.1", "");
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["DedicatedIp"]["PoolName"], "pool-b");
 
         // Set warmup
@@ -3299,7 +3299,7 @@ mod tests {
 
         let req = make_request(Method::GET, "/v2/email/dedicated-ips/198.51.100.1", "");
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["DedicatedIp"]["WarmupPercentage"], 50);
         assert_eq!(body["DedicatedIp"]["WarmupStatus"], "IN_PROGRESS");
 
@@ -3355,7 +3355,7 @@ mod tests {
 
         let req = make_request(Method::GET, "/v2/email/account", "");
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["DedicatedIpAutoWarmupEnabled"], true);
     }
 
@@ -3374,7 +3374,7 @@ mod tests {
         );
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Status"], "READY");
         assert!(body["EndpointId"].as_str().is_some());
 
@@ -3386,7 +3386,7 @@ mod tests {
         );
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["EndpointName"], "global-ep");
         assert_eq!(body["Status"], "READY");
         let routes = body["Routes"].as_array().unwrap();
@@ -3395,7 +3395,7 @@ mod tests {
         // List
         let req = make_request(Method::GET, "/v2/email/multi-region-endpoints", "");
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["MultiRegionEndpoints"].as_array().unwrap().len(), 1);
 
         // Duplicate
@@ -3415,7 +3415,7 @@ mod tests {
         );
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Status"], "DELETING");
 
         // Get after delete
@@ -3445,7 +3445,7 @@ mod tests {
 
         let req = make_request(Method::GET, "/v2/email/account", "");
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Details"]["MailType"], "TRANSACTIONAL");
         assert_eq!(body["Details"]["WebsiteURL"], "https://example.com");
         assert_eq!(body["Details"]["UseCaseDescription"], "Testing");
@@ -3467,7 +3467,7 @@ mod tests {
 
         let req = make_request(Method::GET, "/v2/email/account", "");
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["SendingEnabled"], false);
 
         // Re-enable
@@ -3480,7 +3480,7 @@ mod tests {
 
         let req = make_request(Method::GET, "/v2/email/account", "");
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["SendingEnabled"], true);
     }
 
@@ -3499,7 +3499,7 @@ mod tests {
 
         let req = make_request(Method::GET, "/v2/email/account", "");
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let reasons = body["SuppressionAttributes"]["SuppressedReasons"]
             .as_array()
             .unwrap();
@@ -3521,7 +3521,7 @@ mod tests {
 
         let req = make_request(Method::GET, "/v2/email/account", "");
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["VdmAttributes"]["VdmEnabled"], "ENABLED");
     }
 
@@ -3546,7 +3546,7 @@ mod tests {
         );
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let job_id = body["JobId"].as_str().unwrap().to_string();
 
         // Get import job
@@ -3557,7 +3557,7 @@ mod tests {
         );
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["JobId"], job_id);
         assert_eq!(body["JobStatus"], "COMPLETED");
 
@@ -3565,7 +3565,7 @@ mod tests {
         let req = make_request(Method::POST, "/v2/email/import-jobs/list", "{}");
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["ImportJobs"].as_array().unwrap().len(), 1);
 
         // Get non-existent job
@@ -3599,7 +3599,7 @@ mod tests {
         );
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let job_id = body["JobId"].as_str().unwrap().to_string();
 
         // Get export job
@@ -3610,7 +3610,7 @@ mod tests {
         );
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["JobId"], job_id);
         assert_eq!(body["JobStatus"], "COMPLETED");
         assert_eq!(body["ExportSourceType"], "METRICS_DATA");
@@ -3619,7 +3619,7 @@ mod tests {
         let req = make_request(Method::POST, "/v2/email/list-export-jobs", "{}");
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["ExportJobs"].as_array().unwrap().len(), 1);
 
         // Cancel — should fail since already COMPLETED
@@ -3645,7 +3645,7 @@ mod tests {
         );
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["TenantName"], "my-tenant");
         assert!(body["TenantId"].as_str().is_some());
         assert_eq!(body["SendingStatus"], "ENABLED");
@@ -3658,14 +3658,14 @@ mod tests {
         );
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Tenant"]["TenantName"], "my-tenant");
 
         // List tenants
         let req = make_request(Method::POST, "/v2/email/tenants/list", "{}");
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Tenants"].as_array().unwrap().len(), 1);
 
         // Create resource association
@@ -3685,7 +3685,7 @@ mod tests {
         );
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["TenantResources"].as_array().unwrap().len(), 1);
 
         // List resource tenants
@@ -3696,7 +3696,7 @@ mod tests {
         );
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["ResourceTenants"].as_array().unwrap().len(), 1);
 
         // Delete resource association
@@ -3715,7 +3715,7 @@ mod tests {
             r#"{"TenantName": "my-tenant"}"#,
         );
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["TenantResources"].as_array().unwrap().is_empty());
 
         // Delete tenant
@@ -3750,7 +3750,7 @@ mod tests {
         );
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["ReputationEntity"]["SendingStatusAggregate"],
             "ENABLED"
@@ -3781,7 +3781,7 @@ mod tests {
             "",
         );
         let resp = svc.handle(req).await.unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["ReputationEntity"]["CustomerManagedStatus"]["SendingStatus"],
             "DISABLED"
@@ -3791,7 +3791,7 @@ mod tests {
         let req = make_request(Method::POST, "/v2/email/reputation/entities", "{}");
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["ReputationEntities"].as_array().unwrap().len(), 1);
     }
 
@@ -3817,7 +3817,7 @@ mod tests {
         );
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Results"].as_array().unwrap().len(), 1);
         assert_eq!(body["Results"][0]["Id"], "q1");
         assert!(body["Errors"].as_array().unwrap().is_empty());

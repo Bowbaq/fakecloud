@@ -2114,7 +2114,7 @@ mod tests {
         let req = make_v1_request("CreateReceiptRuleSet", vec![("RuleSetName", "my-rules")]);
         let resp = handle_v1_action(&state, &req).unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("CreateReceiptRuleSetResponse"));
 
         // Duplicate should fail
@@ -2142,7 +2142,7 @@ mod tests {
 
         let req = make_v1_request("ListReceiptRuleSets", vec![]);
         let resp = handle_v1_action(&state, &req).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<Name>set-a</Name>"));
         assert!(body.contains("<Name>set-b</Name>"));
     }
@@ -2289,7 +2289,7 @@ mod tests {
             vec![("RuleSetName", "my-set"), ("RuleName", "store-email")],
         );
         let resp = handle_v1_action(&state, &req).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<Name>store-email</Name>"));
         assert!(body.contains("<Enabled>true</Enabled>"));
         assert!(body.contains("<ScanEnabled>true</ScanEnabled>"));
@@ -2430,7 +2430,7 @@ mod tests {
         // List filters
         let req = make_v1_request("ListReceiptFilters", vec![]);
         let resp = handle_v1_action(&state, &req).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<Name>allow-internal</Name>"));
         assert!(body.contains("<Cidr>10.0.0.0/8</Cidr>"));
         assert!(body.contains("<Policy>Allow</Policy>"));
@@ -2445,7 +2445,7 @@ mod tests {
         // List should be empty
         let req = make_v1_request("ListReceiptFilters", vec![]);
         let resp = handle_v1_action(&state, &req).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(!body.contains("allow-internal"));
     }
 
@@ -2637,7 +2637,7 @@ mod tests {
 
         let req = make_v1_request("DescribeReceiptRuleSet", vec![("RuleSetName", "my-set")]);
         let resp = handle_v1_action(&state, &req).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<Name>my-set</Name>"));
         assert!(body.contains("<Name>rule1</Name>"));
         assert!(body.contains("<Rules>"));
@@ -2717,7 +2717,7 @@ mod tests {
         let req = make_v1_request("VerifyDomainIdentity", vec![("Domain", "example.com")]);
         let resp = handle_v1_action(&state, &req).unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<VerificationToken>"));
 
         let st = state.read();
@@ -2731,7 +2731,7 @@ mod tests {
         let state = make_state();
         let req = make_v1_request("VerifyDomainDkim", vec![("Domain", "example.com")]);
         let resp = handle_v1_action(&state, &req).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<DkimTokens>"));
         // Should return 3 tokens
         assert_eq!(body.matches("<member>").count(), 3);
@@ -2754,7 +2754,7 @@ mod tests {
 
         // List all
         let resp = handle_v1_action(&state, &make_v1_request("ListIdentities", vec![])).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("a@test.com"));
         assert!(body.contains("test.com"));
 
@@ -2764,7 +2764,7 @@ mod tests {
             &make_v1_request("ListIdentities", vec![("IdentityType", "EmailAddress")]),
         )
         .unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("a@test.com"));
         assert!(!body.contains("<member>test.com</member>"));
 
@@ -2774,7 +2774,7 @@ mod tests {
             &make_v1_request("ListIdentities", vec![("IdentityType", "Domain")]),
         )
         .unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(!body.contains("a@test.com"));
         assert!(body.contains("test.com"));
     }
@@ -2796,7 +2796,7 @@ mod tests {
             ],
         );
         let resp = handle_v1_action(&state, &req).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<VerificationStatus>Success</VerificationStatus>"));
         assert!(body.contains("<VerificationStatus>NotStarted</VerificationStatus>"));
     }
@@ -2864,7 +2864,7 @@ mod tests {
             vec![("Identities.member.1", "example.com")],
         );
         let resp = handle_v1_action(&state, &req).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<DkimEnabled>"));
         assert!(body.contains("<DkimVerificationStatus>"));
         assert!(body.contains("<DkimTokens>"));
@@ -2913,7 +2913,7 @@ mod tests {
             vec![("Identities.member.1", "a@test.com")],
         );
         let resp = handle_v1_action(&state, &req).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<ForwardingEnabled>true</ForwardingEnabled>"));
     }
 
@@ -2959,7 +2959,7 @@ mod tests {
             vec![("Identities.member.1", "example.com")],
         );
         let resp = handle_v1_action(&state, &req).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<BehaviorOnMXFailure>"));
         assert!(body.contains("<MailFromDomainStatus>"));
     }
@@ -2982,7 +2982,7 @@ mod tests {
         );
         let resp = handle_v1_action(&state, &req).unwrap();
         assert_eq!(resp.status, StatusCode::OK);
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<MessageId>"));
 
         let st = state.read();
@@ -3108,7 +3108,7 @@ mod tests {
             ],
         );
         let resp = handle_v1_action(&state, &req).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<Status>Success</Status>"));
 
         let st = state.read();
@@ -3151,13 +3151,13 @@ mod tests {
             &make_v1_request("GetTemplate", vec![("TemplateName", "t1")]),
         )
         .unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<TemplateName>t1</TemplateName>"));
         assert!(body.contains("<SubjectPart>Subject</SubjectPart>"));
 
         // List
         let resp = handle_v1_action(&state, &make_v1_request("ListTemplates", vec![])).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<Name>t1</Name>"));
 
         // Update
@@ -3219,7 +3219,7 @@ mod tests {
         // List
         let resp =
             handle_v1_action(&state, &make_v1_request("ListConfigurationSets", vec![])).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<Name>my-config</Name>"));
 
         // Describe
@@ -3231,7 +3231,7 @@ mod tests {
             ),
         )
         .unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<Name>my-config</Name>"));
 
         // Delete
@@ -3326,7 +3326,7 @@ mod tests {
     fn test_get_send_quota() {
         let state = make_state();
         let resp = handle_v1_action(&state, &make_v1_request("GetSendQuota", vec![])).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<Max24HourSend>50000.0</Max24HourSend>"));
         assert!(body.contains("<MaxSendRate>14.0</MaxSendRate>"));
     }
@@ -3350,7 +3350,7 @@ mod tests {
         .unwrap();
 
         let resp = handle_v1_action(&state, &make_v1_request("GetSendStatistics", vec![])).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<DeliveryAttempts>1</DeliveryAttempts>"));
     }
 
@@ -3359,7 +3359,7 @@ mod tests {
         let state = make_state();
         let resp =
             handle_v1_action(&state, &make_v1_request("GetAccountSendingEnabled", vec![])).unwrap();
-        let body = String::from_utf8(resp.body.to_vec()).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<Enabled>true</Enabled>"));
     }
 }

@@ -61,7 +61,33 @@ async fn main() {
             tracing_subscriber::EnvFilter::try_new(&cli.log_level)
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
+        .with_writer(std::io::stderr)
         .init();
+
+    let persistence_config = match cli.persistence_config() {
+        Ok(cfg) => cfg,
+        Err(err) => fatal_exit(format_args!("invalid persistence configuration: {err}")),
+    };
+
+    if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
+        if let Some(ref data_path) = persistence_config.data_path {
+            if let Err(err) = std::fs::create_dir_all(data_path) {
+                fatal_exit(format_args!(
+                    "failed to create persistence data directory {}: {err}",
+                    data_path.display()
+                ));
+            }
+            if let Err(err) = fakecloud_persistence::version::ensure_version_file(
+                data_path,
+                env!("CARGO_PKG_VERSION"),
+            ) {
+                fatal_exit(format_args!(
+                    "persistence version file check failed at {}/fakecloud.version.toml: {err}",
+                    data_path.display()
+                ));
+            }
+        }
+    }
 
     let endpoint_url = cli.endpoint_url();
 
@@ -350,6 +376,32 @@ async fn main() {
     };
 
     // Register services
+    if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
+        for service in [
+            "cloudformation",
+            "sqs",
+            "sns",
+            "events",
+            "iam",
+            "sts",
+            "ssm",
+            "dynamodb",
+            "lambda",
+            "secretsmanager",
+            "logs",
+            "kms",
+            "ses",
+            "cognito-idp",
+            "kinesis",
+            "rds",
+            "elasticache",
+            "states",
+            "apigatewayv2",
+            "bedrock",
+        ] {
+            fakecloud_persistence::warn_unsupported(service);
+        }
+    }
     let mut registry = ServiceRegistry::new();
     registry.register(Arc::new(CloudFormationService::new(
         cloudformation_state,
@@ -392,11 +444,10 @@ async fn main() {
     registry.register(Arc::new(
         SsmService::new(ssm_state).with_secretsmanager(secretsmanager_state.clone()),
     ));
-    registry.register(Arc::new(
-        DynamoDbService::new(dynamodb_state.clone())
-            .with_s3(s3_state.clone())
-            .with_delivery(delivery_for_dynamodb),
-    ));
+    // DynamoDB is registered later, after s3_store is constructed, so the
+    // export path can persist result objects through the S3 store.
+    let dynamodb_state_for_register = dynamodb_state.clone();
+    let delivery_for_dynamodb_register = delivery_for_dynamodb;
     let mut lambda_service = LambdaService::new(lambda_state.clone());
     if let Some(ref rt) = container_runtime {
         lambda_service = lambda_service.with_runtime(rt.clone());
@@ -416,8 +467,75 @@ async fn main() {
     ));
     registry.register(Arc::new(LogsService::new(logs_state, delivery_for_logs)));
     registry.register(Arc::new(KmsService::new(kms_state.clone())));
+    let mut shared_body_cache: Option<Arc<fakecloud_persistence::cache::BodyCache>> = None;
+    let s3_store: Arc<dyn fakecloud_persistence::S3Store> = match persistence_config.mode {
+        fakecloud_persistence::StorageMode::Persistent => {
+            let data_path = persistence_config
+                .data_path
+                .as_ref()
+                .expect("validated above")
+                .clone();
+            let s3_root = data_path.join("s3");
+            if let Err(err) = std::fs::create_dir_all(&s3_root) {
+                fatal_exit(format_args!(
+                    "failed to create s3 persistence dir {}: {err}",
+                    s3_root.display()
+                ));
+            }
+            let cache = Arc::new(fakecloud_persistence::cache::BodyCache::new(
+                persistence_config.s3_cache_bytes,
+            ));
+            shared_body_cache = Some(cache.clone());
+            let disk = fakecloud_persistence::s3::DiskS3Store::new(s3_root, cache);
+            match <fakecloud_persistence::s3::DiskS3Store as fakecloud_persistence::S3Store>::load(
+                &disk,
+            ) {
+                Ok(snapshot) => {
+                    let bucket_count = snapshot.buckets.len();
+                    let object_count: usize =
+                        snapshot.buckets.values().map(|b| b.objects.len()).sum();
+                    let hydrated = match fakecloud_s3::persistence::hydrate_s3_state(
+                        snapshot,
+                        &cli.account_id,
+                        &cli.region,
+                    ) {
+                        Ok(h) => h,
+                        Err(err) => fatal_exit(format_args!(
+                            "failed to hydrate s3 persistence snapshot: {err}"
+                        )),
+                    };
+                    *s3_state.write() = hydrated;
+                    tracing::info!(
+                        buckets = bucket_count,
+                        objects = object_count,
+                        "loaded s3 persistence snapshot",
+                    );
+                }
+                Err(err) => fatal_exit(format_args!(
+                    "failed to load s3 persistence snapshot: {err}"
+                )),
+            }
+            Arc::new(disk)
+        }
+        fakecloud_persistence::StorageMode::Memory => {
+            Arc::new(fakecloud_persistence::s3::MemoryS3Store::new())
+        }
+    };
+    let s3_store_for_inbound = s3_store.clone();
+    if let Some(ref cache) = shared_body_cache {
+        // Share the cache between the S3Store and S3State so read_body honors
+        // the persistent LRU on every read site, not just open_object_body.
+        s3_state.write().set_body_cache(cache.clone());
+    }
     registry.register(Arc::new(
-        S3Service::new(s3_state.clone(), delivery_for_s3).with_kms(kms_state),
+        S3Service::with_store(s3_state.clone(), delivery_for_s3, s3_store.clone())
+            .with_kms(kms_state),
+    ));
+    registry.register(Arc::new(
+        DynamoDbService::new(dynamodb_state_for_register)
+            .with_s3(s3_state.clone())
+            .with_s3_store(s3_store.clone())
+            .with_delivery(delivery_for_dynamodb_register),
     ));
     // SES delivery bus (event fanout to SNS topics and EventBridge buses)
     let eb_delivery_for_ses = Arc::new(
@@ -627,6 +745,7 @@ async fn main() {
             axum::routing::post({
                 let ss = ses_inbound_state.clone();
                 let s3_for_inbound = s3_introspection_state.clone();
+                let s3_store_for_inbound = s3_store_for_inbound.clone();
                 let delivery_for_inbound = {
                     let mut bus = DeliveryBus::new();
                     let sns_fanout_bus = {
@@ -674,9 +793,9 @@ async fn main() {
                                 let etag = format!("\"{:x}\"", md5::Md5::digest(&data));
                                 let obj = fakecloud_s3::state::S3Object {
                                     key: key.clone(),
-                                    data,
+                                    body: fakecloud_persistence::BodyRef::Memory(data.clone()),
                                     content_type: "text/plain".to_string(),
-                                    etag,
+                                    etag: etag.clone(),
                                     size,
                                     last_modified: now,
                                     storage_class: "STANDARD".to_string(),
@@ -689,7 +808,24 @@ async fn main() {
                                         key = %key,
                                         "SES inbound: stored email in S3"
                                     );
-                                    bucket.objects.insert(key, obj);
+                                    let meta =
+                                        fakecloud_s3::persistence::object_meta_snapshot(&obj);
+                                    bucket.objects.insert(key.clone(), obj);
+                                    drop(state);
+                                    if let Err(err) = s3_store_for_inbound.put_object(
+                                        bucket_name,
+                                        &key,
+                                        None,
+                                        fakecloud_persistence::BodySource::Bytes(data),
+                                        &meta,
+                                    ) {
+                                        tracing::error!(
+                                            bucket = %bucket_name,
+                                            key = %key,
+                                            error = %err,
+                                            "SES inbound: failed to persist S3 object via store"
+                                        );
+                                    }
                                 } else {
                                     tracing::warn!(
                                         bucket = %bucket_name,
@@ -1635,4 +1771,13 @@ async fn shutdown_signal() {
         .await
         .expect("failed to install Ctrl+C handler");
     tracing::info!("shutting down");
+}
+
+/// Emit a fatal error through the tracing pipeline, flush stderr so the
+/// message survives `process::exit`, and terminate with code 1.
+fn fatal_exit(args: std::fmt::Arguments<'_>) -> ! {
+    use std::io::Write;
+    tracing::error!("{args}");
+    let _ = std::io::stderr().flush();
+    std::process::exit(1);
 }

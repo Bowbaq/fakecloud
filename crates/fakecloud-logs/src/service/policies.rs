@@ -880,7 +880,7 @@ mod tests {
             }),
         );
         let resp = svc.put_account_policy(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["accountPolicy"]["policyName"], "test-policy");
 
         let req = make_request(
@@ -888,7 +888,7 @@ mod tests {
             json!({ "policyType": "DATA_PROTECTION_POLICY" }),
         );
         let resp = svc.describe_account_policies(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["accountPolicies"].as_array().unwrap().len(), 1);
 
         let req = make_request(
@@ -905,7 +905,7 @@ mod tests {
             json!({ "policyType": "DATA_PROTECTION_POLICY" }),
         );
         let resp = svc.describe_account_policies(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["accountPolicies"].as_array().unwrap().is_empty());
     }
 
@@ -930,7 +930,7 @@ mod tests {
             json!({ "logGroupIdentifier": "dp-group" }),
         );
         let resp = svc.get_data_protection_policy(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["policyDocument"], "{\"Name\":\"dp\"}");
 
         let req = make_request(
@@ -944,7 +944,7 @@ mod tests {
             json!({ "logGroupIdentifier": "dp-group" }),
         );
         let resp = svc.get_data_protection_policy(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body.get("policyDocument").is_none());
     }
 
@@ -969,7 +969,7 @@ mod tests {
             json!({ "logGroupIdentifiers": ["idx-group"] }),
         );
         let resp = svc.describe_index_policies(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["indexPolicies"].as_array().unwrap().len(), 1);
 
         let req = make_request(
@@ -1002,7 +1002,7 @@ mod tests {
             json!({ "logGroupIdentifier": "tx-group" }),
         );
         let resp = svc.get_transformer(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["transformerConfig"].is_array());
 
         let req = make_request(
@@ -1024,7 +1024,7 @@ mod tests {
             }),
         );
         let resp = svc.test_transformer(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["transformedLogs"].as_array().unwrap().len(), 2);
     }
 }

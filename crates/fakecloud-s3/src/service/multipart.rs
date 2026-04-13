@@ -4,6 +4,9 @@ use http::{HeaderMap, StatusCode};
 
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 
+use fakecloud_persistence::BodySource;
+
+use crate::persistence::{mpu_init_snapshot, object_meta_snapshot};
 use crate::state::{MultipartUpload, S3Object, UploadPart};
 
 use md5::{Digest, Md5};
@@ -102,6 +105,13 @@ impl S3Service {
             acl_grants,
             checksum_algorithm,
         };
+        // Store-first: persist the MPU init before touching memory so a disk
+        // write failure short-circuits the handler cleanly without leaving an
+        // orphaned in-memory upload.
+        let init_snapshot = mpu_init_snapshot(&upload);
+        self.store
+            .mpu_create(bucket, &upload_id, &init_snapshot)
+            .map_err(super::persistence_error)?;
         b.multipart_uploads.insert(upload_id.clone(), upload);
 
         let mut headers = HeaderMap::new();
@@ -176,9 +186,19 @@ impl S3Service {
             return Err(no_such_upload(upload_id));
         }
 
+        // Store-first: durably write the part body before mutating memory.
+        self.store
+            .mpu_put_part(
+                bucket,
+                upload_id,
+                pn,
+                BodySource::Bytes(data.clone()),
+                &etag,
+            )
+            .map_err(super::persistence_error)?;
         let part = UploadPart {
             part_number: pn,
-            data: data.clone(),
+            body: crate::state::memory_body(data.clone()),
             etag: etag.clone(),
             size: data.len() as u64,
             last_modified: Utc::now(),
@@ -199,7 +219,7 @@ impl S3Service {
         Ok(AwsResponse {
             status: StatusCode::OK,
             content_type: "application/xml".to_string(),
-            body: Bytes::new(),
+            body: Bytes::new().into(),
             headers,
         })
     }
@@ -252,7 +272,7 @@ impl S3Service {
             .and_then(|v| v.to_str().ok());
 
         let mut state = self.state.write();
-        let src_data = {
+        let src_body_ref = {
             let sb = state
                 .buckets
                 .get(src_bucket)
@@ -265,20 +285,21 @@ impl S3Service {
                     .get(src_key)
                     .ok_or_else(|| no_such_key(src_key))?
             };
-
-            if let Some(range_str) = copy_range {
-                let range_part = range_str.strip_prefix("bytes=").unwrap_or(range_str);
-                if let Some((start_str, end_str)) = range_part.split_once('-') {
-                    let start: usize = start_str.parse().unwrap_or(0);
-                    let end: usize = end_str.parse().unwrap_or(src_obj.data.len() - 1);
-                    let end = std::cmp::min(end + 1, src_obj.data.len());
-                    src_obj.data.slice(start..end)
-                } else {
-                    src_obj.data.clone()
-                }
+            src_obj.body.clone()
+        };
+        let src_bytes = state.read_body(&src_body_ref).map_err(super::io_to_aws)?;
+        let src_data = if let Some(range_str) = copy_range {
+            let range_part = range_str.strip_prefix("bytes=").unwrap_or(range_str);
+            if let Some((start_str, end_str)) = range_part.split_once('-') {
+                let start: usize = start_str.parse().unwrap_or(0);
+                let end: usize = end_str.parse().unwrap_or(src_bytes.len() - 1);
+                let end = std::cmp::min(end + 1, src_bytes.len());
+                src_bytes.slice(start..end)
             } else {
-                src_obj.data.clone()
+                src_bytes.clone()
             }
+        } else {
+            src_bytes.clone()
         };
 
         let data_len = src_data.len() as u64;
@@ -295,9 +316,19 @@ impl S3Service {
             return Err(no_such_upload(upload_id));
         }
 
+        // Store-first: durably write before the in-memory part is visible.
+        self.store
+            .mpu_put_part(
+                bucket,
+                upload_id,
+                part_number as u32,
+                BodySource::Bytes(src_data.clone()),
+                &etag,
+            )
+            .map_err(super::persistence_error)?;
         let part = UploadPart {
             part_number: part_number as u32,
-            data: src_data,
+            body: crate::state::memory_body(src_data),
             etag: etag.clone(),
             size: data_len,
             last_modified: Utc::now(),
@@ -341,14 +372,23 @@ impl S3Service {
             .map(|s| s.to_string());
 
         let mut state = self.state.write();
-        let b = state
-            .buckets
-            .get_mut(bucket)
-            .ok_or_else(|| no_such_bucket(bucket))?;
-
-        let upload = match b.multipart_uploads.get(upload_id) {
-            Some(u) => u.clone(),
+        let (upload, already_has_object) = {
+            let b = state
+                .buckets
+                .get(bucket)
+                .ok_or_else(|| no_such_bucket(bucket))?;
+            match b.multipart_uploads.get(upload_id) {
+                Some(u) => (Some(u.clone()), b.objects.contains_key(key)),
+                None => (None, b.objects.contains_key(key)),
+            }
+        };
+        let upload = match upload {
+            Some(u) => u,
             None => {
+                let b = state
+                    .buckets
+                    .get(bucket)
+                    .ok_or_else(|| no_such_bucket(bucket))?;
                 // Upload already completed - return existing object if it exists
                 // IfNoneMatch does NOT apply to re-completions
                 if let Some(obj) = b.objects.get(key) {
@@ -381,7 +421,7 @@ impl S3Service {
 
         // IfNoneMatch: if "*" and object already exists, reject (only for real completions)
         if let Some(ref inm) = if_none_match {
-            if inm == "*" && b.objects.contains_key(key) {
+            if inm == "*" && already_has_object {
                 return Err(precondition_failed("If-None-Match"));
             }
         }
@@ -418,7 +458,7 @@ impl S3Service {
                     break; // skip last part
                 }
                 if let Some(part) = upload.parts.get(part_num) {
-                    if part.data.len() < MIN_PART_SIZE {
+                    if part.size < MIN_PART_SIZE as u64 {
                         return Err(AwsServiceError::aws_error(
                             StatusCode::BAD_REQUEST,
                             "EntityTooSmall",
@@ -449,10 +489,11 @@ impl S3Service {
                     "One or more of the specified parts could not be found. The part may not have been uploaded, or the specified entity tag may not have matched the part's entity tag.",
                 ));
             }
-            combined_data.extend_from_slice(&part.data);
-            let part_md5 = Md5::digest(&part.data);
+            let part_bytes = state.read_body(&part.body).map_err(super::io_to_aws)?;
+            combined_data.extend_from_slice(&part_bytes);
+            let part_md5 = Md5::digest(&part_bytes);
             md5_digests.extend_from_slice(&part_md5);
-            part_sizes.push((*part_num, part.data.len() as u64));
+            part_sizes.push((*part_num, part_bytes.len() as u64));
         }
 
         // Multipart ETag: MD5(concat(part_md5_digests))-N
@@ -463,6 +504,7 @@ impl S3Service {
             .as_deref()
             .map(|algo| compute_checksum(algo, &combined_data));
         let data = Bytes::from(combined_data);
+        let store_body = data.clone();
 
         let tags = if let Some(ref tagging) = upload.tagging {
             parse_url_encoded_tags(tagging).into_iter().collect()
@@ -470,6 +512,10 @@ impl S3Service {
             std::collections::HashMap::new()
         };
 
+        let b = state
+            .buckets
+            .get_mut(bucket)
+            .ok_or_else(|| no_such_bucket(bucket))?;
         let version_id = if b.versioning.as_deref() == Some("Enabled") {
             Some(uuid::Uuid::new_v4().to_string())
         } else {
@@ -479,7 +525,7 @@ impl S3Service {
         let obj = S3Object {
             key: key.to_string(),
             size: data.len() as u64,
-            data,
+            body: crate::state::memory_body(data),
             content_type: upload.content_type.clone(),
             etag: etag.clone(),
             last_modified: Utc::now(),
@@ -499,6 +545,33 @@ impl S3Service {
         };
         b.objects.insert(key.to_string(), obj);
         b.multipart_uploads.remove(upload_id);
+        let meta = {
+            let o = b.objects.get(key).ok_or_else(|| no_such_key(key))?;
+            object_meta_snapshot(o)
+        };
+        self.store
+            .mpu_complete(bucket, upload_id, key, meta.version_id.as_deref(), &meta)
+            .map_err(super::persistence_error)?;
+        let returned_body = self
+            .store
+            .put_object(
+                bucket,
+                key,
+                meta.version_id.as_deref(),
+                BodySource::Bytes(store_body.clone()),
+                &meta,
+            )
+            .map_err(super::persistence_error)?;
+        if let Some(o) = b.objects.get_mut(key) {
+            o.body = returned_body.clone();
+        }
+        if b.versioning.as_deref() == Some("Enabled") {
+            if let Some(versions) = b.object_versions.get_mut(key) {
+                if let Some(last) = versions.last_mut() {
+                    last.body = returned_body;
+                }
+            }
+        }
 
         let mut headers = HeaderMap::new();
         if let Some(vid) = &version_id {
@@ -555,12 +628,16 @@ impl S3Service {
             }
             _ => {}
         }
+        // Store-first for consistency with other MPU ops.
+        self.store
+            .mpu_abort(bucket, upload_id)
+            .map_err(super::persistence_error)?;
         b.multipart_uploads.remove(upload_id);
 
         Ok(AwsResponse {
             status: StatusCode::NO_CONTENT,
             content_type: "application/xml".to_string(),
-            body: Bytes::new(),
+            body: Bytes::new().into(),
             headers: HeaderMap::new(),
         })
     }
