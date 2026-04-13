@@ -11,9 +11,102 @@ use fakecloud_aws::arn::Arn;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
 use fakecloud_core::validation::*;
 
-use crate::state::{CustomKeyStore, KeyRotation, KmsAlias, KmsGrant, KmsKey, SharedKmsState};
+use crate::state::{
+    CustomKeyStore, KeyRotation, KmsAlias, KmsGrant, KmsKey, KmsState, SharedKmsState,
+};
 
 const FAKE_ENVELOPE_PREFIX: &str = "fakecloud-kms:";
+const IMPORTED_ENVELOPE_PREFIX: &str = "fakecloud-imported:";
+
+/// Result of decoding a FakeCloud KMS ciphertext blob. We carry the
+/// plaintext as base64 so the two callers that care (`Decrypt` returns
+/// it to the client, `ReEncrypt` re-wraps it with a new key) can both
+/// hand it straight to the response builder without an extra encode.
+struct DecodedCiphertext {
+    source_arn: String,
+    plaintext_b64: String,
+}
+
+/// Decode a FakeCloud KMS ciphertext envelope back into its plaintext.
+///
+/// Ciphertexts come in two flavours: `fakecloud-kms:<key-id>:<b64>`
+/// stores the plaintext directly (we're a simulator, not a real KMS),
+/// and `fakecloud-imported:<key-id>:<b64>` stores bytes XOR'd with
+/// caller-provided imported key material which we un-XOR here. Both
+/// flavours look up the source key to return its ARN, so `Decrypt`
+/// and `ReEncrypt` can surface the same `KeyId` / `SourceKeyId` the
+/// real service does.
+fn decode_ciphertext_envelope(
+    state: &KmsState,
+    ciphertext_b64: &str,
+) -> Result<DecodedCiphertext, AwsServiceError> {
+    let ciphertext_bytes = base64::engine::general_purpose::STANDARD
+        .decode(ciphertext_b64)
+        .map_err(|_| invalid_ciphertext())?;
+    let envelope = String::from_utf8(ciphertext_bytes).map_err(|_| invalid_ciphertext())?;
+
+    if let Some(rest) = envelope.strip_prefix(IMPORTED_ENVELOPE_PREFIX) {
+        let (key_id, xored_b64) = rest.split_once(':').ok_or_else(invalid_ciphertext)?;
+        let xored_bytes = base64::engine::general_purpose::STANDARD
+            .decode(xored_b64)
+            .map_err(|_| invalid_ciphertext())?;
+
+        let key = state.keys.get(key_id).ok_or_else(|| {
+            AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "NotFoundException",
+                format!("Key '{key_id}' does not exist"),
+            )
+        })?;
+
+        let material = key.imported_material_bytes.as_ref().ok_or_else(|| {
+            AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidCiphertextException",
+                "Key material has been deleted",
+            )
+        })?;
+
+        let plaintext_bytes: Vec<u8> = xored_bytes
+            .iter()
+            .enumerate()
+            .map(|(i, b)| b ^ material[i % material.len()])
+            .collect();
+        return Ok(DecodedCiphertext {
+            source_arn: key.arn.clone(),
+            plaintext_b64: base64::engine::general_purpose::STANDARD.encode(&plaintext_bytes),
+        });
+    }
+
+    if let Some(rest) = envelope.strip_prefix(FAKE_ENVELOPE_PREFIX) {
+        let (key_id, plaintext_b64) = rest.split_once(':').ok_or_else(invalid_ciphertext)?;
+        let key = state.keys.get(key_id).ok_or_else(|| {
+            AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "NotFoundException",
+                format!("Key '{key_id}' does not exist"),
+            )
+        })?;
+        return Ok(DecodedCiphertext {
+            source_arn: key.arn.clone(),
+            plaintext_b64: plaintext_b64.to_string(),
+        });
+    }
+
+    Err(AwsServiceError::aws_error(
+        StatusCode::BAD_REQUEST,
+        "InvalidCiphertextException",
+        "The ciphertext is not a valid FakeCloud KMS ciphertext",
+    ))
+}
+
+fn invalid_ciphertext() -> AwsServiceError {
+    AwsServiceError::aws_error(
+        StatusCode::BAD_REQUEST,
+        "InvalidCiphertextException",
+        "The ciphertext is invalid",
+    )
+}
 
 const VALID_KEY_SPECS: &[&str] = &[
     "ECC_NIST_P256",
@@ -725,113 +818,18 @@ impl KmsService {
             )
         })?;
 
-        let ciphertext_bytes = base64::engine::general_purpose::STANDARD
-            .decode(ciphertext_b64)
-            .map_err(|_| {
-                AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "InvalidCiphertextException",
-                    "The ciphertext is invalid",
-                )
-            })?;
+        let state = self.state.read();
+        let decoded = decode_ciphertext_envelope(&state, ciphertext_b64)?;
 
-        let envelope = String::from_utf8(ciphertext_bytes).map_err(|_| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "InvalidCiphertextException",
-                "The ciphertext is invalid",
-            )
-        })?;
-
-        const IMPORTED_PREFIX: &str = "fakecloud-imported:";
-
-        if let Some(rest) = envelope.strip_prefix(IMPORTED_PREFIX) {
-            // Imported key material envelope: XOR to recover plaintext
-            let (key_id, xored_b64) = rest.split_once(':').ok_or_else(|| {
-                AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "InvalidCiphertextException",
-                    "The ciphertext is invalid",
-                )
-            })?;
-
-            let xored_bytes = base64::engine::general_purpose::STANDARD
-                .decode(xored_b64)
-                .map_err(|_| {
-                    AwsServiceError::aws_error(
-                        StatusCode::BAD_REQUEST,
-                        "InvalidCiphertextException",
-                        "The ciphertext is invalid",
-                    )
-                })?;
-
-            let state = self.state.read();
-            let key = state.keys.get(key_id).ok_or_else(|| {
-                AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "NotFoundException",
-                    format!("Key '{key_id}' does not exist"),
-                )
-            })?;
-
-            let material = key.imported_material_bytes.as_ref().ok_or_else(|| {
-                AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "InvalidCiphertextException",
-                    "Key material has been deleted",
-                )
-            })?;
-
-            let plaintext_bytes: Vec<u8> = xored_bytes
-                .iter()
-                .enumerate()
-                .map(|(i, b)| b ^ material[i % material.len()])
-                .collect();
-            let plaintext_b64 = base64::engine::general_purpose::STANDARD.encode(&plaintext_bytes);
-
-            Ok(AwsResponse::json(
-                StatusCode::OK,
-                serde_json::to_string(&json!({
-                    "Plaintext": plaintext_b64,
-                    "KeyId": key.arn,
-                    "EncryptionAlgorithm": "SYMMETRIC_DEFAULT",
-                }))
-                .unwrap(),
-            ))
-        } else if let Some(rest) = envelope.strip_prefix(FAKE_ENVELOPE_PREFIX) {
-            let (key_id, plaintext_b64) = rest.split_once(':').ok_or_else(|| {
-                AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "InvalidCiphertextException",
-                    "The ciphertext is invalid",
-                )
-            })?;
-
-            let state = self.state.read();
-            let key = state.keys.get(key_id).ok_or_else(|| {
-                AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "NotFoundException",
-                    format!("Key '{key_id}' does not exist"),
-                )
-            })?;
-
-            Ok(AwsResponse::json(
-                StatusCode::OK,
-                serde_json::to_string(&json!({
-                    "Plaintext": plaintext_b64,
-                    "KeyId": key.arn,
-                    "EncryptionAlgorithm": "SYMMETRIC_DEFAULT",
-                }))
-                .unwrap(),
-            ))
-        } else {
-            Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "InvalidCiphertextException",
-                "The ciphertext is not a valid FakeCloud KMS ciphertext",
-            ))
-        }
+        Ok(AwsResponse::json(
+            StatusCode::OK,
+            serde_json::to_string(&json!({
+                "Plaintext": decoded.plaintext_b64,
+                "KeyId": decoded.source_arn,
+                "EncryptionAlgorithm": "SYMMETRIC_DEFAULT",
+            }))
+            .unwrap(),
+        ))
     }
 
     fn re_encrypt(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
@@ -851,99 +849,9 @@ impl KmsService {
             )
         })?;
 
-        // Decrypt
-        let ciphertext_bytes = base64::engine::general_purpose::STANDARD
-            .decode(ciphertext_b64)
-            .map_err(|_| {
-                AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "InvalidCiphertextException",
-                    "The ciphertext is invalid",
-                )
-            })?;
-
-        let envelope = String::from_utf8(ciphertext_bytes).map_err(|_| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "InvalidCiphertextException",
-                "The ciphertext is invalid",
-            )
-        })?;
-
-        const IMPORTED_PREFIX: &str = "fakecloud-imported:";
-
-        // Extract source key ID and plaintext from either envelope format
-        let (source_key_id, plaintext_b64) =
-            if let Some(rest) = envelope.strip_prefix(IMPORTED_PREFIX) {
-                let (kid, xored_b64) = rest.split_once(':').ok_or_else(|| {
-                    AwsServiceError::aws_error(
-                        StatusCode::BAD_REQUEST,
-                        "InvalidCiphertextException",
-                        "The ciphertext is invalid",
-                    )
-                })?;
-                let xored_bytes = base64::engine::general_purpose::STANDARD
-                    .decode(xored_b64)
-                    .map_err(|_| {
-                        AwsServiceError::aws_error(
-                            StatusCode::BAD_REQUEST,
-                            "InvalidCiphertextException",
-                            "The ciphertext is invalid",
-                        )
-                    })?;
-                let state = self.state.read();
-                let key = state.keys.get(kid).ok_or_else(|| {
-                    AwsServiceError::aws_error(
-                        StatusCode::BAD_REQUEST,
-                        "NotFoundException",
-                        format!("Key '{kid}' does not exist"),
-                    )
-                })?;
-                let material = key.imported_material_bytes.as_ref().ok_or_else(|| {
-                    AwsServiceError::aws_error(
-                        StatusCode::BAD_REQUEST,
-                        "InvalidCiphertextException",
-                        "Key material has been deleted",
-                    )
-                })?;
-                let plaintext_bytes: Vec<u8> = xored_bytes
-                    .iter()
-                    .enumerate()
-                    .map(|(i, b)| b ^ material[i % material.len()])
-                    .collect();
-                (
-                    kid.to_string(),
-                    base64::engine::general_purpose::STANDARD.encode(&plaintext_bytes),
-                )
-            } else if let Some(rest) = envelope.strip_prefix(FAKE_ENVELOPE_PREFIX) {
-                let (kid, pt) = rest.split_once(':').ok_or_else(|| {
-                    AwsServiceError::aws_error(
-                        StatusCode::BAD_REQUEST,
-                        "InvalidCiphertextException",
-                        "The ciphertext is invalid",
-                    )
-                })?;
-                (kid.to_string(), pt.to_string())
-            } else {
-                return Err(AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "InvalidCiphertextException",
-                    "The ciphertext is invalid",
-                ));
-            };
-
         let state = self.state.read();
+        let decoded = decode_ciphertext_envelope(&state, ciphertext_b64)?;
 
-        let source_key = state.keys.get(source_key_id.as_str()).ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "NotFoundException",
-                format!("Key '{source_key_id}' does not exist"),
-            )
-        })?;
-        let source_arn = source_key.arn.clone();
-
-        // Resolve destination
         let dest_resolved =
             Self::resolve_key_id_with_state(&state, dest_key_id).ok_or_else(|| {
                 AwsServiceError::aws_error(
@@ -961,10 +869,9 @@ impl KmsService {
             )
         })?;
 
-        // Re-encrypt with destination key
         let new_envelope = if let Some(ref material) = dest_key.imported_material_bytes {
             let plaintext_bytes = base64::engine::general_purpose::STANDARD
-                .decode(&plaintext_b64)
+                .decode(&decoded.plaintext_b64)
                 .unwrap_or_default();
             let xored: Vec<u8> = plaintext_bytes
                 .iter()
@@ -974,7 +881,10 @@ impl KmsService {
             let xored_b64 = base64::engine::general_purpose::STANDARD.encode(&xored);
             format!("fakecloud-imported:{}:{xored_b64}", dest_key.key_id)
         } else {
-            format!("{FAKE_ENVELOPE_PREFIX}{}:{plaintext_b64}", dest_key.key_id)
+            format!(
+                "{FAKE_ENVELOPE_PREFIX}{}:{}",
+                dest_key.key_id, decoded.plaintext_b64
+            )
         };
         let new_ciphertext_b64 =
             base64::engine::general_purpose::STANDARD.encode(new_envelope.as_bytes());
@@ -984,7 +894,7 @@ impl KmsService {
             serde_json::to_string(&json!({
                 "CiphertextBlob": new_ciphertext_b64,
                 "KeyId": dest_key.arn,
-                "SourceKeyId": source_arn,
+                "SourceKeyId": decoded.source_arn,
                 "SourceEncryptionAlgorithm": "SYMMETRIC_DEFAULT",
                 "DestinationEncryptionAlgorithm": "SYMMETRIC_DEFAULT",
             }))
