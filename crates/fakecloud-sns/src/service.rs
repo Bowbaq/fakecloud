@@ -910,62 +910,8 @@ impl SnsService {
             None
         };
 
-        // Collect subscribers
-        let sqs_subscribers: Vec<(String, bool, Option<String>, Option<String>)> = state
-            .subscriptions
-            .values()
-            .filter(|s| s.topic_arn == topic_arn && s.protocol == "sqs" && s.confirmed)
-            .filter(|s| matches_filter_policy(s, &message_attributes, &message))
-            .map(|s| {
-                let raw = s
-                    .attributes
-                    .get("RawMessageDelivery")
-                    .map(|v| v == "true")
-                    .unwrap_or(false);
-                (s.endpoint.clone(), raw, None, None)
-            })
-            .collect();
-
-        let http_subscribers: Vec<String> = state
-            .subscriptions
-            .values()
-            .filter(|s| {
-                s.topic_arn == topic_arn
-                    && (s.protocol == "http" || s.protocol == "https")
-                    && s.confirmed
-            })
-            .filter(|s| matches_filter_policy(s, &message_attributes, &message))
-            .map(|s| s.endpoint.clone())
-            .collect();
-
-        let lambda_subscribers: Vec<(String, String)> = state
-            .subscriptions
-            .values()
-            .filter(|s| s.topic_arn == topic_arn && s.protocol == "lambda" && s.confirmed)
-            .filter(|s| matches_filter_policy(s, &message_attributes, &message))
-            .map(|s| (s.endpoint.clone(), s.subscription_arn.clone()))
-            .collect();
-
-        let email_subscribers: Vec<String> = state
-            .subscriptions
-            .values()
-            .filter(|s| {
-                s.topic_arn == topic_arn
-                    && (s.protocol == "email" || s.protocol == "email-json")
-                    && s.confirmed
-            })
-            .filter(|s| matches_filter_policy(s, &message_attributes, &message))
-            .map(|s| s.endpoint.clone())
-            .collect();
-
-        let sms_subscribers: Vec<String> = state
-            .subscriptions
-            .values()
-            .filter(|s| s.topic_arn == topic_arn && s.protocol == "sms" && s.confirmed)
-            .filter(|s| matches_filter_policy(s, &message_attributes, &message))
-            .map(|s| s.endpoint.clone())
-            .collect();
-
+        let subscribers =
+            collect_topic_subscribers(&state, &topic_arn, &message_attributes, &message);
         let endpoint = state.endpoint.clone();
         drop(state);
 
@@ -991,194 +937,26 @@ impl SnsService {
             message.clone()
         };
 
-        // Build SNS notification envelope
-        let mut envelope_attrs = serde_json::Map::new();
-        for (key, attr) in &message_attributes {
-            let mut attr_obj = serde_json::Map::new();
-            attr_obj.insert("Type".to_string(), Value::String(attr.data_type.clone()));
-            if let Some(ref sv) = attr.string_value {
-                attr_obj.insert("Value".to_string(), Value::String(sv.clone()));
-            }
-            if let Some(ref bv) = attr.binary_value {
-                attr_obj.insert(
-                    "Value".to_string(),
-                    Value::String(base64::engine::general_purpose::STANDARD.encode(bv)),
-                );
-            }
-            envelope_attrs.insert(key.clone(), Value::Object(attr_obj));
-        }
+        let envelope_attrs = build_envelope_attrs(&message_attributes);
 
-        // Deliver to SQS subscribers
-        for (queue_arn, raw, _msg_group, _msg_dedup) in &sqs_subscribers {
-            if *raw {
-                // Raw message delivery: just send the message body directly
-                let mut sqs_msg_attrs = HashMap::new();
-                for (k, v) in &message_attributes {
-                    let mut attr = fakecloud_core::delivery::SqsMessageAttribute {
-                        data_type: v.data_type.clone(),
-                        string_value: v.string_value.clone(),
-                        binary_value: None,
-                    };
-                    if let Some(ref bv) = v.binary_value {
-                        attr.binary_value =
-                            Some(base64::engine::general_purpose::STANDARD.encode(bv));
-                    }
-                    sqs_msg_attrs.insert(k.clone(), attr);
-                }
-                self.delivery.send_to_sqs_with_attrs(
-                    queue_arn,
-                    &sqs_message,
-                    &sqs_msg_attrs,
-                    message_group_id.as_deref(),
-                    message_dedup_id.as_deref(),
-                );
-            } else {
-                // Standard delivery: wrap in SNS envelope
-                let envelope_str = build_sns_envelope(
-                    &msg_id,
-                    &topic_arn,
-                    &subject,
-                    &sqs_message,
-                    &envelope_attrs,
-                    &endpoint,
-                );
-                self.delivery
-                    .send_to_sqs(queue_arn, &envelope_str, &HashMap::new());
-            }
-        }
+        let ctx = TopicFanoutContext {
+            msg_id: &msg_id,
+            topic_arn: &topic_arn,
+            subject: subject.as_deref(),
+            endpoint: &endpoint,
+            sqs_message: &sqs_message,
+            default_message: &default_message,
+            envelope_attrs: &envelope_attrs,
+            message_attributes: &message_attributes,
+            message_group_id: message_group_id.as_deref(),
+            message_dedup_id: message_dedup_id.as_deref(),
+        };
 
-        // Deliver to HTTP/HTTPS subscribers (fire-and-forget)
-        for endpoint_url in http_subscribers {
-            let sns_envelope_str = build_sns_envelope(
-                &msg_id,
-                &topic_arn,
-                &subject,
-                &default_message,
-                &envelope_attrs,
-                &endpoint,
-            );
-            let body = sns_envelope_str;
-            let topic = topic_arn.clone();
-            tokio::spawn(async move {
-                let client = reqwest::Client::new();
-                let result = client
-                    .post(&endpoint_url)
-                    .header("Content-Type", "application/json")
-                    .header("x-amz-sns-message-type", "Notification")
-                    .header("x-amz-sns-topic-arn", &topic)
-                    .body(body)
-                    .send()
-                    .await;
-                if let Err(e) = result {
-                    tracing::warn!(endpoint = %endpoint_url, error = %e, "SNS HTTP delivery failed");
-                }
-            });
-        }
-
-        // Deliver to Lambda subscribers
-        if !lambda_subscribers.is_empty() {
-            let now = Utc::now();
-
-            // Build SNS Lambda event payloads
-            let lambda_payloads: Vec<(String, String)> = lambda_subscribers
-                .iter()
-                .map(|(function_arn, subscription_arn)| {
-                    let payload = build_sns_lambda_event(&SnsLambdaEventInput {
-                        message_id: &msg_id,
-                        topic_arn: &topic_arn,
-                        subscription_arn,
-                        message: &default_message,
-                        subject: subject.as_deref(),
-                        message_attributes: &envelope_attrs,
-                        timestamp: &now,
-                        endpoint: &endpoint,
-                    });
-                    (function_arn.clone(), payload)
-                })
-                .collect();
-
-            // Record invocations in state
-            {
-                let mut state = self.state.write();
-                for (function_arn, _) in &lambda_payloads {
-                    state
-                        .lambda_invocations
-                        .push(crate::state::LambdaInvocation {
-                            function_arn: function_arn.clone(),
-                            message: default_message.clone(),
-                            subject: subject.clone(),
-                            timestamp: now,
-                        });
-                }
-            }
-
-            // Invoke Lambda functions asynchronously via container runtime
-            let delivery = self.delivery.clone();
-            tokio::spawn(async move {
-                for (function_arn, payload) in lambda_payloads {
-                    tracing::info!(
-                        function_arn = %function_arn,
-                        "SNS invoking Lambda function"
-                    );
-                    match delivery.invoke_lambda(&function_arn, &payload).await {
-                        Some(Ok(_)) => {
-                            tracing::info!(
-                                function_arn = %function_arn,
-                                "SNS->Lambda invocation succeeded"
-                            );
-                        }
-                        Some(Err(e)) => {
-                            tracing::error!(
-                                function_arn = %function_arn,
-                                error = %e,
-                                "SNS->Lambda invocation failed"
-                            );
-                        }
-                        None => {
-                            tracing::debug!(
-                                function_arn = %function_arn,
-                                "SNS->Lambda: no container runtime, skipping real execution"
-                            );
-                        }
-                    }
-                }
-            });
-        }
-
-        // Deliver to email subscribers (stub — log and store)
-        if !email_subscribers.is_empty() {
-            let now = Utc::now();
-            let mut state = self.state.write();
-            for email_address in email_subscribers {
-                tracing::info!(
-                    email = %email_address,
-                    topic_arn = %topic_arn,
-                    "SNS delivering to email (stub)"
-                );
-                state.sent_emails.push(crate::state::SentEmail {
-                    email_address,
-                    message: default_message.clone(),
-                    subject: subject.clone(),
-                    topic_arn: topic_arn.clone(),
-                    timestamp: now,
-                });
-            }
-        }
-
-        // Deliver to SMS subscribers (stub — log and store)
-        if !sms_subscribers.is_empty() {
-            let mut state = self.state.write();
-            for phone_number in sms_subscribers {
-                tracing::info!(
-                    phone_number = %phone_number,
-                    topic_arn = %topic_arn,
-                    "SNS delivering to SMS (stub)"
-                );
-                state
-                    .sms_messages
-                    .push((phone_number, default_message.clone()));
-            }
-        }
+        self.deliver_to_sqs_subscribers(&subscribers.sqs, &ctx);
+        self.deliver_to_http_subscribers(&subscribers.http, &ctx);
+        self.deliver_to_lambda_subscribers(&subscribers.lambda, &ctx);
+        self.deliver_to_email_subscribers(&subscribers.email, &ctx);
+        self.deliver_to_sms_subscribers(&subscribers.sms, &ctx);
 
         Ok(xml_resp(
             &format!(
@@ -1194,6 +972,184 @@ impl SnsService {
             ),
             &req.request_id,
         ))
+    }
+
+    fn deliver_to_sqs_subscribers(&self, subs: &[(String, bool)], ctx: &TopicFanoutContext<'_>) {
+        for (queue_arn, raw) in subs {
+            if *raw {
+                let mut sqs_msg_attrs = HashMap::new();
+                for (k, v) in ctx.message_attributes {
+                    let mut attr = fakecloud_core::delivery::SqsMessageAttribute {
+                        data_type: v.data_type.clone(),
+                        string_value: v.string_value.clone(),
+                        binary_value: None,
+                    };
+                    if let Some(ref bv) = v.binary_value {
+                        attr.binary_value =
+                            Some(base64::engine::general_purpose::STANDARD.encode(bv));
+                    }
+                    sqs_msg_attrs.insert(k.clone(), attr);
+                }
+                self.delivery.send_to_sqs_with_attrs(
+                    queue_arn,
+                    ctx.sqs_message,
+                    &sqs_msg_attrs,
+                    ctx.message_group_id,
+                    ctx.message_dedup_id,
+                );
+            } else {
+                let envelope_str = build_sns_envelope(
+                    ctx.msg_id,
+                    ctx.topic_arn,
+                    &ctx.subject.map(|s| s.to_string()),
+                    ctx.sqs_message,
+                    ctx.envelope_attrs,
+                    ctx.endpoint,
+                );
+                self.delivery
+                    .send_to_sqs(queue_arn, &envelope_str, &HashMap::new());
+            }
+        }
+    }
+
+    fn deliver_to_http_subscribers(&self, subs: &[String], ctx: &TopicFanoutContext<'_>) {
+        for endpoint_url in subs {
+            let body = build_sns_envelope(
+                ctx.msg_id,
+                ctx.topic_arn,
+                &ctx.subject.map(|s| s.to_string()),
+                ctx.default_message,
+                ctx.envelope_attrs,
+                ctx.endpoint,
+            );
+            let endpoint_url = endpoint_url.clone();
+            let topic = ctx.topic_arn.to_string();
+            tokio::spawn(async move {
+                let client = reqwest::Client::new();
+                let result = client
+                    .post(&endpoint_url)
+                    .header("Content-Type", "application/json")
+                    .header("x-amz-sns-message-type", "Notification")
+                    .header("x-amz-sns-topic-arn", &topic)
+                    .body(body)
+                    .send()
+                    .await;
+                if let Err(e) = result {
+                    tracing::warn!(endpoint = %endpoint_url, error = %e, "SNS HTTP delivery failed");
+                }
+            });
+        }
+    }
+
+    fn deliver_to_lambda_subscribers(
+        &self,
+        subs: &[(String, String)],
+        ctx: &TopicFanoutContext<'_>,
+    ) {
+        if subs.is_empty() {
+            return;
+        }
+        let now = Utc::now();
+        let subject_owned = ctx.subject.map(|s| s.to_string());
+
+        let lambda_payloads: Vec<(String, String)> = subs
+            .iter()
+            .map(|(function_arn, subscription_arn)| {
+                let payload = build_sns_lambda_event(&SnsLambdaEventInput {
+                    message_id: ctx.msg_id,
+                    topic_arn: ctx.topic_arn,
+                    subscription_arn,
+                    message: ctx.default_message,
+                    subject: ctx.subject,
+                    message_attributes: ctx.envelope_attrs,
+                    timestamp: &now,
+                    endpoint: ctx.endpoint,
+                });
+                (function_arn.clone(), payload)
+            })
+            .collect();
+
+        {
+            let mut state = self.state.write();
+            for (function_arn, _) in &lambda_payloads {
+                state
+                    .lambda_invocations
+                    .push(crate::state::LambdaInvocation {
+                        function_arn: function_arn.clone(),
+                        message: ctx.default_message.to_string(),
+                        subject: subject_owned.clone(),
+                        timestamp: now,
+                    });
+            }
+        }
+
+        let delivery = self.delivery.clone();
+        tokio::spawn(async move {
+            for (function_arn, payload) in lambda_payloads {
+                tracing::info!(function_arn = %function_arn, "SNS invoking Lambda function");
+                match delivery.invoke_lambda(&function_arn, &payload).await {
+                    Some(Ok(_)) => {
+                        tracing::info!(
+                            function_arn = %function_arn,
+                            "SNS->Lambda invocation succeeded"
+                        );
+                    }
+                    Some(Err(e)) => {
+                        tracing::error!(
+                            function_arn = %function_arn,
+                            error = %e,
+                            "SNS->Lambda invocation failed"
+                        );
+                    }
+                    None => {
+                        tracing::debug!(
+                            function_arn = %function_arn,
+                            "SNS->Lambda: no container runtime, skipping real execution"
+                        );
+                    }
+                }
+            }
+        });
+    }
+
+    fn deliver_to_email_subscribers(&self, subs: &[String], ctx: &TopicFanoutContext<'_>) {
+        if subs.is_empty() {
+            return;
+        }
+        let now = Utc::now();
+        let subject_owned = ctx.subject.map(|s| s.to_string());
+        let mut state = self.state.write();
+        for email_address in subs {
+            tracing::info!(
+                email = %email_address,
+                topic_arn = %ctx.topic_arn,
+                "SNS delivering to email (stub)"
+            );
+            state.sent_emails.push(crate::state::SentEmail {
+                email_address: email_address.clone(),
+                message: ctx.default_message.to_string(),
+                subject: subject_owned.clone(),
+                topic_arn: ctx.topic_arn.to_string(),
+                timestamp: now,
+            });
+        }
+    }
+
+    fn deliver_to_sms_subscribers(&self, subs: &[String], ctx: &TopicFanoutContext<'_>) {
+        if subs.is_empty() {
+            return;
+        }
+        let mut state = self.state.write();
+        for phone_number in subs {
+            tracing::info!(
+                phone_number = %phone_number,
+                topic_arn = %ctx.topic_arn,
+                "SNS delivering to SMS (stub)"
+            );
+            state
+                .sms_messages
+                .push((phone_number.clone(), ctx.default_message.to_string()));
+        }
     }
 
     fn publish_batch(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
@@ -2746,6 +2702,125 @@ fn format_sub_member(sub: &SnsSubscription) -> String {
 /// Parse MessageAttributes from query params.
 /// Format: MessageAttributes.entry.N.Name, MessageAttributes.entry.N.Value.DataType,
 ///         MessageAttributes.entry.N.Value.StringValue
+/// Subscribers of a topic, grouped by protocol. Returned by
+/// `collect_topic_subscribers` so the fan-out loop doesn't have to
+/// re-filter the subscriptions map five times inline.
+struct TopicSubscribers {
+    /// (queue_arn, raw_message_delivery)
+    sqs: Vec<(String, bool)>,
+    http: Vec<String>,
+    /// (function_arn, subscription_arn)
+    lambda: Vec<(String, String)>,
+    email: Vec<String>,
+    sms: Vec<String>,
+}
+
+/// Read-only state passed down the fan-out helpers so each helper has
+/// the same data the monolithic publish() used to reference inline.
+struct TopicFanoutContext<'a> {
+    msg_id: &'a str,
+    topic_arn: &'a str,
+    subject: Option<&'a str>,
+    endpoint: &'a str,
+    sqs_message: &'a str,
+    default_message: &'a str,
+    envelope_attrs: &'a serde_json::Map<String, Value>,
+    message_attributes: &'a HashMap<String, MessageAttribute>,
+    message_group_id: Option<&'a str>,
+    message_dedup_id: Option<&'a str>,
+}
+
+fn collect_topic_subscribers(
+    state: &crate::state::SnsState,
+    topic_arn: &str,
+    message_attributes: &HashMap<String, MessageAttribute>,
+    message: &str,
+) -> TopicSubscribers {
+    let confirmed_for_topic = |s: &&SnsSubscription| {
+        s.topic_arn == topic_arn
+            && s.confirmed
+            && matches_filter_policy(s, message_attributes, message)
+    };
+
+    let sqs = state
+        .subscriptions
+        .values()
+        .filter(|s| s.protocol == "sqs")
+        .filter(confirmed_for_topic)
+        .map(|s| {
+            let raw = s
+                .attributes
+                .get("RawMessageDelivery")
+                .map(|v| v == "true")
+                .unwrap_or(false);
+            (s.endpoint.clone(), raw)
+        })
+        .collect();
+
+    let http = state
+        .subscriptions
+        .values()
+        .filter(|s| s.protocol == "http" || s.protocol == "https")
+        .filter(confirmed_for_topic)
+        .map(|s| s.endpoint.clone())
+        .collect();
+
+    let lambda = state
+        .subscriptions
+        .values()
+        .filter(|s| s.protocol == "lambda")
+        .filter(confirmed_for_topic)
+        .map(|s| (s.endpoint.clone(), s.subscription_arn.clone()))
+        .collect();
+
+    let email = state
+        .subscriptions
+        .values()
+        .filter(|s| s.protocol == "email" || s.protocol == "email-json")
+        .filter(confirmed_for_topic)
+        .map(|s| s.endpoint.clone())
+        .collect();
+
+    let sms = state
+        .subscriptions
+        .values()
+        .filter(|s| s.protocol == "sms")
+        .filter(confirmed_for_topic)
+        .map(|s| s.endpoint.clone())
+        .collect();
+
+    TopicSubscribers {
+        sqs,
+        http,
+        lambda,
+        email,
+        sms,
+    }
+}
+
+/// Build the `MessageAttributes` object used inside an SNS notification
+/// envelope from the typed SNS message attributes.
+fn build_envelope_attrs(
+    message_attributes: &HashMap<String, MessageAttribute>,
+) -> serde_json::Map<String, Value> {
+    let mut envelope_attrs = serde_json::Map::new();
+    for (key, attr) in message_attributes {
+        let mut attr_obj = serde_json::Map::new();
+        attr_obj.insert("Type".to_string(), Value::String(attr.data_type.clone()));
+        if let Some(ref sv) = attr.string_value {
+            attr_obj.insert("Value".to_string(), Value::String(sv.clone()));
+        }
+        if let Some(ref bv) = attr.binary_value {
+            attr_obj.insert(
+                "Value".to_string(),
+                Value::String(base64::engine::general_purpose::STANDARD.encode(bv)),
+            );
+        }
+        envelope_attrs.insert(key.clone(), Value::Object(attr_obj));
+    }
+    envelope_attrs
+}
+
 fn parse_message_attributes(req: &AwsRequest) -> HashMap<String, MessageAttribute> {
     let mut attrs = HashMap::new();
     for n in 1..=10 {
