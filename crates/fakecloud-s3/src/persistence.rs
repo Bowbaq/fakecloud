@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, HashMap};
 
 use fakecloud_persistence::{
-    AclGrantSnapshot, BucketMeta, BucketSnapshot, LoadedObject, MpuInit, ObjectMeta,
-    S3StateSnapshot, UploadPartMeta,
+    AclGrantSnapshot, BucketMeta, BucketSnapshot, LoadedMpu, LoadedObject, LoadedPart, MpuInit,
+    ObjectMeta, S3StateSnapshot, UploadPartMeta,
 };
 
 use crate::state::{AclGrant, MultipartUpload, S3Bucket, S3Object, S3State, UploadPart};
@@ -131,12 +131,46 @@ pub fn s3_object_from_loaded(lo: LoadedObject) -> S3Object {
     }
 }
 
+pub fn upload_part_from_loaded(lp: LoadedPart) -> UploadPart {
+    let LoadedPart { meta, body } = lp;
+    UploadPart {
+        part_number: meta.part_number,
+        body,
+        etag: meta.etag,
+        size: meta.size,
+        last_modified: meta.last_modified,
+    }
+}
+
+pub fn multipart_upload_from_loaded(lm: LoadedMpu) -> MultipartUpload {
+    let LoadedMpu { init, parts } = lm;
+    let runtime_parts: BTreeMap<u32, UploadPart> = parts
+        .into_iter()
+        .map(|(n, lp)| (n, upload_part_from_loaded(lp)))
+        .collect();
+    MultipartUpload {
+        upload_id: init.upload_id,
+        key: init.key,
+        initiated: init.initiated,
+        parts: runtime_parts,
+        metadata: init.metadata,
+        content_type: init.content_type,
+        storage_class: init.storage_class,
+        sse_algorithm: init.sse_algorithm,
+        sse_kms_key_id: init.sse_kms_key_id,
+        tagging: init.tagging,
+        acl_grants: init.acl_grants.iter().map(acl_grant_from_snapshot).collect(),
+        checksum_algorithm: init.checksum_algorithm,
+    }
+}
+
 pub fn s3_bucket_from_snapshot(name: &str, snap: BucketSnapshot, default_region: &str) -> S3Bucket {
     let BucketSnapshot {
         meta,
         objects,
         object_versions,
         subresources,
+        multipart_uploads,
     } = snap;
     let region = if meta.region.is_empty() {
         default_region.to_string()
@@ -176,6 +210,10 @@ pub fn s3_bucket_from_snapshot(name: &str, snap: BucketSnapshot, default_region:
     for (key, vs) in object_versions {
         b.object_versions
             .insert(key, vs.into_iter().map(s3_object_from_loaded).collect());
+    }
+    for (upload_id, lm) in multipart_uploads {
+        b.multipart_uploads
+            .insert(upload_id, multipart_upload_from_loaded(lm));
     }
     // Subresources are stored as raw pass-through strings on the service side;
     // fold any present into the matching Option<String> field.

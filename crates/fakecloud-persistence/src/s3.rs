@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 use bytes::Bytes;
@@ -25,6 +25,22 @@ pub struct BucketSnapshot {
     pub object_versions: HashMap<String, Vec<LoadedObject>>,
     #[serde(default)]
     pub subresources: HashMap<String, String>,
+    #[serde(default)]
+    pub multipart_uploads: HashMap<String, LoadedMpu>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct LoadedMpu {
+    pub init: MpuInit,
+    #[serde(default)]
+    pub parts: BTreeMap<u32, LoadedPart>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct LoadedPart {
+    pub meta: UploadPartMeta,
+    #[serde(default)]
+    pub body: BodyRef,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -481,6 +497,34 @@ impl DiskS3Store {
     fn cleanup_empty(dir: &std::path::Path) {
         let _ = std::fs::remove_dir(dir);
     }
+
+    fn mpu_dir(&self, bucket: &str, upload_id: &str) -> PathBuf {
+        self.bucket_dir(bucket)
+            .join("mpu")
+            .join(crate::key_escape::escape_key_segment(upload_id))
+    }
+
+    fn mpu_parts_dir(&self, bucket: &str, upload_id: &str) -> PathBuf {
+        self.mpu_dir(bucket, upload_id).join("parts")
+    }
+
+    fn mpu_part_bin(&self, bucket: &str, upload_id: &str, part_number: u32) -> PathBuf {
+        self.mpu_parts_dir(bucket, upload_id)
+            .join(format!("{}.bin", part_number))
+    }
+
+    fn mpu_part_toml(&self, bucket: &str, upload_id: &str, part_number: u32) -> PathBuf {
+        self.mpu_parts_dir(bucket, upload_id)
+            .join(format!("{}.toml", part_number))
+    }
+
+    fn mpu_body_key(bucket: &str, upload_id: &str, part_number: u32) -> crate::cache::BodyKey {
+        crate::cache::BodyKey::new(
+            bucket.to_string(),
+            format!("__mpu__/{}", upload_id),
+            Some(format!("part-{}", part_number)),
+        )
+    }
 }
 
 fn io_other(msg: impl Into<String>) -> StoreError {
@@ -512,6 +556,7 @@ impl S3Store for DiskS3Store {
                 objects: HashMap::new(),
                 object_versions: HashMap::new(),
                 subresources: HashMap::new(),
+                multipart_uploads: HashMap::new(),
             };
 
             for kind in ALL_SUBRESOURCES {
@@ -601,8 +646,76 @@ impl S3Store for DiskS3Store {
                 }
             }
 
-            // TODO(phase-6): mpu/ directory is ignored.
-            let _ = bdir.join("mpu");
+            let mpu_root = bdir.join("mpu");
+            if mpu_root.exists() {
+                for upload_entry in std::fs::read_dir(&mpu_root)? {
+                    let upload_entry = upload_entry?;
+                    if !upload_entry.file_type()?.is_dir() {
+                        continue;
+                    }
+                    let upload_dir = upload_entry.path();
+                    let init_path = upload_dir.join("init.toml");
+                    if !init_path.exists() {
+                        continue;
+                    }
+                    let init_text = std::fs::read_to_string(&init_path)?;
+                    let init: MpuInit = toml::from_str(&init_text)
+                        .map_err(|e| StoreError::Serde(e.to_string()))?;
+                    let mut loaded_parts: BTreeMap<u32, LoadedPart> = BTreeMap::new();
+                    let parts_dir = upload_dir.join("parts");
+                    if parts_dir.exists() {
+                        for part_entry in std::fs::read_dir(&parts_dir)? {
+                            let part_entry = part_entry?;
+                            let path = part_entry.path();
+                            let Some(fname) = path.file_name().and_then(|s| s.to_str())
+                            else {
+                                continue;
+                            };
+                            if !fname.ends_with(".toml") {
+                                continue;
+                            }
+                            let stem = &fname[..fname.len() - 5];
+                            let Ok(part_number) = stem.parse::<u32>() else {
+                                continue;
+                            };
+                            let toml_text = std::fs::read_to_string(&path)?;
+                            let part_meta: UploadPartMeta = toml::from_str(&toml_text)
+                                .map_err(|e| StoreError::Serde(e.to_string()))?;
+                            let bin_path = parts_dir.join(format!("{}.bin", part_number));
+                            let (body, size) = if bin_path.exists() {
+                                let sz = std::fs::metadata(&bin_path)?.len();
+                                (
+                                    BodyRef::Disk {
+                                        bucket: meta.name.clone(),
+                                        key: format!("__mpu__/{}", init.upload_id),
+                                        version: Some(format!("part-{}", part_number)),
+                                        path: bin_path,
+                                        size: sz,
+                                    },
+                                    sz,
+                                )
+                            } else {
+                                (BodyRef::Memory(Bytes::new()), 0u64)
+                            };
+                            let _ = size;
+                            loaded_parts.insert(
+                                part_number,
+                                LoadedPart {
+                                    meta: part_meta,
+                                    body,
+                                },
+                            );
+                        }
+                    }
+                    snap.multipart_uploads.insert(
+                        init.upload_id.clone(),
+                        LoadedMpu {
+                            init,
+                            parts: loaded_parts,
+                        },
+                    );
+                }
+            }
 
             state.buckets.insert(meta.name.clone(), snap);
         }
@@ -771,36 +884,210 @@ impl S3Store for DiskS3Store {
         }
     }
 
-    fn mpu_create(&self, _bucket: &str, _upload_id: &str, _init: &MpuInit) -> StoreResult<()> {
-        // TODO(phase-6): resumable multipart persistence.
-        Err(io_other("multipart persistence not yet implemented — phase 6"))
+    fn mpu_create(&self, bucket: &str, upload_id: &str, init: &MpuInit) -> StoreResult<()> {
+        let parts_dir = self.mpu_parts_dir(bucket, upload_id);
+        std::fs::create_dir_all(&parts_dir)?;
+        let init_path = self.mpu_dir(bucket, upload_id).join("init.toml");
+        crate::atomic::write_atomic_toml(&init_path, init)?;
+        Ok(())
     }
+
     fn mpu_put_part(
         &self,
-        _bucket: &str,
-        _upload_id: &str,
-        _part_number: u32,
-        _body: BodySource,
-        _etag: &str,
+        bucket: &str,
+        upload_id: &str,
+        part_number: u32,
+        body: BodySource,
+        etag: &str,
     ) -> StoreResult<()> {
-        // TODO(phase-6): resumable multipart persistence.
-        Err(io_other("multipart persistence not yet implemented — phase 6"))
+        let parts_dir = self.mpu_parts_dir(bucket, upload_id);
+        std::fs::create_dir_all(&parts_dir)?;
+        let bin_path = self.mpu_part_bin(bucket, upload_id, part_number);
+        let toml_path = self.mpu_part_toml(bucket, upload_id, part_number);
+
+        let size: u64 = match body {
+            BodySource::Bytes(b) => {
+                let n = b.len() as u64;
+                crate::atomic::write_atomic_bytes(&bin_path, &b)?;
+                let cache_key = Self::mpu_body_key(bucket, upload_id, part_number);
+                self.cache.insert(cache_key, b);
+                n
+            }
+            BodySource::File(src) => {
+                let n = std::fs::metadata(&src)?.len();
+                crate::atomic::write_atomic_from_file(&src, &bin_path)?;
+                self.cache
+                    .invalidate(&Self::mpu_body_key(bucket, upload_id, part_number));
+                n
+            }
+        };
+
+        let meta = UploadPartMeta {
+            part_number,
+            etag: etag.to_string(),
+            size,
+            last_modified: Utc::now(),
+        };
+        crate::atomic::write_atomic_toml(&toml_path, &meta)?;
+        Ok(())
     }
-    fn mpu_abort(&self, _bucket: &str, _upload_id: &str) -> StoreResult<()> {
-        // TODO(phase-6): resumable multipart persistence.
-        Err(io_other("multipart persistence not yet implemented — phase 6"))
+
+    fn mpu_abort(&self, bucket: &str, upload_id: &str) -> StoreResult<()> {
+        let dir = self.mpu_dir(bucket, upload_id);
+        // Invalidate any cached part bodies for this upload.
+        if let Ok(entries) = std::fs::read_dir(self.mpu_parts_dir(bucket, upload_id)) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if let Some(fname) = path.file_name().and_then(|s| s.to_str()) {
+                    if let Some(stem) = fname.strip_suffix(".bin") {
+                        if let Ok(n) = stem.parse::<u32>() {
+                            self.cache
+                                .invalidate(&Self::mpu_body_key(bucket, upload_id, n));
+                        }
+                    }
+                }
+            }
+        }
+        match std::fs::remove_dir_all(&dir) {
+            Ok(_) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        }
     }
+
     fn mpu_complete(
         &self,
-        _bucket: &str,
-        _upload_id: &str,
-        _final_key: &str,
-        _version: Option<&str>,
-        _meta: &ObjectMeta,
+        bucket: &str,
+        upload_id: &str,
+        final_key: &str,
+        version: Option<&str>,
+        meta: &ObjectMeta,
     ) -> StoreResult<BodyRef> {
-        // TODO(phase-6): resumable multipart persistence.
-        Err(io_other("multipart persistence not yet implemented — phase 6"))
+        let parts_dir = self.mpu_parts_dir(bucket, upload_id);
+        if !parts_dir.exists() {
+            return Err(io_other(format!(
+                "mpu_complete: no parts dir for upload {}",
+                upload_id
+            )));
+        }
+
+        // Enumerate parts in ascending part-number order.
+        let mut part_numbers: Vec<u32> = Vec::new();
+        for entry in std::fs::read_dir(&parts_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let Some(fname) = path.file_name().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if let Some(stem) = fname.strip_suffix(".toml") {
+                if let Ok(n) = stem.parse::<u32>() {
+                    if self.mpu_part_bin(bucket, upload_id, n).exists() {
+                        part_numbers.push(n);
+                    }
+                }
+            }
+        }
+        part_numbers.sort_unstable();
+        if part_numbers.is_empty() {
+            return Err(io_other(format!(
+                "mpu_complete: upload {} has no parts",
+                upload_id
+            )));
+        }
+
+        let (dir, bin_path, toml_path) = self.object_paths(bucket, final_key, version);
+        std::fs::create_dir_all(&dir)?;
+
+        let total_size: u64 = if part_numbers.len() == 1 {
+            let only = self.mpu_part_bin(bucket, upload_id, part_numbers[0]);
+            let sz = std::fs::metadata(&only)?.len();
+            match std::fs::rename(&only, &bin_path) {
+                Ok(_) => {}
+                Err(e) if e.raw_os_error() == Some(libc_exdev()) => {
+                    // Cross-device rename: fall back to streaming copy then remove source.
+                    {
+                        let mut input = std::fs::File::open(&only)?;
+                        let tmp = {
+                            let mut os = bin_path.as_os_str().to_owned();
+                            os.push(".tmp");
+                            PathBuf::from(os)
+                        };
+                        let mut out = std::fs::OpenOptions::new()
+                            .write(true)
+                            .create(true)
+                            .truncate(true)
+                            .open(&tmp)?;
+                        std::io::copy(&mut input, &mut out)?;
+                        out.sync_all()?;
+                        std::fs::rename(&tmp, &bin_path)?;
+                    }
+                    let _ = std::fs::remove_file(&only);
+                }
+                Err(e) => return Err(e.into()),
+            }
+            sz
+        } else {
+            let tmp = {
+                let mut os = bin_path.as_os_str().to_owned();
+                os.push(".tmp");
+                PathBuf::from(os)
+            };
+            let mut total: u64 = 0;
+            {
+                let mut out = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .open(&tmp)?;
+                for n in &part_numbers {
+                    let part_path = self.mpu_part_bin(bucket, upload_id, *n);
+                    let mut input = std::fs::File::open(&part_path)?;
+                    let copied = std::io::copy(&mut input, &mut out)?;
+                    total += copied;
+                }
+                out.sync_all()?;
+            }
+            std::fs::rename(&tmp, &bin_path)?;
+            if let Some(parent) = bin_path.parent() {
+                if let Ok(dir_handle) = std::fs::File::open(parent) {
+                    let _ = dir_handle.sync_all();
+                }
+            }
+            total
+        };
+
+        crate::atomic::write_atomic_toml(&toml_path, meta)?;
+
+        // Invalidate per-part cache entries and drop the mpu dir.
+        for n in &part_numbers {
+            self.cache
+                .invalidate(&Self::mpu_body_key(bucket, upload_id, *n));
+        }
+        let mpu_dir = self.mpu_dir(bucket, upload_id);
+        let _ = std::fs::remove_dir_all(&mpu_dir);
+
+        // The concatenated body is deliberately NOT re-inserted into the cache —
+        // large multipart uploads typically exceed the single-object cap, and we
+        // must never round-trip the assembled body through RAM. The next
+        // open_object_body call will load through the normal cache path.
+        self.cache.invalidate(&crate::cache::BodyKey::new(
+            bucket.to_string(),
+            final_key.to_string(),
+            version.map(|s| s.to_string()),
+        ));
+
+        Ok(BodyRef::Disk {
+            bucket: bucket.to_string(),
+            key: final_key.to_string(),
+            version: version.map(|s| s.to_string()),
+            path: bin_path,
+            size: total_size,
+        })
     }
+}
+
+fn libc_exdev() -> i32 {
+    18
 }
 
 #[cfg(test)]
@@ -1073,7 +1360,7 @@ mod disk_tests {
     }
 
     #[test]
-    fn load_ignores_mpu_dir() {
+    fn load_skips_mpu_without_init() {
         let tmp = TempDir::new().unwrap();
         let store = new_store(&tmp);
         store
@@ -1087,14 +1374,14 @@ mod disk_tests {
         store
             .put_object("b", "k", None, BodySource::Bytes(data), &meta)
             .unwrap();
-        // TODO(phase-6): mpu dir is ignored by load.
+        // Directory with no init.toml is skipped by load.
         let mpu = store.bucket_dir("b").join("mpu").join("upload1");
         std::fs::create_dir_all(&mpu).unwrap();
-        std::fs::write(mpu.join("init.toml"), "x").unwrap();
 
         let loaded = store.load().unwrap();
         let snap = loaded.buckets.get("b").unwrap();
         assert_eq!(snap.objects.len(), 1);
+        assert!(snap.multipart_uploads.is_empty());
     }
 
     #[test]
@@ -1265,6 +1552,266 @@ mod disk_tests {
         let b = loaded.buckets.get("b").unwrap();
         assert!(b.objects.is_empty());
         assert_eq!(b.object_versions.get("twice").unwrap().len(), 2);
+    }
+
+    fn sample_mpu_init(upload_id: &str, key: &str) -> MpuInit {
+        MpuInit {
+            upload_id: upload_id.to_string(),
+            key: key.to_string(),
+            initiated: chrono::Utc::now(),
+            content_type: "application/octet-stream".to_string(),
+            storage_class: "STANDARD".to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn mpu_create_then_load_empty_parts() {
+        let tmp = TempDir::new().unwrap();
+        let store = new_store(&tmp);
+        store
+            .put_bucket_meta("b", &BucketMeta {
+                name: "b".to_string(),
+                ..Default::default()
+            })
+            .unwrap();
+        let init = sample_mpu_init("up1", "k1");
+        store.mpu_create("b", "up1", &init).unwrap();
+        let loaded = store.load().unwrap();
+        let snap = loaded.buckets.get("b").unwrap();
+        let m = snap.multipart_uploads.get("up1").expect("upload present");
+        assert_eq!(m.init.upload_id, "up1");
+        assert_eq!(m.init.key, "k1");
+        assert!(m.parts.is_empty());
+    }
+
+    #[test]
+    fn mpu_put_part_then_load_three_parts() {
+        let tmp = TempDir::new().unwrap();
+        let store = new_store(&tmp);
+        store
+            .put_bucket_meta("b", &BucketMeta {
+                name: "b".to_string(),
+                ..Default::default()
+            })
+            .unwrap();
+        store.mpu_create("b", "up", &sample_mpu_init("up", "k")).unwrap();
+        let bodies = [
+            Bytes::from_static(b"part-one"),
+            Bytes::from_static(b"part-two-longer"),
+            Bytes::from_static(b"p3"),
+        ];
+        for (i, body) in bodies.iter().enumerate() {
+            let n = (i + 1) as u32;
+            store
+                .mpu_put_part("b", "up", n, BodySource::Bytes(body.clone()), &format!("et{}", n))
+                .unwrap();
+        }
+        let loaded = store.load().unwrap();
+        let snap = loaded.buckets.get("b").unwrap();
+        let m = snap.multipart_uploads.get("up").unwrap();
+        assert_eq!(m.parts.len(), 3);
+        for (i, body) in bodies.iter().enumerate() {
+            let n = (i + 1) as u32;
+            let part = m.parts.get(&n).unwrap();
+            assert_eq!(part.meta.part_number, n);
+            assert_eq!(part.meta.size, body.len() as u64);
+            assert_eq!(part.meta.etag, format!("et{}", n));
+            match &part.body {
+                BodyRef::Disk { path, size, .. } => {
+                    assert_eq!(*size, body.len() as u64);
+                    assert_eq!(std::fs::read(path).unwrap(), body.to_vec());
+                }
+                _ => panic!("expected Disk"),
+            }
+        }
+    }
+
+    #[test]
+    fn mpu_abort_removes_upload() {
+        let tmp = TempDir::new().unwrap();
+        let store = new_store(&tmp);
+        store
+            .put_bucket_meta("b", &BucketMeta {
+                name: "b".to_string(),
+                ..Default::default()
+            })
+            .unwrap();
+        store.mpu_create("b", "up", &sample_mpu_init("up", "k")).unwrap();
+        store
+            .mpu_put_part(
+                "b",
+                "up",
+                1,
+                BodySource::Bytes(Bytes::from_static(b"x")),
+                "e",
+            )
+            .unwrap();
+        store.mpu_abort("b", "up").unwrap();
+        assert!(!store.mpu_dir("b", "up").exists());
+        // Idempotent.
+        store.mpu_abort("b", "up").unwrap();
+        let loaded = store.load().unwrap();
+        let snap = loaded.buckets.get("b").unwrap();
+        assert!(snap.multipart_uploads.is_empty());
+    }
+
+    #[test]
+    fn mpu_complete_single_part_fast_path() {
+        let tmp = TempDir::new().unwrap();
+        let store = new_store(&tmp);
+        store
+            .put_bucket_meta("b", &BucketMeta {
+                name: "b".to_string(),
+                ..Default::default()
+            })
+            .unwrap();
+        store.mpu_create("b", "up", &sample_mpu_init("up", "k")).unwrap();
+        let body = Bytes::from_static(b"only-part-bytes");
+        store
+            .mpu_put_part("b", "up", 1, BodySource::Bytes(body.clone()), "et")
+            .unwrap();
+        let meta = sample_meta("k", body.len() as u64);
+        let body_ref = store.mpu_complete("b", "up", "k", None, &meta).unwrap();
+        match &body_ref {
+            BodyRef::Disk { path, size, .. } => {
+                assert_eq!(*size, body.len() as u64);
+                assert_eq!(std::fs::read(path).unwrap(), body.to_vec());
+            }
+            _ => panic!("expected Disk"),
+        }
+        assert!(!store.mpu_dir("b", "up").exists());
+    }
+
+    #[test]
+    fn mpu_complete_multi_part_concat() {
+        let tmp = TempDir::new().unwrap();
+        let store = new_store(&tmp);
+        store
+            .put_bucket_meta("b", &BucketMeta {
+                name: "b".to_string(),
+                ..Default::default()
+            })
+            .unwrap();
+        store.mpu_create("b", "up", &sample_mpu_init("up", "k")).unwrap();
+        let p1 = Bytes::from_static(b"AAAA");
+        let p2 = Bytes::from_static(b"BBBBBB");
+        let p3 = Bytes::from_static(b"CC");
+        for (n, b) in [(1u32, &p1), (2, &p2), (3, &p3)] {
+            store
+                .mpu_put_part("b", "up", n, BodySource::Bytes(b.clone()), "e")
+                .unwrap();
+        }
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&p1);
+        expected.extend_from_slice(&p2);
+        expected.extend_from_slice(&p3);
+        let meta = sample_meta("k", expected.len() as u64);
+        let body_ref = store.mpu_complete("b", "up", "k", None, &meta).unwrap();
+        let path = match body_ref {
+            BodyRef::Disk { path, size, .. } => {
+                assert_eq!(size, expected.len() as u64);
+                path
+            }
+            _ => panic!("expected Disk"),
+        };
+        assert_eq!(std::fs::read(&path).unwrap(), expected);
+        assert!(!store.mpu_dir("b", "up").exists());
+    }
+
+    #[test]
+    fn mpu_complete_large_streaming_via_file_source() {
+        let tmp = TempDir::new().unwrap();
+        let store = new_store(&tmp);
+        store
+            .put_bucket_meta("b", &BucketMeta {
+                name: "b".to_string(),
+                ..Default::default()
+            })
+            .unwrap();
+        store.mpu_create("b", "up", &sample_mpu_init("up", "k")).unwrap();
+
+        // 3 parts of ~1 MiB each (kept small so tests stay fast but still
+        // exercise the BodySource::File + streaming concat path).
+        const PART_SIZE: usize = 1024 * 1024;
+        let patterns: [u8; 3] = [0x11, 0x22, 0x33];
+        let mut expected: Vec<u8> = Vec::with_capacity(PART_SIZE * 3);
+        for (i, byte) in patterns.iter().enumerate() {
+            let src = tmp.path().join(format!("src-{}.bin", i + 1));
+            let data = vec![*byte; PART_SIZE];
+            std::fs::write(&src, &data).unwrap();
+            expected.extend_from_slice(&data);
+            store
+                .mpu_put_part(
+                    "b",
+                    "up",
+                    (i + 1) as u32,
+                    BodySource::File(src),
+                    "et",
+                )
+                .unwrap();
+        }
+        let meta = sample_meta("k", expected.len() as u64);
+        let body_ref = store.mpu_complete("b", "up", "k", None, &meta).unwrap();
+        let path = match body_ref {
+            BodyRef::Disk { path, size, .. } => {
+                assert_eq!(size, expected.len() as u64);
+                path
+            }
+            _ => panic!("expected Disk"),
+        };
+        let actual = std::fs::read(&path).unwrap();
+        assert_eq!(actual.len(), expected.len());
+        assert_eq!(actual, expected);
+        assert!(!store.mpu_dir("b", "up").exists());
+    }
+
+    #[test]
+    fn mpu_resumable_across_load() {
+        let tmp = TempDir::new().unwrap();
+        let store = new_store(&tmp);
+        store
+            .put_bucket_meta("b", &BucketMeta {
+                name: "b".to_string(),
+                ..Default::default()
+            })
+            .unwrap();
+        store.mpu_create("b", "up", &sample_mpu_init("up", "k")).unwrap();
+        let p1 = Bytes::from_static(b"hello-");
+        let p2 = Bytes::from_static(b"world-");
+        store
+            .mpu_put_part("b", "up", 1, BodySource::Bytes(p1.clone()), "e1")
+            .unwrap();
+        store
+            .mpu_put_part("b", "up", 2, BodySource::Bytes(p2.clone()), "e2")
+            .unwrap();
+
+        // Simulate a restart: re-open the store on the same dir and load.
+        let store2 = new_store_with_cache(&tmp, 1024 * 1024).0;
+        let loaded = store2.load().unwrap();
+        let snap = loaded.buckets.get("b").unwrap();
+        let m = snap.multipart_uploads.get("up").unwrap();
+        assert_eq!(m.parts.len(), 2);
+        assert_eq!(m.parts.get(&1).unwrap().meta.etag, "e1");
+        assert_eq!(m.parts.get(&2).unwrap().meta.etag, "e2");
+
+        // Continue the upload on the fresh store.
+        let p3 = Bytes::from_static(b"again!");
+        store2
+            .mpu_put_part("b", "up", 3, BodySource::Bytes(p3.clone()), "e3")
+            .unwrap();
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&p1);
+        expected.extend_from_slice(&p2);
+        expected.extend_from_slice(&p3);
+        let meta = sample_meta("k", expected.len() as u64);
+        let body_ref = store2.mpu_complete("b", "up", "k", None, &meta).unwrap();
+        let path = match body_ref {
+            BodyRef::Disk { path, .. } => path,
+            _ => panic!(),
+        };
+        assert_eq!(std::fs::read(&path).unwrap(), expected);
+        assert!(!store2.mpu_dir("b", "up").exists());
     }
 
     #[test]
