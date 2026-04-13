@@ -72,44 +72,18 @@ impl SecretsManagerService {
     }
 
     fn create_secret(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = req.json_body();
-        validate_required("Name", &body["Name"])?;
-        let name = body["Name"]
-            .as_str()
-            .ok_or_else(|| {
-                AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "InvalidParameterException",
-                    "Name is required",
-                )
-            })?
-            .to_string();
-        validate_string_length("name", &name, 1, 512)?;
-        validate_optional_string_length(
-            "clientRequestToken",
-            body["ClientRequestToken"].as_str(),
-            32,
-            64,
-        )?;
-        validate_optional_string_length("description", body["Description"].as_str(), 0, 2048)?;
-        validate_optional_string_length("kmsKeyId", body["KmsKeyId"].as_str(), 0, 2048)?;
-        validate_optional_string_length("secretString", body["SecretString"].as_str(), 1, 65536)?;
+        let input = CreateSecretInput::from_body(&req.json_body())?;
+        let has_value = input.secret_string.is_some() || input.secret_binary.is_some();
 
         let mut state = self.state.write();
 
-        let secret_string = body["SecretString"].as_str().map(|s| s.to_string());
-        let secret_binary = body["SecretBinary"].as_str().and_then(base64_decode);
-        let has_value = secret_string.is_some() || secret_binary.is_some();
-
-        let client_request_token = body["ClientRequestToken"].as_str().map(|s| s.to_string());
-
-        if let Some(existing) = state.secrets.get(&name) {
-            if let Some(ref token) = client_request_token {
+        if let Some(existing) = state.secrets.get(&input.name) {
+            if let Some(ref token) = input.client_request_token {
                 match check_secret_version_idempotency(
                     &existing.versions,
                     token,
-                    &secret_string,
-                    &secret_binary,
+                    &input.secret_string,
+                    &input.secret_binary,
                 ) {
                     VersionIdempotency::Match => {
                         let mut response = json!({
@@ -138,33 +112,32 @@ impl SecretsManagerService {
             return Err(AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
                 "ResourceExistsException",
-                format!("The operation failed because the secret {name} already exists."),
+                format!(
+                    "The operation failed because the secret {} already exists.",
+                    input.name
+                ),
             ));
         }
 
-        let region = &req.region;
-        let account_id = &req.account_id;
         let arn = format!(
             "arn:aws:secretsmanager:{}:{}:secret:{}-{}",
-            region,
-            account_id,
-            name,
+            req.region,
+            req.account_id,
+            input.name,
             &uuid::Uuid::new_v4().to_string()[..6]
         );
 
         let now = Utc::now();
 
-        let description = body["Description"].as_str().map(|s| s.to_string());
-        let kms_key_id = body["KmsKeyId"].as_str().map(|s| s.to_string());
-
-        let tags = parse_tags(&body["Tags"]);
-
         let (versions, current_version_id, version_id_for_response) = if has_value {
-            let vid = client_request_token.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            let vid = input
+                .client_request_token
+                .clone()
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
             let version = SecretVersion {
                 version_id: vid.clone(),
-                secret_string,
-                secret_binary,
+                secret_string: input.secret_string,
+                secret_binary: input.secret_binary,
                 stages: vec!["AWSCURRENT".to_string()],
                 created_at: now,
             };
@@ -175,15 +148,15 @@ impl SecretsManagerService {
             (std::collections::HashMap::new(), None, None)
         };
 
-        let tags_ever_set = !tags.is_empty();
+        let tags_ever_set = !input.tags.is_empty();
         let secret = Secret {
-            name: name.clone(),
+            name: input.name.clone(),
             arn: arn.clone(),
-            description,
-            kms_key_id,
+            description: input.description,
+            kms_key_id: input.kms_key_id,
             versions,
             current_version_id,
-            tags,
+            tags: input.tags,
             tags_ever_set,
             deleted: false,
             deletion_date: None,
@@ -197,11 +170,11 @@ impl SecretsManagerService {
             resource_policy: None,
         };
 
-        state.secrets.insert(name.clone(), secret);
+        state.secrets.insert(input.name.clone(), secret);
 
         let mut response = json!({
             "ARN": arn,
-            "Name": name,
+            "Name": input.name,
         });
         if let Some(vid) = version_id_for_response {
             response["VersionId"] = json!(vid);
@@ -1740,6 +1713,53 @@ impl SecretsManagerService {
             "ResourceNotFoundException",
             "Secrets Manager can't find the specified secret.",
         ))
+    }
+}
+
+/// Parsed + validated inputs for `CreateSecret`.
+struct CreateSecretInput {
+    name: String,
+    client_request_token: Option<String>,
+    description: Option<String>,
+    kms_key_id: Option<String>,
+    secret_string: Option<String>,
+    secret_binary: Option<Vec<u8>>,
+    tags: Vec<(String, String)>,
+}
+
+impl CreateSecretInput {
+    fn from_body(body: &Value) -> Result<Self, AwsServiceError> {
+        validate_required("Name", &body["Name"])?;
+        let name = body["Name"]
+            .as_str()
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "InvalidParameterException",
+                    "Name is required",
+                )
+            })?
+            .to_string();
+        validate_string_length("name", &name, 1, 512)?;
+        validate_optional_string_length(
+            "clientRequestToken",
+            body["ClientRequestToken"].as_str(),
+            32,
+            64,
+        )?;
+        validate_optional_string_length("description", body["Description"].as_str(), 0, 2048)?;
+        validate_optional_string_length("kmsKeyId", body["KmsKeyId"].as_str(), 0, 2048)?;
+        validate_optional_string_length("secretString", body["SecretString"].as_str(), 1, 65536)?;
+
+        Ok(Self {
+            name,
+            client_request_token: body["ClientRequestToken"].as_str().map(|s| s.to_string()),
+            description: body["Description"].as_str().map(|s| s.to_string()),
+            kms_key_id: body["KmsKeyId"].as_str().map(|s| s.to_string()),
+            secret_string: body["SecretString"].as_str().map(|s| s.to_string()),
+            secret_binary: body["SecretBinary"].as_str().and_then(base64_decode),
+            tags: parse_tags(&body["Tags"]),
+        })
     }
 }
 
