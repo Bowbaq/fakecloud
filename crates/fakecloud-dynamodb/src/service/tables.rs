@@ -154,6 +154,7 @@ impl DynamoDbService {
         let table = DynamoTable {
             name: table_name.clone(),
             arn: arn.clone(),
+            table_id: uuid::Uuid::new_v4().to_string().replace('-', ""),
             key_schema: key_schema.clone(),
             attribute_definitions: attribute_definitions.clone(),
             provisioned_throughput: provisioned_throughput.clone(),
@@ -181,10 +182,12 @@ impl DynamoDbService {
             sse_kms_key_arn,
         };
 
+        let table_id = table.table_id.clone();
         state.tables.insert(table_name, table);
 
         let table_desc = build_table_description_json(&super::TableDescriptionInput {
             arn: &arn,
+            table_id: &table_id,
             key_schema: &key_schema,
             attribute_definitions: &attribute_definitions,
             provisioned_throughput: &provisioned_throughput,
@@ -215,6 +218,7 @@ impl DynamoDbService {
 
         let table_desc = build_table_description_json(&super::TableDescriptionInput {
             arn: &table.arn,
+            table_id: &table.table_id,
             key_schema: &table.key_schema,
             attribute_definitions: &table.attribute_definitions,
             provisioned_throughput: &table.provisioned_throughput,
@@ -337,6 +341,7 @@ impl DynamoDbService {
 
         let table_desc = build_table_description_json(&super::TableDescriptionInput {
             arn: &table.arn,
+            table_id: &table.table_id,
             key_schema: &table.key_schema,
             attribute_definitions: &table.attribute_definitions,
             provisioned_throughput: &table.provisioned_throughput,
@@ -749,6 +754,7 @@ impl DynamoDbService {
         let mut table = DynamoTable {
             name: target_table_name.to_string(),
             arn: arn.clone(),
+            table_id: uuid::Uuid::new_v4().to_string().replace('-', ""),
             key_schema: backup.key_schema.clone(),
             attribute_definitions: backup.attribute_definitions.clone(),
             provisioned_throughput: backup.provisioned_throughput.clone(),
@@ -826,6 +832,7 @@ impl DynamoDbService {
         let mut table = DynamoTable {
             name: target_table_name.to_string(),
             arn: arn.clone(),
+            table_id: uuid::Uuid::new_v4().to_string().replace('-', ""),
             key_schema: source.key_schema.clone(),
             attribute_definitions: source.attribute_definitions.clone(),
             provisioned_throughput: source.provisioned_throughput.clone(),
@@ -1219,6 +1226,7 @@ impl DynamoDbService {
         let mut table = DynamoTable {
             name: table_name.to_string(),
             arn: table_arn.clone(),
+            table_id: uuid::Uuid::new_v4().to_string().replace('-', ""),
             key_schema,
             attribute_definitions,
             provisioned_throughput: ProvisionedThroughput {
@@ -1282,7 +1290,7 @@ impl DynamoDbService {
                 "ImportArn": import_arn,
                 "ImportStatus": "COMPLETED",
                 "TableArn": table_arn,
-                "TableId": uuid::Uuid::new_v4().to_string(),
+                "TableId": table_ref.table_id,
                 "S3BucketSource": {
                     "S3Bucket": s3_bucket
                 },
