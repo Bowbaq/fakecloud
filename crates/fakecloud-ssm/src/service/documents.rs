@@ -49,6 +49,126 @@ fn select_document_version<'a>(
         .find(|v| v.document_version == doc.default_version)
 }
 
+/// `UpdateDocument` rejects a `DocumentVersion` that doesn't refer to
+/// either `$LATEST` or an existing version on the document.
+fn validate_update_document_target_version(
+    doc: &SsmDocument,
+    target_version: Option<&str>,
+) -> Result<(), AwsServiceError> {
+    let Some(ver) = target_version else {
+        return Ok(());
+    };
+    if ver == "$LATEST" || doc.versions.iter().any(|v| v.document_version == ver) {
+        return Ok(());
+    }
+    Err(AwsServiceError::aws_error(
+        StatusCode::BAD_REQUEST,
+        "InvalidDocument",
+        "The document version is not valid or does not exist.",
+    ))
+}
+
+/// `UpdateDocument` rejects content whose SHA-256 already matches some
+/// other version on the document. Mirrors AWS's
+/// `DuplicateDocumentContent` behavior.
+fn validate_update_document_unique_content(
+    doc: &SsmDocument,
+    content: &str,
+) -> Result<(), AwsServiceError> {
+    let new_hash = format!("{:x}", Sha256::digest(content.as_bytes()));
+    for v in &doc.versions {
+        let existing_hash = format!("{:x}", Sha256::digest(v.content.as_bytes()));
+        if new_hash == existing_hash {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "DuplicateDocumentContent",
+                "The content of the association document matches another \
+                 document. Change the content of the document and try again.",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// `UpdateDocument` rejects a `VersionName` that another version on the
+/// same document already uses.
+fn validate_update_document_unique_version_name(
+    doc: &SsmDocument,
+    version_name: Option<&str>,
+) -> Result<(), AwsServiceError> {
+    let Some(vn) = version_name else {
+        return Ok(());
+    };
+    if doc
+        .versions
+        .iter()
+        .any(|v| v.version_name.as_deref() == Some(vn))
+    {
+        return Err(AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "DuplicateDocumentVersionName",
+            "The specified version name is a duplicate.",
+        ));
+    }
+    Ok(())
+}
+
+/// Apply the `ListDocuments` filter list to a single document. Supports
+/// `Owner` (with the `Self` sentinel meaning current account),
+/// `TargetType`, and `Name` filters; unknown filter keys are silently
+/// passed (mirrors the prior inline behavior).
+fn document_matches_list_filters(
+    doc: &SsmDocument,
+    filters: Option<&Vec<Value>>,
+    account_id: &str,
+) -> bool {
+    let Some(filters) = filters else {
+        return true;
+    };
+    for filter in filters {
+        let key = filter["Key"].as_str().unwrap_or("");
+        let values: Vec<&str> = filter["Values"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+        match key {
+            "Owner" => {
+                if values.contains(&"Self") && doc.owner != account_id {
+                    return false;
+                }
+            }
+            "TargetType" => match &doc.target_type {
+                Some(tt) if values.contains(&tt.as_str()) => {}
+                _ => return false,
+            },
+            "Name" => {
+                if !values.contains(&doc.name.as_str()) {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    true
+}
+
+/// Build a `ListDocuments` `DocumentIdentifier` JSON entry for one document.
+fn document_identifier_json(doc: &SsmDocument) -> Value {
+    let mut v = json!({
+        "Name": doc.name,
+        "DocumentType": doc.document_type,
+        "DocumentFormat": doc.document_format,
+        "DocumentVersion": doc.default_version,
+        "Owner": doc.owner,
+        "SchemaVersion": "2.2",
+        "PlatformTypes": ["Linux", "MacOS", "Windows"],
+    });
+    if let Some(tt) = &doc.target_type {
+        v["TargetType"] = json!(tt);
+    }
+    v
+}
+
 impl SsmService {
     pub(super) fn create_document(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = req.json_body();
@@ -298,45 +418,9 @@ impl SsmService {
             .get_mut(name)
             .ok_or_else(|| doc_not_found(name))?;
 
-        // Validate target version exists (if specified and not $LATEST)
-        if let Some(ver) = target_version {
-            if ver != "$LATEST" && !doc.versions.iter().any(|v| v.document_version == ver) {
-                return Err(AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "InvalidDocument",
-                    "The document version is not valid or does not exist.",
-                ));
-            }
-        }
-
-        // Check for duplicate content
-        let new_hash = format!("{:x}", Sha256::digest(content.as_bytes()));
-        for v in &doc.versions {
-            let existing_hash = format!("{:x}", Sha256::digest(v.content.as_bytes()));
-            if new_hash == existing_hash {
-                return Err(AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "DuplicateDocumentContent",
-                    "The content of the association document matches another \
-                     document. Change the content of the document and try again.",
-                ));
-            }
-        }
-
-        // Check for duplicate version name
-        if let Some(ref vn) = version_name {
-            if doc
-                .versions
-                .iter()
-                .any(|v| v.version_name.as_deref() == Some(vn))
-            {
-                return Err(AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "DuplicateDocumentVersionName",
-                    "The specified version name is a duplicate.",
-                ));
-            }
-        }
+        validate_update_document_target_version(doc, target_version)?;
+        validate_update_document_unique_content(doc, &content)?;
+        validate_update_document_unique_version_name(doc, version_name.as_deref())?;
 
         let new_version_num = (doc.versions.len() + 1).to_string();
         let format = doc_format.unwrap_or(&doc.document_format).to_string();
@@ -513,56 +597,8 @@ impl SsmService {
         let all_docs: Vec<Value> = state
             .documents
             .values()
-            .filter(|doc| {
-                if let Some(filters) = filters {
-                    for filter in filters {
-                        let key = filter["Key"].as_str().unwrap_or("");
-                        let values: Vec<&str> = filter["Values"]
-                            .as_array()
-                            .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
-                            .unwrap_or_default();
-                        match key {
-                            "Owner" => {
-                                // "Self" means owned by current account
-                                if values.contains(&"Self") && doc.owner != state.account_id {
-                                    return false;
-                                }
-                            }
-                            "TargetType" => {
-                                if let Some(tt) = &doc.target_type {
-                                    if !values.contains(&tt.as_str()) {
-                                        return false;
-                                    }
-                                } else {
-                                    return false;
-                                }
-                            }
-                            "Name" => {
-                                if !values.contains(&doc.name.as_str()) {
-                                    return false;
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                true
-            })
-            .map(|doc| {
-                let mut v = json!({
-                    "Name": doc.name,
-                    "DocumentType": doc.document_type,
-                    "DocumentFormat": doc.document_format,
-                    "DocumentVersion": doc.default_version,
-                    "Owner": doc.owner,
-                    "SchemaVersion": "2.2",
-                    "PlatformTypes": ["Linux", "MacOS", "Windows"],
-                });
-                if let Some(tt) = &doc.target_type {
-                    v["TargetType"] = json!(tt);
-                }
-                v
-            })
+            .filter(|doc| document_matches_list_filters(doc, filters, &state.account_id))
+            .map(document_identifier_json)
             .collect();
 
         let (result, next_token) = paginate(&all_docs, body["NextToken"].as_str(), max_results);
