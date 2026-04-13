@@ -470,9 +470,43 @@ async fn main() {
     ));
     registry.register(Arc::new(LogsService::new(logs_state, delivery_for_logs)));
     registry.register(Arc::new(KmsService::new(kms_state.clone())));
-    // TODO(phase-4): swap in DiskS3Store when mode == Persistent.
-    let s3_store: Arc<dyn fakecloud_persistence::S3Store> =
-        Arc::new(fakecloud_persistence::s3::MemoryS3Store::new());
+    let s3_store: Arc<dyn fakecloud_persistence::S3Store> = match persistence_config.mode {
+        fakecloud_persistence::StorageMode::Persistent => {
+            let data_path = persistence_config
+                .data_path
+                .as_ref()
+                .expect("validated above")
+                .clone();
+            let s3_root = data_path.join("s3");
+            if let Err(err) = std::fs::create_dir_all(&s3_root) {
+                tracing::error!(error = %err, path = %s3_root.display(), "failed to create s3 persistence dir");
+                std::process::exit(1);
+            }
+            let cache = Arc::new(fakecloud_persistence::cache::BodyCache::new(
+                persistence_config.body_cache_bytes,
+            ));
+            let disk = fakecloud_persistence::s3::DiskS3Store::new(s3_root, cache);
+            match <fakecloud_persistence::s3::DiskS3Store as fakecloud_persistence::S3Store>::load(&disk) {
+                Ok(snapshot) => {
+                    // TODO(phase-5/6): rehydrate runtime S3State from snapshot (versioning + mpu).
+                    let count: usize = snapshot.buckets.values().map(|b| b.objects.len()).sum();
+                    tracing::info!(
+                        buckets = snapshot.buckets.len(),
+                        objects = count,
+                        "loaded s3 persistence snapshot",
+                    );
+                }
+                Err(err) => {
+                    tracing::error!(error = %err, "failed to load s3 persistence snapshot");
+                    std::process::exit(1);
+                }
+            }
+            Arc::new(disk)
+        }
+        fakecloud_persistence::StorageMode::Memory => {
+            Arc::new(fakecloud_persistence::s3::MemoryS3Store::new())
+        }
+    };
     registry.register(Arc::new(
         S3Service::with_store(s3_state.clone(), delivery_for_s3, s3_store).with_kms(kms_state),
     ));
