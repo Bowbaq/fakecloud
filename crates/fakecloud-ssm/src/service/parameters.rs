@@ -629,52 +629,10 @@ impl SsmService {
         }
 
         let state = self.state.read();
-        let prefix = if path.ends_with('/') {
-            path.to_string()
-        } else {
-            format!("{path}/")
-        };
-
-        let is_root = path == "/";
-        let targets_aws = path.starts_with("/aws/") || path.starts_with("/aws");
-
         let all_params: Vec<&SsmParameter> = state
             .parameters
             .values()
-            .filter(|p| {
-                // Exclude /aws/ prefix params unless path explicitly targets them
-                if !targets_aws && p.name.starts_with("/aws/") {
-                    return false;
-                }
-                true
-            })
-            .filter(|p| {
-                if is_root {
-                    if recursive {
-                        true
-                    } else {
-                        // Root level: params without '/' or with exactly one leading '/'
-                        // and no further '/' in the name
-                        if p.name.starts_with('/') {
-                            // e.g., "/foo" is root-level, "/foo/bar" is not
-                            !p.name[1..].contains('/')
-                        } else {
-                            // Non-path params like "foo" are at root
-                            !p.name.contains('/')
-                        }
-                    }
-                } else {
-                    if p.name.starts_with(&prefix) {
-                        if recursive {
-                            true
-                        } else {
-                            !p.name[prefix.len()..].contains('/')
-                        }
-                    } else {
-                        false
-                    }
-                }
-            })
+            .filter(|p| param_matches_path(p, path, recursive))
             .filter(|p| apply_parameter_filters(p, filters.as_ref()))
             .collect();
 
@@ -823,7 +781,6 @@ impl SsmService {
         let with_decryption = body["WithDecryption"].as_bool().unwrap_or(false);
         let max_results = body["MaxResults"].as_i64();
 
-        // Validate MaxResults
         if let Some(mr) = max_results {
             if mr > 50 {
                 return Err(AwsServiceError::aws_error(
@@ -849,58 +806,31 @@ impl SsmService {
             .history
             .iter()
             .map(|h| {
-                let value = if h.param_type == "SecureString" && !with_decryption {
-                    let kid = h.key_id.as_deref().unwrap_or("alias/aws/ssm");
-                    format!("kms:{}:{}", kid, h.value)
-                } else {
-                    h.value.clone()
-                };
-                let mut entry = json!({
-                    "Name": param.name,
-                    "Value": value,
-                    "Version": h.version,
-                    "LastModifiedDate": h.last_modified.timestamp_millis() as f64 / 1000.0,
-                    "Type": h.param_type,
-                });
-                if let Some(desc) = &h.description {
-                    entry["Description"] = json!(desc);
-                }
-                if let Some(kid) = &h.key_id {
-                    entry["KeyId"] = json!(kid);
-                }
-                let labels = param.labels.get(&h.version).cloned().unwrap_or_default();
-                entry["Labels"] = json!(labels);
-                entry
+                history_entry_json(
+                    &param.name,
+                    h.version,
+                    &h.param_type,
+                    &h.value,
+                    h.key_id.as_deref(),
+                    h.description.as_deref(),
+                    h.last_modified.timestamp_millis() as f64 / 1000.0,
+                    param.labels.get(&h.version),
+                    with_decryption,
+                )
             })
             .collect();
 
-        // Include current version
-        let current_value = if param.param_type == "SecureString" && !with_decryption {
-            let kid = param.key_id.as_deref().unwrap_or("alias/aws/ssm");
-            format!("kms:{}:{}", kid, param.value)
-        } else {
-            param.value.clone()
-        };
-        let mut current = json!({
-            "Name": param.name,
-            "Value": current_value,
-            "Version": param.version,
-            "LastModifiedDate": param.last_modified.timestamp_millis() as f64 / 1000.0,
-            "Type": param.param_type,
-        });
-        if let Some(desc) = &param.description {
-            current["Description"] = json!(desc);
-        }
-        if let Some(kid) = &param.key_id {
-            current["KeyId"] = json!(kid);
-        }
-        let current_labels = param
-            .labels
-            .get(&param.version)
-            .cloned()
-            .unwrap_or_default();
-        current["Labels"] = json!(current_labels);
-        all_history.push(current);
+        all_history.push(history_entry_json(
+            &param.name,
+            param.version,
+            &param.param_type,
+            &param.value,
+            param.key_id.as_deref(),
+            param.description.as_deref(),
+            param.last_modified.timestamp_millis() as f64 / 1000.0,
+            param.labels.get(&param.version),
+            with_decryption,
+        ));
 
         let (result, next_token) = paginate(&all_history, body["NextToken"].as_str(), max_results);
         let mut resp = json!({ "Parameters": result });
@@ -930,13 +860,19 @@ impl SsmService {
             })?)
         };
 
+        let label_strings: Vec<String> = labels
+            .iter()
+            .filter_map(|l| l.as_str().map(|s| s.to_string()))
+            .collect();
+
+        validate_label_lengths(&label_strings)?;
+
         let mut state = self.state.write();
         let param =
             lookup_param_mut(&mut state.parameters, name).ok_or_else(|| param_not_found(name))?;
 
         let target_version = version.unwrap_or(param.version);
 
-        // Validate version exists
         let version_exists = param.version == target_version
             || param.history.iter().any(|h| h.version == target_version);
         if !version_exists {
@@ -950,43 +886,7 @@ impl SsmService {
             ));
         }
 
-        let label_strings: Vec<String> = labels
-            .iter()
-            .filter_map(|l| l.as_str().map(|s| s.to_string()))
-            .collect();
-
-        // Validate label length (max 100)
-        for label in &label_strings {
-            if label.len() > 100 {
-                let labels_display: Vec<&str> = label_strings.iter().map(|s| s.as_str()).collect();
-                return Err(AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "ValidationException",
-                    format!(
-                        "1 validation error detected: \
-                         Value '[{}]' at 'labels' failed to satisfy constraint: \
-                         Member must satisfy constraint: \
-                         [Member must have length less than or equal to 100, Member must \
-                         have length greater than or equal to 1]",
-                        labels_display.join(", ")
-                    ),
-                ));
-            }
-        }
-
-        // Validate invalid labels (aws/ssm prefix, starts with digit, contains / or :)
-        let mut invalid_labels = Vec::new();
-        for label in &label_strings {
-            let lower = label.to_lowercase();
-            let is_invalid = lower.starts_with("aws")
-                || lower.starts_with("ssm")
-                || label.starts_with(|c: char| c.is_ascii_digit())
-                || label.contains('/')
-                || label.contains(':');
-            if is_invalid {
-                invalid_labels.push(label.clone());
-            }
-        }
+        let invalid_labels = collect_invalid_label_content(&label_strings);
         if !invalid_labels.is_empty() {
             return Ok(AwsResponse::ok_json(json!({
                 "InvalidLabels": invalid_labels,
@@ -994,13 +894,12 @@ impl SsmService {
             })));
         }
 
-        // Count current labels for target version
         let current_count = param
             .labels
             .get(&target_version)
             .map(|l| l.len())
             .unwrap_or(0);
-        let new_unique: Vec<&String> = label_strings
+        let new_unique = label_strings
             .iter()
             .filter(|l| {
                 !param
@@ -1008,9 +907,9 @@ impl SsmService {
                     .get(&target_version)
                     .is_some_and(|existing| existing.contains(l))
             })
-            .collect();
+            .count();
 
-        if current_count + new_unique.len() > 10 {
+        if current_count + new_unique > 10 {
             return Err(AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
                 "ParameterVersionLabelLimitExceeded",
@@ -1021,14 +920,14 @@ impl SsmService {
             ));
         }
 
-        // Remove these labels from any other version (labels are unique across versions)
+        // Labels are unique across versions: detach from any other
+        // version that already holds one of the new labels, then attach
+        // to the target version.
         for existing_labels in param.labels.values_mut() {
             existing_labels.retain(|l| !label_strings.contains(l));
         }
-        // Remove empty entries
         param.labels.retain(|_, v| !v.is_empty());
 
-        // Add labels to target version
         let entry = param.labels.entry(target_version).or_default();
         for label in &label_strings {
             if !entry.contains(label) {
@@ -1850,4 +1749,120 @@ pub(super) fn param_not_found(name: &str) -> AwsServiceError {
         "ParameterNotFound",
         format!("Parameter {name} not found."),
     )
+}
+
+/// Returns true if `param.name` falls under `path` according to
+/// `GetParametersByPath` semantics. Treats `/` as a special "root"
+/// query, hides the `/aws/` namespace unless explicitly targeted, and
+/// honors the `recursive` flag for non-recursive shallow listings.
+fn param_matches_path(param: &SsmParameter, path: &str, recursive: bool) -> bool {
+    let targets_aws = path.starts_with("/aws/") || path.starts_with("/aws");
+    if !targets_aws && param.name.starts_with("/aws/") {
+        return false;
+    }
+
+    if path == "/" {
+        if recursive {
+            return true;
+        }
+        return if let Some(rest) = param.name.strip_prefix('/') {
+            !rest.contains('/')
+        } else {
+            !param.name.contains('/')
+        };
+    }
+
+    let prefix = if path.ends_with('/') {
+        path.to_string()
+    } else {
+        format!("{path}/")
+    };
+    let Some(rest) = param.name.strip_prefix(&prefix) else {
+        return false;
+    };
+    recursive || !rest.contains('/')
+}
+
+/// Reject any label longer than 100 characters. AWS reports this with
+/// the full label list inline, so we collect display strings even when
+/// only one entry is over.
+fn validate_label_lengths(labels: &[String]) -> Result<(), AwsServiceError> {
+    for label in labels {
+        if label.len() > 100 {
+            let labels_display: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "ValidationException",
+                format!(
+                    "1 validation error detected: \
+                     Value '[{}]' at 'labels' failed to satisfy constraint: \
+                     Member must satisfy constraint: \
+                     [Member must have length less than or equal to 100, Member must \
+                     have length greater than or equal to 1]",
+                    labels_display.join(", ")
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Collect labels that violate the content rules: reserved `aws`/`ssm`
+/// prefix (case-insensitive), starts with a digit, contains `/` or `:`.
+/// AWS reports these as `InvalidLabels` in the response rather than as
+/// a top-level error.
+fn collect_invalid_label_content(labels: &[String]) -> Vec<String> {
+    labels
+        .iter()
+        .filter(|label| {
+            let lower = label.to_lowercase();
+            lower.starts_with("aws")
+                || lower.starts_with("ssm")
+                || label.starts_with(|c: char| c.is_ascii_digit())
+                || label.contains('/')
+                || label.contains(':')
+        })
+        .cloned()
+        .collect()
+}
+
+/// Build one history entry JSON for `GetParameterHistory`. Used for both
+/// the historical entries (from `param.history`) and the current version
+/// — both shapes are identical apart from where the field values come
+/// from. Encrypts SecureString values into `kms:<key-id>:<value>` envelopes
+/// when `with_decryption` is false, matching the inline encoding the rest
+/// of the parameters service uses.
+#[allow(clippy::too_many_arguments)]
+fn history_entry_json(
+    name: &str,
+    version: i64,
+    param_type: &str,
+    value: &str,
+    key_id: Option<&str>,
+    description: Option<&str>,
+    last_modified_secs: f64,
+    labels: Option<&Vec<String>>,
+    with_decryption: bool,
+) -> Value {
+    let display_value = if param_type == "SecureString" && !with_decryption {
+        let kid = key_id.unwrap_or("alias/aws/ssm");
+        format!("kms:{kid}:{value}")
+    } else {
+        value.to_string()
+    };
+    let mut entry = json!({
+        "Name": name,
+        "Value": display_value,
+        "Version": version,
+        "LastModifiedDate": last_modified_secs,
+        "Type": param_type,
+    });
+    if let Some(desc) = description {
+        entry["Description"] = json!(desc);
+    }
+    if let Some(kid) = key_id {
+        entry["KeyId"] = json!(kid);
+    }
+    entry["Labels"] = json!(labels.cloned().unwrap_or_default());
+    entry
 }
