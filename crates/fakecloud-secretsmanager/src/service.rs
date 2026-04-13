@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -16,6 +17,40 @@ struct RotationInvocation {
     lambda_arn: String,
     secret_id: String,
     client_request_token: String,
+}
+
+/// Result of an idempotency check against an existing
+/// `ClientRequestToken` / version id.
+enum VersionIdempotency {
+    /// The version id isn't in the secret yet — this is a fresh write.
+    NotFound,
+    /// The version id exists and stores the exact same payload we're
+    /// about to write — callers should return the existing version as
+    /// a successful no-op response.
+    Match,
+    /// The version id exists but stores a different payload — AWS
+    /// surfaces this as a `ResourceExistsException`.
+    Conflict,
+}
+
+/// Classify whether a proposed write collides with an existing
+/// version. AWS uses `ClientRequestToken` as a client-side idempotency
+/// key, so a repeat write of the exact same payload is a success but a
+/// repeat with a different payload is a `ResourceExistsException`.
+fn check_secret_version_idempotency(
+    versions: &HashMap<String, SecretVersion>,
+    version_id: &str,
+    secret_string: &Option<String>,
+    secret_binary: &Option<Vec<u8>>,
+) -> VersionIdempotency {
+    let Some(existing) = versions.get(version_id) else {
+        return VersionIdempotency::NotFound;
+    };
+    if &existing.secret_string == secret_string && &existing.secret_binary == secret_binary {
+        VersionIdempotency::Match
+    } else {
+        VersionIdempotency::Conflict
+    }
 }
 
 pub struct SecretsManagerService {
@@ -68,17 +103,15 @@ impl SecretsManagerService {
 
         let client_request_token = body["ClientRequestToken"].as_str().map(|s| s.to_string());
 
-        // Check for existing secret (idempotency)
         if let Some(existing) = state.secrets.get(&name) {
             if let Some(ref token) = client_request_token {
-                // Check if same token was used
-                if existing.versions.contains_key(token) {
-                    let version = &existing.versions[token];
-                    // Check if the value matches
-                    if version.secret_string == secret_string
-                        && version.secret_binary == secret_binary
-                    {
-                        // Idempotent: return same result
+                match check_secret_version_idempotency(
+                    &existing.versions,
+                    token,
+                    &secret_string,
+                    &secret_binary,
+                ) {
+                    VersionIdempotency::Match => {
                         let mut response = json!({
                             "ARN": existing.arn,
                             "Name": existing.name,
@@ -88,7 +121,8 @@ impl SecretsManagerService {
                             response.as_object_mut().unwrap().remove("VersionId");
                         }
                         return Ok(AwsResponse::ok_json(response));
-                    } else {
+                    }
+                    VersionIdempotency::Conflict => {
                         return Err(AwsServiceError::aws_error(
                             StatusCode::BAD_REQUEST,
                             "ResourceExistsException",
@@ -98,6 +132,7 @@ impl SecretsManagerService {
                             ),
                         ));
                     }
+                    VersionIdempotency::NotFound => {}
                 }
             }
             return Err(AwsServiceError::aws_error(
@@ -313,20 +348,22 @@ impl SecretsManagerService {
             .map(|s| s.to_string())
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
-        // Check for idempotent request (same token, same value)
-        if let Some(existing_version) = secret.versions.get(&version_id) {
-            if existing_version.secret_string == secret_string
-                && existing_version.secret_binary == secret_binary
-            {
-                // Idempotent: return existing version
-                let response = json!({
+        match check_secret_version_idempotency(
+            &secret.versions,
+            &version_id,
+            &secret_string,
+            &secret_binary,
+        ) {
+            VersionIdempotency::Match => {
+                let existing_stages = secret.versions[&version_id].stages.clone();
+                return Ok(AwsResponse::ok_json(json!({
                     "ARN": secret.arn,
                     "Name": secret.name,
                     "VersionId": version_id,
-                    "VersionStages": existing_version.stages,
-                });
-                return Ok(AwsResponse::ok_json(response));
-            } else {
+                    "VersionStages": existing_stages,
+                })));
+            }
+            VersionIdempotency::Conflict => {
                 return Err(AwsServiceError::aws_error(
                     StatusCode::BAD_REQUEST,
                     "ResourceExistsException",
@@ -336,6 +373,7 @@ impl SecretsManagerService {
                     ),
                 ));
             }
+            VersionIdempotency::NotFound => {}
         }
 
         let mut version_stages: Vec<String> = body["VersionStages"]
@@ -459,19 +497,20 @@ impl SecretsManagerService {
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
-            // Check for idempotent request
-            if let Some(existing_version) = secret.versions.get(&vid) {
-                if existing_version.secret_string == secret_string
-                    && existing_version.secret_binary == secret_binary
-                {
-                    // Idempotent
-                    let response = json!({
+            match check_secret_version_idempotency(
+                &secret.versions,
+                &vid,
+                &secret_string,
+                &secret_binary,
+            ) {
+                VersionIdempotency::Match => {
+                    return Ok(AwsResponse::ok_json(json!({
                         "ARN": secret.arn,
                         "Name": secret.name,
                         "VersionId": vid,
-                    });
-                    return Ok(AwsResponse::ok_json(response));
-                } else {
+                    })));
+                }
+                VersionIdempotency::Conflict => {
                     return Err(AwsServiceError::aws_error(
                         StatusCode::BAD_REQUEST,
                         "ResourceExistsException",
@@ -481,6 +520,7 @@ impl SecretsManagerService {
                         ),
                     ));
                 }
+                VersionIdempotency::NotFound => {}
             }
 
             let now = Utc::now();
