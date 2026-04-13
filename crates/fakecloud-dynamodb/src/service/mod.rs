@@ -928,79 +928,114 @@ fn evaluate_single_key_condition(
 ) -> bool {
     let part = part.trim();
 
-    // begins_with(attr, :val) — S type only
     if let Some(rest) = part
         .strip_prefix("begins_with(")
         .or_else(|| part.strip_prefix("begins_with ("))
     {
-        if let Some(inner) = rest.strip_suffix(')') {
-            let mut split = inner.splitn(2, ',');
-            if let (Some(attr_ref), Some(val_ref)) = (split.next(), split.next()) {
-                let attr_name = resolve_attr_name(attr_ref.trim(), expr_attr_names);
-                let val_ref = val_ref.trim();
-                let expected = expr_attr_values.get(val_ref);
-                let actual = item.get(&attr_name);
-                return match (actual, expected) {
-                    (Some(a), Some(e)) => {
-                        let a_str = a.get("S").and_then(|v| v.as_str());
-                        let e_str = e.get("S").and_then(|v| v.as_str());
-                        matches!((a_str, e_str), (Some(a), Some(e)) if a.starts_with(e))
-                    }
-                    _ => false,
-                };
-            }
-        }
-        return false;
+        return key_cond_begins_with(rest, item, expr_attr_names, expr_attr_values);
     }
 
-    // BETWEEN
     if let Some(between_pos) = part.to_ascii_uppercase().find("BETWEEN") {
-        let attr_part = part[..between_pos].trim();
-        let attr_name = resolve_attr_name(attr_part, expr_attr_names);
-        let range_part = &part[between_pos + 7..];
-        if let Some(and_pos) = range_part.to_ascii_uppercase().find(" AND ") {
-            let lo_ref = range_part[..and_pos].trim();
-            let hi_ref = range_part[and_pos + 5..].trim();
-            let lo = expr_attr_values.get(lo_ref);
-            let hi = expr_attr_values.get(hi_ref);
-            let actual = item.get(&attr_name);
-            return match (actual, lo, hi) {
-                (Some(a), Some(l), Some(h)) => {
-                    compare_attribute_values(Some(a), Some(l)) != std::cmp::Ordering::Less
-                        && compare_attribute_values(Some(a), Some(h)) != std::cmp::Ordering::Greater
-                }
-                _ => false,
-            };
-        }
+        return key_cond_between(part, between_pos, item, expr_attr_names, expr_attr_values);
     }
 
-    // Simple comparison: attr <op> :val
+    key_cond_simple_comparison(part, item, expr_attr_names, expr_attr_values)
+}
+
+/// `begins_with(attr, :val)` — KeyCondition variant: supports only
+/// S-typed attributes (mirrors AWS's behavior of returning false for
+/// type mismatches). The filter-expression evaluator has its own
+/// `eval_begins_with` because it operates on filter-grammar inputs.
+fn key_cond_begins_with(
+    rest: &str,
+    item: &HashMap<String, AttributeValue>,
+    expr_attr_names: &HashMap<String, String>,
+    expr_attr_values: &HashMap<String, Value>,
+) -> bool {
+    let Some(inner) = rest.strip_suffix(')') else {
+        return false;
+    };
+    let mut split = inner.splitn(2, ',');
+    let (Some(attr_ref), Some(val_ref)) = (split.next(), split.next()) else {
+        return false;
+    };
+    let attr_name = resolve_attr_name(attr_ref.trim(), expr_attr_names);
+    let expected = expr_attr_values.get(val_ref.trim());
+    let actual = item.get(&attr_name);
+    match (actual, expected) {
+        (Some(a), Some(e)) => {
+            let a_str = a.get("S").and_then(|v| v.as_str());
+            let e_str = e.get("S").and_then(|v| v.as_str());
+            matches!((a_str, e_str), (Some(a), Some(e)) if a.starts_with(e))
+        }
+        _ => false,
+    }
+}
+
+/// `attr BETWEEN :lo AND :hi` — inclusive range comparison via the
+/// shared `compare_attribute_values` ordering.
+fn key_cond_between(
+    part: &str,
+    between_pos: usize,
+    item: &HashMap<String, AttributeValue>,
+    expr_attr_names: &HashMap<String, String>,
+    expr_attr_values: &HashMap<String, Value>,
+) -> bool {
+    let attr_part = part[..between_pos].trim();
+    let attr_name = resolve_attr_name(attr_part, expr_attr_names);
+    let range_part = &part[between_pos + 7..];
+    let Some(and_pos) = range_part.to_ascii_uppercase().find(" AND ") else {
+        return false;
+    };
+    let lo_ref = range_part[..and_pos].trim();
+    let hi_ref = range_part[and_pos + 5..].trim();
+    let lo = expr_attr_values.get(lo_ref);
+    let hi = expr_attr_values.get(hi_ref);
+    let actual = item.get(&attr_name);
+    match (actual, lo, hi) {
+        (Some(a), Some(l), Some(h)) => {
+            compare_attribute_values(Some(a), Some(l)) != std::cmp::Ordering::Less
+                && compare_attribute_values(Some(a), Some(h)) != std::cmp::Ordering::Greater
+        }
+        _ => false,
+    }
+}
+
+/// `attr <op> :val` — six operators (`=`, `<>`, `<`, `>`, `<=`, `>=`).
+/// Multi-character operators come first in the search list so that `<=`
+/// is not mistakenly matched as `<`.
+fn key_cond_simple_comparison(
+    part: &str,
+    item: &HashMap<String, AttributeValue>,
+    expr_attr_names: &HashMap<String, String>,
+    expr_attr_values: &HashMap<String, Value>,
+) -> bool {
     for op in &["<=", ">=", "<>", "=", "<", ">"] {
-        if let Some(pos) = part.find(op) {
-            let left = part[..pos].trim();
-            let right = part[pos + op.len()..].trim();
-            let attr_name = resolve_attr_name(left, expr_attr_names);
-            let expected = expr_attr_values.get(right);
-            let actual = item.get(&attr_name);
+        let Some(pos) = part.find(op) else {
+            continue;
+        };
+        let left = part[..pos].trim();
+        let right = part[pos + op.len()..].trim();
+        let attr_name = resolve_attr_name(left, expr_attr_names);
+        let expected = expr_attr_values.get(right);
+        let actual = item.get(&attr_name);
 
-            return match *op {
-                "=" => actual == expected,
-                "<>" => actual != expected,
-                "<" => compare_attribute_values(actual, expected) == std::cmp::Ordering::Less,
-                ">" => compare_attribute_values(actual, expected) == std::cmp::Ordering::Greater,
-                "<=" => {
-                    let cmp = compare_attribute_values(actual, expected);
-                    cmp == std::cmp::Ordering::Less || cmp == std::cmp::Ordering::Equal
-                }
-                ">=" => {
-                    let cmp = compare_attribute_values(actual, expected);
-                    cmp == std::cmp::Ordering::Greater || cmp == std::cmp::Ordering::Equal
-                }
-                _ => false,
-            };
-        }
+        return match *op {
+            "=" => actual == expected,
+            "<>" => actual != expected,
+            "<" => compare_attribute_values(actual, expected) == std::cmp::Ordering::Less,
+            ">" => compare_attribute_values(actual, expected) == std::cmp::Ordering::Greater,
+            "<=" => {
+                let cmp = compare_attribute_values(actual, expected);
+                cmp == std::cmp::Ordering::Less || cmp == std::cmp::Ordering::Equal
+            }
+            ">=" => {
+                let cmp = compare_attribute_values(actual, expected);
+                cmp == std::cmp::Ordering::Greater || cmp == std::cmp::Ordering::Equal
+            }
+            _ => false,
+        };
     }
-
     false
 }
 
@@ -2347,37 +2382,8 @@ fn find_partiql_where_indices(
     where_clause: &str,
     parameters: &[Value],
 ) -> Result<Vec<usize>, AwsServiceError> {
-    // Support: col = 'val' AND col2 = 'val2'  or  col = ? AND col2 = ?
-    // Case-insensitive AND splitting
-    let upper = where_clause.to_uppercase();
-    let conditions = if upper.contains(" AND ") {
-        // Find positions of " AND " case-insensitively and split
-        let mut parts = Vec::new();
-        let mut last = 0;
-        for (i, _) in upper.match_indices(" AND ") {
-            parts.push(where_clause[last..i].trim());
-            last = i + 5;
-        }
-        parts.push(where_clause[last..].trim());
-        parts
-    } else {
-        vec![where_clause.trim()]
-    };
-
-    let mut param_idx = 0usize;
-    let mut parsed_conditions: Vec<(String, Value)> = Vec::new();
-
-    for cond in &conditions {
-        let cond = cond.trim();
-        if let Some((left, right)) = cond.split_once('=') {
-            let attr = left.trim().trim_matches('"').to_string();
-            let val_str = right.trim();
-            let value = parse_partiql_literal(val_str, parameters, &mut param_idx);
-            if let Some(v) = value {
-                parsed_conditions.push((attr, v));
-            }
-        }
-    }
+    let conditions = split_partiql_and_clauses(where_clause);
+    let parsed_conditions = parse_partiql_equality_conditions(&conditions, parameters);
 
     let mut indices = Vec::new();
     for (i, item) in table.items.iter().enumerate() {
@@ -2390,6 +2396,45 @@ fn find_partiql_where_indices(
     }
 
     Ok(indices)
+}
+
+/// Split a PartiQL WHERE clause on case-insensitive ` AND ` boundaries.
+fn split_partiql_and_clauses(where_clause: &str) -> Vec<&str> {
+    let upper = where_clause.to_uppercase();
+    if !upper.contains(" AND ") {
+        return vec![where_clause.trim()];
+    }
+    let mut parts = Vec::new();
+    let mut last = 0;
+    for (i, _) in upper.match_indices(" AND ") {
+        parts.push(where_clause[last..i].trim());
+        last = i + 5;
+    }
+    parts.push(where_clause[last..].trim());
+    parts
+}
+
+/// Parse each `col = literal` (or `col = ?`) condition into an
+/// `(attribute_name, expected_AttributeValue)` pair. Conditions that
+/// don't parse as equality, or whose RHS literal can't be resolved, are
+/// silently dropped — that mirrors the prior inline behavior.
+fn parse_partiql_equality_conditions(
+    conditions: &[&str],
+    parameters: &[Value],
+) -> Vec<(String, Value)> {
+    let mut param_idx = 0usize;
+    let mut parsed = Vec::new();
+    for cond in conditions {
+        let cond = cond.trim();
+        if let Some((left, right)) = cond.split_once('=') {
+            let attr = left.trim().trim_matches('"').to_string();
+            let val_str = right.trim();
+            if let Some(value) = parse_partiql_literal(val_str, parameters, &mut param_idx) {
+                parsed.push((attr, value));
+            }
+        }
+    }
+    parsed
 }
 
 /// Parse a PartiQL literal value. Supports:
