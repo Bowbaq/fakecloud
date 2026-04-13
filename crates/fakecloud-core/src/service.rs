@@ -2,8 +2,6 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use http::{HeaderMap, Method, StatusCode};
 use std::collections::HashMap;
-use std::ops::Deref;
-use std::path::PathBuf;
 
 /// A parsed AWS request.
 #[derive(Debug)]
@@ -38,11 +36,15 @@ impl AwsRequest {
 /// A response body. Most handlers return [`ResponseBody::Bytes`] built from
 /// an in-memory [`Bytes`] buffer; the [`File`](ResponseBody::File) variant
 /// exists so large disk-backed objects can be streamed straight from the
-/// filesystem to the HTTP body without being materialized into RAM.
+/// filesystem to the HTTP body without being materialized into RAM. The file
+/// handle is opened by the service handler while it still holds the
+/// per-bucket read guard, so the reader sees a consistent inode even if a
+/// concurrent PUT/DELETE renames or unlinks the path before dispatch streams
+/// the body.
 #[derive(Debug)]
 pub enum ResponseBody {
     Bytes(Bytes),
-    File { path: PathBuf, size: u64 },
+    File { file: tokio::fs::File, size: u64 },
 }
 
 impl ResponseBody {
@@ -55,6 +57,18 @@ impl ResponseBody {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Accessor that returns the bytes of a `Bytes` variant and panics for
+    /// `File`. Used by tests and by callers that know the response was built
+    /// from an in-memory buffer (JSON handlers, cross-service glue).
+    pub fn expect_bytes(&self) -> &[u8] {
+        match self {
+            ResponseBody::Bytes(b) => b,
+            ResponseBody::File { .. } => {
+                panic!("expect_bytes called on ResponseBody::File")
+            }
+        }
     }
 }
 
@@ -91,25 +105,6 @@ impl From<String> for ResponseBody {
 impl From<&'static str> for ResponseBody {
     fn from(s: &'static str) -> Self {
         ResponseBody::Bytes(Bytes::from_static(s.as_bytes()))
-    }
-}
-
-/// Deref gives existing test code that does `&resp.body` a `&[u8]` view.
-/// File-variant responses appear empty to this view — tests only inspect
-/// in-memory bodies.
-impl Deref for ResponseBody {
-    type Target = [u8];
-    fn deref(&self) -> &Self::Target {
-        match self {
-            ResponseBody::Bytes(b) => b,
-            ResponseBody::File { .. } => &[],
-        }
-    }
-}
-
-impl AsRef<[u8]> for ResponseBody {
-    fn as_ref(&self) -> &[u8] {
-        self
     }
 }
 

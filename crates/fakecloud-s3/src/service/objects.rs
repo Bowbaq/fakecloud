@@ -2585,8 +2585,14 @@ impl S3Service {
 
 /// Build the response body for a full GetObject read. For memory-backed
 /// bodies this returns `ResponseBody::Bytes`; for disk-backed bodies it
-/// returns `ResponseBody::File` so the dispatcher can stream the file
-/// directly into the HTTP response without materializing it in RAM.
+/// opens the file handle eagerly (while the caller still holds the per-state
+/// read guard) and returns `ResponseBody::File` so the dispatcher can stream
+/// the file directly into the HTTP response without materializing it in RAM.
+///
+/// Opening the handle inside the read guard is load-bearing: on unix an open
+/// fd keeps the old inode alive even after the path is renamed over or
+/// unlinked, so a concurrent PUT/DELETE that lands after we drop the guard
+/// cannot hand the reader a partial or swapped body.
 fn full_body_response(
     state: &crate::state::S3State,
     body: &fakecloud_persistence::BodyRef,
@@ -2596,9 +2602,10 @@ fn full_body_response(
             let bytes = state.read_body(body).map_err(super::io_to_aws)?;
             Ok(ResponseBody::Bytes(bytes))
         }
-        fakecloud_persistence::BodyRef::Disk { path, size, .. } => Ok(ResponseBody::File {
-            path: path.clone(),
-            size: *size,
-        }),
+        fakecloud_persistence::BodyRef::Disk { path, size, .. } => {
+            let std_file = std::fs::File::open(path).map_err(super::io_to_aws)?;
+            let file = tokio::fs::File::from_std(std_file);
+            Ok(ResponseBody::File { file, size: *size })
+        }
     }
 }

@@ -266,7 +266,13 @@ impl Default for BodyRef {
 #[derive(Debug)]
 pub enum BodySource {
     Bytes(Bytes),
+    /// Existing disk path that should be *moved* into the destination via
+    /// rename (upload-tmp → final) and consumed.
     File(PathBuf),
+    /// Existing disk path that should be *copied* into the destination and
+    /// left in place. Used by replication so the source object stays
+    /// available while the replica is produced.
+    FileCopy(PathBuf),
 }
 
 #[derive(Debug, Error)]
@@ -385,7 +391,9 @@ impl S3Store for MemoryS3Store {
     ) -> StoreResult<BodyRef> {
         match body {
             BodySource::Bytes(b) => Ok(BodyRef::Memory(b)),
-            BodySource::File(_) => Err(StoreError::NotSupported),
+            BodySource::File(_) | BodySource::FileCopy(_) => Err(StoreError::Other(
+                "file-backed put not supported in memory mode".to_string(),
+            )),
         }
     }
     fn put_object_meta(
@@ -653,25 +661,20 @@ impl S3Store for DiskS3Store {
                     if !versioned.is_empty() {
                         versioned.sort_by(|a, b| a.meta.last_modified.cmp(&b.meta.last_modified));
                         if let Some(key) = key_name {
-                            // Promote the most recent non-delete-marker version
-                            // into snap.objects so unversioned GETs after
-                            // restart see the current object, matching runtime
-                            // semantics where DeleteObject creates a marker
-                            // that hides the object and a subsequent PutObject
-                            // clears it.
-                            if !snap.objects.contains_key(&key) {
-                                let latest_live =
-                                    versioned.iter().rev().find(|v| !v.meta.is_delete_marker);
-                                if let Some(live) = latest_live {
-                                    // Only promote if the *newest* version is
-                                    // also live — a trailing delete marker
-                                    // hides the object until another put.
-                                    if let Some(newest) = versioned.last() {
-                                        if !newest.meta.is_delete_marker {
-                                            snap.objects.insert(key.clone(), live.clone());
-                                        }
-                                    }
+                            // Reconcile snap.objects with the newest version:
+                            // a trailing delete marker hides any prior null or
+                            // live version (remove it); otherwise overwrite
+                            // with the newest live version, even if a
+                            // pre-versioning null.toml had already been
+                            // inserted during the non-versioned scan.
+                            match versioned.last() {
+                                Some(newest) if newest.meta.is_delete_marker => {
+                                    snap.objects.remove(&key);
                                 }
+                                Some(newest) => {
+                                    snap.objects.insert(key.clone(), newest.clone());
+                                }
+                                None => {}
                             }
                             snap.object_versions.insert(key, versioned);
                         }
@@ -824,6 +827,12 @@ impl S3Store for DiskS3Store {
                 crate::atomic::write_atomic_from_file(&src, &bin_path)?;
                 bytes_for_cache = None;
             }
+            BodySource::FileCopy(src) => {
+                let src_size = std::fs::metadata(&src)?.len();
+                size = src_size;
+                crate::atomic::write_atomic_copy_from_file(&src, &bin_path)?;
+                bytes_for_cache = None;
+            }
         }
 
         crate::atomic::write_atomic_toml(&toml_path, meta)?;
@@ -938,6 +947,13 @@ impl S3Store for DiskS3Store {
             BodySource::File(src) => {
                 let n = std::fs::metadata(&src)?.len();
                 crate::atomic::write_atomic_from_file(&src, &bin_path)?;
+                self.cache
+                    .invalidate(&Self::mpu_body_key(bucket, upload_id, part_number));
+                n
+            }
+            BodySource::FileCopy(src) => {
+                let n = std::fs::metadata(&src)?.len();
+                crate::atomic::write_atomic_copy_from_file(&src, &bin_path)?;
                 self.cache
                     .invalidate(&Self::mpu_body_key(bucket, upload_id, part_number));
                 n
@@ -1269,6 +1285,37 @@ mod disk_tests {
         let snap = loaded.buckets.get("b").unwrap();
         let obj = snap.objects.get("k1").unwrap();
         assert_eq!(obj.meta.size, data.len() as u64);
+    }
+
+    #[test]
+    fn put_object_file_copy_source_leaves_src_in_place() {
+        let tmp = TempDir::new().unwrap();
+        let store = new_store(&tmp);
+        store
+            .put_bucket_meta(
+                "b",
+                &BucketMeta {
+                    name: "b".to_string(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let src_dir = TempDir::new().unwrap();
+        let src = src_dir.path().join("src.bin");
+        std::fs::write(&src, b"copied-body").unwrap();
+        let meta = sample_meta("k", 11);
+        let bref = store
+            .put_object("b", "k", None, BodySource::FileCopy(src.clone()), &meta)
+            .unwrap();
+        match bref {
+            BodyRef::Disk { path, size, .. } => {
+                assert_eq!(size, 11);
+                assert_eq!(std::fs::read(&path).unwrap(), b"copied-body");
+            }
+            _ => panic!("expected Disk bodyref"),
+        }
+        assert!(src.exists(), "source file must not be moved by FileCopy");
+        assert_eq!(std::fs::read(&src).unwrap(), b"copied-body");
     }
 
     #[test]
@@ -1623,6 +1670,140 @@ mod disk_tests {
             "trailing delete marker must hide current object",
         );
         assert_eq!(snap.object_versions.get("k").unwrap().len(), 4);
+    }
+
+    #[test]
+    fn legacy_null_object_overridden_by_newer_versions() {
+        // A pre-versioning null put followed by versioning-enabled puts must
+        // see snap.objects reflect the newest live version, not the stale null.
+        let tmp = TempDir::new().unwrap();
+        let store = new_store(&tmp);
+        store
+            .put_bucket_meta(
+                "b",
+                &BucketMeta {
+                    name: "b".to_string(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let base = chrono::Utc::now();
+        let mut null_meta = sample_meta("k", 3);
+        null_meta.last_modified = base;
+        store
+            .put_object(
+                "b",
+                "k",
+                None,
+                BodySource::Bytes(Bytes::from_static(b"old")),
+                &null_meta,
+            )
+            .unwrap();
+        // Enable versioning and put two versions, the second a delete.
+        store
+            .put_bucket_meta(
+                "b",
+                &BucketMeta {
+                    name: "b".to_string(),
+                    versioning: Some("Enabled".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let mut v1 = sample_meta("k", 3);
+        v1.version_id = Some("v1".to_string());
+        v1.last_modified = base + chrono::Duration::seconds(1);
+        store
+            .put_object(
+                "b",
+                "k",
+                Some("v1"),
+                BodySource::Bytes(Bytes::from_static(b"new")),
+                &v1,
+            )
+            .unwrap();
+        let mut v2 = sample_meta("k", 5);
+        v2.version_id = Some("v2".to_string());
+        v2.last_modified = base + chrono::Duration::seconds(2);
+        store
+            .put_object(
+                "b",
+                "k",
+                Some("v2"),
+                BodySource::Bytes(Bytes::from_static(b"newer")),
+                &v2,
+            )
+            .unwrap();
+        let loaded = store.load().unwrap();
+        let snap = loaded.buckets.get("b").unwrap();
+        let current = snap
+            .objects
+            .get("k")
+            .expect("latest live version must override stale null");
+        assert_eq!(current.meta.version_id.as_deref(), Some("v2"));
+        assert_eq!(current.meta.size, 5);
+    }
+
+    #[test]
+    fn legacy_null_hidden_by_trailing_delete_marker() {
+        let tmp = TempDir::new().unwrap();
+        let store = new_store(&tmp);
+        store
+            .put_bucket_meta(
+                "b",
+                &BucketMeta {
+                    name: "b".to_string(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let base = chrono::Utc::now();
+        let mut null_meta = sample_meta("k", 3);
+        null_meta.last_modified = base;
+        store
+            .put_object(
+                "b",
+                "k",
+                None,
+                BodySource::Bytes(Bytes::from_static(b"old")),
+                &null_meta,
+            )
+            .unwrap();
+        store
+            .put_bucket_meta(
+                "b",
+                &BucketMeta {
+                    name: "b".to_string(),
+                    versioning: Some("Enabled".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let mut v1 = sample_meta("k", 3);
+        v1.version_id = Some("v1".to_string());
+        v1.last_modified = base + chrono::Duration::seconds(1);
+        store
+            .put_object(
+                "b",
+                "k",
+                Some("v1"),
+                BodySource::Bytes(Bytes::from_static(b"new")),
+                &v1,
+            )
+            .unwrap();
+        let mut dm = sample_meta("k", 0);
+        dm.version_id = Some("dm1".to_string());
+        dm.is_delete_marker = true;
+        dm.last_modified = base + chrono::Duration::seconds(2);
+        store
+            .put_object("b", "k", Some("dm1"), BodySource::Bytes(Bytes::new()), &dm)
+            .unwrap();
+        let loaded = store.load().unwrap();
+        let snap = loaded.buckets.get("b").unwrap();
+        assert!(
+            !snap.objects.contains_key("k"),
+            "trailing delete marker must hide even a legacy null object",
+        );
     }
 
     #[test]

@@ -288,7 +288,7 @@ mod tests {
             json!({ "logGroupNamePrefix": "tag-grp" }),
         );
         let resp = svc.describe_log_groups(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let arn = body["logGroups"][0]["arn"].as_str().unwrap().to_string();
 
         // Tag
@@ -304,7 +304,7 @@ mod tests {
         // List tags
         let req = make_request("ListTagsForResource", json!({ "resourceArn": arn }));
         let resp = svc.list_tags_for_resource(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["tags"]["env"], "prod");
         assert_eq!(body["tags"]["team"], "platform");
 
@@ -320,7 +320,7 @@ mod tests {
 
         let req = make_request("ListTagsForResource", json!({ "resourceArn": arn }));
         let resp = svc.list_tags_for_resource(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["tags"].as_object().unwrap().len(), 1);
         assert!(body["tags"].get("team").is_none());
     }
@@ -338,7 +338,7 @@ mod tests {
             }),
         );
         let resp = svc.put_destination(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let arn = body["destination"]["arn"].as_str().unwrap().to_string();
 
         let req = make_request(
@@ -349,7 +349,7 @@ mod tests {
 
         let req = make_request("ListTagsForResource", json!({ "resourceArn": arn }));
         let resp = svc.list_tags_for_resource(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["tags"]["key1"], "val1");
     }
 

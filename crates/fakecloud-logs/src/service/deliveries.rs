@@ -882,7 +882,7 @@ mod tests {
             }),
         );
         let resp = svc.put_delivery_destination(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let config = &body["deliveryDestination"]["deliveryDestinationConfiguration"];
         // destinationResourceArn should always be present as a string (Smithy requirement)
         assert_eq!(
@@ -905,7 +905,7 @@ mod tests {
             }),
         );
         let resp = svc.put_delivery_destination(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let config = &body["deliveryDestination"]["deliveryDestinationConfiguration"];
         assert_eq!(
             config["destinationResourceArn"].as_str().unwrap(),
@@ -950,7 +950,7 @@ mod tests {
             json!({ "logGroupNamePrefix": "/delivery/test" }),
         );
         let resp = svc.describe_log_groups(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let group_arn = body["logGroups"][0]["arn"].as_str().unwrap().to_string();
 
         // Create delivery source referencing this log group
@@ -979,7 +979,7 @@ mod tests {
         // Get the destination ARN
         let req = make_request("GetDeliveryDestination", json!({ "name": "test-dest" }));
         let resp = svc.get_delivery_destination(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let dest_arn = body["deliveryDestination"]["arn"]
             .as_str()
             .unwrap()
@@ -1016,7 +1016,7 @@ mod tests {
             json!({ "keyPrefix": "delivery-test-bucket/delivery" }),
         );
         let resp = svc.get_exported_data(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let entries = body["entries"].as_array().unwrap();
         assert!(!entries.is_empty(), "Should have delivery data");
         let data = entries[0]["data"].as_str().unwrap();
@@ -1036,7 +1036,7 @@ mod tests {
             json!({ "logGroupNamePrefix": "ds-grp" }),
         );
         let resp = svc.describe_log_groups(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let group_arn = body["logGroups"][0]["arn"].as_str().unwrap().to_string();
 
         // Put
@@ -1053,14 +1053,14 @@ mod tests {
         // Get
         let req = make_request("GetDeliverySource", json!({ "name": "src1" }));
         let resp = svc.get_delivery_source(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["deliverySource"]["name"], "src1");
         assert_eq!(body["deliverySource"]["logType"], "APPLICATION_LOGS");
 
         // Describe
         let req = make_request("DescribeDeliverySources", json!({}));
         let resp = svc.describe_delivery_sources(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["deliverySources"].as_array().unwrap().len(), 1);
 
         // Delete
@@ -1069,7 +1069,7 @@ mod tests {
 
         let req = make_request("DescribeDeliverySources", json!({}));
         let resp = svc.describe_delivery_sources(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["deliverySources"].as_array().unwrap().is_empty());
     }
 
@@ -1093,7 +1093,7 @@ mod tests {
         // Get
         let req = make_request("GetDeliveryDestination", json!({ "name": "dd1" }));
         let resp = svc.get_delivery_destination(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["deliveryDestination"]["name"], "dd1");
         let arn = body["deliveryDestination"]["arn"]
             .as_str()
@@ -1104,7 +1104,7 @@ mod tests {
         // Describe
         let req = make_request("DescribeDeliveryDestinations", json!({}));
         let resp = svc.describe_delivery_destinations(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["deliveryDestinations"].as_array().unwrap().len(), 1);
 
         // Delete
@@ -1113,7 +1113,7 @@ mod tests {
 
         let req = make_request("DescribeDeliveryDestinations", json!({}));
         let resp = svc.describe_delivery_destinations(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["deliveryDestinations"].as_array().unwrap().is_empty());
     }
 
@@ -1129,7 +1129,7 @@ mod tests {
             json!({ "logGroupNamePrefix": "del-grp" }),
         );
         let resp = svc.describe_log_groups(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let group_arn = body["logGroups"][0]["arn"].as_str().unwrap().to_string();
 
         // Source
@@ -1157,7 +1157,7 @@ mod tests {
 
         let req = make_request("GetDeliveryDestination", json!({ "name": "del-dest" }));
         let resp = svc.get_delivery_destination(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let dest_arn = body["deliveryDestination"]["arn"]
             .as_str()
             .unwrap()
@@ -1172,19 +1172,19 @@ mod tests {
             }),
         );
         let resp = svc.create_delivery(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let delivery_id = body["delivery"]["id"].as_str().unwrap().to_string();
 
         // Get delivery
         let req = make_request("GetDelivery", json!({ "id": delivery_id }));
         let resp = svc.get_delivery(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["delivery"]["deliverySourceName"], "del-src");
 
         // Describe deliveries
         let req = make_request("DescribeDeliveries", json!({}));
         let resp = svc.describe_deliveries(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["deliveries"].as_array().unwrap().len(), 1);
 
         // Delete delivery
@@ -1193,7 +1193,7 @@ mod tests {
 
         let req = make_request("DescribeDeliveries", json!({}));
         let resp = svc.describe_deliveries(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["deliveries"].as_array().unwrap().is_empty());
     }
 }

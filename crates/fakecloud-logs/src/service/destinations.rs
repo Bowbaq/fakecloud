@@ -226,7 +226,7 @@ mod tests {
             }),
         );
         let resp = svc.put_destination(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["destination"]["destinationName"], "my-dest");
         assert!(body["destination"]["arn"]
             .as_str()
@@ -246,7 +246,7 @@ mod tests {
         // Describe
         let req = make_request("DescribeDestinations", json!({}));
         let resp = svc.describe_destinations(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let dests = body["destinations"].as_array().unwrap();
         assert_eq!(dests.len(), 1);
         assert_eq!(dests[0]["accessPolicy"], "{\"Version\":\"2012-10-17\"}");
@@ -257,7 +257,7 @@ mod tests {
 
         let req = make_request("DescribeDestinations", json!({}));
         let resp = svc.describe_destinations(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["destinations"].as_array().unwrap().is_empty());
     }
 

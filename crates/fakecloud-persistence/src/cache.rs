@@ -138,10 +138,10 @@ impl Inner {
             self.remove(idx);
         }
         let size = bytes.len() as u64;
-        if size > self.single_object_cap {
+        let charged = size.saturating_add(PER_ENTRY_OVERHEAD);
+        if size > self.single_object_cap || charged > self.capacity_bytes {
             return;
         }
-        let charged = size.saturating_add(PER_ENTRY_OVERHEAD);
         self.evict_until_fits(charged);
         self.used_bytes += charged;
         let node = Node {
@@ -313,6 +313,31 @@ mod tests {
         assert!(c.get(&k("a")).is_none());
         assert_eq!(c.used_bytes(), 0);
         assert_eq!(c.len(), 0);
+    }
+
+    #[test]
+    fn charged_size_cannot_exceed_total_capacity() {
+        // capacity=200, single_object_cap=100. A 100-byte body charged at
+        // 100+128=228 > 200, so it must be rejected even though it fits the
+        // single-object cap.
+        let c = BodyCache::new(200);
+        c.insert(k("a"), mk(100));
+        assert!(c.get(&k("a")).is_none());
+        assert_eq!(c.used_bytes(), 0);
+        assert_eq!(c.len(), 0);
+
+        // capacity=600, single_object_cap=300. A 300-byte body charged at
+        // 300+128=428 <= 600, so it succeeds.
+        let c = BodyCache::new(600);
+        c.insert(k("b"), mk(300));
+        assert!(c.get(&k("b")).is_some());
+        assert_eq!(c.used_bytes(), 300 + PER_ENTRY_OVERHEAD);
+
+        // capacity=600, single_object_cap=300. A 500-byte body exceeds the
+        // single-object cap and is rejected.
+        let c = BodyCache::new(600);
+        c.insert(k("c"), mk(500));
+        assert!(c.get(&k("c")).is_none());
     }
 
     #[test]

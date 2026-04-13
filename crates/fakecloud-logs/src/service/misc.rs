@@ -697,7 +697,7 @@ mod tests {
             json!({ "logGroupName": "fields-group" }),
         );
         let resp = svc.get_log_group_fields(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["logGroupFields"].as_array().unwrap().len(), 2);
     }
 
@@ -713,7 +713,7 @@ mod tests {
             }),
         );
         let resp = svc.test_metric_filter(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["matches"].as_array().unwrap().len(), 2);
     }
 
@@ -732,7 +732,7 @@ mod tests {
             }),
         );
         let resp = svc.start_query(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let qid = body["queryId"].as_str().unwrap().to_string();
 
         // Manually set query status to Running so we can test cancellation
@@ -743,7 +743,7 @@ mod tests {
 
         let req = make_request("StopQuery", json!({ "queryId": &qid }));
         let resp = svc.stop_query(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["success"], true);
 
         let state = svc.state.read();
@@ -777,7 +777,7 @@ mod tests {
             json!({ "logRecordPointer": "some-pointer" }),
         );
         let resp = svc.get_log_record(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["logRecord"].is_object());
     }
 
@@ -787,7 +787,7 @@ mod tests {
 
         let req = make_request("ListAnomalies", json!({}));
         let resp = svc.list_anomalies(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["anomalies"].as_array().unwrap().is_empty());
     }
 
@@ -815,12 +815,12 @@ mod tests {
             }),
         );
         let resp = svc.create_import_task(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let import_id = body["importId"].as_str().unwrap().to_string();
 
         let req = make_request("DescribeImportTasks", json!({}));
         let resp = svc.describe_import_tasks(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["imports"].as_array().unwrap().len(), 1);
 
         let req = make_request(
@@ -828,7 +828,7 @@ mod tests {
             json!({ "importId": import_id }),
         );
         let resp = svc.describe_import_task_batches(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["importBatches"].as_array().unwrap().is_empty());
 
         let req = make_request("CancelImportTask", json!({ "importId": import_id }));
@@ -836,7 +836,7 @@ mod tests {
 
         let req = make_request("DescribeImportTasks", json!({}));
         let resp = svc.describe_import_tasks(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["imports"][0]["importStatus"].as_str().unwrap(),
             "CANCELLED"
@@ -861,12 +861,12 @@ mod tests {
 
         let req = make_request("GetIntegration", json!({ "integrationName": "test-int" }));
         let resp = svc.get_integration(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["integrationName"].as_str().unwrap(), "test-int");
 
         let req = make_request("ListIntegrations", json!({}));
         let resp = svc.list_integrations(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["integrationSummaries"].as_array().unwrap().len(), 1);
 
         let req = make_request(
@@ -877,7 +877,7 @@ mod tests {
 
         let req = make_request("ListIntegrations", json!({}));
         let resp = svc.list_integrations(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["integrationSummaries"].as_array().unwrap().is_empty());
     }
 
@@ -895,17 +895,17 @@ mod tests {
             }),
         );
         let resp = svc.create_lookup_table(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let arn = body["lookupTableArn"].as_str().unwrap().to_string();
 
         let req = make_request("GetLookupTable", json!({ "lookupTableArn": arn }));
         let resp = svc.get_lookup_table(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["lookupTableName"].as_str().unwrap(), "test-table");
 
         let req = make_request("DescribeLookupTables", json!({}));
         let resp = svc.describe_lookup_tables(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["lookupTables"].as_array().unwrap().len(), 1);
 
         let req = make_request(
@@ -919,7 +919,7 @@ mod tests {
 
         let req = make_request("DescribeLookupTables", json!({}));
         let resp = svc.describe_lookup_tables(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["lookupTables"].as_array().unwrap().is_empty());
     }
 
@@ -940,12 +940,12 @@ mod tests {
             }),
         );
         let resp = svc.create_scheduled_query(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let arn = body["scheduledQueryArn"].as_str().unwrap().to_string();
 
         let req = make_request("GetScheduledQuery", json!({ "identifier": arn }));
         let resp = svc.get_scheduled_query(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["name"].as_str().unwrap(), "test-sq");
 
         let req = make_request(
@@ -953,12 +953,12 @@ mod tests {
             json!({ "identifier": arn, "startTime": 0_i64, "endTime": 9999999999_i64 }),
         );
         let resp = svc.get_scheduled_query_history(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["triggerHistory"].as_array().unwrap().is_empty());
 
         let req = make_request("ListScheduledQueries", json!({}));
         let resp = svc.list_scheduled_queries(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["scheduledQueries"].as_array().unwrap().len(), 1);
 
         let req = make_request(
@@ -978,7 +978,7 @@ mod tests {
 
         let req = make_request("ListScheduledQueries", json!({}));
         let resp = svc.list_scheduled_queries(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["scheduledQueries"].as_array().unwrap().is_empty());
     }
 
@@ -992,7 +992,7 @@ mod tests {
             json!({ "logGroupIdentifiers": ["/test/group"] }),
         );
         let resp = svc.start_live_tail(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["responseStream"]["sessionStart"]["sessionId"]
             .as_str()
             .is_some());
@@ -1004,7 +1004,7 @@ mod tests {
         create_group(&svc, "/test/list");
         let req = make_request("DescribeLogGroups", json!({}));
         let resp = svc.describe_log_groups(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["logGroups"].as_array().unwrap().len(), 1);
     }
 
@@ -1016,7 +1016,7 @@ mod tests {
             json!({ "queryId": "some-query-id" }),
         );
         let resp = svc.list_log_groups_for_query(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["logGroupIdentifiers"].as_array().unwrap().is_empty());
     }
 
@@ -1028,7 +1028,7 @@ mod tests {
             json!({ "groupBy": "DATA_SOURCE_NAME_AND_TYPE" }),
         );
         let resp = svc.list_aggregate_log_group_summaries(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["aggregateLogGroupSummaries"]
             .as_array()
             .unwrap()
@@ -1057,7 +1057,7 @@ mod tests {
             json!({ "logObjectPointer": "some-pointer" }),
         );
         let resp = svc.get_log_object(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body.is_object());
     }
 
@@ -1069,7 +1069,7 @@ mod tests {
             json!({ "dataSourceName": "test", "dataSourceType": "CW_LOG" }),
         );
         let resp = svc.get_log_fields(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["logFields"].as_array().unwrap().is_empty());
     }
 
@@ -1093,7 +1093,7 @@ mod tests {
             }),
         );
         let resp = svc.list_sources_for_s3_table_integration(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["sources"].as_array().unwrap().len(), 1);
 
         let req = make_request(
@@ -1137,7 +1137,7 @@ mod tests {
             }),
         );
         let resp = svc.create_delivery(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let delivery_id = body["delivery"]["id"].as_str().unwrap().to_string();
 
         let req = make_request("UpdateDeliveryConfiguration", json!({ "id": delivery_id }));
@@ -1149,7 +1149,7 @@ mod tests {
         let svc = make_service();
         let req = make_request("DescribeConfigurationTemplates", json!({}));
         let resp = svc.describe_configuration_templates(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["configurationTemplates"]
             .as_array()
             .unwrap()
@@ -1213,7 +1213,7 @@ mod tests {
             json!({ "logRecordPointer": "any-pointer-value" }),
         );
         let resp = svc.get_log_record(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["logRecord"].is_object());
     }
 }

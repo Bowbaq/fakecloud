@@ -2848,7 +2848,7 @@ mod tests {
             }),
         );
         let resp = svc.delete_item(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
 
         // Verify the old item is returned
         let attrs = &body["Attributes"];
@@ -2865,7 +2865,7 @@ mod tests {
             }),
         );
         let resp = svc.get_item(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body.get("Item").is_none(), "item should be deleted");
     }
 
@@ -2897,7 +2897,7 @@ mod tests {
             }),
         );
         let resp = svc.transact_get_items(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let responses = body["Responses"].as_array().unwrap();
         assert_eq!(responses.len(), 2);
         assert_eq!(responses[0]["Item"]["pk"]["S"].as_str().unwrap(), "exists");
@@ -2957,7 +2957,7 @@ mod tests {
             }),
         );
         let resp = svc.get_item(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Item"]["val"]["S"].as_str().unwrap(), "hi");
 
         // Verify deleted item is gone
@@ -2969,7 +2969,7 @@ mod tests {
             }),
         );
         let resp = svc.get_item(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body.get("Item").is_none());
     }
 
@@ -2996,7 +2996,7 @@ mod tests {
         let resp = svc.transact_write_items(&req).unwrap();
         // Should be a 400 error response
         assert_eq!(resp.status, StatusCode::BAD_REQUEST);
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["__type"].as_str().unwrap(),
             "TransactionCanceledException"
@@ -3021,7 +3021,7 @@ mod tests {
             }),
         );
         let resp = svc.update_time_to_live(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["TimeToLiveSpecification"]["AttributeName"]
                 .as_str()
@@ -3035,7 +3035,7 @@ mod tests {
         // Describe TTL
         let req = make_request("DescribeTimeToLive", json!({ "TableName": "test-table" }));
         let resp = svc.describe_time_to_live(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["TimeToLiveDescription"]["TimeToLiveStatus"]
                 .as_str()
@@ -3064,7 +3064,7 @@ mod tests {
 
         let req = make_request("DescribeTimeToLive", json!({ "TableName": "test-table" }));
         let resp = svc.describe_time_to_live(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["TimeToLiveDescription"]["TimeToLiveStatus"]
                 .as_str()
@@ -3093,13 +3093,13 @@ mod tests {
             }),
         );
         let resp = svc.put_resource_policy(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["RevisionId"].as_str().is_some());
 
         // Get policy
         let req = make_request("GetResourcePolicy", json!({ "ResourceArn": table_arn }));
         let resp = svc.get_resource_policy(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Policy"].as_str().unwrap(), policy_doc);
 
         // Delete policy
@@ -3109,7 +3109,7 @@ mod tests {
         // Get should return null now
         let req = make_request("GetResourcePolicy", json!({ "ResourceArn": table_arn }));
         let resp = svc.get_resource_policy(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["Policy"].is_null());
     }
 
@@ -3118,7 +3118,7 @@ mod tests {
         let svc = make_service();
         let req = make_request("DescribeEndpoints", json!({}));
         let resp = svc.describe_endpoints(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Endpoints"][0]["CachePeriodInMinutes"], 1440);
     }
 
@@ -3127,7 +3127,7 @@ mod tests {
         let svc = make_service();
         let req = make_request("DescribeLimits", json!({}));
         let resp = svc.describe_limits(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["TableMaxReadCapacityUnits"], 40000);
     }
 
@@ -3142,7 +3142,7 @@ mod tests {
             json!({ "TableName": "test-table", "BackupName": "my-backup" }),
         );
         let resp = svc.create_backup(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let backup_arn = body["BackupDetails"]["BackupArn"]
             .as_str()
             .unwrap()
@@ -3152,7 +3152,7 @@ mod tests {
         // Describe backup
         let req = make_request("DescribeBackup", json!({ "BackupArn": backup_arn }));
         let resp = svc.describe_backup(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["BackupDescription"]["BackupDetails"]["BackupName"],
             "my-backup"
@@ -3161,7 +3161,7 @@ mod tests {
         // List backups
         let req = make_request("ListBackups", json!({}));
         let resp = svc.list_backups(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["BackupSummaries"].as_array().unwrap().len(), 1);
 
         // Restore from backup
@@ -3174,7 +3174,7 @@ mod tests {
         // Verify restored table exists
         let req = make_request("DescribeTable", json!({ "TableName": "restored-table" }));
         let resp = svc.describe_table(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Table"]["TableStatus"], "ACTIVE");
 
         // Delete backup
@@ -3184,7 +3184,7 @@ mod tests {
         // List should be empty
         let req = make_request("ListBackups", json!({}));
         let resp = svc.list_backups(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["BackupSummaries"].as_array().unwrap().len(), 0);
     }
 
@@ -3199,7 +3199,7 @@ mod tests {
             json!({ "TableName": "test-table" }),
         );
         let resp = svc.describe_continuous_backups(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["ContinuousBackupsDescription"]["PointInTimeRecoveryDescription"]
                 ["PointInTimeRecoveryStatus"],
@@ -3224,7 +3224,7 @@ mod tests {
             json!({ "TableName": "test-table" }),
         );
         let resp = svc.describe_continuous_backups(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["ContinuousBackupsDescription"]["PointInTimeRecoveryDescription"]
                 ["PointInTimeRecoveryStatus"],
@@ -3248,7 +3248,7 @@ mod tests {
 
         let req = make_request("DescribeTable", json!({ "TableName": "pitr-restored" }));
         let resp = svc.describe_table(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Table"]["TableStatus"], "ACTIVE");
     }
 
@@ -3268,7 +3268,7 @@ mod tests {
             }),
         );
         let resp = svc.create_global_table(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["GlobalTableDescription"]["GlobalTableStatus"],
             "ACTIVE"
@@ -3280,7 +3280,7 @@ mod tests {
             json!({ "GlobalTableName": "my-global" }),
         );
         let resp = svc.describe_global_table(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["GlobalTableDescription"]["ReplicationGroup"]
                 .as_array()
@@ -3292,7 +3292,7 @@ mod tests {
         // List
         let req = make_request("ListGlobalTables", json!({}));
         let resp = svc.list_global_tables(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["GlobalTables"].as_array().unwrap().len(), 1);
 
         // Update - add a region
@@ -3306,7 +3306,7 @@ mod tests {
             }),
         );
         let resp = svc.update_global_table(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["GlobalTableDescription"]["ReplicationGroup"]
                 .as_array()
@@ -3321,7 +3321,7 @@ mod tests {
             json!({ "GlobalTableName": "my-global" }),
         );
         let resp = svc.describe_global_table_settings(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["ReplicaSettings"].as_array().unwrap().len(), 3);
 
         // Update settings (no-op, just verify no error)
@@ -3342,7 +3342,7 @@ mod tests {
             json!({ "TableName": "test-table" }),
         );
         let resp = svc.describe_table_replica_auto_scaling(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["TableAutoScalingDescription"]["TableName"],
             "test-table"
@@ -3369,7 +3369,7 @@ mod tests {
             }),
         );
         let resp = svc.enable_kinesis_streaming_destination(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["DestinationStatus"], "ACTIVE");
 
         // Describe
@@ -3378,7 +3378,7 @@ mod tests {
             json!({ "TableName": "test-table" }),
         );
         let resp = svc.describe_kinesis_streaming_destination(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["KinesisDataStreamDestinations"]
                 .as_array()
@@ -3409,7 +3409,7 @@ mod tests {
             }),
         );
         let resp = svc.disable_kinesis_streaming_destination(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["DestinationStatus"], "DISABLED");
     }
 
@@ -3424,7 +3424,7 @@ mod tests {
             json!({ "TableName": "test-table" }),
         );
         let resp = svc.describe_contributor_insights(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["ContributorInsightsStatus"], "DISABLED");
 
         // Enable
@@ -3436,13 +3436,13 @@ mod tests {
             }),
         );
         let resp = svc.update_contributor_insights(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["ContributorInsightsStatus"], "ENABLED");
 
         // List
         let req = make_request("ListContributorInsights", json!({}));
         let resp = svc.list_contributor_insights(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["ContributorInsightsSummaries"]
                 .as_array()
@@ -3468,7 +3468,7 @@ mod tests {
             }),
         );
         let resp = svc.export_table_to_point_in_time(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let export_arn = body["ExportDescription"]["ExportArn"]
             .as_str()
             .unwrap()
@@ -3478,13 +3478,13 @@ mod tests {
         // Describe
         let req = make_request("DescribeExport", json!({ "ExportArn": export_arn }));
         let resp = svc.describe_export(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["ExportDescription"]["S3Bucket"], "my-bucket");
 
         // List
         let req = make_request("ListExports", json!({}));
         let resp = svc.list_exports(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["ExportSummaries"].as_array().unwrap().len(), 1);
     }
 
@@ -3505,7 +3505,7 @@ mod tests {
             }),
         );
         let resp = svc.import_table(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let import_arn = body["ImportTableDescription"]["ImportArn"]
             .as_str()
             .unwrap()
@@ -3515,19 +3515,19 @@ mod tests {
         // Describe import
         let req = make_request("DescribeImport", json!({ "ImportArn": import_arn }));
         let resp = svc.describe_import(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["ImportTableDescription"]["ImportStatus"], "COMPLETED");
 
         // List imports
         let req = make_request("ListImports", json!({}));
         let resp = svc.list_imports(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["ImportSummaryList"].as_array().unwrap().len(), 1);
 
         // Verify the table was created
         let req = make_request("DescribeTable", json!({ "TableName": "imported-table" }));
         let resp = svc.describe_table(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Table"]["TableStatus"], "ACTIVE");
     }
 
@@ -3560,7 +3560,7 @@ mod tests {
             }),
         );
         let resp = svc.create_backup(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let backup_arn = body["BackupDetails"]["BackupArn"]
             .as_str()
             .unwrap()
@@ -3581,7 +3581,7 @@ mod tests {
         // Verify original table is empty
         let req = make_request("Scan", json!({ "TableName": "test-table" }));
         let resp = svc.scan(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Count"], 0);
 
         // Restore from backup
@@ -3597,7 +3597,7 @@ mod tests {
         // Scan restored table — should have 3 items
         let req = make_request("Scan", json!({ "TableName": "restored-table" }));
         let resp = svc.scan(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Count"], 3);
         assert_eq!(body["Items"].as_array().unwrap().len(), 3);
     }
@@ -3619,7 +3619,7 @@ mod tests {
             }),
         );
         let resp = svc.create_global_table(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(
             body["GlobalTableDescription"]["GlobalTableStatus"],
             "ACTIVE"
@@ -3647,7 +3647,7 @@ mod tests {
             }),
         );
         let resp = svc.get_item(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Item"]["pk"]["S"], "replicated-key");
         assert_eq!(body["Item"]["data"]["S"], "replicated-value");
     }
@@ -3700,7 +3700,7 @@ mod tests {
             json!({ "TableName": "test-table" }),
         );
         let resp = svc.describe_contributor_insights(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["ContributorInsightsStatus"], "ENABLED");
 
         let contributors = body["TopContributors"].as_array().unwrap();
@@ -3743,7 +3743,7 @@ mod tests {
             json!({ "TableName": "test-table" }),
         );
         let resp = svc.describe_contributor_insights(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["ContributorInsightsStatus"], "DISABLED");
 
         let contributors = body["TopContributors"].as_array().unwrap();
@@ -3787,7 +3787,7 @@ mod tests {
             json!({ "TableName": "test-table" }),
         );
         let resp = svc.describe_contributor_insights(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let contributors = body["TopContributors"].as_array().unwrap();
         assert!(
             !contributors.is_empty(),
@@ -3814,7 +3814,7 @@ mod tests {
             json!({ "TableName": "test-table" }),
         );
         let resp = svc.describe_contributor_insights(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let contributors = body["TopContributors"].as_array().unwrap();
         assert!(
             contributors.is_empty(),
@@ -3845,7 +3845,7 @@ mod tests {
         // Scan with limit=2
         let req = make_request("Scan", json!({ "TableName": "test-table", "Limit": 2 }));
         let resp = svc.scan(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Count"], 2);
         assert!(
             body["LastEvaluatedKey"].is_object(),
@@ -3867,7 +3867,7 @@ mod tests {
                 }),
             );
             let resp = svc.scan(&req).unwrap();
-            let body: Value = serde_json::from_slice(&resp.body).unwrap();
+            let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
             all_items.extend(body["Items"].as_array().unwrap().iter().cloned());
             lek = body["LastEvaluatedKey"].clone();
         }
@@ -3900,7 +3900,7 @@ mod tests {
         // Scan with limit > item count
         let req = make_request("Scan", json!({ "TableName": "test-table", "Limit": 10 }));
         let resp = svc.scan(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Count"], 3);
         assert!(
             body["LastEvaluatedKey"].is_null(),
@@ -3910,7 +3910,7 @@ mod tests {
         // Scan without limit
         let req = make_request("Scan", json!({ "TableName": "test-table" }));
         let resp = svc.scan(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Count"], 3);
         assert!(body["LastEvaluatedKey"].is_null());
     }
@@ -3966,7 +3966,7 @@ mod tests {
             }),
         );
         let resp = svc.query(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Count"], 2);
         assert!(body["LastEvaluatedKey"].is_object());
         assert!(body["LastEvaluatedKey"]["pk"].is_object());
@@ -3988,7 +3988,7 @@ mod tests {
                 }),
             );
             let resp = svc.query(&req).unwrap();
-            let body: Value = serde_json::from_slice(&resp.body).unwrap();
+            let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
             all_items.extend(body["Items"].as_array().unwrap().iter().cloned());
             lek = body["LastEvaluatedKey"].clone();
         }
@@ -4038,7 +4038,7 @@ mod tests {
             }),
         );
         let resp = svc.query(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Count"], 2);
         assert!(
             body["LastEvaluatedKey"].is_null(),
@@ -4108,7 +4108,7 @@ mod tests {
             }),
         );
         let resp = svc.query(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Count"], 1);
         let lek = &body["LastEvaluatedKey"];
         assert!(lek.is_object(), "should have LastEvaluatedKey");
@@ -4161,7 +4161,7 @@ mod tests {
 
             let req = make_request("Query", query);
             let resp = svc.query(&req).unwrap();
-            let body: Value = serde_json::from_slice(&resp.body).unwrap();
+            let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
 
             for item in body["Items"].as_array().unwrap() {
                 let pk = item["pk"]["S"].as_str().unwrap().to_string();

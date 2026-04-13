@@ -572,7 +572,7 @@ mod tests {
 
         let req = make_request("DescribeLogGroups", json!({ "logGroupNamePattern": "app" }));
         let resp = svc.describe_log_groups(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let names: Vec<&str> = body["logGroups"]
             .as_array()
             .unwrap()
@@ -592,7 +592,7 @@ mod tests {
 
         let req = make_request("DescribeLogGroups", json!({}));
         let resp = svc.describe_log_groups(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["logGroups"].as_array().unwrap().len(), 2);
     }
 

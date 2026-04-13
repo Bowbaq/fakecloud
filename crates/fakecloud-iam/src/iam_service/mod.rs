@@ -1411,7 +1411,7 @@ mod tests {
                 other => panic!("handle_sync: unhandled action {other}"),
             }
             .unwrap();
-            String::from_utf8(resp.body.to_vec()).unwrap()
+            String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap()
         }
     }
 
@@ -1426,7 +1426,7 @@ mod tests {
             vec![("PolicyName", "test-pol"), ("PolicyDocument", policy_doc)],
         );
         let resp = svc.create_policy(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         // Extract policy ARN
         let policy_arn = extract_xml_tag(&body, "Arn");
 
@@ -1441,7 +1441,7 @@ mod tests {
             ],
         );
         let resp = svc.create_policy_version(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         assert!(body.contains("<VersionId>v2</VersionId>"));
         assert!(body.contains("<IsDefaultVersion>true</IsDefaultVersion>"));
 
@@ -1451,7 +1451,7 @@ mod tests {
             vec![("PolicyArn", policy_arn), ("VersionId", "v2")],
         );
         let resp = svc.get_policy_version(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         assert!(body.contains("<VersionId>v2</VersionId>"));
         assert!(body.contains("<IsDefaultVersion>true</IsDefaultVersion>"));
     }
@@ -1465,7 +1465,7 @@ mod tests {
             vec![("PolicyName", "ver-pol"), ("PolicyDocument", policy_doc)],
         );
         let resp = svc.create_policy(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         let policy_arn = extract_xml_tag(&body, "Arn");
 
         // Create v2
@@ -1477,7 +1477,7 @@ mod tests {
 
         let req = make_request("ListPolicyVersions", vec![("PolicyArn", policy_arn)]);
         let resp = svc.list_policy_versions(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         // Should have v1 and v2
         assert!(body.contains("<VersionId>v1</VersionId>"));
         assert!(body.contains("<VersionId>v2</VersionId>"));
@@ -1492,7 +1492,7 @@ mod tests {
             vec![("PolicyName", "def-pol"), ("PolicyDocument", policy_doc)],
         );
         let resp = svc.create_policy(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         let policy_arn = extract_xml_tag(&body, "Arn");
 
         // v1 is the default; deleting it should fail
@@ -1513,7 +1513,7 @@ mod tests {
             vec![("PolicyName", "sd-pol"), ("PolicyDocument", policy_doc)],
         );
         let resp = svc.create_policy(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         let policy_arn = extract_xml_tag(&body, "Arn");
 
         // Create v2
@@ -1536,7 +1536,7 @@ mod tests {
             vec![("PolicyArn", policy_arn), ("VersionId", "v2")],
         );
         let resp = svc.get_policy_version(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         assert!(body.contains("<IsDefaultVersion>true</IsDefaultVersion>"));
 
         // v1 should no longer be default
@@ -1545,7 +1545,7 @@ mod tests {
             vec![("PolicyArn", policy_arn), ("VersionId", "v1")],
         );
         let resp = svc.get_policy_version(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         assert!(body.contains("<IsDefaultVersion>false</IsDefaultVersion>"));
     }
 
@@ -1571,7 +1571,7 @@ mod tests {
             ],
         );
         let resp = svc.upload_server_certificate(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         assert!(body.contains("<ServerCertificateName>my-cert</ServerCertificateName>"));
         assert!(body.contains("ASCA"));
 
@@ -1581,13 +1581,13 @@ mod tests {
             vec![("ServerCertificateName", "my-cert")],
         );
         let resp = svc.get_server_certificate(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         assert!(body.contains("<ServerCertificateName>my-cert</ServerCertificateName>"));
 
         // List
         let req = make_request("ListServerCertificates", vec![]);
         let resp = svc.list_server_certificates(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         assert!(body.contains("my-cert"));
 
         // Delete
@@ -1649,7 +1649,7 @@ mod tests {
             ],
         );
         let resp = svc.upload_ssh_public_key(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         assert!(body.contains("<Status>Active</Status>"));
         assert!(body.contains("APKA"));
         // Extract key ID
@@ -1663,14 +1663,14 @@ mod tests {
             vec![("UserName", "sshuser"), ("SSHPublicKeyId", key_id)],
         );
         let resp = svc.get_ssh_public_key(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         assert!(body.contains(key_id));
         assert!(body.contains("<Status>Active</Status>"));
 
         // List
         let req = make_request("ListSSHPublicKeys", vec![("UserName", "sshuser")]);
         let resp = svc.list_ssh_public_keys(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         assert!(body.contains(key_id));
 
         // Update status to Inactive
@@ -1690,7 +1690,7 @@ mod tests {
             vec![("UserName", "sshuser"), ("SSHPublicKeyId", key_id)],
         );
         let resp = svc.get_ssh_public_key(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         assert!(body.contains("<Status>Inactive</Status>"));
 
         // Delete
@@ -1703,7 +1703,7 @@ mod tests {
         // Should be empty now
         let req = make_request("ListSSHPublicKeys", vec![("UserName", "sshuser")]);
         let resp = svc.list_ssh_public_keys(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         assert!(!body.contains(key_id));
     }
 
@@ -1723,7 +1723,7 @@ mod tests {
             vec![("UserName", "certuser"), ("CertificateBody", pem)],
         );
         let resp = svc.upload_signing_certificate(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         assert!(body.contains("<Status>Active</Status>"));
         assert!(body.contains("<UserName>certuser</UserName>"));
         let cid_start = body.find("<CertificateId>").unwrap() + 15;
@@ -1733,7 +1733,7 @@ mod tests {
         // List
         let req = make_request("ListSigningCertificates", vec![("UserName", "certuser")]);
         let resp = svc.list_signing_certificates(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         assert!(body.contains(cert_id));
 
         // Update to Inactive
@@ -1757,7 +1757,7 @@ mod tests {
         // Should be empty
         let req = make_request("ListSigningCertificates", vec![("UserName", "certuser")]);
         let resp = svc.list_signing_certificates(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         assert!(!body.contains(cert_id));
     }
 
@@ -1790,19 +1790,19 @@ mod tests {
         // Generate
         let req = make_request("GenerateCredentialReport", vec![]);
         let resp = svc.generate_credential_report(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         assert!(body.contains("<State>STARTED</State>"));
 
         // Generate again returns COMPLETE
         let req = make_request("GenerateCredentialReport", vec![]);
         let resp = svc.generate_credential_report(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         assert!(body.contains("<State>COMPLETE</State>"));
 
         // Get credential report
         let req = make_request("GetCredentialReport", vec![]);
         let resp = svc.get_credential_report(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         assert!(body.contains("<ReportFormat>text/csv</ReportFormat>"));
         assert!(body.contains("<Content>"));
     }
@@ -1819,7 +1819,7 @@ mod tests {
             vec![("AWSServiceName", "elasticloadbalancing.amazonaws.com")],
         );
         let resp = svc.create_service_linked_role(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         assert!(body.contains("AWSServiceRoleForElasticLoadBalancing"));
         assert!(body.contains("/aws-service-role/elasticloadbalancing.amazonaws.com/"));
 
@@ -1829,7 +1829,7 @@ mod tests {
             vec![("RoleName", "AWSServiceRoleForElasticLoadBalancing")],
         );
         let resp = svc.delete_service_linked_role(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         assert!(body.contains("<DeletionTaskId>"));
         let tid_start = body.find("<DeletionTaskId>").unwrap() + 16;
         let tid_end = body.find("</DeletionTaskId>").unwrap();
@@ -1841,7 +1841,7 @@ mod tests {
             vec![("DeletionTaskId", task_id)],
         );
         let resp = svc.get_service_linked_role_deletion_status(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         assert!(body.contains("<Status>SUCCEEDED</Status>"));
     }
 
@@ -1874,7 +1874,7 @@ mod tests {
         // Verify via GetRole
         let req = make_request("GetRole", vec![("RoleName", "bound-role")]);
         let resp = svc.get_role(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         assert!(body.contains(boundary_arn));
 
         // Delete boundary
@@ -1887,7 +1887,7 @@ mod tests {
         // Verify removed
         let req = make_request("GetRole", vec![("RoleName", "bound-role")]);
         let resp = svc.get_role(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         assert!(!body.contains(boundary_arn));
     }
 
@@ -1920,7 +1920,7 @@ mod tests {
         // List tags
         let req = make_request("ListRoleTags", vec![("RoleName", "tag-role")]);
         let resp = svc.list_role_tags(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         assert!(body.contains("<Key>env</Key>"));
         assert!(body.contains("<Value>prod</Value>"));
 
@@ -1933,7 +1933,7 @@ mod tests {
 
         let req = make_request("ListRoleTags", vec![("RoleName", "tag-role")]);
         let resp = svc.list_role_tags(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         assert!(!body.contains("<Key>env</Key>"));
     }
 
@@ -1948,7 +1948,7 @@ mod tests {
             vec![("PolicyName", "tag-pol"), ("PolicyDocument", policy_doc)],
         );
         let resp = svc.create_policy(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         let policy_arn = extract_xml_tag(&body, "Arn").to_string();
 
         let req = make_request(
@@ -1963,7 +1963,7 @@ mod tests {
 
         let req = make_request("ListPolicyTags", vec![("PolicyArn", &policy_arn)]);
         let resp = svc.list_policy_tags(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         assert!(body.contains("<Key>team</Key>"));
 
         let req = make_request(
@@ -1974,7 +1974,7 @@ mod tests {
 
         let req = make_request("ListPolicyTags", vec![("PolicyArn", &policy_arn)]);
         let resp = svc.list_policy_tags(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         assert!(!body.contains("<Key>team</Key>"));
     }
 
@@ -2004,7 +2004,7 @@ mod tests {
             vec![("InstanceProfileName", "tag-ip")],
         );
         let resp = svc.list_instance_profile_tags(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         assert!(body.contains("<Key>dept</Key>"));
 
         let req = make_request(
@@ -2021,7 +2021,7 @@ mod tests {
             vec![("InstanceProfileName", "tag-ip")],
         );
         let resp = svc.list_instance_profile_tags(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         assert!(!body.contains("<Key>dept</Key>"));
     }
 
@@ -2041,7 +2041,7 @@ mod tests {
             ],
         );
         let resp = svc.create_oidc_provider(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         let arn_start =
             body.find("<OpenIDConnectProviderArn>").unwrap() + "<OpenIDConnectProviderArn>".len();
         let arn_end = body.find("</OpenIDConnectProviderArn>").unwrap();
@@ -2062,7 +2062,7 @@ mod tests {
             vec![("OpenIDConnectProviderArn", &oidc_arn)],
         );
         let resp = svc.list_oidc_provider_tags(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         assert!(body.contains("<Key>stage</Key>"));
 
         let req = make_request(
@@ -2079,7 +2079,7 @@ mod tests {
             vec![("OpenIDConnectProviderArn", &oidc_arn)],
         );
         let resp = svc.list_oidc_provider_tags(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         assert!(!body.contains("<Key>stage</Key>"));
     }
 
@@ -2115,7 +2115,7 @@ mod tests {
             vec![("RoleName", "upd-role"), ("Description", "updated desc")],
         );
         let resp = svc.update_role_description(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         assert!(body.contains("<Description>updated desc</Description>"));
     }
 
@@ -2144,7 +2144,7 @@ mod tests {
         // Verify by GetRole
         let req = make_request("GetRole", vec![("RoleName", "arp-role")]);
         let resp = svc.get_role(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         assert!(body.contains("lambda.amazonaws.com"));
     }
 
@@ -2171,7 +2171,7 @@ mod tests {
         let resp = svc
             .get_group(&make_request("GetGroup", vec![("GroupName", "new-grp")]))
             .unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         assert!(body.contains("<GroupName>new-grp</GroupName>"));
     }
 
@@ -2196,7 +2196,7 @@ mod tests {
         let resp = svc
             .get_user(&make_request("GetUser", vec![("UserName", "new-user")]))
             .unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         assert!(body.contains("<UserName>new-user</UserName>"));
     }
 
@@ -2224,7 +2224,7 @@ mod tests {
         // Get
         let req = make_request("GetAccountPasswordPolicy", vec![]);
         let resp = svc.get_account_password_policy(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         assert!(body.contains("<MinimumPasswordLength>12</MinimumPasswordLength>"));
         assert!(body.contains("<RequireSymbols>true</RequireSymbols>"));
 
@@ -2258,7 +2258,7 @@ mod tests {
 
         let req = make_request("GetAccountAuthorizationDetails", vec![]);
         let resp = svc.get_account_authorization_details(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         assert!(body.contains("<UserName>auth-user</UserName>"));
         assert!(body.contains("<RoleName>auth-role</RoleName>"));
     }
@@ -2276,7 +2276,7 @@ mod tests {
             vec![("PolicyName", "ent-pol"), ("PolicyDocument", policy_doc)],
         );
         let resp = svc.create_policy(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         let policy_arn = extract_xml_tag(&body, "Arn").to_string();
 
         // Create role and attach policy
@@ -2306,7 +2306,7 @@ mod tests {
 
         let req = make_request("ListEntitiesForPolicy", vec![("PolicyArn", &policy_arn)]);
         let resp = svc.list_entities_for_policy(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         assert!(body.contains("<RoleName>ent-role</RoleName>"));
         assert!(body.contains("<UserName>ent-user</UserName>"));
     }
@@ -2321,14 +2321,14 @@ mod tests {
 
         let req = make_request("CreateAccessKey", vec![("UserName", "keyuser")]);
         let resp = svc.create_access_key(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         let kid_start = body.find("<AccessKeyId>").unwrap() + 13;
         let kid_end = body.find("</AccessKeyId>").unwrap();
         let key_id = body[kid_start..kid_end].to_string();
 
         let req = make_request("GetAccessKeyLastUsed", vec![("AccessKeyId", &key_id)]);
         let resp = svc.get_access_key_last_used(&req).unwrap();
-        let body = String::from_utf8_lossy(&resp.body);
+        let body = String::from_utf8_lossy(resp.body.expect_bytes());
         assert!(body.contains("<UserName>keyuser</UserName>"));
         // No last used info yet -- should show N/A
         assert!(body.contains("<ServiceName>N/A</ServiceName>"));

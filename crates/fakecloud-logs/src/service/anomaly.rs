@@ -329,7 +329,7 @@ mod tests {
             }),
         );
         let resp = svc.create_log_anomaly_detector(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let arn = body["anomalyDetectorArn"].as_str().unwrap().to_string();
 
         let req = make_request(
@@ -337,12 +337,12 @@ mod tests {
             json!({ "anomalyDetectorArn": &arn }),
         );
         let resp = svc.get_log_anomaly_detector(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["detectorName"], "my-detector");
 
         let req = make_request("ListLogAnomalyDetectors", json!({}));
         let resp = svc.list_log_anomaly_detectors(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["anomalyDetectors"].as_array().unwrap().len(), 1);
 
         let req = make_request(

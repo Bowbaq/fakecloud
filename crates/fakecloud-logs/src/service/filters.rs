@@ -494,7 +494,7 @@ mod tests {
             json!({ "logGroupName": "sub-grp" }),
         );
         let resp = svc.describe_subscription_filters(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let filters = body["subscriptionFilters"].as_array().unwrap();
         assert_eq!(filters.len(), 1);
         assert_eq!(filters[0]["filterName"], "my-filter");
@@ -517,7 +517,7 @@ mod tests {
             json!({ "logGroupName": "sub-grp" }),
         );
         let resp = svc.describe_subscription_filters(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["subscriptionFilters"].as_array().unwrap().is_empty());
     }
 
@@ -554,7 +554,7 @@ mod tests {
             json!({ "logGroupName": "sub-upd" }),
         );
         let resp = svc.describe_subscription_filters(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let filters = body["subscriptionFilters"].as_array().unwrap();
         assert_eq!(filters.len(), 1);
         assert_eq!(filters[0]["filterPattern"], "WARN");
@@ -628,7 +628,7 @@ mod tests {
         // Describe by log group
         let req = make_request("DescribeMetricFilters", json!({ "logGroupName": "mf-grp" }));
         let resp = svc.describe_metric_filters(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let filters = body["metricFilters"].as_array().unwrap();
         assert_eq!(filters.len(), 1);
         assert_eq!(filters[0]["filterName"], "err-count");
@@ -643,7 +643,7 @@ mod tests {
             json!({ "metricName": "ErrorCount", "metricNamespace": "MyApp" }),
         );
         let resp = svc.describe_metric_filters(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["metricFilters"].as_array().unwrap().len(), 1);
 
         // Delete
@@ -655,7 +655,7 @@ mod tests {
 
         let req = make_request("DescribeMetricFilters", json!({ "logGroupName": "mf-grp" }));
         let resp = svc.describe_metric_filters(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["metricFilters"].as_array().unwrap().is_empty());
     }
 
@@ -698,7 +698,7 @@ mod tests {
 
         let req = make_request("DescribeMetricFilters", json!({ "logGroupName": "mf-upd" }));
         let resp = svc.describe_metric_filters(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let filters = body["metricFilters"].as_array().unwrap();
         assert_eq!(filters.len(), 1);
         assert_eq!(filters[0]["filterPattern"], "WARN");

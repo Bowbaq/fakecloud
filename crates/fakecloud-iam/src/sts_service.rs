@@ -768,7 +768,7 @@ mod tests {
 
         let req = make_test_request(params);
         let resp = service.decode_authorization_message(&req).unwrap();
-        let body = std::str::from_utf8(&resp.body).unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
         assert!(body.contains("DecodedMessage"));
         assert!(body.contains("allowed"));
         assert!(body.contains("matchedStatements"));

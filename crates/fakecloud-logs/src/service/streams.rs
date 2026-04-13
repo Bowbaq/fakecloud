@@ -1021,7 +1021,7 @@ mod tests {
             json!({ "logGroupIdentifier": "my-group" }),
         );
         let resp = svc.filter_log_events(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["events"].as_array().unwrap().len(), 1);
     }
 
@@ -1037,7 +1037,7 @@ mod tests {
             json!({ "logGroupIdentifier": "arn:aws:logs:us-east-1:123456789012:log-group:my-group:*" }),
         );
         let resp = svc.filter_log_events(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["events"].as_array().unwrap().len(), 1);
     }
 
@@ -1066,7 +1066,7 @@ mod tests {
             json!({ "logGroupName": "grp", "logStreamNamePrefix": "web" }),
         );
         let resp = svc.filter_log_events(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let events = body["events"].as_array().unwrap();
         assert_eq!(events.len(), 2);
         for e in events {
@@ -1226,7 +1226,7 @@ mod tests {
             }),
         );
         let resp = svc.filter_log_events(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let events = body["events"].as_array().unwrap();
         assert_eq!(events.len(), 2);
         assert!(events[0]["message"].as_str().unwrap().contains("ERROR"));
@@ -1241,7 +1241,7 @@ mod tests {
             }),
         );
         let resp = svc.filter_log_events(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let events = body["events"].as_array().unwrap();
         assert_eq!(events.len(), 1);
         assert!(events[0]["message"].as_str().unwrap().contains("timeout"));
@@ -1255,7 +1255,7 @@ mod tests {
             }),
         );
         let resp = svc.filter_log_events(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let events = body["events"].as_array().unwrap();
         assert_eq!(events.len(), 1);
         assert!(events[0]["message"]
@@ -1308,7 +1308,7 @@ mod tests {
             }),
         );
         let resp = svc.filter_log_events(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let events = body["events"].as_array().unwrap();
         assert_eq!(events.len(), 2);
         assert!(events[0]["message"].as_str().unwrap().contains("ERROR"));
@@ -1352,13 +1352,13 @@ mod tests {
             }),
         );
         let resp = svc.start_query(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let query_id = body["queryId"].as_str().unwrap();
 
         // Get results
         let req = make_request("GetQueryResults", json!({ "queryId": query_id }));
         let resp = svc.get_query_results(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let results = body["results"].as_array().unwrap();
         assert_eq!(results.len(), 2, "Should only return ERROR events");
         assert_eq!(body["status"].as_str().unwrap(), "Complete");
@@ -1393,12 +1393,12 @@ mod tests {
             }),
         );
         let resp = svc.start_query(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let query_id = body["queryId"].as_str().unwrap();
 
         let req = make_request("GetQueryResults", json!({ "queryId": query_id }));
         let resp = svc.get_query_results(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let results = body["results"].as_array().unwrap();
         assert_eq!(results.len(), 1);
 
@@ -1442,12 +1442,12 @@ mod tests {
             }),
         );
         let resp = svc.start_query(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let query_id = body["queryId"].as_str().unwrap();
 
         let req = make_request("GetQueryResults", json!({ "queryId": query_id }));
         let resp = svc.get_query_results(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let results = body["results"].as_array().unwrap();
         assert_eq!(results.len(), 2, "Should be limited to 2");
 
@@ -1494,12 +1494,12 @@ mod tests {
             }),
         );
         let resp = svc.start_query(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let query_id = body["queryId"].as_str().unwrap();
 
         let req = make_request("GetQueryResults", json!({ "queryId": query_id }));
         let resp = svc.get_query_results(&req).unwrap();
-        let body: Value = serde_json::from_slice(&resp.body).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         let results = body["results"].as_array().unwrap();
         assert_eq!(results.len(), 2, "Should only match ERROR JSON events");
     }

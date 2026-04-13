@@ -74,6 +74,36 @@ pub fn write_atomic_from_file(src: &Path, dst: &Path) -> io::Result<()> {
     }
 }
 
+fn write_atomic_copy_from_file_inner(tmp: &Path, src: &Path, dst: &Path) -> io::Result<()> {
+    {
+        let mut input = File::open(src)?;
+        let mut out = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(tmp)?;
+        io::copy(&mut input, &mut out)?;
+        out.sync_all()?;
+    }
+    std::fs::rename(tmp, dst)?;
+    fsync_parent(dst)?;
+    Ok(())
+}
+
+/// Copy `src` into `dst` atomically, leaving `src` untouched. Used by the
+/// S3 store to replicate disk-backed object bodies without round-tripping
+/// through RAM.
+pub fn write_atomic_copy_from_file(src: &Path, dst: &Path) -> io::Result<()> {
+    let tmp = tmp_path(dst);
+    match write_atomic_copy_from_file_inner(&tmp, src, dst) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

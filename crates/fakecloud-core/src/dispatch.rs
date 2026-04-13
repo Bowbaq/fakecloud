@@ -176,30 +176,14 @@ pub async fn dispatch(
 
             match resp.body {
                 ResponseBody::Bytes(b) => builder.body(Body::from(b)).unwrap(),
-                ResponseBody::File { path, size } => match tokio::fs::File::open(&path).await {
-                    Ok(f) => {
-                        let stream = tokio_util::io::ReaderStream::new(f);
-                        let body = Body::from_stream(stream);
-                        builder
-                            .header("content-length", size.to_string())
-                            .body(body)
-                            .unwrap()
-                    }
-                    Err(err) => {
-                        tracing::error!(
-                            path = %path.display(),
-                            error = %err,
-                            "failed to open response body file",
-                        );
-                        build_error_response(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "InternalError",
-                            &format!("failed to open response body file: {err}"),
-                            &request_id,
-                            detected.protocol,
-                        )
-                    }
-                },
+                ResponseBody::File { file, size } => {
+                    let stream = tokio_util::io::ReaderStream::new(file);
+                    let body = Body::from_stream(stream);
+                    builder
+                        .header("content-length", size.to_string())
+                        .body(body)
+                        .unwrap()
+                }
             }
         }
         Err(err) => {

@@ -278,7 +278,10 @@ mod tests {
 
         assert_eq!(result.status, StatusCode::OK);
         assert_eq!(result.content_type, "application/json");
-        assert_eq!(result.body.as_ref(), br#"{"message":"success"}"#.as_slice());
+        assert_eq!(
+            result.body.expect_bytes(),
+            br#"{"message":"success"}"#.as_slice()
+        );
     }
 
     #[test]
@@ -293,6 +296,6 @@ mod tests {
         let result = parse_lambda_response(response).unwrap();
 
         assert_eq!(result.status, StatusCode::OK);
-        assert_eq!(result.body.as_ref(), b"binary data".as_slice());
+        assert_eq!(result.body.expect_bytes(), b"binary data".as_slice());
     }
 }
