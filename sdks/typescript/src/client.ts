@@ -1,7 +1,11 @@
 import type {
   ApiGatewayV2RequestsResponse,
+  BedrockFaultRule,
+  BedrockFaultsResponse,
   BedrockInvocationsResponse,
   BedrockModelResponseConfig,
+  BedrockResponseRule,
+  BedrockStatusResponse,
   HealthResponse,
   ResetResponse,
   ResetServiceResponse,
@@ -352,6 +356,57 @@ export class BedrockClient {
         body: response,
       },
     );
+    return parse(resp);
+  }
+
+  /** Replace the prompt-conditional response rules for a given model. */
+  async setResponseRules(
+    modelId: string,
+    rules: BedrockResponseRule[],
+  ): Promise<BedrockModelResponseConfig> {
+    const resp = await fetch(
+      `${this.baseUrl}/_fakecloud/bedrock/models/${encodeURIComponent(modelId)}/responses`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rules }),
+      },
+    );
+    return parse(resp);
+  }
+
+  /** Clear all prompt-conditional response rules for a given model. */
+  async clearResponseRules(
+    modelId: string,
+  ): Promise<BedrockModelResponseConfig> {
+    const resp = await fetch(
+      `${this.baseUrl}/_fakecloud/bedrock/models/${encodeURIComponent(modelId)}/responses`,
+      { method: "DELETE" },
+    );
+    return parse(resp);
+  }
+
+  /** Queue a fault rule that will cause the next matching Bedrock runtime call(s) to fail. */
+  async queueFault(rule: BedrockFaultRule): Promise<BedrockStatusResponse> {
+    const resp = await fetch(`${this.baseUrl}/_fakecloud/bedrock/faults`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(rule),
+    });
+    return parse(resp);
+  }
+
+  /** List currently queued fault rules. */
+  async getFaults(): Promise<BedrockFaultsResponse> {
+    const resp = await fetch(`${this.baseUrl}/_fakecloud/bedrock/faults`);
+    return parse(resp);
+  }
+
+  /** Clear all queued fault rules. */
+  async clearFaults(): Promise<BedrockStatusResponse> {
+    const resp = await fetch(`${this.baseUrl}/_fakecloud/bedrock/faults`, {
+      method: "DELETE",
+    });
     return parse(resp);
   }
 }

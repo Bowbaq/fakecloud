@@ -18,6 +18,8 @@ import pytest
 
 from fakecloud import FakeCloudSync
 from fakecloud.types import (
+    BedrockFaultRule,
+    BedrockResponseRule,
     ConfirmSubscriptionRequest,
     ConfirmUserRequest,
     ExpireTokensRequest,
@@ -356,6 +358,65 @@ def test_events_history(fc: FakeCloudSync, fakecloud_url: str) -> None:
     assert event.bus_name == "default"
 
 
+# ── Bedrock introspection ────────────────────────────────────────────
+
+
+def test_bedrock_response_rules_roundtrip(
+    fc: FakeCloudSync, fakecloud_url: str
+) -> None:
+    model_id = "anthropic.claude-3-haiku-20240307-v1:0"
+    cfg = fc.bedrock.set_response_rules(
+        model_id,
+        [
+            BedrockResponseRule(
+                prompt_contains="spam:", response='{"label":"spam"}'
+            ),
+            BedrockResponseRule(
+                prompt_contains=None, response='{"label":"ham"}'
+            ),
+        ],
+    )
+    assert cfg.status == "ok"
+    assert cfg.model_id == model_id
+
+    cleared = fc.bedrock.clear_response_rules(model_id)
+    assert cleared.status == "ok"
+
+
+def test_bedrock_faults_roundtrip(
+    fc: FakeCloudSync, fakecloud_url: str
+) -> None:
+    queued = fc.bedrock.queue_fault(
+        BedrockFaultRule(
+            error_type="ThrottlingException",
+            message="Rate exceeded",
+            http_status=429,
+            count=2,
+            operation="InvokeModel",
+        )
+    )
+    assert queued.status == "ok"
+
+    listed = fc.bedrock.get_faults()
+    assert len(listed.faults) == 1
+    assert listed.faults[0].error_type == "ThrottlingException"
+    assert listed.faults[0].remaining == 2
+    assert listed.faults[0].operation == "InvokeModel"
+    assert listed.faults[0].model_id is None
+
+    cleared = fc.bedrock.clear_faults()
+    assert cleared.status == "ok"
+    assert fc.bedrock.get_faults().faults == []
+
+
+def test_bedrock_invocations_has_error_field(
+    fc: FakeCloudSync, fakecloud_url: str
+) -> None:
+    result = fc.bedrock.get_invocations()
+    for inv in result.invocations:
+        assert inv.error is None or isinstance(inv.error, str)
+
+
 # ── Unit tests for serialization logic ────────────────────────────────
 
 
@@ -401,6 +462,35 @@ def test_expire_tokens_request_to_dict_empty() -> None:
     req = ExpireTokensRequest()
     d = req.to_dict()
     assert d == {}
+
+
+def test_bedrock_response_rule_to_dict() -> None:
+    rule = BedrockResponseRule(prompt_contains="spam", response="x")
+    assert rule.to_dict() == {"promptContains": "spam", "response": "x"}
+
+
+def test_bedrock_fault_rule_to_dict_minimal() -> None:
+    rule = BedrockFaultRule(error_type="ThrottlingException")
+    assert rule.to_dict() == {"errorType": "ThrottlingException"}
+
+
+def test_bedrock_fault_rule_to_dict_full() -> None:
+    rule = BedrockFaultRule(
+        error_type="ValidationException",
+        message="bad input",
+        http_status=400,
+        count=3,
+        model_id="anthropic.claude-3-haiku-20240307-v1:0",
+        operation="Converse",
+    )
+    assert rule.to_dict() == {
+        "errorType": "ValidationException",
+        "message": "bad input",
+        "httpStatus": 400,
+        "count": 3,
+        "modelId": "anthropic.claude-3-haiku-20240307-v1:0",
+        "operation": "Converse",
+    }
 
 
 def test_trailing_slash_stripped() -> None:

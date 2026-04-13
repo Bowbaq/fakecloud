@@ -151,6 +151,64 @@ Top-level client. Defaults to `http://localhost:4566`.
 | --------------- | ----------------------------------- |
 | `getRequests()` | List all HTTP API requests received |
 
+### `fc.bedrock`
+
+| Method                             | Description                                                          |
+| ---------------------------------- | -------------------------------------------------------------------- |
+| `getInvocations()`                 | List recorded Bedrock runtime invocations (each has `error` field)   |
+| `setModelResponse(modelId, text)`  | Configure a single canned response for a model                       |
+| `setResponseRules(modelId, rules)` | Replace prompt-conditional response rules for a model                |
+| `clearResponseRules(modelId)`      | Clear all prompt-conditional response rules for a model              |
+| `queueFault(rule)`                 | Queue a fault rule (e.g. `ThrottlingException`) for the next N calls |
+| `getFaults()`                      | List currently queued fault rules                                    |
+| `clearFaults()`                    | Clear all queued fault rules                                         |
+
+#### Full test loop — asserting on Bedrock calls
+
+```typescript
+import { FakeCloud } from "fakecloud";
+import {
+  BedrockRuntimeClient,
+  InvokeModelCommand,
+} from "@aws-sdk/client-bedrock-runtime";
+
+const fc = new FakeCloud();
+const modelId = "anthropic.claude-3-haiku-20240307-v1:0";
+
+beforeEach(() => fc.reset());
+
+test("classifier branches on spam vs ham", async () => {
+  await fc.bedrock.setResponseRules(modelId, [
+    { promptContains: "buy now", response: '{"label":"spam"}' },
+    { promptContains: null, response: '{"label":"ham"}' }, // catch-all
+  ]);
+
+  await classify("hello friend");          // user code calls Bedrock
+  await classify("buy now cheap pills");
+
+  const { invocations } = await fc.bedrock.getInvocations();
+  expect(invocations).toHaveLength(2);
+  expect(invocations[0].output).toContain("ham");
+  expect(invocations[1].output).toContain("spam");
+});
+
+test("retries on ThrottlingException", async () => {
+  await fc.bedrock.queueFault({
+    errorType: "ThrottlingException",
+    message: "Rate exceeded",
+    httpStatus: 429,
+    count: 1, // only the first call faults; the retry succeeds
+  });
+
+  await classify("hello");
+
+  const { invocations } = await fc.bedrock.getInvocations();
+  expect(invocations).toHaveLength(2);
+  expect(invocations[0].error).toContain("ThrottlingException");
+  expect(invocations[1].error).toBeNull();
+});
+```
+
 ### Error handling
 
 All methods throw `FakeCloudError` on non-2xx responses:

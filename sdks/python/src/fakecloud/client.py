@@ -7,8 +7,12 @@ import httpx
 from fakecloud.types import (
     ApiGatewayV2RequestsResponse,
     AuthEventsResponse,
+    BedrockFaultRule,
+    BedrockFaultsResponse,
     BedrockInvocationsResponse,
     BedrockModelResponseConfig,
+    BedrockResponseRule,
+    BedrockStatusResponse,
     ConfirmationCodesResponse,
     ConfirmSubscriptionRequest,
     ConfirmSubscriptionResponse,
@@ -372,6 +376,46 @@ class BedrockClient:
         _check(resp)
         return BedrockModelResponseConfig.from_dict(resp.json())
 
+    async def set_response_rules(
+        self, model_id: str, rules: list[BedrockResponseRule]
+    ) -> BedrockModelResponseConfig:
+        """Replace the prompt-conditional response rule list for a model."""
+        resp = await self._client.post(
+            f"{self._base}/_fakecloud/bedrock/models/{model_id}/responses",
+            json={"rules": [r.to_dict() for r in rules]},
+        )
+        _check(resp)
+        return BedrockModelResponseConfig.from_dict(resp.json())
+
+    async def clear_response_rules(
+        self, model_id: str
+    ) -> BedrockModelResponseConfig:
+        """Clear all prompt-conditional response rules for a model."""
+        resp = await self._client.delete(
+            f"{self._base}/_fakecloud/bedrock/models/{model_id}/responses",
+        )
+        _check(resp)
+        return BedrockModelResponseConfig.from_dict(resp.json())
+
+    async def queue_fault(self, rule: BedrockFaultRule) -> BedrockStatusResponse:
+        """Queue a fault rule for the next matching runtime call(s)."""
+        resp = await self._client.post(
+            f"{self._base}/_fakecloud/bedrock/faults",
+            json=rule.to_dict(),
+        )
+        _check(resp)
+        return BedrockStatusResponse.from_dict(resp.json())
+
+    async def get_faults(self) -> BedrockFaultsResponse:
+        resp = await self._client.get(f"{self._base}/_fakecloud/bedrock/faults")
+        _check(resp)
+        return BedrockFaultsResponse.from_dict(resp.json())
+
+    async def clear_faults(self) -> BedrockStatusResponse:
+        resp = await self._client.delete(f"{self._base}/_fakecloud/bedrock/faults")
+        _check(resp)
+        return BedrockStatusResponse.from_dict(resp.json())
+
 
 # ── Sync sub-clients ────────────────────────────────────────────────
 
@@ -650,6 +694,41 @@ class _SyncBedrockClient:
         )
         _check(resp)
         return BedrockModelResponseConfig.from_dict(resp.json())
+
+    def set_response_rules(
+        self, model_id: str, rules: list[BedrockResponseRule]
+    ) -> BedrockModelResponseConfig:
+        resp = self._client.post(
+            f"{self._base}/_fakecloud/bedrock/models/{model_id}/responses",
+            json={"rules": [r.to_dict() for r in rules]},
+        )
+        _check(resp)
+        return BedrockModelResponseConfig.from_dict(resp.json())
+
+    def clear_response_rules(self, model_id: str) -> BedrockModelResponseConfig:
+        resp = self._client.delete(
+            f"{self._base}/_fakecloud/bedrock/models/{model_id}/responses",
+        )
+        _check(resp)
+        return BedrockModelResponseConfig.from_dict(resp.json())
+
+    def queue_fault(self, rule: BedrockFaultRule) -> BedrockStatusResponse:
+        resp = self._client.post(
+            f"{self._base}/_fakecloud/bedrock/faults",
+            json=rule.to_dict(),
+        )
+        _check(resp)
+        return BedrockStatusResponse.from_dict(resp.json())
+
+    def get_faults(self) -> BedrockFaultsResponse:
+        resp = self._client.get(f"{self._base}/_fakecloud/bedrock/faults")
+        _check(resp)
+        return BedrockFaultsResponse.from_dict(resp.json())
+
+    def clear_faults(self) -> BedrockStatusResponse:
+        resp = self._client.delete(f"{self._base}/_fakecloud/bedrock/faults")
+        _check(resp)
+        return BedrockStatusResponse.from_dict(resp.json())
 
 
 # ── Main clients ────────────────────────────────────────────────────

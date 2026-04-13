@@ -160,6 +160,79 @@ func main() {
 |--------|-------------|
 | `GetRequests(ctx)` | List all HTTP API requests received |
 
+### Bedrock - `fc.Bedrock()`
+
+| Method | Description |
+|--------|-------------|
+| `GetInvocations(ctx)` | List recorded Bedrock runtime invocations (each has `Error *string`) |
+| `SetModelResponse(ctx, modelID, text)` | Configure a single canned response for a model |
+| `SetResponseRules(ctx, modelID, rules)` | Replace prompt-conditional response rules for a model |
+| `ClearResponseRules(ctx, modelID)` | Clear all prompt-conditional response rules for a model |
+| `QueueFault(ctx, rule)` | Queue a fault rule (e.g. `ThrottlingException`) for the next N calls |
+| `GetFaults(ctx)` | List currently queued fault rules |
+| `ClearFaults(ctx)` | Clear all queued fault rules |
+
+#### Testing Bedrock-calling code end-to-end
+
+```go
+func TestClassifierBranchesOnSpamVsHam(t *testing.T) {
+    ctx := context.Background()
+    fc := fakecloud.New("http://localhost:4566")
+    _ = fc.Reset(ctx)
+
+    modelID := "anthropic.claude-3-haiku-20240307-v1:0"
+    spam := "buy now"
+    _, err := fc.Bedrock().SetResponseRules(ctx, modelID, []fakecloud.BedrockResponseRule{
+        {PromptContains: &spam, Response: `{"label":"spam"}`},
+        {PromptContains: nil, Response: `{"label":"ham"}`}, // catch-all
+    })
+    if err != nil {
+        t.Fatal(err)
+    }
+
+    classify(t, "hello friend")
+    classify(t, "buy now cheap pills")
+
+    invs, _ := fc.Bedrock().GetInvocations(ctx)
+    if len(invs.Invocations) != 2 {
+        t.Fatalf("expected 2 invocations, got %d", len(invs.Invocations))
+    }
+    if !strings.Contains(invs.Invocations[0].Output, "ham") ||
+        !strings.Contains(invs.Invocations[1].Output, "spam") {
+        t.Errorf("routing broken")
+    }
+}
+
+func TestRetriesOnThrottling(t *testing.T) {
+    ctx := context.Background()
+    fc := fakecloud.New("http://localhost:4566")
+    _ = fc.Reset(ctx)
+
+    _, err := fc.Bedrock().QueueFault(ctx, fakecloud.BedrockFaultRule{
+        ErrorType:  "ThrottlingException",
+        Message:    "Rate exceeded",
+        HTTPStatus: 429,
+        Count:      1, // first call faults; retry succeeds
+    })
+    if err != nil {
+        t.Fatal(err)
+    }
+
+    classify(t, "hello")
+
+    invs, _ := fc.Bedrock().GetInvocations(ctx)
+    if len(invs.Invocations) != 2 {
+        t.Fatalf("expected 2 invocations, got %d", len(invs.Invocations))
+    }
+    if invs.Invocations[0].Error == nil || !strings.Contains(*invs.Invocations[0].Error, "ThrottlingException") {
+        t.Errorf("first call should be faulted")
+    }
+    if invs.Invocations[1].Error != nil {
+        t.Errorf("retry should succeed")
+    }
+}
+```
+
 ### Error handling
 
 Non-2xx responses return `*fakecloud.APIError`:

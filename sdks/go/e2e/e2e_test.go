@@ -749,3 +749,95 @@ func TestE2EEventBridge(t *testing.T) {
 		t.Error("expected to find EventBridge event via introspection")
 	}
 }
+
+// ── Bedrock introspection ────────────────────────────────────────────
+
+func TestE2EBedrockResponseRules(t *testing.T) {
+	resetState(t)
+	ctx := context.Background()
+	fc := fakecloud.New(fakecloudURL)
+
+	modelID := "anthropic.claude-3-haiku-20240307-v1:0"
+	spam := "spam:"
+	rules := []fakecloud.BedrockResponseRule{
+		{PromptContains: &spam, Response: `{"label":"spam"}`},
+		{PromptContains: nil, Response: `{"label":"ham"}`},
+	}
+
+	set, err := fc.Bedrock().SetResponseRules(ctx, modelID, rules)
+	if err != nil {
+		t.Fatalf("SetResponseRules failed: %v", err)
+	}
+	if set.Status != "ok" || set.ModelID != modelID {
+		t.Errorf("unexpected set response: %+v", set)
+	}
+
+	cleared, err := fc.Bedrock().ClearResponseRules(ctx, modelID)
+	if err != nil {
+		t.Fatalf("ClearResponseRules failed: %v", err)
+	}
+	if cleared.Status != "ok" {
+		t.Errorf("expected status ok, got %q", cleared.Status)
+	}
+}
+
+func TestE2EBedrockFaults(t *testing.T) {
+	resetState(t)
+	ctx := context.Background()
+	fc := fakecloud.New(fakecloudURL)
+
+	_, err := fc.Bedrock().QueueFault(ctx, fakecloud.BedrockFaultRule{
+		ErrorType:  "ThrottlingException",
+		Message:    "Rate exceeded",
+		HTTPStatus: 429,
+		Count:      2,
+		Operation:  "InvokeModel",
+	})
+	if err != nil {
+		t.Fatalf("QueueFault failed: %v", err)
+	}
+
+	listed, err := fc.Bedrock().GetFaults(ctx)
+	if err != nil {
+		t.Fatalf("GetFaults failed: %v", err)
+	}
+	if len(listed.Faults) != 1 {
+		t.Fatalf("expected 1 queued fault, got %d", len(listed.Faults))
+	}
+	f := listed.Faults[0]
+	if f.ErrorType != "ThrottlingException" || f.Remaining != 2 {
+		t.Errorf("unexpected fault state: %+v", f)
+	}
+	if f.Operation == nil || *f.Operation != "InvokeModel" {
+		t.Errorf("expected operation filter InvokeModel, got %v", f.Operation)
+	}
+	if f.ModelID != nil {
+		t.Errorf("expected nil modelId filter, got %v", f.ModelID)
+	}
+
+	if _, err := fc.Bedrock().ClearFaults(ctx); err != nil {
+		t.Fatalf("ClearFaults failed: %v", err)
+	}
+	after, err := fc.Bedrock().GetFaults(ctx)
+	if err != nil {
+		t.Fatalf("GetFaults after clear failed: %v", err)
+	}
+	if len(after.Faults) != 0 {
+		t.Errorf("expected 0 faults after clear, got %d", len(after.Faults))
+	}
+}
+
+func TestE2EBedrockInvocationsErrorField(t *testing.T) {
+	resetState(t)
+	ctx := context.Background()
+	fc := fakecloud.New(fakecloudURL)
+
+	resp, err := fc.Bedrock().GetInvocations(ctx)
+	if err != nil {
+		t.Fatalf("GetInvocations failed: %v", err)
+	}
+	// Freshly reset — just confirm the field decodes without panic.
+	for _, inv := range resp.Invocations {
+		_ = inv.Error
+	}
+}

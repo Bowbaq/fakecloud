@@ -102,6 +102,10 @@ impl FakeCloud {
         StepFunctionsClient { fc: self }
     }
 
+    pub fn bedrock(&self) -> BedrockClient<'_> {
+        BedrockClient { fc: self }
+    }
+
     // ── Internal helpers ────────────────────────────────────────────
 
     async fn parse<T: serde::de::DeserializeOwned>(resp: reqwest::Response) -> Result<T, Error> {
@@ -627,6 +631,123 @@ impl StepFunctionsClient<'_> {
                 "{}/_fakecloud/stepfunctions/executions",
                 self.fc.base_url
             ))
+            .send()
+            .await?;
+        FakeCloud::parse(resp).await
+    }
+}
+
+// ── Bedrock ─────────────────────────────────────────────────────────
+
+pub struct BedrockClient<'a> {
+    fc: &'a FakeCloud,
+}
+
+impl BedrockClient<'_> {
+    /// List recorded Bedrock runtime invocations. Each invocation has an optional
+    /// `error` field that is set for calls faulted via [`Self::queue_fault`].
+    pub async fn get_invocations(&self) -> Result<BedrockInvocationsResponse, Error> {
+        let resp = self
+            .fc
+            .client
+            .get(format!(
+                "{}/_fakecloud/bedrock/invocations",
+                self.fc.base_url
+            ))
+            .send()
+            .await?;
+        FakeCloud::parse(resp).await
+    }
+
+    /// Configure a single canned response for a Bedrock model.
+    pub async fn set_model_response(
+        &self,
+        model_id: &str,
+        response: &str,
+    ) -> Result<BedrockModelResponseConfig, Error> {
+        let resp = self
+            .fc
+            .client
+            .post(format!(
+                "{}/_fakecloud/bedrock/models/{}/response",
+                self.fc.base_url, model_id
+            ))
+            .header("content-type", "text/plain")
+            .body(response.to_string())
+            .send()
+            .await?;
+        FakeCloud::parse(resp).await
+    }
+
+    /// Replace the prompt-conditional response rule list for a Bedrock model.
+    pub async fn set_response_rules(
+        &self,
+        model_id: &str,
+        rules: &[BedrockResponseRule],
+    ) -> Result<BedrockModelResponseConfig, Error> {
+        let body = serde_json::json!({ "rules": rules });
+        let resp = self
+            .fc
+            .client
+            .post(format!(
+                "{}/_fakecloud/bedrock/models/{}/responses",
+                self.fc.base_url, model_id
+            ))
+            .json(&body)
+            .send()
+            .await?;
+        FakeCloud::parse(resp).await
+    }
+
+    /// Clear all prompt-conditional response rules for a Bedrock model.
+    pub async fn clear_response_rules(
+        &self,
+        model_id: &str,
+    ) -> Result<BedrockModelResponseConfig, Error> {
+        let resp = self
+            .fc
+            .client
+            .delete(format!(
+                "{}/_fakecloud/bedrock/models/{}/responses",
+                self.fc.base_url, model_id
+            ))
+            .send()
+            .await?;
+        FakeCloud::parse(resp).await
+    }
+
+    /// Queue a fault rule that will cause the next matching Bedrock runtime call(s) to fail.
+    pub async fn queue_fault(
+        &self,
+        rule: &BedrockFaultRule,
+    ) -> Result<BedrockStatusResponse, Error> {
+        let resp = self
+            .fc
+            .client
+            .post(format!("{}/_fakecloud/bedrock/faults", self.fc.base_url))
+            .json(rule)
+            .send()
+            .await?;
+        FakeCloud::parse(resp).await
+    }
+
+    /// List currently queued fault rules.
+    pub async fn get_faults(&self) -> Result<BedrockFaultsResponse, Error> {
+        let resp = self
+            .fc
+            .client
+            .get(format!("{}/_fakecloud/bedrock/faults", self.fc.base_url))
+            .send()
+            .await?;
+        FakeCloud::parse(resp).await
+    }
+
+    /// Clear all queued fault rules.
+    pub async fn clear_faults(&self) -> Result<BedrockStatusResponse, Error> {
+        let resp = self
+            .fc
+            .client
+            .delete(format!("{}/_fakecloud/bedrock/faults", self.fc.base_url))
             .send()
             .await?;
         FakeCloud::parse(resp).await
