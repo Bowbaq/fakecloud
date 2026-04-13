@@ -65,6 +65,236 @@ fn parse_redrive_policy(attr_str: &str) -> Option<RedrivePolicy> {
     })
 }
 
+/// Validate FIFO-specific send-message constraints: delay must be 0,
+/// MessageGroupId is required, and either MessageDeduplicationId must be
+/// supplied or the queue must have ContentBasedDeduplication enabled.
+/// No-op for non-FIFO queues.
+fn check_fifo_send_constraints(
+    queue: &SqsQueue,
+    raw_delay: Option<i64>,
+    message_group_id: &Option<String>,
+    message_dedup_id: &Option<String>,
+) -> Result<(), AwsServiceError> {
+    if !queue.is_fifo {
+        return Ok(());
+    }
+
+    let delay = raw_delay.unwrap_or(0);
+    if delay != 0 {
+        return Err(AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "InvalidParameterValue",
+            format!(
+                "Value {delay} for parameter DelaySeconds is invalid. Reason: \
+                 The request include parameter that is not valid for this queue type."
+            ),
+        ));
+    }
+
+    if message_group_id.is_none() {
+        return Err(AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "MissingParameter",
+            "The request must contain the parameter MessageGroupId.",
+        ));
+    }
+
+    if message_dedup_id.is_none()
+        && queue
+            .attributes
+            .get("ContentBasedDeduplication")
+            .map(|v| v.as_str())
+            != Some("true")
+    {
+        return Err(AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "InvalidParameterValue",
+            "The queue should either have ContentBasedDeduplication enabled \
+             or MessageDeduplicationId provided explicitly",
+        ));
+    }
+
+    Ok(())
+}
+
+/// Per-queue configuration used while processing a SendMessageBatch,
+/// read once outside the per-entry loop.
+struct BatchSendConfig {
+    is_fifo: bool,
+    content_based_dedup: bool,
+    max_message_size: usize,
+    queue_delay: Option<i64>,
+    now: chrono::DateTime<Utc>,
+}
+
+impl BatchSendConfig {
+    fn from_queue(queue: &SqsQueue, now: chrono::DateTime<Utc>) -> Self {
+        Self {
+            is_fifo: queue.is_fifo,
+            content_based_dedup: queue
+                .attributes
+                .get("ContentBasedDeduplication")
+                .map(|v| v.as_str())
+                == Some("true"),
+            max_message_size: queue
+                .attributes
+                .get("MaximumMessageSize")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(262144),
+            queue_delay: queue
+                .attributes
+                .get("DelaySeconds")
+                .and_then(|s| s.parse().ok()),
+            now,
+        }
+    }
+}
+
+enum BatchEntryOutcome {
+    Success(Value),
+    Failure(Value),
+}
+
+fn batch_failure(id: &str, code: &str, message: impl Into<String>) -> Value {
+    json!({
+        "Id": id,
+        "SenderFault": true,
+        "Code": code,
+        "Message": message.into(),
+    })
+}
+
+/// Process a single SendMessageBatch entry: validate per-entry constraints,
+/// enqueue the message, and return either a successful or failed response
+/// fragment. Returns `Err` only for errors that AWS signals at the
+/// *batch* level (missing MessageGroupId / dedup on FIFO queues).
+fn process_batch_send_entry(
+    queue: &mut SqsQueue,
+    entry: &Value,
+    cfg: &BatchSendConfig,
+) -> Result<BatchEntryOutcome, AwsServiceError> {
+    let id = match entry["Id"].as_str() {
+        Some(id) => id.to_string(),
+        None => {
+            return Ok(BatchEntryOutcome::Failure(batch_failure(
+                "",
+                "MissingParameter",
+                "Id is required",
+            )))
+        }
+    };
+
+    let Some(message_body) = entry["MessageBody"].as_str().map(|s| s.to_string()) else {
+        return Ok(BatchEntryOutcome::Failure(batch_failure(
+            &id,
+            "MissingParameter",
+            "MessageBody is required",
+        )));
+    };
+
+    if message_body.len() > cfg.max_message_size {
+        return Ok(BatchEntryOutcome::Failure(batch_failure(
+            &id,
+            "InvalidParameterValue",
+            format!(
+                "One or more parameters are invalid. Reason: Message must be shorter than {} bytes.",
+                cfg.max_message_size
+            ),
+        )));
+    }
+
+    if let Some(d) = val_as_i64(&entry["DelaySeconds"]) {
+        if !(0..=900).contains(&d) {
+            return Ok(BatchEntryOutcome::Failure(batch_failure(
+                &id,
+                "InvalidParameterValue",
+                format!(
+                    "Value {d} for parameter DelaySeconds is invalid. Reason: \
+                     Must be between 0 and 900, if provided."
+                ),
+            )));
+        }
+    }
+
+    let message_group_id = entry["MessageGroupId"].as_str().map(|s| s.to_string());
+    let message_dedup_id = entry["MessageDeduplicationId"]
+        .as_str()
+        .map(|s| s.to_string());
+
+    if cfg.is_fifo {
+        if message_group_id.is_none() {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "MissingParameter",
+                "The request must contain the parameter MessageGroupId.",
+            ));
+        }
+        if message_dedup_id.is_none() && !cfg.content_based_dedup {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidParameterValue",
+                "The queue should either have ContentBasedDeduplication enabled \
+                 or MessageDeduplicationId provided explicitly",
+            ));
+        }
+    }
+
+    let delay: i64 = val_as_i64(&entry["DelaySeconds"])
+        .or(cfg.queue_delay)
+        .unwrap_or(0);
+    let visible_at = if delay > 0 {
+        Some(cfg.now + chrono::Duration::seconds(delay))
+    } else {
+        None
+    };
+
+    let message_attributes = parse_message_attributes(entry);
+
+    let sequence_number = if cfg.is_fifo {
+        let seq = queue.next_sequence_number;
+        queue.next_sequence_number += 1;
+        Some(seq.to_string())
+    } else {
+        None
+    };
+
+    let md5_of_attrs = if message_attributes.is_empty() {
+        None
+    } else {
+        Some(md5_of_message_attributes(&message_attributes))
+    };
+
+    let msg = SqsMessage {
+        message_id: uuid::Uuid::new_v4().to_string(),
+        receipt_handle: None,
+        md5_of_body: md5_hex(&message_body),
+        body: message_body,
+        sent_timestamp: cfg.now.timestamp_millis(),
+        attributes: HashMap::new(),
+        message_attributes,
+        visible_at,
+        receive_count: 0,
+        message_group_id,
+        message_dedup_id,
+        created_at: cfg.now,
+        sequence_number: sequence_number.clone(),
+    };
+
+    let mut entry_resp = json!({
+        "Id": id,
+        "MessageId": msg.message_id,
+        "MD5OfMessageBody": msg.md5_of_body,
+    });
+    if let Some(seq) = &sequence_number {
+        entry_resp["SequenceNumber"] = json!(seq);
+    }
+    if let Some(md5) = &md5_of_attrs {
+        entry_resp["MD5OfMessageAttributes"] = json!(md5);
+    }
+    queue.messages.push_back(msg);
+    Ok(BatchEntryOutcome::Success(entry_resp))
+}
+
 /// Verify that the DLQ referenced by `rp` actually exists, and — when
 /// the source queue is FIFO — that the DLQ is itself a FIFO queue.
 /// Mirrors AWS's constraint that FIFO and standard queues cannot be
@@ -282,100 +512,87 @@ fn sqs_response(action: &str, body: Value, request_id: &str, is_query: bool) -> 
     if !is_query {
         return AwsResponse::ok_json(body);
     }
-    match action {
-        "CreateQueue" => {
-            let url = body["QueueUrl"].as_str().unwrap_or("");
-            let inner = format!("<QueueUrl>{}</QueueUrl>", xml_escape(url));
-            AwsResponse::xml(StatusCode::OK, xml_wrap(action, &inner, request_id))
+    let inner = match action {
+        "CreateQueue" | "GetQueueUrl" => xml_queue_url_only(&body),
+        "ListQueues" => xml_list_queues(&body),
+        "SendMessage" => xml_send_message(&body),
+        "ReceiveMessage" => xml_receive_message(&body),
+        "GetQueueAttributes" => xml_attributes_list(&body),
+        "SendMessageBatch" => xml_batch_result(
+            &body,
+            "SendMessageBatchResultEntry",
+            xml_send_message_batch_success,
+        ),
+        "DeleteMessageBatch" => {
+            xml_batch_result(&body, "DeleteMessageBatchResultEntry", xml_id_only_success)
         }
-        "GetQueueUrl" => {
-            let url = body["QueueUrl"].as_str().unwrap_or("");
-            let inner = format!("<QueueUrl>{}</QueueUrl>", xml_escape(url));
-            AwsResponse::xml(StatusCode::OK, xml_wrap(action, &inner, request_id))
-        }
-        "ListQueues" => {
-            let mut inner = String::new();
-            if let Some(urls) = body["QueueUrls"].as_array() {
-                for url in urls {
-                    if let Some(u) = url.as_str() {
-                        inner.push_str(&format!("<QueueUrl>{}</QueueUrl>", xml_escape(u)));
-                    }
-                }
+        "ChangeMessageVisibilityBatch" => xml_batch_result(
+            &body,
+            "ChangeMessageVisibilityBatchResultEntry",
+            xml_id_only_success,
+        ),
+        "ListDeadLetterSourceQueues" => xml_dlq_sources(&body),
+        // DeleteQueue, DeleteMessage, PurgeQueue, SetQueueAttributes, ChangeMessageVisibility
+        _ => return xml_metadata_only(action, request_id),
+    };
+    AwsResponse::xml(StatusCode::OK, xml_wrap(action, &inner, request_id))
+}
+
+fn xml_queue_url_only(body: &Value) -> String {
+    let url = body["QueueUrl"].as_str().unwrap_or("");
+    format!("<QueueUrl>{}</QueueUrl>", xml_escape(url))
+}
+
+fn xml_list_queues(body: &Value) -> String {
+    let mut inner = String::new();
+    if let Some(urls) = body["QueueUrls"].as_array() {
+        for url in urls {
+            if let Some(u) = url.as_str() {
+                inner.push_str(&format!("<QueueUrl>{}</QueueUrl>", xml_escape(u)));
             }
-            if let Some(token) = body["NextToken"].as_str() {
-                inner.push_str(&format!("<NextToken>{}</NextToken>", xml_escape(token)));
-            }
-            AwsResponse::xml(StatusCode::OK, xml_wrap(action, &inner, request_id))
         }
-        "SendMessage" => {
-            let msg_id = body["MessageId"].as_str().unwrap_or("");
-            let md5 = body["MD5OfMessageBody"].as_str().unwrap_or("");
-            let inner = format!(
-                "<MessageId>{}</MessageId><MD5OfMessageBody>{}</MD5OfMessageBody>",
-                xml_escape(msg_id),
-                xml_escape(md5)
-            );
-            AwsResponse::xml(StatusCode::OK, xml_wrap(action, &inner, request_id))
+    }
+    if let Some(token) = body["NextToken"].as_str() {
+        inner.push_str(&format!("<NextToken>{}</NextToken>", xml_escape(token)));
+    }
+    inner
+}
+
+fn xml_send_message(body: &Value) -> String {
+    let msg_id = body["MessageId"].as_str().unwrap_or("");
+    let md5 = body["MD5OfMessageBody"].as_str().unwrap_or("");
+    format!(
+        "<MessageId>{}</MessageId><MD5OfMessageBody>{}</MD5OfMessageBody>",
+        xml_escape(msg_id),
+        xml_escape(md5)
+    )
+}
+
+fn xml_receive_message(body: &Value) -> String {
+    let Some(messages) = body["Messages"].as_array() else {
+        return String::new();
+    };
+    let mut inner = String::new();
+    for msg in messages {
+        inner.push_str("<Message>");
+        if let Some(id) = msg["MessageId"].as_str() {
+            inner.push_str(&format!("<MessageId>{}</MessageId>", xml_escape(id)));
         }
-        "ReceiveMessage" => {
-            let mut inner = String::new();
-            if let Some(messages) = body["Messages"].as_array() {
-                for msg in messages {
-                    inner.push_str("<Message>");
-                    if let Some(id) = msg["MessageId"].as_str() {
-                        inner.push_str(&format!("<MessageId>{}</MessageId>", xml_escape(id)));
-                    }
-                    if let Some(rh) = msg["ReceiptHandle"].as_str() {
-                        inner.push_str(&format!(
-                            "<ReceiptHandle>{}</ReceiptHandle>",
-                            xml_escape(rh)
-                        ));
-                    }
-                    if let Some(md5) = msg["MD5OfBody"].as_str() {
-                        inner.push_str(&format!("<MD5OfBody>{}</MD5OfBody>", xml_escape(md5)));
-                    }
-                    if let Some(body_str) = msg["Body"].as_str() {
-                        inner.push_str(&format!("<Body>{}</Body>", xml_escape(body_str)));
-                    }
-                    if let Some(attrs) = msg["Attributes"].as_object() {
-                        for (k, v) in attrs {
-                            if let Some(val) = v.as_str() {
-                                inner.push_str(&format!(
-                                    "<Attribute><Name>{}</Name><Value>{}</Value></Attribute>",
-                                    xml_escape(k),
-                                    xml_escape(val)
-                                ));
-                            }
-                        }
-                    }
-                    if let Some(msg_attrs) = msg["MessageAttributes"].as_object() {
-                        for (name, attr) in msg_attrs {
-                            inner.push_str("<MessageAttribute>");
-                            inner.push_str(&format!("<Name>{}</Name>", xml_escape(name)));
-                            inner.push_str("<Value>");
-                            if let Some(dt) = attr["DataType"].as_str() {
-                                inner.push_str(&format!("<DataType>{}</DataType>", xml_escape(dt)));
-                            }
-                            if let Some(sv) = attr["StringValue"].as_str() {
-                                inner.push_str(&format!(
-                                    "<StringValue>{}</StringValue>",
-                                    xml_escape(sv)
-                                ));
-                            }
-                            inner.push_str("</Value>");
-                            inner.push_str("</MessageAttribute>");
-                        }
-                    }
-                    inner.push_str("</Message>");
-                }
-            }
-            AwsResponse::xml(StatusCode::OK, xml_wrap(action, &inner, request_id))
+        if let Some(rh) = msg["ReceiptHandle"].as_str() {
+            inner.push_str(&format!(
+                "<ReceiptHandle>{}</ReceiptHandle>",
+                xml_escape(rh)
+            ));
         }
-        "GetQueueAttributes" => {
-            let mut inner = String::new();
-            if let Some(attrs) = body["Attributes"].as_object() {
-                for (k, v) in attrs {
-                    let val = v.as_str().unwrap_or("");
+        if let Some(md5) = msg["MD5OfBody"].as_str() {
+            inner.push_str(&format!("<MD5OfBody>{}</MD5OfBody>", xml_escape(md5)));
+        }
+        if let Some(body_str) = msg["Body"].as_str() {
+            inner.push_str(&format!("<Body>{}</Body>", xml_escape(body_str)));
+        }
+        if let Some(attrs) = msg["Attributes"].as_object() {
+            for (k, v) in attrs {
+                if let Some(val) = v.as_str() {
                     inner.push_str(&format!(
                         "<Attribute><Name>{}</Name><Value>{}</Value></Attribute>",
                         xml_escape(k),
@@ -383,124 +600,118 @@ fn sqs_response(action: &str, body: Value, request_id: &str, is_query: bool) -> 
                     ));
                 }
             }
-            AwsResponse::xml(StatusCode::OK, xml_wrap(action, &inner, request_id))
         }
-        "SendMessageBatch" => {
-            let mut inner = String::new();
-            if let Some(successful) = body["Successful"].as_array() {
-                for entry in successful {
-                    inner.push_str("<SendMessageBatchResultEntry>");
-                    if let Some(id) = entry["Id"].as_str() {
-                        inner.push_str(&format!("<Id>{}</Id>", xml_escape(id)));
-                    }
-                    if let Some(msg_id) = entry["MessageId"].as_str() {
-                        inner.push_str(&format!("<MessageId>{}</MessageId>", xml_escape(msg_id)));
-                    }
-                    if let Some(md5) = entry["MD5OfMessageBody"].as_str() {
-                        inner.push_str(&format!(
-                            "<MD5OfMessageBody>{}</MD5OfMessageBody>",
-                            xml_escape(md5)
-                        ));
-                    }
-                    inner.push_str("</SendMessageBatchResultEntry>");
+        if let Some(msg_attrs) = msg["MessageAttributes"].as_object() {
+            for (name, attr) in msg_attrs {
+                inner.push_str("<MessageAttribute>");
+                inner.push_str(&format!("<Name>{}</Name>", xml_escape(name)));
+                inner.push_str("<Value>");
+                if let Some(dt) = attr["DataType"].as_str() {
+                    inner.push_str(&format!("<DataType>{}</DataType>", xml_escape(dt)));
                 }
-            }
-            if let Some(failed) = body["Failed"].as_array() {
-                for entry in failed {
-                    inner.push_str("<BatchResultErrorEntry>");
-                    if let Some(id) = entry["Id"].as_str() {
-                        inner.push_str(&format!("<Id>{}</Id>", xml_escape(id)));
-                    }
-                    if let Some(code) = entry["Code"].as_str() {
-                        inner.push_str(&format!("<Code>{}</Code>", xml_escape(code)));
-                    }
-                    if let Some(msg) = entry["Message"].as_str() {
-                        inner.push_str(&format!("<Message>{}</Message>", xml_escape(msg)));
-                    }
-                    if let Some(sf) = entry["SenderFault"].as_bool() {
-                        inner.push_str(&format!("<SenderFault>{sf}</SenderFault>"));
-                    }
-                    inner.push_str("</BatchResultErrorEntry>");
+                if let Some(sv) = attr["StringValue"].as_str() {
+                    inner.push_str(&format!("<StringValue>{}</StringValue>", xml_escape(sv)));
                 }
+                inner.push_str("</Value>");
+                inner.push_str("</MessageAttribute>");
             }
-            AwsResponse::xml(StatusCode::OK, xml_wrap(action, &inner, request_id))
         }
-        "DeleteMessageBatch" => {
-            let mut inner = String::new();
-            if let Some(successful) = body["Successful"].as_array() {
-                for entry in successful {
-                    inner.push_str("<DeleteMessageBatchResultEntry>");
-                    if let Some(id) = entry["Id"].as_str() {
-                        inner.push_str(&format!("<Id>{}</Id>", xml_escape(id)));
-                    }
-                    inner.push_str("</DeleteMessageBatchResultEntry>");
-                }
-            }
-            if let Some(failed) = body["Failed"].as_array() {
-                for entry in failed {
-                    inner.push_str("<BatchResultErrorEntry>");
-                    if let Some(id) = entry["Id"].as_str() {
-                        inner.push_str(&format!("<Id>{}</Id>", xml_escape(id)));
-                    }
-                    if let Some(code) = entry["Code"].as_str() {
-                        inner.push_str(&format!("<Code>{}</Code>", xml_escape(code)));
-                    }
-                    if let Some(msg) = entry["Message"].as_str() {
-                        inner.push_str(&format!("<Message>{}</Message>", xml_escape(msg)));
-                    }
-                    if let Some(sf) = entry["SenderFault"].as_bool() {
-                        inner.push_str(&format!("<SenderFault>{sf}</SenderFault>"));
-                    }
-                    inner.push_str("</BatchResultErrorEntry>");
-                }
-            }
-            AwsResponse::xml(StatusCode::OK, xml_wrap(action, &inner, request_id))
-        }
-        "ChangeMessageVisibilityBatch" => {
-            let mut inner = String::new();
-            if let Some(successful) = body["Successful"].as_array() {
-                for entry in successful {
-                    inner.push_str("<ChangeMessageVisibilityBatchResultEntry>");
-                    if let Some(id) = entry["Id"].as_str() {
-                        inner.push_str(&format!("<Id>{}</Id>", xml_escape(id)));
-                    }
-                    inner.push_str("</ChangeMessageVisibilityBatchResultEntry>");
-                }
-            }
-            if let Some(failed) = body["Failed"].as_array() {
-                for entry in failed {
-                    inner.push_str("<BatchResultErrorEntry>");
-                    if let Some(id) = entry["Id"].as_str() {
-                        inner.push_str(&format!("<Id>{}</Id>", xml_escape(id)));
-                    }
-                    if let Some(code) = entry["Code"].as_str() {
-                        inner.push_str(&format!("<Code>{}</Code>", xml_escape(code)));
-                    }
-                    if let Some(msg) = entry["Message"].as_str() {
-                        inner.push_str(&format!("<Message>{}</Message>", xml_escape(msg)));
-                    }
-                    if let Some(sf) = entry["SenderFault"].as_bool() {
-                        inner.push_str(&format!("<SenderFault>{sf}</SenderFault>"));
-                    }
-                    inner.push_str("</BatchResultErrorEntry>");
-                }
-            }
-            AwsResponse::xml(StatusCode::OK, xml_wrap(action, &inner, request_id))
-        }
-        "ListDeadLetterSourceQueues" => {
-            let mut inner = String::new();
-            if let Some(urls) = body["queueUrls"].as_array() {
-                for url in urls {
-                    if let Some(u) = url.as_str() {
-                        inner.push_str(&format!("<QueueUrl>{}</QueueUrl>", xml_escape(u)));
-                    }
-                }
-            }
-            AwsResponse::xml(StatusCode::OK, xml_wrap(action, &inner, request_id))
-        }
-        // DeleteQueue, DeleteMessage, PurgeQueue, SetQueueAttributes, ChangeMessageVisibility
-        _ => xml_metadata_only(action, request_id),
+        inner.push_str("</Message>");
     }
+    inner
+}
+
+fn xml_attributes_list(body: &Value) -> String {
+    let Some(attrs) = body["Attributes"].as_object() else {
+        return String::new();
+    };
+    let mut inner = String::new();
+    for (k, v) in attrs {
+        let val = v.as_str().unwrap_or("");
+        inner.push_str(&format!(
+            "<Attribute><Name>{}</Name><Value>{}</Value></Attribute>",
+            xml_escape(k),
+            xml_escape(val)
+        ));
+    }
+    inner
+}
+
+/// Serialize the Successful + Failed arrays for a `*Batch` response, using
+/// `success_tag` as the wrapper tag for each successful entry and
+/// `success_body` to write the per-entry body. Failed entries always use
+/// the shared `BatchResultErrorEntry` shape.
+fn xml_batch_result(body: &Value, success_tag: &str, success_body: fn(&Value) -> String) -> String {
+    let mut inner = String::new();
+    if let Some(successful) = body["Successful"].as_array() {
+        for entry in successful {
+            inner.push_str(&format!("<{success_tag}>"));
+            inner.push_str(&success_body(entry));
+            inner.push_str(&format!("</{success_tag}>"));
+        }
+    }
+    if let Some(failed) = body["Failed"].as_array() {
+        for entry in failed {
+            inner.push_str(&xml_batch_error_entry(entry));
+        }
+    }
+    inner
+}
+
+fn xml_id_only_success(entry: &Value) -> String {
+    if let Some(id) = entry["Id"].as_str() {
+        format!("<Id>{}</Id>", xml_escape(id))
+    } else {
+        String::new()
+    }
+}
+
+fn xml_send_message_batch_success(entry: &Value) -> String {
+    let mut out = String::new();
+    if let Some(id) = entry["Id"].as_str() {
+        out.push_str(&format!("<Id>{}</Id>", xml_escape(id)));
+    }
+    if let Some(msg_id) = entry["MessageId"].as_str() {
+        out.push_str(&format!("<MessageId>{}</MessageId>", xml_escape(msg_id)));
+    }
+    if let Some(md5) = entry["MD5OfMessageBody"].as_str() {
+        out.push_str(&format!(
+            "<MD5OfMessageBody>{}</MD5OfMessageBody>",
+            xml_escape(md5)
+        ));
+    }
+    out
+}
+
+fn xml_batch_error_entry(entry: &Value) -> String {
+    let mut out = String::from("<BatchResultErrorEntry>");
+    if let Some(id) = entry["Id"].as_str() {
+        out.push_str(&format!("<Id>{}</Id>", xml_escape(id)));
+    }
+    if let Some(code) = entry["Code"].as_str() {
+        out.push_str(&format!("<Code>{}</Code>", xml_escape(code)));
+    }
+    if let Some(msg) = entry["Message"].as_str() {
+        out.push_str(&format!("<Message>{}</Message>", xml_escape(msg)));
+    }
+    if let Some(sf) = entry["SenderFault"].as_bool() {
+        out.push_str(&format!("<SenderFault>{sf}</SenderFault>"));
+    }
+    out.push_str("</BatchResultErrorEntry>");
+    out
+}
+
+fn xml_dlq_sources(body: &Value) -> String {
+    let Some(urls) = body["queueUrls"].as_array() else {
+        return String::new();
+    };
+    let mut inner = String::new();
+    for url in urls {
+        if let Some(u) = url.as_str() {
+            inner.push_str(&format!("<QueueUrl>{}</QueueUrl>", xml_escape(u)));
+        }
+    }
+    inner
 }
 
 impl SqsService {
@@ -949,41 +1160,7 @@ impl SqsService {
                 .get_mut(&resolved_url)
                 .ok_or_else(queue_not_found)?;
 
-            // FIFO delay validation
-            if queue.is_fifo {
-                let delay = raw_delay.unwrap_or(0);
-                if delay != 0 {
-                    return Err(AwsServiceError::aws_error(
-                        StatusCode::BAD_REQUEST,
-                        "InvalidParameterValue",
-                        format!("Value {} for parameter DelaySeconds is invalid. Reason: The request include parameter that is not valid for this queue type.", delay),
-                    ));
-                }
-            }
-
-            // FIFO validations
-            if queue.is_fifo {
-                if message_group_id.is_none() {
-                    return Err(AwsServiceError::aws_error(
-                        StatusCode::BAD_REQUEST,
-                        "MissingParameter",
-                        "The request must contain the parameter MessageGroupId.",
-                    ));
-                }
-                if message_dedup_id.is_none()
-                    && queue
-                        .attributes
-                        .get("ContentBasedDeduplication")
-                        .map(|v| v.as_str())
-                        != Some("true")
-                {
-                    return Err(AwsServiceError::aws_error(
-                        StatusCode::BAD_REQUEST,
-                        "InvalidParameterValue",
-                        "The queue should either have ContentBasedDeduplication enabled or MessageDeduplicationId provided explicitly",
-                    ));
-                }
-            }
+            check_fifo_send_constraints(queue, raw_delay, &message_group_id, &message_dedup_id)?;
 
             // FIFO dedup
             let effective_dedup_id = if queue.is_fifo {
@@ -1817,144 +1994,13 @@ impl SqsService {
         let mut successful = Vec::new();
         let mut failed: Vec<Value> = Vec::new();
 
-        let is_fifo = queue.is_fifo;
-        let content_based_dedup = queue
-            .attributes
-            .get("ContentBasedDeduplication")
-            .map(|v| v.as_str())
-            == Some("true");
-        let max_message_size: usize = queue
-            .attributes
-            .get("MaximumMessageSize")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(262144);
-        let queue_delay: Option<i64> = queue
-            .attributes
-            .get("DelaySeconds")
-            .and_then(|s| s.parse().ok());
+        let cfg = BatchSendConfig::from_queue(queue, now);
 
         for entry in &entries {
-            let id = match entry["Id"].as_str() {
-                Some(id) => id.to_string(),
-                None => continue,
-            };
-            let message_body = match entry["MessageBody"].as_str() {
-                Some(b) => b.to_string(),
-                None => {
-                    failed.push(json!({
-                        "Id": id,
-                        "SenderFault": true,
-                        "Code": "MissingParameter",
-                        "Message": "MessageBody is required",
-                    }));
-                    continue;
-                }
-            };
-
-            // MaximumMessageSize validation
-            if message_body.len() > max_message_size {
-                failed.push(json!({
-                    "Id": id,
-                    "SenderFault": true,
-                    "Code": "InvalidParameterValue",
-                    "Message": format!(
-                        "One or more parameters are invalid. Reason: Message must be shorter than {} bytes.",
-                        max_message_size
-                    ),
-                }));
-                continue;
+            match process_batch_send_entry(queue, entry, &cfg)? {
+                BatchEntryOutcome::Success(v) => successful.push(v),
+                BatchEntryOutcome::Failure(v) => failed.push(v),
             }
-
-            // Per-entry delay validation (0–900 seconds)
-            if let Some(d) = val_as_i64(&entry["DelaySeconds"]) {
-                if !(0..=900).contains(&d) {
-                    failed.push(json!({
-                        "Id": id,
-                        "SenderFault": true,
-                        "Code": "InvalidParameterValue",
-                        "Message": format!("Value {} for parameter DelaySeconds is invalid. Reason: Must be between 0 and 900, if provided.", d),
-                    }));
-                    continue;
-                }
-            }
-
-            let message_group_id = entry["MessageGroupId"].as_str().map(|s| s.to_string());
-            let message_dedup_id = entry["MessageDeduplicationId"]
-                .as_str()
-                .map(|s| s.to_string());
-
-            // FIFO validations
-            if is_fifo {
-                if message_group_id.is_none() {
-                    return Err(AwsServiceError::aws_error(
-                        StatusCode::BAD_REQUEST,
-                        "MissingParameter",
-                        "The request must contain the parameter MessageGroupId.",
-                    ));
-                }
-                if message_dedup_id.is_none() && !content_based_dedup {
-                    return Err(AwsServiceError::aws_error(
-                        StatusCode::BAD_REQUEST,
-                        "InvalidParameterValue",
-                        "The queue should either have ContentBasedDeduplication enabled or MessageDeduplicationId provided explicitly",
-                    ));
-                }
-            }
-
-            let delay: i64 = val_as_i64(&entry["DelaySeconds"])
-                .or(queue_delay)
-                .unwrap_or(0);
-            let visible_at = if delay > 0 {
-                Some(now + chrono::Duration::seconds(delay))
-            } else {
-                None
-            };
-
-            let message_attributes = parse_message_attributes(entry);
-
-            let sequence_number = if is_fifo {
-                let seq = queue.next_sequence_number;
-                queue.next_sequence_number += 1;
-                Some(seq.to_string())
-            } else {
-                None
-            };
-
-            let md5_of_attrs = if message_attributes.is_empty() {
-                None
-            } else {
-                Some(md5_of_message_attributes(&message_attributes))
-            };
-
-            let msg = SqsMessage {
-                message_id: uuid::Uuid::new_v4().to_string(),
-                receipt_handle: None,
-                md5_of_body: md5_hex(&message_body),
-                body: message_body,
-                sent_timestamp: now.timestamp_millis(),
-                attributes: HashMap::new(),
-                message_attributes,
-                visible_at,
-                receive_count: 0,
-                message_group_id,
-                message_dedup_id,
-                created_at: now,
-                sequence_number: sequence_number.clone(),
-            };
-
-            let mut entry_resp = json!({
-                "Id": id,
-                "MessageId": msg.message_id,
-                "MD5OfMessageBody": msg.md5_of_body,
-            });
-            if let Some(seq) = &sequence_number {
-                entry_resp["SequenceNumber"] = json!(seq);
-            }
-            if let Some(md5) = &md5_of_attrs {
-                entry_resp["MD5OfMessageAttributes"] = json!(md5);
-            }
-            successful.push(entry_resp);
-            queue.messages.push_back(msg);
         }
 
         Ok(sqs_response(
