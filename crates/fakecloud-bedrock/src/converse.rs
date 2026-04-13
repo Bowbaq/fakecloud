@@ -20,18 +20,16 @@ pub fn converse(
         .unwrap_or(u64::MAX);
     let tool_config = input.get("toolConfig");
 
-    let response_text = {
-        let s = state.read();
-        if let Some(custom) = s.custom_responses.get(model_id) {
-            let parsed: Value = serde_json::from_str(custom).unwrap_or_default();
+    let response_text = match crate::prompt::resolve_override(state, model_id, body) {
+        Some(custom) => {
+            let parsed: Value = serde_json::from_str(&custom).unwrap_or_default();
             if let Some(text) = parsed["output"]["message"]["content"][0]["text"].as_str() {
                 text.to_string()
             } else {
-                custom.clone()
+                custom
             }
-        } else {
-            "This is a test response from the emulated model.".to_string()
         }
+        None => "This is a test response from the emulated model.".to_string(),
     };
 
     // Respect maxTokens by truncating (rough approximation: 1 token ~= 4 chars)

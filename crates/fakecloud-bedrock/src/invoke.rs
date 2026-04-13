@@ -24,14 +24,8 @@ pub fn invoke_model(
 
     let input: Value = serde_json::from_slice(body).unwrap_or_default();
 
-    let response_body = {
-        let s = state.read();
-        if let Some(custom) = s.custom_responses.get(model_id) {
-            custom.clone()
-        } else {
-            generate_canned_response(model_id, &input)
-        }
-    };
+    let response_body = crate::prompt::resolve_override(state, model_id, body)
+        .unwrap_or_else(|| generate_canned_response(model_id, &input));
 
     // Record invocation for introspection
     {

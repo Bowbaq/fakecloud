@@ -1506,6 +1506,73 @@ async fn main() {
                 }
             }),
         )
+        // Bedrock simulation: configure prompt-conditional response rules
+        .route(
+            "/_fakecloud/bedrock/models/{model_id}/responses",
+            axum::routing::post({
+                let bs = bedrock_state.clone();
+                move |axum::extract::Path(model_id): axum::extract::Path<String>,
+                      axum::Json(body): axum::Json<serde_json::Value>| async move {
+                    let rules_json = body.get("rules").and_then(|r| r.as_array()).cloned();
+                    let Some(rules_json) = rules_json else {
+                        return (
+                            axum::http::StatusCode::BAD_REQUEST,
+                            axum::Json(serde_json::json!({
+                                "error": "body must contain a `rules` array"
+                            })),
+                        );
+                    };
+                    let mut parsed = Vec::with_capacity(rules_json.len());
+                    for rule in rules_json {
+                        let prompt_contains = match rule.get("promptContains") {
+                            None | Some(serde_json::Value::Null) => None,
+                            Some(serde_json::Value::String(s)) => Some(s.clone()),
+                            Some(_) => {
+                                return (
+                                    axum::http::StatusCode::BAD_REQUEST,
+                                    axum::Json(serde_json::json!({
+                                        "error": "`promptContains` must be a string when provided"
+                                    })),
+                                );
+                            }
+                        };
+                        let response = match rule.get("response") {
+                            Some(serde_json::Value::String(s)) => s.clone(),
+                            Some(other) => other.to_string(),
+                            None => {
+                                return (
+                                    axum::http::StatusCode::BAD_REQUEST,
+                                    axum::Json(serde_json::json!({
+                                        "error": "each rule must include a `response` field"
+                                    })),
+                                );
+                            }
+                        };
+                        parsed.push(fakecloud_bedrock::state::ResponseRule {
+                            prompt_contains,
+                            response,
+                        });
+                    }
+                    let mut state = bs.write();
+                    state.response_rules.insert(model_id.clone(), parsed);
+                    (
+                        axum::http::StatusCode::OK,
+                        axum::Json(serde_json::json!({
+                            "status": "ok",
+                            "modelId": model_id
+                        })),
+                    )
+                }
+            })
+            .delete({
+                let bs = bedrock_state.clone();
+                move |axum::extract::Path(model_id): axum::extract::Path<String>| async move {
+                    let mut state = bs.write();
+                    state.response_rules.remove(&model_id);
+                    axum::Json(serde_json::json!({ "status": "ok", "modelId": model_id }))
+                }
+            }),
+        )
         .fallback(dispatch::dispatch)
         .layer(Extension(Arc::new(registry)))
         .layer(Extension(Arc::new(config)))
