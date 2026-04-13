@@ -41,30 +41,7 @@ impl PolicyScope {
 
 impl IamService {
     pub(super) fn create_policy(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let policy_name = required_param(&req.query_params, "PolicyName")?;
-        validate_string_length("policyName", &policy_name, 1, 128)?;
-        let policy_document = required_param(&req.query_params, "PolicyDocument")?;
-        let path = req
-            .query_params
-            .get("Path")
-            .cloned()
-            .unwrap_or_else(|| "/".to_string());
-        let description = req
-            .query_params
-            .get("Description")
-            .cloned()
-            .unwrap_or_default();
-        let tags = parse_tags(&req.query_params);
-        validate_tags(&tags, 0)?;
-
-        // Validate policy document
-        if let Err(msg) = validate_policy_document(&policy_document) {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "MalformedPolicyDocument",
-                msg,
-            ));
-        }
+        let input = CreatePolicyInput::from_query(&req.query_params)?;
 
         let partition = partition_for_region(&req.region);
         let effective_account = self.effective_account_id(req);
@@ -73,22 +50,24 @@ impl IamService {
 
         let arn = format!(
             "arn:{}:iam::{}:policy{}{}",
-            partition, effective_account, path, policy_name
+            partition, effective_account, input.path, input.policy_name
         );
 
-        // Check for duplicate policy ARN
         if state.policies.contains_key(&arn) {
             return Err(AwsServiceError::aws_error(
                 StatusCode::CONFLICT,
                 "EntityAlreadyExists",
-                format!("A policy called {policy_name} already exists. Duplicate names are not allowed."),
+                format!(
+                    "A policy called {} already exists. Duplicate names are not allowed.",
+                    input.policy_name
+                ),
             ));
         }
 
         let now = Utc::now();
         let version = PolicyVersion {
             version_id: "v1".to_string(),
-            document: policy_document,
+            document: input.policy_document,
             is_default: true,
             created_at: now,
         };
@@ -96,11 +75,11 @@ impl IamService {
         let policy = IamPolicy {
             policy_id: format!("ANPA{}", generate_id()),
             arn: arn.clone(),
-            policy_name,
-            path,
-            description,
+            policy_name: input.policy_name,
+            path: input.path,
+            description: input.description,
             created_at: now,
-            tags,
+            tags: input.tags,
             default_version_id: "v1".to_string(),
             versions: vec![version],
             next_version_num: 2,
@@ -673,5 +652,45 @@ impl IamService {
             req.request_id
         );
         Ok(AwsResponse::xml(StatusCode::OK, xml))
+    }
+}
+
+/// Parsed + validated inputs for `CreatePolicy`.
+struct CreatePolicyInput {
+    policy_name: String,
+    policy_document: String,
+    path: String,
+    description: String,
+    tags: Vec<crate::state::Tag>,
+}
+
+impl CreatePolicyInput {
+    fn from_query(
+        params: &std::collections::HashMap<String, String>,
+    ) -> Result<Self, AwsServiceError> {
+        let policy_name = required_param(params, "PolicyName")?;
+        validate_string_length("policyName", &policy_name, 1, 128)?;
+        let policy_document = required_param(params, "PolicyDocument")?;
+        let path = params
+            .get("Path")
+            .cloned()
+            .unwrap_or_else(|| "/".to_string());
+        let description = params.get("Description").cloned().unwrap_or_default();
+        let tags = parse_tags(params);
+        validate_tags(&tags, 0)?;
+        if let Err(msg) = validate_policy_document(&policy_document) {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "MalformedPolicyDocument",
+                msg,
+            ));
+        }
+        Ok(Self {
+            policy_name,
+            policy_document,
+            path,
+            description,
+            tags,
+        })
     }
 }
