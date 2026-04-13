@@ -65,6 +65,8 @@ Every feature ships with E2E tests using the actual AWS SDK. Not unit tests with
 
 When the test uses the real SDK and the code is wrong, the test fails. The AI iterates until it's right.
 
+This matters most for cross-service wiring—the stuff that's easy to get subtly wrong and almost impossible to catch with mocks. fakecloud actually executes the integrations: an EventBridge rule really triggers the Step Functions state machine, an SES inbound rule really invokes the Lambda, an S3 event really lands in SQS. If the AI wires it up wrong, the test fails for the same reason it would fail in production.
+
 **2. Conformance testing the AI didn't write.**
 
 We auto-generate 34,000+ test variants from AWS Smithy models. Every operation, every parameter, every boundary condition, every error case.
@@ -93,7 +95,7 @@ If you're building on AWS and using AI to write code, here's what matters:
 
 ## The test suite is the guardrail
 
-I built fakecloud almost entirely with Claude. 20 AWS services, 1,000+ operations, 100% conformance to AWS behavior.
+I built fakecloud almost entirely with Claude. 22 AWS services, 1,150+ operations, 100% conformance to AWS behavior.
 
 fakecloud works because the tests verify everything:
 
