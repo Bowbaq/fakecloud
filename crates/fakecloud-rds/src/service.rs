@@ -1263,41 +1263,15 @@ impl RdsService {
             return Err(runtime_error_to_service_error(e));
         }
 
-        let replica = DbInstance {
-            db_instance_identifier: db_instance_identifier.clone(),
+        let replica = build_read_replica_instance(
+            &db_instance_identifier,
             db_instance_arn,
-            db_instance_class: source_instance.db_instance_class.clone(),
-            engine: source_instance.engine.clone(),
-            engine_version: source_instance.engine_version.clone(),
-            db_instance_status: "available".to_string(),
-            master_username: source_instance.master_username.clone(),
-            db_name: source_instance.db_name.clone(),
-            endpoint_address: "127.0.0.1".to_string(),
-            port: i32::from(running.host_port),
-            allocated_storage: source_instance.allocated_storage,
-            publicly_accessible: source_instance.publicly_accessible,
-            deletion_protection: false,
-            created_at,
             dbi_resource_id,
-            master_user_password: source_instance.master_user_password.clone(),
-            container_id: running.container_id,
-            host_port: running.host_port,
-            tags: Vec::new(),
-            read_replica_source_db_instance_identifier: Some(source_db_instance_identifier.clone()),
-            read_replica_db_instance_identifiers: Vec::new(),
-            vpc_security_group_ids: source_instance.vpc_security_group_ids.clone(),
-            db_parameter_group_name: source_instance.db_parameter_group_name.clone(),
-            backup_retention_period: source_instance.backup_retention_period,
-            preferred_backup_window: source_instance.preferred_backup_window.clone(),
-            latest_restorable_time: if source_instance.backup_retention_period > 0 {
-                Some(created_at)
-            } else {
-                None
-            },
-            option_group_name: source_instance.option_group_name.clone(),
-            multi_az: source_instance.multi_az,
-            pending_modified_values: None,
-        };
+            created_at,
+            &source_db_instance_identifier,
+            &source_instance,
+            &running,
+        );
 
         let source_missing = {
             let mut state = self.state.write();
@@ -2116,6 +2090,56 @@ fn filter_orderable_options(
         .filter(|_| vpc.unwrap_or(true))
         .cloned()
         .collect()
+}
+
+/// Build a `DbInstance` for a newly-created read replica, copying the
+/// source instance's physical attributes and binding the replica's
+/// identifier, ARN, resource id, container id and host port.
+#[allow(clippy::too_many_arguments)]
+fn build_read_replica_instance(
+    db_instance_identifier: &str,
+    db_instance_arn: String,
+    dbi_resource_id: String,
+    created_at: chrono::DateTime<Utc>,
+    source_db_instance_identifier: &str,
+    source: &DbInstance,
+    running: &crate::runtime::RunningDbContainer,
+) -> DbInstance {
+    DbInstance {
+        db_instance_identifier: db_instance_identifier.to_string(),
+        db_instance_arn,
+        db_instance_class: source.db_instance_class.clone(),
+        engine: source.engine.clone(),
+        engine_version: source.engine_version.clone(),
+        db_instance_status: "available".to_string(),
+        master_username: source.master_username.clone(),
+        db_name: source.db_name.clone(),
+        endpoint_address: "127.0.0.1".to_string(),
+        port: i32::from(running.host_port),
+        allocated_storage: source.allocated_storage,
+        publicly_accessible: source.publicly_accessible,
+        deletion_protection: false,
+        created_at,
+        dbi_resource_id,
+        master_user_password: source.master_user_password.clone(),
+        container_id: running.container_id.clone(),
+        host_port: running.host_port,
+        tags: Vec::new(),
+        read_replica_source_db_instance_identifier: Some(source_db_instance_identifier.to_string()),
+        read_replica_db_instance_identifiers: Vec::new(),
+        vpc_security_group_ids: source.vpc_security_group_ids.clone(),
+        db_parameter_group_name: source.db_parameter_group_name.clone(),
+        backup_retention_period: source.backup_retention_period,
+        preferred_backup_window: source.preferred_backup_window.clone(),
+        latest_restorable_time: if source.backup_retention_period > 0 {
+            Some(created_at)
+        } else {
+            None
+        },
+        option_group_name: source.option_group_name.clone(),
+        multi_az: source.multi_az,
+        pending_modified_values: None,
+    }
 }
 
 fn xml_wrap(action: &str, inner: &str, request_id: &str) -> String {
