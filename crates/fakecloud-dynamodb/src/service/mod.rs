@@ -1206,77 +1206,20 @@ fn evaluate_single_filter_condition(
         return !item.contains_key(&attr);
     }
 
-    // begins_with only works on S (string) type — not N
     if let Some(rest) = part
         .strip_prefix("begins_with(")
         .or_else(|| part.strip_prefix("begins_with ("))
     {
-        if let Some(inner) = rest.strip_suffix(')') {
-            let mut split = inner.splitn(2, ',');
-            if let (Some(attr_ref), Some(val_ref)) = (split.next(), split.next()) {
-                let attr_name = resolve_attr_name(attr_ref.trim(), expr_attr_names);
-                let expected = expr_attr_values.get(val_ref.trim());
-                let actual = item.get(&attr_name);
-                return match (actual, expected) {
-                    (Some(a), Some(e)) => {
-                        let a_str = a.get("S").and_then(|v| v.as_str());
-                        let e_str = e.get("S").and_then(|v| v.as_str());
-                        matches!((a_str, e_str), (Some(a), Some(e)) if a.starts_with(e))
-                    }
-                    _ => false,
-                };
-            }
-        }
+        return eval_begins_with(rest, item, expr_attr_names, expr_attr_values);
     }
 
-    // contains: works on S (substring), SS/NS/BS/L (set membership)
     if let Some(rest) = part
         .strip_prefix("contains(")
         .or_else(|| part.strip_prefix("contains ("))
     {
-        if let Some(inner) = rest.strip_suffix(')') {
-            let mut split = inner.splitn(2, ',');
-            if let (Some(attr_ref), Some(val_ref)) = (split.next(), split.next()) {
-                let attr_name = resolve_attr_name(attr_ref.trim(), expr_attr_names);
-                let expected = expr_attr_values.get(val_ref.trim());
-                let actual = item.get(&attr_name);
-                return match (actual, expected) {
-                    (Some(a), Some(e)) => {
-                        // String substring check (S type only)
-                        if let (Some(a_s), Some(e_s)) = (
-                            a.get("S").and_then(|v| v.as_str()),
-                            e.get("S").and_then(|v| v.as_str()),
-                        ) {
-                            return a_s.contains(e_s);
-                        }
-                        // Set/list membership
-                        if let Some(set) = a.get("SS").and_then(|v| v.as_array()) {
-                            if let Some(val) = e.get("S") {
-                                return set.contains(val);
-                            }
-                        }
-                        if let Some(set) = a.get("NS").and_then(|v| v.as_array()) {
-                            if let Some(val) = e.get("N") {
-                                return set.contains(val);
-                            }
-                        }
-                        if let Some(set) = a.get("BS").and_then(|v| v.as_array()) {
-                            if let Some(val) = e.get("B") {
-                                return set.contains(val);
-                            }
-                        }
-                        if let Some(list) = a.get("L").and_then(|v| v.as_array()) {
-                            return list.contains(e);
-                        }
-                        false
-                    }
-                    _ => false,
-                };
-            }
-        }
+        return eval_contains(rest, item, expr_attr_names, expr_attr_values);
     }
 
-    // size(path) op :val — attribute size comparison
     if part.starts_with("size(") || part.starts_with("size (") {
         if let Some(result) =
             evaluate_size_comparison(part, item, expr_attr_names, expr_attr_values)
@@ -1285,40 +1228,11 @@ fn evaluate_single_filter_condition(
         }
     }
 
-    // attribute_type(path, :type)
-    if part.starts_with("attribute_type(") || part.starts_with("attribute_type (") {
-        if let Some(rest) = part
-            .strip_prefix("attribute_type(")
-            .or_else(|| part.strip_prefix("attribute_type ("))
-        {
-            if let Some(inner) = rest.strip_suffix(')') {
-                let mut split = inner.splitn(2, ',');
-                if let (Some(attr_ref), Some(val_ref)) = (split.next(), split.next()) {
-                    let attr_name = resolve_attr_name(attr_ref.trim(), expr_attr_names);
-                    let expected_type = expr_attr_values
-                        .get(val_ref.trim())
-                        .and_then(|v| v.get("S"))
-                        .and_then(|v| v.as_str());
-                    let actual = item.get(&attr_name);
-                    return match (actual, expected_type) {
-                        (Some(val), Some(t)) => match t {
-                            "S" => val.get("S").is_some(),
-                            "N" => val.get("N").is_some(),
-                            "B" => val.get("B").is_some(),
-                            "BOOL" => val.get("BOOL").is_some(),
-                            "NULL" => val.get("NULL").is_some(),
-                            "SS" => val.get("SS").is_some(),
-                            "NS" => val.get("NS").is_some(),
-                            "BS" => val.get("BS").is_some(),
-                            "L" => val.get("L").is_some(),
-                            "M" => val.get("M").is_some(),
-                            _ => false,
-                        },
-                        _ => false,
-                    };
-                }
-            }
-        }
+    if let Some(rest) = part
+        .strip_prefix("attribute_type(")
+        .or_else(|| part.strip_prefix("attribute_type ("))
+    {
+        return eval_attribute_type(rest, item, expr_attr_names, expr_attr_values);
     }
 
     if let Some((attr_ref, value_refs)) = parse_in_expression(part) {
@@ -1328,6 +1242,125 @@ fn evaluate_single_filter_condition(
     }
 
     evaluate_single_key_condition(part, item, "", expr_attr_names, expr_attr_values)
+}
+
+/// `begins_with(path, :val)` — only S (string) operands. Returns false on
+/// any parse failure or type mismatch (this is the same shape DynamoDB
+/// returns: a malformed predicate is silently false rather than an error).
+fn eval_begins_with(
+    rest: &str,
+    item: &HashMap<String, AttributeValue>,
+    expr_attr_names: &HashMap<String, String>,
+    expr_attr_values: &HashMap<String, Value>,
+) -> bool {
+    let Some(inner) = rest.strip_suffix(')') else {
+        return false;
+    };
+    let mut split = inner.splitn(2, ',');
+    let (Some(attr_ref), Some(val_ref)) = (split.next(), split.next()) else {
+        return false;
+    };
+    let attr_name = resolve_attr_name(attr_ref.trim(), expr_attr_names);
+    let expected = expr_attr_values.get(val_ref.trim());
+    let actual = item.get(&attr_name);
+    match (actual, expected) {
+        (Some(a), Some(e)) => {
+            let a_str = a.get("S").and_then(|v| v.as_str());
+            let e_str = e.get("S").and_then(|v| v.as_str());
+            matches!((a_str, e_str), (Some(a), Some(e)) if a.starts_with(e))
+        }
+        _ => false,
+    }
+}
+
+/// `contains(path, :val)` — substring check on S, set membership on
+/// SS/NS/BS, and element membership on L. Other type pairings return
+/// false.
+fn eval_contains(
+    rest: &str,
+    item: &HashMap<String, AttributeValue>,
+    expr_attr_names: &HashMap<String, String>,
+    expr_attr_values: &HashMap<String, Value>,
+) -> bool {
+    let Some(inner) = rest.strip_suffix(')') else {
+        return false;
+    };
+    let mut split = inner.splitn(2, ',');
+    let (Some(attr_ref), Some(val_ref)) = (split.next(), split.next()) else {
+        return false;
+    };
+    let attr_name = resolve_attr_name(attr_ref.trim(), expr_attr_names);
+    let expected = expr_attr_values.get(val_ref.trim());
+    let actual = item.get(&attr_name);
+    let (Some(a), Some(e)) = (actual, expected) else {
+        return false;
+    };
+
+    if let (Some(a_s), Some(e_s)) = (
+        a.get("S").and_then(|v| v.as_str()),
+        e.get("S").and_then(|v| v.as_str()),
+    ) {
+        return a_s.contains(e_s);
+    }
+    if let Some(set) = a.get("SS").and_then(|v| v.as_array()) {
+        if let Some(val) = e.get("S") {
+            return set.contains(val);
+        }
+    }
+    if let Some(set) = a.get("NS").and_then(|v| v.as_array()) {
+        if let Some(val) = e.get("N") {
+            return set.contains(val);
+        }
+    }
+    if let Some(set) = a.get("BS").and_then(|v| v.as_array()) {
+        if let Some(val) = e.get("B") {
+            return set.contains(val);
+        }
+    }
+    if let Some(list) = a.get("L").and_then(|v| v.as_array()) {
+        return list.contains(e);
+    }
+    false
+}
+
+/// `attribute_type(path, :type)` — checks whether the attribute at `path`
+/// is stored under the wire type identified by `:type` (one of the
+/// DynamoDB type letters S/N/B/BOOL/NULL/SS/NS/BS/L/M).
+fn eval_attribute_type(
+    rest: &str,
+    item: &HashMap<String, AttributeValue>,
+    expr_attr_names: &HashMap<String, String>,
+    expr_attr_values: &HashMap<String, Value>,
+) -> bool {
+    let Some(inner) = rest.strip_suffix(')') else {
+        return false;
+    };
+    let mut split = inner.splitn(2, ',');
+    let (Some(attr_ref), Some(val_ref)) = (split.next(), split.next()) else {
+        return false;
+    };
+    let attr_name = resolve_attr_name(attr_ref.trim(), expr_attr_names);
+    let expected_type = expr_attr_values
+        .get(val_ref.trim())
+        .and_then(|v| v.get("S"))
+        .and_then(|v| v.as_str());
+    let actual = item.get(&attr_name);
+    let (Some(val), Some(t)) = (actual, expected_type) else {
+        return false;
+    };
+    match t {
+        "S" => val.get("S").is_some(),
+        "N" => val.get("N").is_some(),
+        "B" => val.get("B").is_some(),
+        "BOOL" => val.get("BOOL").is_some(),
+        "NULL" => val.get("NULL").is_some(),
+        "SS" => val.get("SS").is_some(),
+        "NS" => val.get("NS").is_some(),
+        "BS" => val.get("BS").is_some(),
+        "L" => val.get("L").is_some(),
+        "M" => val.get("M").is_some(),
+        _ => false,
+    }
 }
 
 /// Parse an `attr IN (:v1, :v2, ...)` expression. Mirrors the DynamoDB
@@ -1500,99 +1533,34 @@ fn apply_set_assignment(
     let attr = resolve_attr_name(attr_ref, expr_attr_names);
     let right = right.trim();
 
-    // if_not_exists(attr, :val)
     if let Some(rest) = right
         .strip_prefix("if_not_exists(")
         .or_else(|| right.strip_prefix("if_not_exists ("))
     {
-        if let Some(inner) = rest.strip_suffix(')') {
-            let mut split = inner.splitn(2, ',');
-            if let (Some(check_attr), Some(default_ref)) = (split.next(), split.next()) {
-                let check_name = resolve_attr_name(check_attr.trim(), expr_attr_names);
-                if !item.contains_key(&check_name) {
-                    if let Some(val) = expr_attr_values.get(default_ref.trim()) {
-                        item.insert(attr, val.clone());
-                    }
-                }
-                return Ok(());
-            }
-        }
+        apply_set_if_not_exists(item, &attr, rest, expr_attr_names, expr_attr_values);
+        return Ok(());
     }
 
-    // list_append(a, b)
     if let Some(rest) = right
         .strip_prefix("list_append(")
         .or_else(|| right.strip_prefix("list_append ("))
     {
-        if let Some(inner) = rest.strip_suffix(')') {
-            let mut split = inner.splitn(2, ',');
-            if let (Some(a_ref), Some(b_ref)) = (split.next(), split.next()) {
-                let a_val = resolve_value(a_ref.trim(), item, expr_attr_names, expr_attr_values);
-                let b_val = resolve_value(b_ref.trim(), item, expr_attr_names, expr_attr_values);
-
-                let mut merged = Vec::new();
-                if let Some(Value::Object(obj)) = &a_val {
-                    if let Some(Value::Array(arr)) = obj.get("L") {
-                        merged.extend(arr.clone());
-                    }
-                }
-                if let Some(Value::Object(obj)) = &b_val {
-                    if let Some(Value::Array(arr)) = obj.get("L") {
-                        merged.extend(arr.clone());
-                    }
-                }
-
-                item.insert(attr, json!({"L": merged}));
-                return Ok(());
-            }
-        }
-    }
-
-    // Arithmetic: attr + :val or attr - :val
-    if let Some((arith_left, arith_right, is_add)) = parse_arithmetic(right) {
-        let left_val = resolve_value(arith_left.trim(), item, expr_attr_names, expr_attr_values);
-        let right_val = resolve_value(arith_right.trim(), item, expr_attr_names, expr_attr_values);
-
-        // Both operands must be numeric (N type)
-        let left_num = match extract_number(&left_val) {
-            Some(n) => n,
-            None if left_val.is_some() => {
-                return Err(AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "ValidationException",
-                    "An operand in the update expression has an incorrect data type",
-                ));
-            }
-            None => 0.0, // attribute doesn't exist yet — treat as 0
-        };
-        let right_num = match extract_number(&right_val) {
-            Some(n) => n,
-            None => {
-                return Err(AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "ValidationException",
-                    "An operand in the update expression has an incorrect data type",
-                ));
-            }
-        };
-
-        let result = if is_add {
-            left_num + right_num
-        } else {
-            left_num - right_num
-        };
-
-        let num_str = if result == result.trunc() {
-            format!("{}", result as i64)
-        } else {
-            format!("{result}")
-        };
-
-        item.insert(attr, json!({"N": num_str}));
+        apply_set_list_append(item, &attr, rest, expr_attr_names, expr_attr_values);
         return Ok(());
     }
 
-    // Simple assignment
+    if let Some((arith_left, arith_right, is_add)) = parse_arithmetic(right) {
+        return apply_set_arithmetic(
+            item,
+            &attr,
+            arith_left,
+            arith_right,
+            is_add,
+            expr_attr_names,
+            expr_attr_values,
+        );
+    }
+
     let val = resolve_value(right, item, expr_attr_names, expr_attr_values);
     if let Some(v) = val {
         match list_index {
@@ -1603,6 +1571,119 @@ fn apply_set_assignment(
         }
     }
 
+    Ok(())
+}
+
+/// SET ... = if_not_exists(other_attr, :val) — write `:val` into `attr`
+/// only when `other_attr` is missing from the item. The lookup uses
+/// `other_attr`, not the SET target, which is what makes it useful as a
+/// 'create-or-keep' primitive.
+fn apply_set_if_not_exists(
+    item: &mut HashMap<String, AttributeValue>,
+    attr: &str,
+    rest: &str,
+    expr_attr_names: &HashMap<String, String>,
+    expr_attr_values: &HashMap<String, Value>,
+) {
+    let Some(inner) = rest.strip_suffix(')') else {
+        return;
+    };
+    let mut split = inner.splitn(2, ',');
+    let (Some(check_attr), Some(default_ref)) = (split.next(), split.next()) else {
+        return;
+    };
+    let check_name = resolve_attr_name(check_attr.trim(), expr_attr_names);
+    if item.contains_key(&check_name) {
+        return;
+    }
+    if let Some(val) = expr_attr_values.get(default_ref.trim()) {
+        item.insert(attr.to_string(), val.clone());
+    }
+}
+
+/// SET ... = list_append(a, b) — concatenate the L arrays of two list
+/// operands. Either operand may be missing or non-list, in which case
+/// it contributes nothing.
+fn apply_set_list_append(
+    item: &mut HashMap<String, AttributeValue>,
+    attr: &str,
+    rest: &str,
+    expr_attr_names: &HashMap<String, String>,
+    expr_attr_values: &HashMap<String, Value>,
+) {
+    let Some(inner) = rest.strip_suffix(')') else {
+        return;
+    };
+    let mut split = inner.splitn(2, ',');
+    let (Some(a_ref), Some(b_ref)) = (split.next(), split.next()) else {
+        return;
+    };
+    let a_val = resolve_value(a_ref.trim(), item, expr_attr_names, expr_attr_values);
+    let b_val = resolve_value(b_ref.trim(), item, expr_attr_names, expr_attr_values);
+
+    let mut merged = Vec::new();
+    if let Some(Value::Object(obj)) = &a_val {
+        if let Some(Value::Array(arr)) = obj.get("L") {
+            merged.extend(arr.clone());
+        }
+    }
+    if let Some(Value::Object(obj)) = &b_val {
+        if let Some(Value::Array(arr)) = obj.get("L") {
+            merged.extend(arr.clone());
+        }
+    }
+
+    item.insert(attr.to_string(), json!({"L": merged}));
+}
+
+/// SET ... = `<arith_left> +/- <arith_right>` — both operands must
+/// resolve to N values (or the LHS may be missing, in which case it's
+/// treated as 0). Anything else is rejected with the same
+/// `ValidationException` AWS returns.
+fn apply_set_arithmetic(
+    item: &mut HashMap<String, AttributeValue>,
+    attr: &str,
+    arith_left: &str,
+    arith_right: &str,
+    is_add: bool,
+    expr_attr_names: &HashMap<String, String>,
+    expr_attr_values: &HashMap<String, Value>,
+) -> Result<(), AwsServiceError> {
+    let left_val = resolve_value(arith_left.trim(), item, expr_attr_names, expr_attr_values);
+    let right_val = resolve_value(arith_right.trim(), item, expr_attr_names, expr_attr_values);
+
+    let left_num = match extract_number(&left_val) {
+        Some(n) => n,
+        None if left_val.is_some() => {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "ValidationException",
+                "An operand in the update expression has an incorrect data type",
+            ));
+        }
+        None => 0.0,
+    };
+    let right_num = extract_number(&right_val).ok_or_else(|| {
+        AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "ValidationException",
+            "An operand in the update expression has an incorrect data type",
+        )
+    })?;
+
+    let result = if is_add {
+        left_num + right_num
+    } else {
+        left_num - right_num
+    };
+
+    let num_str = if result == result.trunc() {
+        format!("{}", result as i64)
+    } else {
+        format!("{result}")
+    };
+
+    item.insert(attr.to_string(), json!({"N": num_str}));
     Ok(())
 }
 
