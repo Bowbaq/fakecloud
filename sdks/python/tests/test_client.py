@@ -15,6 +15,7 @@ import time
 
 import boto3
 import pytest
+from botocore.config import Config as BotocoreConfig
 
 from fakecloud import FakeCloudSync
 from fakecloud.types import (
@@ -403,12 +404,50 @@ def test_bedrock_faults_roundtrip(fc: FakeCloudSync, fakecloud_url: str) -> None
     assert fc.bedrock.get_faults().faults == []
 
 
-def test_bedrock_invocations_has_error_field(
+def test_bedrock_invocation_decodes_error_field(
     fc: FakeCloudSync, fakecloud_url: str
 ) -> None:
-    result = fc.bedrock.get_invocations()
-    for inv in result.invocations:
-        assert inv.error is None or isinstance(inv.error, str)
+    """End-to-end coverage: inject a fault, make a Bedrock call via boto3,
+    then confirm the SDK decodes the populated `error` field on the faulted
+    invocation and `None` on the successful one.
+    """
+    bedrock = boto3.client(
+        "bedrock-runtime",
+        **_boto_kwargs(fakecloud_url),
+        config=BotocoreConfig(retries={"max_attempts": 1, "mode": "standard"}),
+    )
+    model_id = "anthropic.claude-3-haiku-20240307-v1:0"
+
+    fc.bedrock.queue_fault(
+        BedrockFaultRule(
+            error_type="ThrottlingException",
+            message="Rate exceeded",
+            http_status=429,
+            count=1,
+        )
+    )
+
+    body = json.dumps(
+        {
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "hello"}],
+        }
+    )
+
+    # First call faults
+    try:
+        bedrock.invoke_model(modelId=model_id, body=body)
+    except Exception:
+        pass
+
+    # Second call succeeds
+    bedrock.invoke_model(modelId=model_id, body=body)
+
+    invs = fc.bedrock.get_invocations().invocations
+    assert len(invs) == 2
+    assert invs[0].error is not None and "ThrottlingException" in invs[0].error
+    assert invs[1].error is None
 
 
 # ── Unit tests for serialization logic ────────────────────────────────

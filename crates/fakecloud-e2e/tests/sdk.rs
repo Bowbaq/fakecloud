@@ -647,22 +647,6 @@ async fn sdk_bedrock_faults_roundtrip() {
     assert!(after.faults.is_empty());
 }
 
-#[tokio::test]
-async fn sdk_bedrock_invocations_has_error_field() {
-    let server = TestServer::start().await;
-    let fc = FakeCloud::new(server.endpoint());
-
-    let resp = fc
-        .bedrock()
-        .get_invocations()
-        .await
-        .expect("get invocations");
-    // Freshly started — shape must carry `error` field (None by default).
-    for inv in resp.invocations {
-        assert!(inv.error.is_none() || inv.error.is_some());
-    }
-}
-
 // ── SecretsManager ─────────────────────────────────────────────────
 
 #[tokio::test]

@@ -827,17 +827,3 @@ func TestE2EBedrockFaults(t *testing.T) {
 	}
 }
 
-func TestE2EBedrockInvocationsErrorField(t *testing.T) {
-	resetState(t)
-	ctx := context.Background()
-	fc := fakecloud.New(fakecloudURL)
-
-	resp, err := fc.Bedrock().GetInvocations(ctx)
-	if err != nil {
-		t.Fatalf("GetInvocations failed: %v", err)
-	}
-	// Freshly reset — just confirm the field decodes without panic.
-	for _, inv := range resp.Invocations {
-		_ = inv.Error
-	}
-}

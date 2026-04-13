@@ -178,7 +178,9 @@ func main() {
 func TestClassifierBranchesOnSpamVsHam(t *testing.T) {
     ctx := context.Background()
     fc := fakecloud.New("http://localhost:4566")
-    _ = fc.Reset(ctx)
+    if err := fc.Reset(ctx); err != nil {
+        t.Fatal(err)
+    }
 
     modelID := "anthropic.claude-3-haiku-20240307-v1:0"
     spam := "buy now"
@@ -193,7 +195,10 @@ func TestClassifierBranchesOnSpamVsHam(t *testing.T) {
     classify(t, "hello friend")
     classify(t, "buy now cheap pills")
 
-    invs, _ := fc.Bedrock().GetInvocations(ctx)
+    invs, err := fc.Bedrock().GetInvocations(ctx)
+    if err != nil {
+        t.Fatal(err)
+    }
     if len(invs.Invocations) != 2 {
         t.Fatalf("expected 2 invocations, got %d", len(invs.Invocations))
     }
@@ -206,7 +211,9 @@ func TestClassifierBranchesOnSpamVsHam(t *testing.T) {
 func TestRetriesOnThrottling(t *testing.T) {
     ctx := context.Background()
     fc := fakecloud.New("http://localhost:4566")
-    _ = fc.Reset(ctx)
+    if err := fc.Reset(ctx); err != nil {
+        t.Fatal(err)
+    }
 
     _, err := fc.Bedrock().QueueFault(ctx, fakecloud.BedrockFaultRule{
         ErrorType:  "ThrottlingException",
@@ -220,7 +227,10 @@ func TestRetriesOnThrottling(t *testing.T) {
 
     classify(t, "hello")
 
-    invs, _ := fc.Bedrock().GetInvocations(ctx)
+    invs, err := fc.Bedrock().GetInvocations(ctx)
+    if err != nil {
+        t.Fatal(err)
+    }
     if len(invs.Invocations) != 2 {
         t.Fatalf("expected 2 invocations, got %d", len(invs.Invocations))
     }
