@@ -13,6 +13,42 @@ use sha2::{Digest, Sha256};
 
 use super::{missing, SsmService};
 
+/// Resolve which `SsmDocumentVersion` a `GetDocument`-style request is
+/// asking for. AWS lets the caller pin a version with `DocumentVersion`,
+/// `VersionName`, both, or neither (in which case we return the document's
+/// default version). `$LATEST` is the only special string the caller is
+/// allowed to pass for `DocumentVersion`.
+fn select_document_version<'a>(
+    doc: &'a SsmDocument,
+    version: Option<&str>,
+    version_name: Option<&str>,
+) -> Option<&'a SsmDocumentVersion> {
+    if let Some(vn) = version_name {
+        let mut candidates = doc
+            .versions
+            .iter()
+            .filter(|v| v.version_name.as_deref() == Some(vn));
+
+        return match version {
+            Some(doc_ver) => candidates.find(|v| v.document_version == doc_ver),
+            None => candidates.next(),
+        };
+    }
+
+    if let Some(doc_ver) = version {
+        let target = if doc_ver == "$LATEST" {
+            doc.latest_version.as_str()
+        } else {
+            doc_ver
+        };
+        return doc.versions.iter().find(|v| v.document_version == target);
+    }
+
+    doc.versions
+        .iter()
+        .find(|v| v.document_version == doc.default_version)
+}
+
 impl SsmService {
     pub(super) fn create_document(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = req.json_body();
@@ -163,58 +199,19 @@ impl SsmService {
             .get(name)
             .ok_or_else(|| doc_not_found(name))?;
 
-        // Find the target version
-        let ver = if let Some(vn) = version_name {
-            // Lookup by VersionName (and optionally DocumentVersion)
-            let candidates: Vec<&_> = doc
-                .versions
-                .iter()
-                .filter(|v| v.version_name.as_deref() == Some(vn))
-                .collect();
-            if let Some(doc_ver) = version {
-                // Both VersionName and DocumentVersion specified - must match
-                candidates
-                    .into_iter()
-                    .find(|v| v.document_version == doc_ver)
-                    .ok_or_else(|| doc_not_found(name))?
-            } else {
-                candidates
-                    .first()
-                    .copied()
-                    .ok_or_else(|| doc_not_found(name))?
-            }
-        } else if let Some(doc_ver) = version {
-            let target = if doc_ver == "$LATEST" {
-                &doc.latest_version
-            } else {
-                doc_ver
-            };
-            doc.versions
-                .iter()
-                .find(|v| v.document_version == target)
-                .ok_or_else(|| doc_not_found(name))?
-        } else {
-            doc.versions
-                .iter()
-                .find(|v| v.document_version == doc.default_version)
-                .ok_or_else(|| doc_not_found(name))?
-        };
+        let ver = select_document_version(doc, version, version_name)
+            .ok_or_else(|| doc_not_found(name))?;
 
-        // Convert content format if requested
-        let (content, format) = if let Some(fmt) = requested_format {
-            let converted = convert_document_content(&ver.content, &ver.document_format, fmt);
-            (converted, fmt.to_string())
-        } else {
-            // If stored as YAML but no explicit format requested, return as JSON
-            let converted = convert_document_content(&ver.content, &ver.document_format, "JSON");
-            (converted, "JSON".to_string())
-        };
+        // If a stored YAML version is fetched without an explicit format we
+        // still hand it back as JSON, matching the AWS default.
+        let target_format = requested_format.unwrap_or("JSON");
+        let content = convert_document_content(&ver.content, &ver.document_format, target_format);
 
         let mut resp = json!({
             "Name": doc.name,
             "Content": content,
             "DocumentType": doc.document_type,
-            "DocumentFormat": format,
+            "DocumentFormat": target_format,
             "DocumentVersion": ver.document_version,
             "Status": ver.status,
             "CreatedDate": ver.created_date.timestamp_millis() as f64 / 1000.0,
