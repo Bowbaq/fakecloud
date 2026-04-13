@@ -2322,80 +2322,75 @@ fn db_instance_xml(instance: &DbInstance, status_override: Option<&str>) -> Stri
         String::new()
     };
 
-    format!(
-        "<DBInstanceIdentifier>{}</DBInstanceIdentifier>\
-         <DBInstanceClass>{}</DBInstanceClass>\
-         <Engine>{}</Engine>\
-         <DBInstanceStatus>{}</DBInstanceStatus>\
-         <MasterUsername>{}</MasterUsername>\
-         {}\
-         <Endpoint><Address>{}</Address><Port>{}</Port></Endpoint>\
-         <AllocatedStorage>{}</AllocatedStorage>\
-         <InstanceCreateTime>{}</InstanceCreateTime>\
-         <PreferredBackupWindow>{}</PreferredBackupWindow>\
-         <BackupRetentionPeriod>{}</BackupRetentionPeriod>\
-         <DBSecurityGroups/>\
-         {}\
-         {}\
-         <AvailabilityZone>us-east-1a</AvailabilityZone>\
-         {}\
-         <PreferredMaintenanceWindow>sun:00:00-sun:00:30</PreferredMaintenanceWindow>\
-         <MultiAZ>{}</MultiAZ>\
-         <EngineVersion>{}</EngineVersion>\
-         <AutoMinorVersionUpgrade>true</AutoMinorVersionUpgrade>\
-         {}\
-         {}\
-         <LicenseModel>{}</LicenseModel>\
-         {}\
-         <PubliclyAccessible>{}</PubliclyAccessible>\
-         <StorageType>gp2</StorageType>\
-         <DbInstancePort>{}</DbInstancePort>\
-         <StorageEncrypted>false</StorageEncrypted>\
-         <DbiResourceId>{}</DbiResourceId>\
-         <DeletionProtection>{}</DeletionProtection>\
-         {}\
-         <DBInstanceArn>{}</DBInstanceArn>",
-        xml_escape(&instance.db_instance_identifier),
-        xml_escape(&instance.db_instance_class),
-        xml_escape(&instance.engine),
-        xml_escape(status),
-        xml_escape(&instance.master_username),
-        db_name_xml,
-        xml_escape(&instance.endpoint_address),
-        instance.port,
-        instance.allocated_storage,
-        instance.created_at.to_rfc3339(),
-        xml_escape(&instance.preferred_backup_window),
-        instance.backup_retention_period,
-        vpc_security_groups_xml,
-        db_parameter_groups_xml,
-        instance
-            .latest_restorable_time
-            .map(|t| format!(
+    let latest_restorable_time_xml = instance
+        .latest_restorable_time
+        .map(|t| {
+            format!(
                 "<LatestRestorableTime>{}</LatestRestorableTime>",
                 t.to_rfc3339()
-            ))
-            .unwrap_or_default(),
-        if instance.multi_az { "true" } else { "false" },
-        xml_escape(&instance.engine_version),
-        read_replica_identifiers_xml,
-        read_replica_source_xml,
-        license_model_for_engine(&instance.engine),
-        option_group_memberships_xml,
-        if instance.publicly_accessible {
+            )
+        })
+        .unwrap_or_default();
+
+    format!(
+        "<DBInstanceIdentifier>{identifier}</DBInstanceIdentifier>\
+         <DBInstanceClass>{class}</DBInstanceClass>\
+         <Engine>{engine}</Engine>\
+         <DBInstanceStatus>{status}</DBInstanceStatus>\
+         <MasterUsername>{master_username}</MasterUsername>\
+         {db_name_xml}\
+         <Endpoint><Address>{endpoint_address}</Address><Port>{port}</Port></Endpoint>\
+         <AllocatedStorage>{allocated_storage}</AllocatedStorage>\
+         <InstanceCreateTime>{create_time}</InstanceCreateTime>\
+         <PreferredBackupWindow>{preferred_backup_window}</PreferredBackupWindow>\
+         <BackupRetentionPeriod>{backup_retention_period}</BackupRetentionPeriod>\
+         <DBSecurityGroups/>\
+         {vpc_security_groups_xml}\
+         {db_parameter_groups_xml}\
+         <AvailabilityZone>us-east-1a</AvailabilityZone>\
+         {latest_restorable_time_xml}\
+         <PreferredMaintenanceWindow>sun:00:00-sun:00:30</PreferredMaintenanceWindow>\
+         <MultiAZ>{multi_az}</MultiAZ>\
+         <EngineVersion>{engine_version}</EngineVersion>\
+         <AutoMinorVersionUpgrade>true</AutoMinorVersionUpgrade>\
+         {read_replica_identifiers_xml}\
+         {read_replica_source_xml}\
+         <LicenseModel>{license_model}</LicenseModel>\
+         {option_group_memberships_xml}\
+         <PubliclyAccessible>{publicly_accessible}</PubliclyAccessible>\
+         <StorageType>gp2</StorageType>\
+         <DbInstancePort>{port}</DbInstancePort>\
+         <StorageEncrypted>false</StorageEncrypted>\
+         <DbiResourceId>{dbi_resource_id}</DbiResourceId>\
+         <DeletionProtection>{deletion_protection}</DeletionProtection>\
+         {pending_modified_values_xml}\
+         <DBInstanceArn>{arn}</DBInstanceArn>",
+        identifier = xml_escape(&instance.db_instance_identifier),
+        class = xml_escape(&instance.db_instance_class),
+        engine = xml_escape(&instance.engine),
+        status = xml_escape(status),
+        master_username = xml_escape(&instance.master_username),
+        endpoint_address = xml_escape(&instance.endpoint_address),
+        port = instance.port,
+        allocated_storage = instance.allocated_storage,
+        create_time = instance.created_at.to_rfc3339(),
+        preferred_backup_window = xml_escape(&instance.preferred_backup_window),
+        backup_retention_period = instance.backup_retention_period,
+        multi_az = if instance.multi_az { "true" } else { "false" },
+        engine_version = xml_escape(&instance.engine_version),
+        license_model = license_model_for_engine(&instance.engine),
+        publicly_accessible = if instance.publicly_accessible {
             "true"
         } else {
             "false"
         },
-        instance.port,
-        xml_escape(&instance.dbi_resource_id),
-        if instance.deletion_protection {
+        dbi_resource_id = xml_escape(&instance.dbi_resource_id),
+        deletion_protection = if instance.deletion_protection {
             "true"
         } else {
             "false"
         },
-        pending_modified_values_xml,
-        xml_escape(&instance.db_instance_arn),
+        arn = xml_escape(&instance.db_instance_arn),
     )
 }
 
