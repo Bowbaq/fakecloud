@@ -70,21 +70,46 @@ pub fn scan_implemented_actions(
                 .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
 
             // Find the supported_actions() function body.
-            // The signature is: fn supported_actions(&self) -> &[&str] { &[...] }
-            // We need to skip past the opening brace to find the array literal.
+            // Two cases:
+            // 1. Inline: fn supported_actions(&self) -> &[&str] { &[...] }
+            // 2. Const reference: fn supported_actions(...) { CONST_NAME }
+            //    where CONST_NAME: &[&str] = &[...] appears elsewhere in the file.
             if let Some(start) = content.find("fn supported_actions") {
                 let after_fn = &content[start..];
                 // Find the opening brace of the function body
                 if let Some(brace_pos) = after_fn.find('{') {
                     let after_brace = &after_fn[brace_pos + 1..];
-                    // Now find the &[ that starts the array literal
-                    if let Some(bracket_start) = after_brace.find("&[") {
-                        let after_bracket = &after_brace[bracket_start..];
-                        // Find the matching ]
-                        if let Some(bracket_end) = after_bracket.find(']') {
-                            let body = &after_bracket[..bracket_end];
-                            for cap in re.captures_iter(body) {
-                                actions.push(cap[1].to_string());
+                    // Find the closing brace to limit our search to the function body
+                    if let Some(close_brace_pos) = after_brace.find('}') {
+                        let func_body_only = &after_brace[..close_brace_pos];
+                        // Now find the &[ that starts the array literal within the function body
+                        if let Some(bracket_start) = func_body_only.find("&[") {
+                            let after_bracket = &func_body_only[bracket_start..];
+                            // Find the matching ]
+                            if let Some(bracket_end) = after_bracket.find(']') {
+                                let body = &after_bracket[..bracket_end];
+                                for cap in re.captures_iter(body) {
+                                    actions.push(cap[1].to_string());
+                                }
+                            }
+                        } else {
+                            // Case 2: function body references a const.
+                            // Extract the const name and search for its definition.
+                            let func_body = func_body_only.trim();
+                            // func_body should be a single identifier like "SUPPORTED_ACTIONS"
+                            if func_body.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                                // Search for const CONST_NAME: &[&str] = &[...];
+                                let const_pattern =
+                                    format!("const {}: &[&str] = &[", func_body);
+                                if let Some(const_start) = content.find(&const_pattern) {
+                                    let after_const = &content[const_start + const_pattern.len()..];
+                                    if let Some(bracket_end) = after_const.find("];") {
+                                        let body = &after_const[..bracket_end];
+                                        for cap in re.captures_iter(body) {
+                                            actions.push(cap[1].to_string());
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
