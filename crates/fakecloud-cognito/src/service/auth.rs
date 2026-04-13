@@ -379,593 +379,621 @@ impl CognitoService {
 
         match auth_flow {
             "USER_PASSWORD_AUTH" => {
-                // Validate client allows this flow
-                if !explicit_auth_flows.contains(&"ALLOW_USER_PASSWORD_AUTH".to_string()) {
-                    return Err(AwsServiceError::aws_error(
-                        StatusCode::BAD_REQUEST,
-                        "NotAuthorizedException",
-                        "USER_PASSWORD_AUTH flow is not enabled for this client.",
-                    ));
-                }
-
-                let auth_params = body["AuthParameters"].as_object().ok_or_else(|| {
-                    AwsServiceError::aws_error(
-                        StatusCode::BAD_REQUEST,
-                        "InvalidParameterException",
-                        "AuthParameters is required",
-                    )
-                })?;
-
-                let username = auth_params
-                    .get("USERNAME")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        AwsServiceError::aws_error(
-                            StatusCode::BAD_REQUEST,
-                            "InvalidParameterException",
-                            "USERNAME is required in AuthParameters",
-                        )
-                    })?;
-
-                let password = auth_params
-                    .get("PASSWORD")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        AwsServiceError::aws_error(
-                            StatusCode::BAD_REQUEST,
-                            "InvalidParameterException",
-                            "PASSWORD is required in AuthParameters",
-                        )
-                    })?;
-
-                // First lock scope: validate user exists, extract trigger data, then drop lock
-                let (user_attrs, region, account_id) = {
-                    let state = self.state.read();
-
-                    let user = state
-                        .users
-                        .get(&pool_id)
-                        .and_then(|users| users.get(username))
-                        .ok_or_else(|| {
-                            AwsServiceError::aws_error(
-                                StatusCode::BAD_REQUEST,
-                                "NotAuthorizedException",
-                                "Incorrect username or password.",
-                            )
-                        })?;
-
-                    if !user.enabled {
-                        return Err(AwsServiceError::aws_error(
-                            StatusCode::BAD_REQUEST,
-                            "NotAuthorizedException",
-                            "User is disabled.",
-                        ));
-                    }
-
-                    // Collect user attributes for triggers
-                    let user_attrs = triggers::collect_user_attributes(user);
-                    let region = state.region.clone();
-                    let account_id = state.account_id.clone();
-
-                    (user_attrs, region, account_id)
-                };
-
-                let username_owned = username.to_string();
-                let client_id_owned = client_id.to_string();
-
-                // PreAuthentication_Authentication trigger (synchronous — can reject auth)
-                if let Some(ref ctx) = self.delivery_ctx {
-                    if let Some(function_arn) = triggers::get_trigger_arn(
-                        &self.state,
-                        &pool_id,
-                        TriggerSource::PreAuthenticationAuthentication,
-                    ) {
-                        let event = triggers::build_trigger_event(
-                            TriggerSource::PreAuthenticationAuthentication,
-                            &pool_id,
-                            Some(&client_id_owned),
-                            &username_owned,
-                            &user_attrs,
-                            &region,
-                            &account_id,
-                        );
-                        if triggers::invoke_trigger(ctx, &function_arn, &event)
-                            .await
-                            .is_none()
-                        {
-                            return Err(AwsServiceError::aws_error(
-                                StatusCode::BAD_REQUEST,
-                                "NotAuthorizedException",
-                                "PreAuthentication Lambda trigger rejected the request.",
-                            ));
-                        }
-                    }
-                }
-
-                // Second lock scope: password check, token generation, state mutations
-                let tokens = {
-                    let mut state = self.state.write();
-
-                    // Re-validate user exists (could have been modified between lock scopes)
-                    let user = state
-                        .users
-                        .get(&pool_id)
-                        .and_then(|users| users.get(username))
-                        .ok_or_else(|| {
-                            AwsServiceError::aws_error(
-                                StatusCode::BAD_REQUEST,
-                                "NotAuthorizedException",
-                                "Incorrect username or password.",
-                            )
-                        })?;
-
-                    let password_matches = match (&user.password, &user.temporary_password) {
-                        (Some(p), _) if p == password => true,
-                        (_, Some(tp)) if tp == password => true,
-                        _ => false,
-                    };
-                    if !password_matches {
-                        state.auth_events.push(AuthEvent {
-                            event_id: Uuid::new_v4().to_string(),
-                            event_type: "SIGN_IN_FAILURE".to_string(),
-                            username: username.to_string(),
-                            user_pool_id: pool_id.to_string(),
-                            client_id: Some(client_id.to_string()),
-                            timestamp: Utc::now(),
-                            success: false,
-                            feedback_value: None,
-                        });
-                        return Err(AwsServiceError::aws_error(
-                            StatusCode::BAD_REQUEST,
-                            "NotAuthorizedException",
-                            "Incorrect username or password.",
-                        ));
-                    }
-
-                    if user.user_status == user_status::FORCE_CHANGE_PASSWORD {
-                        let session = Uuid::new_v4().to_string();
-                        state.sessions.insert(
-                            session.clone(),
-                            SessionData {
-                                user_pool_id: pool_id.to_string(),
-                                username: username.to_string(),
-                                client_id: client_id.to_string(),
-                                challenge_name: "NEW_PASSWORD_REQUIRED".to_string(),
-                                challenge_results: vec![],
-                                challenge_metadata: None,
-                            },
-                        );
-                        return Ok(AwsResponse::ok_json(json!({
-                            "ChallengeName": "NEW_PASSWORD_REQUIRED",
-                            "Session": session,
-                            "ChallengeParameters": {
-                                "USER_ID_FOR_SRP": username,
-                                "requiredAttributes": "[]",
-                                "userAttributes": "{}"
-                            }
-                        })));
-                    }
-
-                    let sub = user.sub.clone();
-                    let tokens = generate_tokens(&pool_id, client_id, &sub, username, &region);
-
-                    state.refresh_tokens.insert(
-                        tokens.refresh_token.clone(),
-                        RefreshTokenData {
-                            user_pool_id: pool_id.to_string(),
-                            username: username.to_string(),
-                            client_id: client_id.to_string(),
-                            issued_at: Utc::now(),
-                        },
-                    );
-
-                    state.access_tokens.insert(
-                        tokens.access_token.clone(),
-                        AccessTokenData {
-                            user_pool_id: pool_id.to_string(),
-                            username: username.to_string(),
-                            client_id: client_id.to_string(),
-                            issued_at: Utc::now(),
-                        },
-                    );
-
-                    state.auth_events.push(AuthEvent {
-                        event_id: Uuid::new_v4().to_string(),
-                        event_type: "SIGN_IN".to_string(),
-                        username: username.to_string(),
-                        user_pool_id: pool_id.to_string(),
-                        client_id: Some(client_id.to_string()),
-                        timestamp: Utc::now(),
-                        success: true,
-                        feedback_value: None,
-                    });
-
-                    tokens
-                };
-
-                // PostAuthentication_Authentication trigger (fire-and-forget)
-                if let Some(ref ctx) = self.delivery_ctx {
-                    if let Some(function_arn) = triggers::get_trigger_arn(
-                        &self.state,
-                        &pool_id,
-                        TriggerSource::PostAuthenticationAuthentication,
-                    ) {
-                        let event = triggers::build_trigger_event(
-                            TriggerSource::PostAuthenticationAuthentication,
-                            &pool_id,
-                            Some(&client_id_owned),
-                            &username_owned,
-                            &user_attrs,
-                            &region,
-                            &account_id,
-                        );
-                        triggers::invoke_trigger_fire_and_forget(ctx, function_arn, event);
-                    }
-                }
-
-                Ok(AwsResponse::ok_json(json!({
-                    "AuthenticationResult": {
-                        "AccessToken": tokens.access_token,
-                        "IdToken": tokens.id_token,
-                        "RefreshToken": tokens.refresh_token,
-                        "TokenType": "Bearer",
-                        "ExpiresIn": 3600
-                    }
-                })))
+                self.initiate_user_password_auth(&body, client_id, &pool_id, &explicit_auth_flows)
+                    .await
             }
             "CUSTOM_AUTH" => {
-                // Validate client allows this flow
-                if !explicit_auth_flows.contains(&"ALLOW_CUSTOM_AUTH".to_string()) {
-                    return Err(AwsServiceError::aws_error(
-                        StatusCode::BAD_REQUEST,
-                        "NotAuthorizedException",
-                        "CUSTOM_AUTH flow is not enabled for this client.",
-                    ));
-                }
+                self.initiate_custom_auth(&body, client_id, &pool_id, &explicit_auth_flows)
+                    .await
+            }
+            "REFRESH_TOKEN_AUTH" | "REFRESH_TOKEN" => {
+                self.initiate_refresh_token_auth(&body, client_id, &explicit_auth_flows)
+            }
+            other => Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidParameterException",
+                format!("Unsupported auth flow: {other}"),
+            )),
+        }
+    }
 
-                let auth_params = body["AuthParameters"].as_object().ok_or_else(|| {
-                    AwsServiceError::aws_error(
-                        StatusCode::BAD_REQUEST,
-                        "InvalidParameterException",
-                        "AuthParameters is required",
-                    )
-                })?;
+    async fn initiate_user_password_auth(
+        &self,
+        body: &Value,
+        client_id: &str,
+        pool_id: &str,
+        explicit_auth_flows: &[String],
+    ) -> Result<AwsResponse, AwsServiceError> {
+        if !explicit_auth_flows
+            .iter()
+            .any(|f| f == "ALLOW_USER_PASSWORD_AUTH")
+        {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "NotAuthorizedException",
+                "USER_PASSWORD_AUTH flow is not enabled for this client.",
+            ));
+        }
 
-                let username = auth_params
-                    .get("USERNAME")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        AwsServiceError::aws_error(
-                            StatusCode::BAD_REQUEST,
-                            "InvalidParameterException",
-                            "USERNAME is required in AuthParameters",
-                        )
-                    })?;
+        let auth_params = body["AuthParameters"].as_object().ok_or_else(|| {
+            AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidParameterException",
+                "AuthParameters is required",
+            )
+        })?;
 
-                // Look up user and collect attributes
-                let (user_attrs, region, account_id) = {
-                    let state = self.state.read();
-                    let user = state
-                        .users
-                        .get(&pool_id)
-                        .and_then(|users| users.get(username))
-                        .ok_or_else(|| {
-                            AwsServiceError::aws_error(
-                                StatusCode::BAD_REQUEST,
-                                "NotAuthorizedException",
-                                "Incorrect username or password.",
-                            )
-                        })?;
-
-                    if !user.enabled {
-                        return Err(AwsServiceError::aws_error(
-                            StatusCode::BAD_REQUEST,
-                            "NotAuthorizedException",
-                            "User is disabled.",
-                        ));
-                    }
-
-                    let user_attrs = triggers::collect_user_attributes(user);
-                    let region = state.region.clone();
-                    let account_id = state.account_id.clone();
-                    (user_attrs, region, account_id)
-                };
-
-                let username_owned = username.to_string();
-                let client_id_owned = client_id.to_string();
-                let challenge_results: Vec<ChallengeResult> = vec![];
-
-                // DefineAuthChallenge Lambda is required for CUSTOM_AUTH
-                let ctx = self.delivery_ctx.as_ref().ok_or_else(|| {
-                    AwsServiceError::aws_error(
-                        StatusCode::BAD_REQUEST,
-                        "InvalidLambdaResponseException",
-                        "No Lambda trigger configured for DefineAuthChallenge.",
-                    )
-                })?;
-
-                let define_arn = triggers::get_trigger_arn(
-                    &self.state,
-                    &pool_id,
-                    TriggerSource::DefineAuthChallengeAuthentication,
+        let username = auth_params
+            .get("USERNAME")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "InvalidParameterException",
+                    "USERNAME is required in AuthParameters",
                 )
+            })?;
+
+        let password = auth_params
+            .get("PASSWORD")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "InvalidParameterException",
+                    "PASSWORD is required in AuthParameters",
+                )
+            })?;
+
+        let (user_attrs, region, account_id) = {
+            let state = self.state.read();
+
+            let user = state
+                .users
+                .get(pool_id)
+                .and_then(|users| users.get(username))
                 .ok_or_else(|| {
                     AwsServiceError::aws_error(
                         StatusCode::BAD_REQUEST,
-                        "InvalidLambdaResponseException",
-                        "No Lambda trigger configured for DefineAuthChallenge.",
+                        "NotAuthorizedException",
+                        "Incorrect username or password.",
                     )
                 })?;
 
-                let define_event = triggers::build_define_auth_challenge_event(
-                    &pool_id,
-                    Some(&client_id_owned),
-                    &username_owned,
+            if !user.enabled {
+                return Err(AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "NotAuthorizedException",
+                    "User is disabled.",
+                ));
+            }
+
+            let user_attrs = triggers::collect_user_attributes(user);
+            let region = state.region.clone();
+            let account_id = state.account_id.clone();
+
+            (user_attrs, region, account_id)
+        };
+
+        if let Some(ctx) = self.delivery_ctx.as_ref() {
+            if let Some(function_arn) = triggers::get_trigger_arn(
+                &self.state,
+                pool_id,
+                TriggerSource::PreAuthenticationAuthentication,
+            ) {
+                let event = triggers::build_trigger_event(
+                    TriggerSource::PreAuthenticationAuthentication,
+                    pool_id,
+                    Some(client_id),
+                    username,
                     &user_attrs,
-                    &challenge_results,
                     &region,
                     &account_id,
                 );
-
-                let define_response = triggers::invoke_trigger(ctx, &define_arn, &define_event)
+                if triggers::invoke_trigger(ctx, &function_arn, &event)
                     .await
-                    .ok_or_else(|| {
-                        AwsServiceError::aws_error(
-                            StatusCode::BAD_REQUEST,
-                            "InvalidLambdaResponseException",
-                            "DefineAuthChallenge Lambda did not return a response.",
-                        )
-                    })?;
-
-                let issue_tokens = define_response["response"]["issueTokens"]
-                    .as_bool()
-                    .unwrap_or(false);
-                let fail_auth = define_response["response"]["failAuthentication"]
-                    .as_bool()
-                    .unwrap_or(false);
-
-                if fail_auth {
-                    let mut state = self.state.write();
-                    state.auth_events.push(AuthEvent {
-                        event_id: Uuid::new_v4().to_string(),
-                        event_type: "SIGN_IN_FAILURE".to_string(),
-                        username: username_owned.clone(),
-                        user_pool_id: pool_id.clone(),
-                        client_id: Some(client_id_owned.clone()),
-                        timestamp: Utc::now(),
-                        success: false,
-                        feedback_value: None,
-                    });
-                    return Err(AwsServiceError::aws_error(
-                        StatusCode::BAD_REQUEST,
-                        "NotAuthorizedException",
-                        "DefineAuthChallenge Lambda rejected authentication.",
-                    ));
-                }
-
-                if issue_tokens {
-                    // Issue tokens immediately
-                    let mut state = self.state.write();
-                    let user = state
-                        .users
-                        .get(&pool_id)
-                        .and_then(|users| users.get(&username_owned))
-                        .ok_or_else(|| {
-                            AwsServiceError::aws_error(
-                                StatusCode::BAD_REQUEST,
-                                "NotAuthorizedException",
-                                "Incorrect username or password.",
-                            )
-                        })?;
-
-                    let sub = user.sub.clone();
-                    let tokens =
-                        generate_tokens(&pool_id, &client_id_owned, &sub, &username_owned, &region);
-
-                    state.refresh_tokens.insert(
-                        tokens.refresh_token.clone(),
-                        RefreshTokenData {
-                            user_pool_id: pool_id.clone(),
-                            username: username_owned.clone(),
-                            client_id: client_id_owned.clone(),
-                            issued_at: Utc::now(),
-                        },
-                    );
-                    state.access_tokens.insert(
-                        tokens.access_token.clone(),
-                        AccessTokenData {
-                            user_pool_id: pool_id.clone(),
-                            username: username_owned.clone(),
-                            client_id: client_id_owned.clone(),
-                            issued_at: Utc::now(),
-                        },
-                    );
-                    state.auth_events.push(AuthEvent {
-                        event_id: Uuid::new_v4().to_string(),
-                        event_type: "SIGN_IN".to_string(),
-                        username: username_owned,
-                        user_pool_id: pool_id,
-                        client_id: Some(client_id_owned),
-                        timestamp: Utc::now(),
-                        success: true,
-                        feedback_value: None,
-                    });
-
-                    return Ok(AwsResponse::ok_json(json!({
-                        "AuthenticationResult": {
-                            "AccessToken": tokens.access_token,
-                            "IdToken": tokens.id_token,
-                            "RefreshToken": tokens.refresh_token,
-                            "TokenType": "Bearer",
-                            "ExpiresIn": 3600
-                        }
-                    })));
-                }
-
-                // DefineAuthChallenge wants to issue a challenge
-                let challenge_name = define_response["response"]["challengeName"]
-                    .as_str()
-                    .unwrap_or("CUSTOM_CHALLENGE")
-                    .to_string();
-
-                // Invoke CreateAuthChallenge Lambda
-                let create_arn = triggers::get_trigger_arn(
-                    &self.state,
-                    &pool_id,
-                    TriggerSource::CreateAuthChallengeAuthentication,
-                );
-
-                let mut public_challenge_params = serde_json::Map::new();
-                let mut challenge_metadata: Option<String> = None;
-
-                if let Some(create_arn) = create_arn {
-                    let create_ctx = triggers::AuthChallengeContext {
-                        pool_id: &pool_id,
-                        client_id: Some(&client_id_owned),
-                        username: &username_owned,
-                        user_attributes: &user_attrs,
-                        region: &region,
-                        account_id: &account_id,
-                    };
-                    let create_event = triggers::build_create_auth_challenge_event(
-                        &create_ctx,
-                        &challenge_name,
-                        &challenge_results,
-                    );
-                    if let Some(create_response) =
-                        triggers::invoke_trigger(ctx, &create_arn, &create_event).await
-                    {
-                        if let Some(params) =
-                            create_response["response"]["publicChallengeParameters"].as_object()
-                        {
-                            public_challenge_params = params.clone();
-                        }
-                        challenge_metadata = create_response["response"]["challengeMetadata"]
-                            .as_str()
-                            .map(|s| s.to_string());
-                    }
-                }
-
-                // Store session
-                let session = Uuid::new_v4().to_string();
+                    .is_none()
                 {
-                    let mut state = self.state.write();
-                    state.sessions.insert(
-                        session.clone(),
-                        SessionData {
-                            user_pool_id: pool_id,
-                            username: username_owned,
-                            client_id: client_id_owned,
-                            challenge_name: challenge_name.clone(),
-                            challenge_results,
-                            challenge_metadata,
-                        },
-                    );
+                    return Err(AwsServiceError::aws_error(
+                        StatusCode::BAD_REQUEST,
+                        "NotAuthorizedException",
+                        "PreAuthentication Lambda trigger rejected the request.",
+                    ));
                 }
-
-                let mut response = json!({
-                    "ChallengeName": challenge_name,
-                    "Session": session,
-                    "ChallengeParameters": public_challenge_params,
-                });
-
-                // Add USERNAME to challenge parameters (AWS always includes it)
-                response["ChallengeParameters"]["USERNAME"] = json!(username);
-
-                Ok(AwsResponse::ok_json(response))
             }
-            "REFRESH_TOKEN_AUTH" | "REFRESH_TOKEN" => {
-                // Validate client allows this flow
-                if !explicit_auth_flows.contains(&"ALLOW_REFRESH_TOKEN_AUTH".to_string()) {
-                    return Err(AwsServiceError::aws_error(
-                        StatusCode::BAD_REQUEST,
-                        "NotAuthorizedException",
-                        "REFRESH_TOKEN_AUTH flow is not enabled for this client.",
-                    ));
-                }
+        }
 
-                let auth_params = body["AuthParameters"].as_object().ok_or_else(|| {
-                    AwsServiceError::aws_error(
-                        StatusCode::BAD_REQUEST,
-                        "InvalidParameterException",
-                        "AuthParameters is required",
-                    )
-                })?;
+        let tokens = {
+            let mut state = self.state.write();
 
-                let refresh_token = auth_params
-                    .get("REFRESH_TOKEN")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        AwsServiceError::aws_error(
-                            StatusCode::BAD_REQUEST,
-                            "InvalidParameterException",
-                            "REFRESH_TOKEN is required in AuthParameters",
-                        )
-                    })?;
-
-                let mut state = self.state.write();
-
-                let token_data = state.refresh_tokens.get(refresh_token).ok_or_else(|| {
+            let user = state
+                .users
+                .get(pool_id)
+                .and_then(|users| users.get(username))
+                .ok_or_else(|| {
                     AwsServiceError::aws_error(
                         StatusCode::BAD_REQUEST,
                         "NotAuthorizedException",
-                        "Invalid refresh token.",
+                        "Incorrect username or password.",
                     )
                 })?;
 
-                if token_data.client_id != client_id {
-                    return Err(AwsServiceError::aws_error(
-                        StatusCode::BAD_REQUEST,
-                        "NotAuthorizedException",
-                        "Invalid refresh token.",
-                    ));
-                }
+            let password_matches = match (&user.password, &user.temporary_password) {
+                (Some(p), _) if p == password => true,
+                (_, Some(tp)) if tp == password => true,
+                _ => false,
+            };
+            if !password_matches {
+                state.auth_events.push(AuthEvent {
+                    event_id: Uuid::new_v4().to_string(),
+                    event_type: "SIGN_IN_FAILURE".to_string(),
+                    username: username.to_string(),
+                    user_pool_id: pool_id.to_string(),
+                    client_id: Some(client_id.to_string()),
+                    timestamp: Utc::now(),
+                    success: false,
+                    feedback_value: None,
+                });
+                return Err(AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "NotAuthorizedException",
+                    "Incorrect username or password.",
+                ));
+            }
 
-                let token_pool_id = token_data.user_pool_id.clone();
-                let token_username = token_data.username.clone();
-
-                let user = state
-                    .users
-                    .get(&token_pool_id)
-                    .and_then(|users| users.get(&token_username))
-                    .ok_or_else(|| {
-                        AwsServiceError::aws_error(
-                            StatusCode::BAD_REQUEST,
-                            "NotAuthorizedException",
-                            "User does not exist.",
-                        )
-                    })?;
-
-                let region = state.region.clone();
-                let sub = user.sub.clone();
-                let tokens =
-                    generate_tokens(&token_pool_id, client_id, &sub, &token_username, &region);
-
-                state.access_tokens.insert(
-                    tokens.access_token.clone(),
-                    AccessTokenData {
-                        user_pool_id: token_pool_id,
-                        username: token_username,
+            if user.user_status == user_status::FORCE_CHANGE_PASSWORD {
+                let session = Uuid::new_v4().to_string();
+                state.sessions.insert(
+                    session.clone(),
+                    SessionData {
+                        user_pool_id: pool_id.to_string(),
+                        username: username.to_string(),
                         client_id: client_id.to_string(),
-                        issued_at: Utc::now(),
+                        challenge_name: "NEW_PASSWORD_REQUIRED".to_string(),
+                        challenge_results: vec![],
+                        challenge_metadata: None,
                     },
                 );
-
-                Ok(AwsResponse::ok_json(json!({
-                    "AuthenticationResult": {
-                        "AccessToken": tokens.access_token,
-                        "IdToken": tokens.id_token,
-                        "TokenType": "Bearer",
-                        "ExpiresIn": 3600
+                return Ok(AwsResponse::ok_json(json!({
+                    "ChallengeName": "NEW_PASSWORD_REQUIRED",
+                    "Session": session,
+                    "ChallengeParameters": {
+                        "USER_ID_FOR_SRP": username,
+                        "requiredAttributes": "[]",
+                        "userAttributes": "{}"
                     }
-                })))
+                })));
             }
-            _ => Err(AwsServiceError::aws_error(
+
+            let sub = user.sub.clone();
+            let tokens = generate_tokens(pool_id, client_id, &sub, username, &region);
+
+            state.refresh_tokens.insert(
+                tokens.refresh_token.clone(),
+                RefreshTokenData {
+                    user_pool_id: pool_id.to_string(),
+                    username: username.to_string(),
+                    client_id: client_id.to_string(),
+                    issued_at: Utc::now(),
+                },
+            );
+
+            state.access_tokens.insert(
+                tokens.access_token.clone(),
+                AccessTokenData {
+                    user_pool_id: pool_id.to_string(),
+                    username: username.to_string(),
+                    client_id: client_id.to_string(),
+                    issued_at: Utc::now(),
+                },
+            );
+
+            state.auth_events.push(AuthEvent {
+                event_id: Uuid::new_v4().to_string(),
+                event_type: "SIGN_IN".to_string(),
+                username: username.to_string(),
+                user_pool_id: pool_id.to_string(),
+                client_id: Some(client_id.to_string()),
+                timestamp: Utc::now(),
+                success: true,
+                feedback_value: None,
+            });
+
+            tokens
+        };
+
+        if let Some(ctx) = self.delivery_ctx.as_ref() {
+            if let Some(function_arn) = triggers::get_trigger_arn(
+                &self.state,
+                pool_id,
+                TriggerSource::PostAuthenticationAuthentication,
+            ) {
+                let event = triggers::build_trigger_event(
+                    TriggerSource::PostAuthenticationAuthentication,
+                    pool_id,
+                    Some(client_id),
+                    username,
+                    &user_attrs,
+                    &region,
+                    &account_id,
+                );
+                triggers::invoke_trigger_fire_and_forget(ctx, function_arn, event);
+            }
+        }
+
+        Ok(AwsResponse::ok_json(json!({
+            "AuthenticationResult": {
+                "AccessToken": tokens.access_token,
+                "IdToken": tokens.id_token,
+                "RefreshToken": tokens.refresh_token,
+                "TokenType": "Bearer",
+                "ExpiresIn": 3600
+            }
+        })))
+    }
+
+    async fn initiate_custom_auth(
+        &self,
+        body: &Value,
+        client_id: &str,
+        pool_id: &str,
+        explicit_auth_flows: &[String],
+    ) -> Result<AwsResponse, AwsServiceError> {
+        if !explicit_auth_flows.iter().any(|f| f == "ALLOW_CUSTOM_AUTH") {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "NotAuthorizedException",
+                "CUSTOM_AUTH flow is not enabled for this client.",
+            ));
+        }
+
+        let auth_params = body["AuthParameters"].as_object().ok_or_else(|| {
+            AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
                 "InvalidParameterException",
-                format!("Unsupported auth flow: {auth_flow}"),
-            )),
+                "AuthParameters is required",
+            )
+        })?;
+
+        let username = auth_params
+            .get("USERNAME")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "InvalidParameterException",
+                    "USERNAME is required in AuthParameters",
+                )
+            })?;
+
+        let (user_attrs, region, account_id) = {
+            let state = self.state.read();
+            let user = state
+                .users
+                .get(pool_id)
+                .and_then(|users| users.get(username))
+                .ok_or_else(|| {
+                    AwsServiceError::aws_error(
+                        StatusCode::BAD_REQUEST,
+                        "NotAuthorizedException",
+                        "Incorrect username or password.",
+                    )
+                })?;
+
+            if !user.enabled {
+                return Err(AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "NotAuthorizedException",
+                    "User is disabled.",
+                ));
+            }
+
+            let user_attrs = triggers::collect_user_attributes(user);
+            let region = state.region.clone();
+            let account_id = state.account_id.clone();
+            (user_attrs, region, account_id)
+        };
+
+        let challenge_results: Vec<ChallengeResult> = vec![];
+
+        // DefineAuthChallenge Lambda is mandatory for CUSTOM_AUTH; without it
+        // there is no policy to drive the challenge graph forward.
+        let ctx = self.delivery_ctx.as_ref().ok_or_else(|| {
+            AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidLambdaResponseException",
+                "No Lambda trigger configured for DefineAuthChallenge.",
+            )
+        })?;
+
+        let define_arn = triggers::get_trigger_arn(
+            &self.state,
+            pool_id,
+            TriggerSource::DefineAuthChallengeAuthentication,
+        )
+        .ok_or_else(|| {
+            AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidLambdaResponseException",
+                "No Lambda trigger configured for DefineAuthChallenge.",
+            )
+        })?;
+
+        let define_event = triggers::build_define_auth_challenge_event(
+            pool_id,
+            Some(client_id),
+            username,
+            &user_attrs,
+            &challenge_results,
+            &region,
+            &account_id,
+        );
+
+        let define_response = triggers::invoke_trigger(ctx, &define_arn, &define_event)
+            .await
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "InvalidLambdaResponseException",
+                    "DefineAuthChallenge Lambda did not return a response.",
+                )
+            })?;
+
+        let issue_tokens = define_response["response"]["issueTokens"]
+            .as_bool()
+            .unwrap_or(false);
+        let fail_auth = define_response["response"]["failAuthentication"]
+            .as_bool()
+            .unwrap_or(false);
+
+        if fail_auth {
+            let mut state = self.state.write();
+            state.auth_events.push(AuthEvent {
+                event_id: Uuid::new_v4().to_string(),
+                event_type: "SIGN_IN_FAILURE".to_string(),
+                username: username.to_string(),
+                user_pool_id: pool_id.to_string(),
+                client_id: Some(client_id.to_string()),
+                timestamp: Utc::now(),
+                success: false,
+                feedback_value: None,
+            });
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "NotAuthorizedException",
+                "DefineAuthChallenge Lambda rejected authentication.",
+            ));
         }
+
+        if issue_tokens {
+            return self.custom_auth_issue_tokens(pool_id, client_id, username, &region);
+        }
+
+        let challenge_name = define_response["response"]["challengeName"]
+            .as_str()
+            .unwrap_or("CUSTOM_CHALLENGE")
+            .to_string();
+
+        let create_arn = triggers::get_trigger_arn(
+            &self.state,
+            pool_id,
+            TriggerSource::CreateAuthChallengeAuthentication,
+        );
+
+        let mut public_challenge_params = serde_json::Map::new();
+        let mut challenge_metadata: Option<String> = None;
+
+        if let Some(create_arn) = create_arn {
+            let create_ctx = triggers::AuthChallengeContext {
+                pool_id,
+                client_id: Some(client_id),
+                username,
+                user_attributes: &user_attrs,
+                region: &region,
+                account_id: &account_id,
+            };
+            let create_event = triggers::build_create_auth_challenge_event(
+                &create_ctx,
+                &challenge_name,
+                &challenge_results,
+            );
+            if let Some(create_response) =
+                triggers::invoke_trigger(ctx, &create_arn, &create_event).await
+            {
+                if let Some(params) =
+                    create_response["response"]["publicChallengeParameters"].as_object()
+                {
+                    public_challenge_params = params.clone();
+                }
+                challenge_metadata = create_response["response"]["challengeMetadata"]
+                    .as_str()
+                    .map(|s| s.to_string());
+            }
+        }
+
+        let session = Uuid::new_v4().to_string();
+        {
+            let mut state = self.state.write();
+            state.sessions.insert(
+                session.clone(),
+                SessionData {
+                    user_pool_id: pool_id.to_string(),
+                    username: username.to_string(),
+                    client_id: client_id.to_string(),
+                    challenge_name: challenge_name.clone(),
+                    challenge_results,
+                    challenge_metadata,
+                },
+            );
+        }
+
+        let mut response = json!({
+            "ChallengeName": challenge_name,
+            "Session": session,
+            "ChallengeParameters": public_challenge_params,
+        });
+        response["ChallengeParameters"]["USERNAME"] = json!(username);
+
+        Ok(AwsResponse::ok_json(response))
+    }
+
+    /// Mint and persist tokens for a CUSTOM_AUTH flow that DefineAuthChallenge
+    /// resolved with `issueTokens: true` on the very first call (no challenge
+    /// round-trip needed).
+    fn custom_auth_issue_tokens(
+        &self,
+        pool_id: &str,
+        client_id: &str,
+        username: &str,
+        region: &str,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let mut state = self.state.write();
+        let user = state
+            .users
+            .get(pool_id)
+            .and_then(|users| users.get(username))
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "NotAuthorizedException",
+                    "Incorrect username or password.",
+                )
+            })?;
+
+        let sub = user.sub.clone();
+        let tokens = generate_tokens(pool_id, client_id, &sub, username, region);
+
+        state.refresh_tokens.insert(
+            tokens.refresh_token.clone(),
+            RefreshTokenData {
+                user_pool_id: pool_id.to_string(),
+                username: username.to_string(),
+                client_id: client_id.to_string(),
+                issued_at: Utc::now(),
+            },
+        );
+        state.access_tokens.insert(
+            tokens.access_token.clone(),
+            AccessTokenData {
+                user_pool_id: pool_id.to_string(),
+                username: username.to_string(),
+                client_id: client_id.to_string(),
+                issued_at: Utc::now(),
+            },
+        );
+        state.auth_events.push(AuthEvent {
+            event_id: Uuid::new_v4().to_string(),
+            event_type: "SIGN_IN".to_string(),
+            username: username.to_string(),
+            user_pool_id: pool_id.to_string(),
+            client_id: Some(client_id.to_string()),
+            timestamp: Utc::now(),
+            success: true,
+            feedback_value: None,
+        });
+
+        Ok(AwsResponse::ok_json(json!({
+            "AuthenticationResult": {
+                "AccessToken": tokens.access_token,
+                "IdToken": tokens.id_token,
+                "RefreshToken": tokens.refresh_token,
+                "TokenType": "Bearer",
+                "ExpiresIn": 3600
+            }
+        })))
+    }
+
+    fn initiate_refresh_token_auth(
+        &self,
+        body: &Value,
+        client_id: &str,
+        explicit_auth_flows: &[String],
+    ) -> Result<AwsResponse, AwsServiceError> {
+        if !explicit_auth_flows
+            .iter()
+            .any(|f| f == "ALLOW_REFRESH_TOKEN_AUTH")
+        {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "NotAuthorizedException",
+                "REFRESH_TOKEN_AUTH flow is not enabled for this client.",
+            ));
+        }
+
+        let auth_params = body["AuthParameters"].as_object().ok_or_else(|| {
+            AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidParameterException",
+                "AuthParameters is required",
+            )
+        })?;
+
+        let refresh_token = auth_params
+            .get("REFRESH_TOKEN")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "InvalidParameterException",
+                    "REFRESH_TOKEN is required in AuthParameters",
+                )
+            })?;
+
+        let mut state = self.state.write();
+
+        let token_data = state.refresh_tokens.get(refresh_token).ok_or_else(|| {
+            AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "NotAuthorizedException",
+                "Invalid refresh token.",
+            )
+        })?;
+
+        if token_data.client_id != client_id {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "NotAuthorizedException",
+                "Invalid refresh token.",
+            ));
+        }
+
+        let token_pool_id = token_data.user_pool_id.clone();
+        let token_username = token_data.username.clone();
+
+        let user = state
+            .users
+            .get(&token_pool_id)
+            .and_then(|users| users.get(&token_username))
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "NotAuthorizedException",
+                    "User does not exist.",
+                )
+            })?;
+
+        let region = state.region.clone();
+        let sub = user.sub.clone();
+        let tokens = generate_tokens(&token_pool_id, client_id, &sub, &token_username, &region);
+
+        state.access_tokens.insert(
+            tokens.access_token.clone(),
+            AccessTokenData {
+                user_pool_id: token_pool_id,
+                username: token_username,
+                client_id: client_id.to_string(),
+                issued_at: Utc::now(),
+            },
+        );
+
+        Ok(AwsResponse::ok_json(json!({
+            "AuthenticationResult": {
+                "AccessToken": tokens.access_token,
+                "IdToken": tokens.id_token,
+                "TokenType": "Bearer",
+                "ExpiresIn": 3600
+            }
+        })))
     }
 
     pub(super) async fn respond_to_auth_challenge(
