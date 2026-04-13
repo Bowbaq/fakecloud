@@ -143,41 +143,12 @@ impl RdsService {
         let deletion_protection =
             parse_optional_bool(optional_param(request, "DeletionProtection").as_deref())?
                 .unwrap_or(false);
-        // Default port based on engine
-        let default_port = match engine.as_str() {
-            "postgres" => 5432,
-            "mysql" | "mariadb" => 3306,
-            _ => 5432,
-        };
-        let port = optional_i32_param(request, "Port")?.unwrap_or(default_port);
+        let port = optional_i32_param(request, "Port")?
+            .unwrap_or_else(|| default_port_for_engine(&engine));
         let vpc_security_group_ids = parse_vpc_security_group_ids(request);
 
-        // Default parameter group based on engine and version
-        let default_param_group = match engine.as_str() {
-            "postgres" => {
-                let major = engine_version.split('.').next().unwrap_or("16");
-                format!("default.postgres{}", major)
-            }
-            "mysql" => {
-                let major = if engine_version.starts_with("5.7") {
-                    "5.7"
-                } else {
-                    "8.0"
-                };
-                format!("default.mysql{}", major)
-            }
-            "mariadb" => {
-                let major = if engine_version.starts_with("10.11") {
-                    "10.11"
-                } else {
-                    "10.6"
-                };
-                format!("default.mariadb{}", major)
-            }
-            _ => "default.postgres16".to_string(),
-        };
-        let db_parameter_group_name =
-            optional_param(request, "DBParameterGroupName").or(Some(default_param_group));
+        let db_parameter_group_name = optional_param(request, "DBParameterGroupName")
+            .or_else(|| Some(default_parameter_group(&engine, &engine_version)));
 
         let backup_retention_period =
             optional_i32_param(request, "BackupRetentionPeriod")?.unwrap_or(1);
@@ -220,12 +191,9 @@ impl RdsService {
 
         let runtime = self.require_runtime()?;
 
-        // Default database name based on engine
-        let logical_db_name = db_name.clone().unwrap_or_else(|| match engine.as_str() {
-            "postgres" => "postgres".to_string(),
-            "mysql" | "mariadb" => "mysql".to_string(),
-            _ => "postgres".to_string(),
-        });
+        let logical_db_name = db_name
+            .clone()
+            .unwrap_or_else(|| default_db_name(&engine).to_string());
         let running = runtime
             .ensure_postgres(
                 &db_instance_identifier,
@@ -339,86 +307,9 @@ impl RdsService {
             }
         }
 
-        // Create final snapshot if requested
         if let Some(ref snapshot_id) = final_db_snapshot_identifier {
-            let runtime = self.runtime.as_ref().ok_or_else(|| {
-                AwsServiceError::aws_error(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "InvalidParameterValue",
-                    "Docker/Podman is required for RDS snapshots but is not available",
-                )
-            })?;
-
-            let (instance_for_snapshot, db_name) = {
-                let state = self.state.read();
-
-                if state.snapshots.contains_key(snapshot_id) {
-                    return Err(AwsServiceError::aws_error(
-                        StatusCode::CONFLICT,
-                        "DBSnapshotAlreadyExists",
-                        format!("DBSnapshot {snapshot_id} already exists."),
-                    ));
-                }
-
-                let instance = state
-                    .instances
-                    .get(&db_instance_identifier)
-                    .cloned()
-                    .ok_or_else(|| db_instance_not_found(&db_instance_identifier))?;
-
-                let default_db = default_db_name(&instance.engine);
-                let db_name = instance
-                    .db_name
-                    .as_deref()
-                    .unwrap_or(default_db)
-                    .to_string();
-
-                (instance, db_name)
-            };
-
-            let dump_data = runtime
-                .dump_database(
-                    &db_instance_identifier,
-                    &instance_for_snapshot.engine,
-                    &instance_for_snapshot.master_username,
-                    &instance_for_snapshot.master_user_password,
-                    &db_name,
-                )
-                .await
-                .map_err(runtime_error_to_service_error)?;
-
-            let mut state = self.state.write();
-
-            if state.snapshots.contains_key(snapshot_id) {
-                return Err(AwsServiceError::aws_error(
-                    StatusCode::CONFLICT,
-                    "DBSnapshotAlreadyExists",
-                    format!("DBSnapshot {snapshot_id} already exists."),
-                ));
-            }
-
-            let snapshot_arn = state.db_snapshot_arn(snapshot_id);
-
-            let snapshot = DbSnapshot {
-                db_snapshot_identifier: snapshot_id.clone(),
-                db_snapshot_arn: snapshot_arn,
-                db_instance_identifier: db_instance_identifier.clone(),
-                snapshot_create_time: Utc::now(),
-                engine: instance_for_snapshot.engine.clone(),
-                engine_version: instance_for_snapshot.engine_version.clone(),
-                allocated_storage: instance_for_snapshot.allocated_storage,
-                status: "available".to_string(),
-                port: instance_for_snapshot.port,
-                master_username: instance_for_snapshot.master_username.clone(),
-                db_name: instance_for_snapshot.db_name.clone(),
-                dbi_resource_id: instance_for_snapshot.dbi_resource_id.clone(),
-                snapshot_type: "manual".to_string(),
-                master_user_password: instance_for_snapshot.master_user_password.clone(),
-                tags: Vec::new(),
-                dump_data,
-            };
-
-            state.snapshots.insert(snapshot_id.clone(), snapshot);
+            self.create_final_db_snapshot(&db_instance_identifier, snapshot_id)
+                .await?;
         }
 
         let instance = {
@@ -460,6 +351,97 @@ impl RdsService {
                 &request.request_id,
             ),
         ))
+    }
+
+    /// Take a final snapshot of an instance that is about to be deleted,
+    /// persisting the dumped database into `state.snapshots`. The DLQ-style
+    /// conflict check runs twice — once under the read lock before paying
+    /// for the dump, once under the write lock before committing — to keep
+    /// concurrent deletes from colliding.
+    async fn create_final_db_snapshot(
+        &self,
+        db_instance_identifier: &str,
+        snapshot_id: &str,
+    ) -> Result<(), AwsServiceError> {
+        let runtime = self.runtime.as_ref().ok_or_else(|| {
+            AwsServiceError::aws_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "InvalidParameterValue",
+                "Docker/Podman is required for RDS snapshots but is not available",
+            )
+        })?;
+
+        let (instance_for_snapshot, db_name) = {
+            let state = self.state.read();
+
+            if state.snapshots.contains_key(snapshot_id) {
+                return Err(AwsServiceError::aws_error(
+                    StatusCode::CONFLICT,
+                    "DBSnapshotAlreadyExists",
+                    format!("DBSnapshot {snapshot_id} already exists."),
+                ));
+            }
+
+            let instance = state
+                .instances
+                .get(db_instance_identifier)
+                .cloned()
+                .ok_or_else(|| db_instance_not_found(db_instance_identifier))?;
+
+            let default_db = default_db_name(&instance.engine);
+            let db_name = instance
+                .db_name
+                .as_deref()
+                .unwrap_or(default_db)
+                .to_string();
+
+            (instance, db_name)
+        };
+
+        let dump_data = runtime
+            .dump_database(
+                db_instance_identifier,
+                &instance_for_snapshot.engine,
+                &instance_for_snapshot.master_username,
+                &instance_for_snapshot.master_user_password,
+                &db_name,
+            )
+            .await
+            .map_err(runtime_error_to_service_error)?;
+
+        let mut state = self.state.write();
+
+        if state.snapshots.contains_key(snapshot_id) {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::CONFLICT,
+                "DBSnapshotAlreadyExists",
+                format!("DBSnapshot {snapshot_id} already exists."),
+            ));
+        }
+
+        let snapshot_arn = state.db_snapshot_arn(snapshot_id);
+
+        let snapshot = DbSnapshot {
+            db_snapshot_identifier: snapshot_id.to_string(),
+            db_snapshot_arn: snapshot_arn,
+            db_instance_identifier: db_instance_identifier.to_string(),
+            snapshot_create_time: Utc::now(),
+            engine: instance_for_snapshot.engine.clone(),
+            engine_version: instance_for_snapshot.engine_version.clone(),
+            allocated_storage: instance_for_snapshot.allocated_storage,
+            status: "available".to_string(),
+            port: instance_for_snapshot.port,
+            master_username: instance_for_snapshot.master_username.clone(),
+            db_name: instance_for_snapshot.db_name.clone(),
+            dbi_resource_id: instance_for_snapshot.dbi_resource_id.clone(),
+            snapshot_type: "manual".to_string(),
+            master_user_password: instance_for_snapshot.master_user_password.clone(),
+            tags: Vec::new(),
+            dump_data,
+        };
+
+        state.snapshots.insert(snapshot_id.to_string(), snapshot);
+        Ok(())
     }
 
     fn modify_db_instance(&self, request: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
@@ -2545,6 +2527,46 @@ fn default_db_name(engine: &str) -> &'static str {
     match engine {
         "mysql" | "mariadb" => "mysql",
         _ => "postgres",
+    }
+}
+
+/// Pick the port AWS defaults to for a freshly-created instance of
+/// `engine`. PostgreSQL lives on 5432; MySQL and MariaDB share 3306.
+fn default_port_for_engine(engine: &str) -> i32 {
+    match engine {
+        "postgres" => 5432,
+        "mysql" | "mariadb" => 3306,
+        _ => 5432,
+    }
+}
+
+/// Pick the built-in parameter group name AWS assigns to a new
+/// instance when the caller doesn't override it. The name encodes the
+/// engine family plus its major version (e.g. `default.postgres16`,
+/// `default.mysql8.0`).
+fn default_parameter_group(engine: &str, engine_version: &str) -> String {
+    match engine {
+        "postgres" => {
+            let major = engine_version.split('.').next().unwrap_or("16");
+            format!("default.postgres{}", major)
+        }
+        "mysql" => {
+            let major = if engine_version.starts_with("5.7") {
+                "5.7"
+            } else {
+                "8.0"
+            };
+            format!("default.mysql{}", major)
+        }
+        "mariadb" => {
+            let major = if engine_version.starts_with("10.11") {
+                "10.11"
+            } else {
+                "10.6"
+            };
+            format!("default.mariadb{}", major)
+        }
+        _ => "default.postgres16".to_string(),
     }
 }
 
