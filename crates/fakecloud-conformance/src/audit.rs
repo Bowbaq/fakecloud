@@ -99,8 +99,7 @@ pub fn scan_implemented_actions(
                             // func_body should be a single identifier like "SUPPORTED_ACTIONS"
                             if func_body.chars().all(|c| c.is_alphanumeric() || c == '_') {
                                 // Search for const CONST_NAME: &[&str] = &[...];
-                                let const_pattern =
-                                    format!("const {}: &[&str] = &[", func_body);
+                                let const_pattern = format!("const {}: &[&str] = &[", func_body);
                                 if let Some(const_start) = content.find(&const_pattern) {
                                     let after_const = &content[const_start + const_pattern.len()..];
                                     if let Some(bracket_end) = after_const.find("];") {
