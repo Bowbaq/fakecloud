@@ -815,59 +815,16 @@ impl SnsService {
         // Parse MessageAttributes from query params
         let message_attributes = parse_message_attributes(req);
 
-        // Handle SMS publish (PhoneNumber)
         if let Some(ref phone) = phone_number {
-            // Validate phone number (basic E.164: starts with + followed by digits)
-            let is_valid_e164 = phone.starts_with('+')
-                && phone.len() >= 2
-                && phone[1..].chars().all(|c| c.is_ascii_digit());
-            if !is_valid_e164 {
-                return Err(AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "InvalidParameter",
-                    format!(
-                        "Invalid parameter: PhoneNumber Reason: {phone} does not meet the E164 format"
-                    ),
-                ));
-            }
-
-            // SMS message length limit: 1600 characters
-            if message.len() > 1600 {
-                return Err(AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "InvalidParameter",
-                    "Invalid parameter: Message Reason: Message must be less than 1600 characters long",
-                ));
-            }
-
-            let msg_id = uuid::Uuid::new_v4().to_string();
-            let mut state = self.state.write();
-            state.sms_messages.push((phone.clone(), message.clone()));
-            state.published.push(PublishedMessage {
-                message_id: msg_id.clone(),
-                topic_arn: String::new(),
+            return self.publish_to_phone_number(
+                req,
+                phone,
                 message,
                 subject,
                 message_attributes,
                 message_group_id,
                 message_dedup_id,
-                timestamp: Utc::now(),
-            });
-
-            return Ok(xml_resp(
-                &format!(
-                    r#"<PublishResponse xmlns="http://sns.amazonaws.com/doc/2010-03-31/">
-  <PublishResult>
-    <MessageId>{msg_id}</MessageId>
-  </PublishResult>
-  <ResponseMetadata>
-    <RequestId>{}</RequestId>
-  </ResponseMetadata>
-</PublishResponse>"#,
-                    req.request_id
-                ),
-                &req.request_id,
-            ));
+            );
         }
 
         let topic_arn = topic_arn.ok_or_else(|| {
@@ -1454,6 +1411,74 @@ impl SnsService {
     <RequestId>{}</RequestId>
   </ResponseMetadata>
 </PublishBatchResponse>"#,
+                req.request_id
+            ),
+            &req.request_id,
+        ))
+    }
+
+    /// Publish directly to an SMS destination (`Publish` called with
+    /// `PhoneNumber` instead of `TopicArn` / `TargetArn`). This path
+    /// does its own length and E.164 validation since AWS reports
+    /// distinct error messages for SMS.
+    #[allow(clippy::too_many_arguments)]
+    fn publish_to_phone_number(
+        &self,
+        req: &AwsRequest,
+        phone: &str,
+        message: String,
+        subject: Option<String>,
+        message_attributes: HashMap<String, MessageAttribute>,
+        message_group_id: Option<String>,
+        message_dedup_id: Option<String>,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let is_valid_e164 = phone.starts_with('+')
+            && phone.len() >= 2
+            && phone[1..].chars().all(|c| c.is_ascii_digit());
+        if !is_valid_e164 {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidParameter",
+                format!(
+                    "Invalid parameter: PhoneNumber Reason: {phone} does not meet the E164 format"
+                ),
+            ));
+        }
+
+        if message.len() > 1600 {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidParameter",
+                "Invalid parameter: Message Reason: Message must be less than 1600 characters long",
+            ));
+        }
+
+        let msg_id = uuid::Uuid::new_v4().to_string();
+        let mut state = self.state.write();
+        state
+            .sms_messages
+            .push((phone.to_string(), message.clone()));
+        state.published.push(PublishedMessage {
+            message_id: msg_id.clone(),
+            topic_arn: String::new(),
+            message,
+            subject,
+            message_attributes,
+            message_group_id,
+            message_dedup_id,
+            timestamp: Utc::now(),
+        });
+
+        Ok(xml_resp(
+            &format!(
+                r#"<PublishResponse xmlns="http://sns.amazonaws.com/doc/2010-03-31/">
+  <PublishResult>
+    <MessageId>{msg_id}</MessageId>
+  </PublishResult>
+  <ResponseMetadata>
+    <RequestId>{}</RequestId>
+  </ResponseMetadata>
+</PublishResponse>"#,
                 req.request_id
             ),
             &req.request_id,
