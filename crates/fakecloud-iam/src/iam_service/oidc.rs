@@ -13,6 +13,79 @@ use super::{
 
 use fakecloud_aws::xml::xml_escape;
 
+/// Validate the URL, thumbprint list, and client ID list for
+/// `CreateOpenIDConnectProvider`. AWS uses two different error styles:
+/// thumbprint count and client ID count violations are surfaced
+/// immediately, while length violations are batched into a single
+/// multi-error ValidationError to match the structure of the real
+/// service.
+fn validate_oidc_provider_input(
+    url: &str,
+    thumbprints: &[String],
+    client_ids: &[String],
+) -> Result<(), AwsServiceError> {
+    let mut validation_errors: Vec<String> = Vec::new();
+
+    if url.len() > 255 {
+        validation_errors.push(
+            "Value at \"url\" failed to satisfy constraint: Member must have length less than or equal to 255".to_string()
+        );
+    }
+
+    if thumbprints.len() > 5 {
+        return Err(AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "ValidationError",
+            "Thumbprint list must contain fewer than 5 entries.".to_string(),
+        ));
+    }
+    if thumbprints.iter().any(|tp| tp.len() != 40) {
+        validation_errors.push(
+            "Value at \"thumbprintList\" failed to satisfy constraint: Member must have length less than or equal to 40; Member must have length greater than or equal to 40".to_string()
+        );
+    }
+
+    if client_ids.len() > 100 {
+        return Err(AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "LimitExceeded",
+            "Cannot exceed quota for ClientIdsPerOpenIdConnectProvider: 100".to_string(),
+        ));
+    }
+    if client_ids
+        .iter()
+        .any(|cid| cid.len() > 255 || cid.is_empty())
+    {
+        validation_errors.push(
+            "Value at \"clientIDList\" failed to satisfy constraint: Member must have length less than or equal to 255; Member must have length greater than or equal to 1".to_string()
+        );
+    }
+
+    if !validation_errors.is_empty() {
+        let count = validation_errors.len();
+        let msg = format!(
+            "{count} validation error{} detected: {}",
+            if count == 1 { "" } else { "s" },
+            validation_errors.join("; ")
+        );
+        return Err(AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "ValidationError",
+            msg,
+        ));
+    }
+
+    if !url.starts_with("https://") && !url.starts_with("http://") {
+        return Err(AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "ValidationError",
+            "Invalid Open ID Connect Provider URL".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
 impl IamService {
     pub(super) fn create_saml_provider(
         &self,
@@ -205,74 +278,7 @@ impl IamService {
             i += 1;
         }
 
-        // Collect validation errors for multi-error response
-        let mut validation_errors: Vec<String> = Vec::new();
-
-        // Check URL length (must be <= 255)
-        if url.len() > 255 {
-            validation_errors.push(
-                "Value at \"url\" failed to satisfy constraint: Member must have length less than or equal to 255".to_string()
-            );
-        }
-
-        // Check thumbprint constraints
-        if thumbprints.len() > 5 {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ValidationError",
-                "Thumbprint list must contain fewer than 5 entries.".to_string(),
-            ));
-        }
-        for tp in &thumbprints {
-            if tp.len() != 40 {
-                // AWS always reports both constraints when thumbprint length is wrong
-                validation_errors.push(
-                    "Value at \"thumbprintList\" failed to satisfy constraint: Member must have length less than or equal to 40; Member must have length greater than or equal to 40".to_string()
-                );
-                break;
-            }
-        }
-
-        // Check client ID constraints
-        if client_ids.len() > 100 {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "LimitExceeded",
-                "Cannot exceed quota for ClientIdsPerOpenIdConnectProvider: 100".to_string(),
-            ));
-        }
-        for cid in &client_ids {
-            if cid.len() > 255 || cid.is_empty() {
-                // AWS always reports both constraints when client ID length is wrong
-                validation_errors.push(
-                    "Value at \"clientIDList\" failed to satisfy constraint: Member must have length less than or equal to 255; Member must have length greater than or equal to 1".to_string()
-                );
-                break;
-            }
-        }
-
-        if !validation_errors.is_empty() {
-            let count = validation_errors.len();
-            let msg = format!(
-                "{count} validation error{} detected: {}",
-                if count == 1 { "" } else { "s" },
-                validation_errors.join("; ")
-            );
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ValidationError",
-                msg,
-            ));
-        }
-
-        // Validate URL: must start with http:// or https://
-        if !url.starts_with("https://") && !url.starts_with("http://") {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ValidationError",
-                "Invalid Open ID Connect Provider URL".to_string(),
-            ));
-        }
+        validate_oidc_provider_input(&url, &thumbprints, &client_ids)?;
 
         let mut state = self.state.write();
 

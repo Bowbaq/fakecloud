@@ -4,7 +4,7 @@ use http::StatusCode;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 use fakecloud_core::validation::*;
 
-use crate::state::{IamRole, ServiceLinkedRoleDeletion};
+use crate::state::{IamRole, IamState, ServiceLinkedRoleDeletion};
 use crate::xml_responses;
 
 use super::{
@@ -16,6 +16,84 @@ use super::{
 use fakecloud_aws::xml::xml_escape;
 
 use crate::policy_validation::validate_policy_document;
+
+/// Reject deletion of a role that's still attached to instance profiles or
+/// has any kind of policy on it. Mirrors AWS's per-dependency
+/// `DeleteConflict` messages.
+fn ensure_role_can_be_deleted(state: &IamState, role_name: &str) -> Result<(), AwsServiceError> {
+    if state
+        .instance_profiles
+        .values()
+        .any(|ip| ip.roles.contains(&role_name.to_string()))
+    {
+        return Err(AwsServiceError::aws_error(
+            StatusCode::CONFLICT,
+            "DeleteConflict",
+            "Cannot delete entity, must remove roles from instance profile first.".to_string(),
+        ));
+    }
+
+    if state
+        .role_policies
+        .get(role_name)
+        .is_some_and(|p| !p.is_empty())
+    {
+        return Err(AwsServiceError::aws_error(
+            StatusCode::CONFLICT,
+            "DeleteConflict",
+            "Cannot delete entity, must detach all policies first.".to_string(),
+        ));
+    }
+
+    if state
+        .role_inline_policies
+        .get(role_name)
+        .is_some_and(|p| !p.is_empty())
+    {
+        return Err(AwsServiceError::aws_error(
+            StatusCode::CONFLICT,
+            "DeleteConflict",
+            "Cannot delete entity, must delete policies first.".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+/// Compute the service-linked-role name for a given service principal.
+///
+/// AWS has a fixed naming scheme: `AWSServiceRoleFor{Suffix}` (with an
+/// optional `_{custom}` tail) where the suffix is derived from the part
+/// of the service principal before `.amazonaws.com`. A handful of
+/// services have non-derivable casing that we hard-code, and the
+/// `<prefix>.<service>` form (e.g. `custom-resource.application-autoscaling`)
+/// produces a `{Service}_{Prefix}` suffix.
+fn derive_service_linked_role_name(aws_service_name: &str, custom_suffix: Option<&str>) -> String {
+    let service_part = aws_service_name
+        .strip_suffix(".amazonaws.com")
+        .unwrap_or(aws_service_name);
+
+    let role_suffix = match service_part {
+        "autoscaling" => "AutoScaling".to_string(),
+        "elasticbeanstalk" => "ElasticBeanstalk".to_string(),
+        "elasticloadbalancing" => "ElasticLoadBalancing".to_string(),
+        "elasticmapreduce" => "ElasticMapReduce".to_string(),
+        s if s.contains('.') => {
+            let parts: Vec<&str> = s.splitn(2, '.').collect();
+            let prefix = parts[0];
+            let service = parts[1];
+            let service_cased = title_case_service(service);
+            let prefix_cased = title_case_service(prefix);
+            format!("{}_{}", service_cased, prefix_cased)
+        }
+        other => other.to_string(),
+    };
+
+    match custom_suffix {
+        Some(suffix) => format!("AWSServiceRoleFor{}_{}", role_suffix, suffix),
+        None => format!("AWSServiceRoleFor{}", role_suffix),
+    }
+}
 
 impl IamService {
     pub(super) fn create_role(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
@@ -118,49 +196,7 @@ impl IamService {
             ));
         }
 
-        // Check if role is in any instance profiles
-        let in_profiles: Vec<String> = state
-            .instance_profiles
-            .values()
-            .filter(|ip| ip.roles.contains(&role_name))
-            .map(|ip| ip.instance_profile_name.clone())
-            .collect();
-
-        if !in_profiles.is_empty() {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::CONFLICT,
-                "DeleteConflict",
-                "Cannot delete entity, must remove roles from instance profile first.".to_string(),
-            ));
-        }
-
-        // Check if role has attached managed policies
-        if state
-            .role_policies
-            .get(&role_name)
-            .map(|p| !p.is_empty())
-            .unwrap_or(false)
-        {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::CONFLICT,
-                "DeleteConflict",
-                "Cannot delete entity, must detach all policies first.".to_string(),
-            ));
-        }
-
-        // Check if role has inline policies
-        if state
-            .role_inline_policies
-            .get(&role_name)
-            .map(|p| !p.is_empty())
-            .unwrap_or(false)
-        {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::CONFLICT,
-                "DeleteConflict",
-                "Cannot delete entity, must delete policies first.".to_string(),
-            ));
-        }
+        ensure_role_can_be_deleted(&state, &role_name)?;
 
         state.roles.remove(&role_name);
         state.role_policies.remove(&role_name);
@@ -787,40 +823,8 @@ impl IamService {
 
         let mut state = self.state.write();
 
-        // Derive role name from service name using AWS naming conventions
-        // The service name before .amazonaws.com determines the role suffix
-        let service_part = aws_service_name
-            .strip_suffix(".amazonaws.com")
-            .unwrap_or(&aws_service_name);
-
-        // Known service name mappings (AWS has specific casing rules)
-        let role_suffix = match service_part {
-            "autoscaling" => "AutoScaling".to_string(),
-            "elasticbeanstalk" => "ElasticBeanstalk".to_string(),
-            "elasticloadbalancing" => "ElasticLoadBalancing".to_string(),
-            "elasticmapreduce" => "ElasticMapReduce".to_string(),
-            s if s.contains('.') => {
-                // e.g. "custom-resource.application-autoscaling"
-                // -> suffix is from the part after the dot: "ApplicationAutoScaling"
-                // -> role name has "_CustomResource" appended for the prefix
-                let parts: Vec<&str> = s.splitn(2, '.').collect();
-                let prefix = parts[0]; // "custom-resource"
-                let service = parts[1]; // "application-autoscaling"
-
-                let service_cased = title_case_service(service);
-                let prefix_cased = title_case_service(prefix);
-
-                format!("{}_{}", service_cased, prefix_cased)
-            }
-            other => other.to_string(), // Use as-is for unknown services
-        };
-
-        let role_name = if let Some(suffix) = &custom_suffix {
-            format!("AWSServiceRoleFor{}_{}", role_suffix, suffix)
-        } else {
-            format!("AWSServiceRoleFor{}", role_suffix)
-        };
-
+        let role_name =
+            derive_service_linked_role_name(&aws_service_name, custom_suffix.as_deref());
         let path = format!("/aws-service-role/{}/", aws_service_name);
 
         // AWS uses arrays for Action and Service in SLR trust policies

@@ -4,11 +4,314 @@ use http::StatusCode;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 use fakecloud_core::validation::*;
 
-use crate::state::{AccountPasswordPolicy, VirtualMfaDevice};
+use crate::state::{AccountPasswordPolicy, IamState, VirtualMfaDevice};
 
 use super::{empty_response, parse_tags, required_param, tags_xml, url_encode, IamService};
 
 use fakecloud_aws::xml::xml_escape;
+
+/// Build the `<UserDetailList>` body for `GetAccountAuthorizationDetails`.
+/// Each `<member>` carries the user record plus its inline policies, group
+/// memberships, attached managed policies, and tags — exactly the fields
+/// AWS returns in the same call.
+fn build_user_details_xml(state: &IamState) -> String {
+    state
+        .users
+        .values()
+        .map(|u| {
+            let inline_policies: String = state
+                .user_inline_policies
+                .get(&u.user_name)
+                .map(|policies| {
+                    policies
+                        .iter()
+                        .map(|(name, doc)| {
+                            format!(
+                                "          <member>\n            <PolicyName>{}</PolicyName>\n            <PolicyDocument>{}</PolicyDocument>\n          </member>",
+                                xml_escape(name),
+                                url_encode(doc)
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default();
+
+            let attached: String = state
+                .user_policies
+                .get(&u.user_name)
+                .map(|arns| {
+                    arns.iter()
+                        .filter_map(|arn| {
+                            state.policies.get(arn).map(|p| {
+                                format!(
+                                    "          <member>\n            <PolicyName>{}</PolicyName>\n            <PolicyArn>{}</PolicyArn>\n          </member>",
+                                    p.policy_name, p.arn
+                                )
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default();
+
+            let group_list: String = state
+                .groups
+                .values()
+                .filter(|g| g.members.contains(&u.user_name))
+                .map(|g| format!("          <member>{}</member>", g.group_name))
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            let tags_members = tags_xml(&u.tags);
+
+            format!(
+                "      <member>\n        <Path>{}</Path>\n        <UserName>{}</UserName>\n        <UserId>{}</UserId>\n        <Arn>{}</Arn>\n        <CreateDate>{}</CreateDate>\n        <UserPolicyList>\n{inline_policies}\n        </UserPolicyList>\n        <GroupList>\n{group_list}\n        </GroupList>\n        <AttachedManagedPolicies>\n{attached}\n        </AttachedManagedPolicies>\n        <Tags>\n{tags_members}\n        </Tags>\n      </member>",
+                u.path, u.user_name, u.user_id, u.arn, u.created_at.format("%Y-%m-%dT%H:%M:%SZ"),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Build the `<RoleDetailList>` body for `GetAccountAuthorizationDetails`.
+/// Each `<member>` carries the role plus its inline policies, attached
+/// managed policies, the instance profiles it lives in, and tags.
+fn build_role_details_xml(state: &IamState) -> String {
+    state
+        .roles
+        .values()
+        .map(|r| {
+            let inline_policies: String = state
+                .role_inline_policies
+                .get(&r.role_name)
+                .map(|policies| {
+                    policies
+                        .iter()
+                        .map(|(name, doc)| {
+                            format!(
+                                "          <member>\n            <PolicyName>{}</PolicyName>\n            <PolicyDocument>{}</PolicyDocument>\n          </member>",
+                                xml_escape(name),
+                                url_encode(doc)
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default();
+
+            let attached: String = state
+                .role_policies
+                .get(&r.role_name)
+                .map(|arns| {
+                    arns.iter()
+                        .filter_map(|arn| {
+                            state.policies.get(arn).map(|p| {
+                                format!(
+                                    "          <member>\n            <PolicyName>{}</PolicyName>\n            <PolicyArn>{}</PolicyArn>\n          </member>",
+                                    p.policy_name, p.arn
+                                )
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default();
+
+            let instance_profiles: String = state
+                .instance_profiles
+                .values()
+                .filter(|ip| ip.roles.contains(&r.role_name))
+                .map(|ip| {
+                    format!(
+                        "          <member>\n            <InstanceProfileName>{}</InstanceProfileName>\n            <InstanceProfileId>{}</InstanceProfileId>\n            <Arn>{}</Arn>\n            <Path>{}</Path>\n            <CreateDate>{}</CreateDate>\n          </member>",
+                        ip.instance_profile_name, ip.instance_profile_id, ip.arn, ip.path, ip.created_at.format("%Y-%m-%dT%H:%M:%SZ")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            let tags_members = tags_xml(&r.tags);
+
+            format!(
+                "      <member>\n        <Path>{}</Path>\n        <RoleName>{}</RoleName>\n        <RoleId>{}</RoleId>\n        <Arn>{}</Arn>\n        <CreateDate>{}</CreateDate>\n        <AssumeRolePolicyDocument>{}</AssumeRolePolicyDocument>\n        <RolePolicyList>\n{inline_policies}\n        </RolePolicyList>\n        <AttachedManagedPolicies>\n{attached}\n        </AttachedManagedPolicies>\n        <InstanceProfileList>\n{instance_profiles}\n        </InstanceProfileList>\n        <Tags>\n{tags_members}\n        </Tags>\n      </member>",
+                r.path, r.role_name, r.role_id, r.arn, r.created_at.format("%Y-%m-%dT%H:%M:%SZ"),
+                url_encode(&r.assume_role_policy_document),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Build the `<GroupDetailList>` body for `GetAccountAuthorizationDetails`.
+/// Each `<member>` carries the group plus its inline policies and attached
+/// managed policies.
+fn build_group_details_xml(state: &IamState) -> String {
+    state
+        .groups
+        .values()
+        .map(|g| {
+            let inline_policies: String = g
+                .inline_policies
+                .iter()
+                .map(|(name, doc)| {
+                    format!(
+                        "          <member>\n            <PolicyName>{}</PolicyName>\n            <PolicyDocument>{}</PolicyDocument>\n          </member>",
+                        xml_escape(name),
+                        url_encode(doc)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            let attached: String = g
+                .attached_policies
+                .iter()
+                .filter_map(|arn| {
+                    state.policies.get(arn).map(|p| {
+                        format!(
+                            "          <member>\n            <PolicyName>{}</PolicyName>\n            <PolicyArn>{}</PolicyArn>\n          </member>",
+                            p.policy_name, p.arn
+                        )
+                    })
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            format!(
+                "      <member>\n        <Path>{}</Path>\n        <GroupName>{}</GroupName>\n        <GroupId>{}</GroupId>\n        <Arn>{}</Arn>\n        <CreateDate>{}</CreateDate>\n        <GroupPolicyList>\n{inline_policies}\n        </GroupPolicyList>\n        <AttachedManagedPolicies>\n{attached}\n        </AttachedManagedPolicies>\n      </member>",
+                g.path, g.group_name, g.group_id, g.arn, g.created_at.format("%Y-%m-%dT%H:%M:%SZ"),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Validate the upper-bound constraints AWS enforces on the password
+/// policy. AWS reports every violating field in a single ValidationError,
+/// so we collect all of them before returning.
+fn validate_password_policy_inputs(req: &AwsRequest) -> Result<(), AwsServiceError> {
+    let min_len: Option<i64> = req
+        .query_params
+        .get("MinimumPasswordLength")
+        .and_then(|v| v.parse().ok());
+    let max_age: Option<i64> = req
+        .query_params
+        .get("MaxPasswordAge")
+        .and_then(|v| v.parse().ok());
+    let reuse_prevention: Option<i64> = req
+        .query_params
+        .get("PasswordReusePrevention")
+        .and_then(|v| v.parse().ok());
+
+    let mut errors = Vec::new();
+    if let Some(v) = min_len {
+        if v > 128 {
+            errors.push(format!("Value \"{v}\" at \"minimumPasswordLength\" failed to satisfy constraint: Member must have value less than or equal to 128"));
+        }
+    }
+    if let Some(v) = reuse_prevention {
+        if v > 24 {
+            errors.push(format!("Value \"{v}\" at \"passwordReusePrevention\" failed to satisfy constraint: Member must have value less than or equal to 24"));
+        }
+    }
+    if let Some(v) = max_age {
+        if v > 1095 {
+            errors.push(format!("Value \"{v}\" at \"maxPasswordAge\" failed to satisfy constraint: Member must have value less than or equal to 1095"));
+        }
+    }
+
+    if errors.is_empty() {
+        return Ok(());
+    }
+
+    let n = errors.len();
+    let msg = format!(
+        "{n} validation error{} detected: {}",
+        if n > 1 { "s" } else { "" },
+        errors.join("; ")
+    );
+    Err(AwsServiceError::aws_error(
+        StatusCode::BAD_REQUEST,
+        "ValidationError",
+        msg,
+    ))
+}
+
+/// Apply each provided password-policy field onto the policy. Absent
+/// fields keep their existing value (consistent with AWS PATCH-style
+/// semantics on this endpoint).
+fn apply_password_policy_updates(policy: &mut AccountPasswordPolicy, req: &AwsRequest) {
+    if let Some(v) = req
+        .query_params
+        .get("MinimumPasswordLength")
+        .and_then(|v| v.parse().ok())
+    {
+        policy.minimum_password_length = v;
+    }
+    if let Some(v) = req.query_params.get("RequireSymbols") {
+        policy.require_symbols = v == "true";
+    }
+    if let Some(v) = req.query_params.get("RequireNumbers") {
+        policy.require_numbers = v == "true";
+    }
+    if let Some(v) = req.query_params.get("RequireUppercaseCharacters") {
+        policy.require_uppercase_characters = v == "true";
+    }
+    if let Some(v) = req.query_params.get("RequireLowercaseCharacters") {
+        policy.require_lowercase_characters = v == "true";
+    }
+    if let Some(v) = req.query_params.get("AllowUsersToChangePassword") {
+        policy.allow_users_to_change_password = v == "true";
+    }
+    if let Some(v) = req
+        .query_params
+        .get("MaxPasswordAge")
+        .and_then(|v| v.parse().ok())
+    {
+        policy.max_password_age = v;
+    }
+    if let Some(v) = req
+        .query_params
+        .get("PasswordReusePrevention")
+        .and_then(|v| v.parse().ok())
+    {
+        policy.password_reuse_prevention = v;
+    }
+    if let Some(v) = req.query_params.get("HardExpiry") {
+        policy.hard_expiry = v == "true";
+    }
+}
+
+/// Build the `<Policies>` body for `GetAccountAuthorizationDetails`. Each
+/// `<member>` carries the policy plus the full version list (so a caller
+/// can see every revision the policy has had, not just the default).
+fn build_policy_details_xml(state: &IamState) -> String {
+    state
+        .policies
+        .values()
+        .map(|p| {
+            let versions: String = p
+                .versions
+                .iter()
+                .map(|v| {
+                    format!(
+                        "            <member>\n              <VersionId>{}</VersionId>\n              <IsDefaultVersion>{}</IsDefaultVersion>\n              <Document>{}</Document>\n              <CreateDate>{}</CreateDate>\n            </member>",
+                        v.version_id, v.is_default, url_encode(&v.document), v.created_at.format("%Y-%m-%dT%H:%M:%SZ")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            format!(
+                "      <member>\n        <PolicyName>{}</PolicyName>\n        <PolicyId>{}</PolicyId>\n        <Arn>{}</Arn>\n        <Path>{}</Path>\n        <DefaultVersionId>{}</DefaultVersionId>\n        <AttachmentCount>{}</AttachmentCount>\n        <IsAttachable>true</IsAttachable>\n        <CreateDate>{}</CreateDate>\n        <PolicyVersionList>\n{versions}\n        </PolicyVersionList>\n      </member>",
+                p.policy_name, p.policy_id, p.arn, p.path, p.default_version_id,
+                p.attachment_count, p.created_at.format("%Y-%m-%dT%H:%M:%SZ"),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 
 impl IamService {
     pub(super) fn get_account_summary(
@@ -97,195 +400,10 @@ impl IamService {
     ) -> Result<AwsResponse, AwsServiceError> {
         let state = self.state.read();
 
-        // Build user details
-        let user_details: String = state
-            .users
-            .values()
-            .map(|u| {
-                let inline_policies: String = state
-                    .user_inline_policies
-                    .get(&u.user_name)
-                    .map(|policies| {
-                        policies
-                            .iter()
-                            .map(|(name, doc)| {
-                                format!(
-                                    "          <member>\n            <PolicyName>{}</PolicyName>\n            <PolicyDocument>{}</PolicyDocument>\n          </member>",
-                                    xml_escape(name),
-                                    url_encode(doc)
-                                )
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                    })
-                    .unwrap_or_default();
-
-                let attached: String = state
-                    .user_policies
-                    .get(&u.user_name)
-                    .map(|arns| {
-                        arns.iter()
-                            .filter_map(|arn| {
-                                state.policies.get(arn).map(|p| {
-                                    format!(
-                                        "          <member>\n            <PolicyName>{}</PolicyName>\n            <PolicyArn>{}</PolicyArn>\n          </member>",
-                                        p.policy_name, p.arn
-                                    )
-                                })
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                    })
-                    .unwrap_or_default();
-
-                let group_list: String = state
-                    .groups
-                    .values()
-                    .filter(|g| g.members.contains(&u.user_name))
-                    .map(|g| format!("          <member>{}</member>", g.group_name))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-
-                let tags_members = tags_xml(&u.tags);
-
-                format!(
-                    "      <member>\n        <Path>{}</Path>\n        <UserName>{}</UserName>\n        <UserId>{}</UserId>\n        <Arn>{}</Arn>\n        <CreateDate>{}</CreateDate>\n        <UserPolicyList>\n{inline_policies}\n        </UserPolicyList>\n        <GroupList>\n{group_list}\n        </GroupList>\n        <AttachedManagedPolicies>\n{attached}\n        </AttachedManagedPolicies>\n        <Tags>\n{tags_members}\n        </Tags>\n      </member>",
-                    u.path, u.user_name, u.user_id, u.arn, u.created_at.format("%Y-%m-%dT%H:%M:%SZ"),
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        // Build role details
-        let role_details: String = state
-            .roles
-            .values()
-            .map(|r| {
-                let inline_policies: String = state
-                    .role_inline_policies
-                    .get(&r.role_name)
-                    .map(|policies| {
-                        policies
-                            .iter()
-                            .map(|(name, doc)| {
-                                format!(
-                                    "          <member>\n            <PolicyName>{}</PolicyName>\n            <PolicyDocument>{}</PolicyDocument>\n          </member>",
-                                    xml_escape(name),
-                                    url_encode(doc)
-                                )
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                    })
-                    .unwrap_or_default();
-
-                let attached: String = state
-                    .role_policies
-                    .get(&r.role_name)
-                    .map(|arns| {
-                        arns.iter()
-                            .filter_map(|arn| {
-                                state.policies.get(arn).map(|p| {
-                                    format!(
-                                        "          <member>\n            <PolicyName>{}</PolicyName>\n            <PolicyArn>{}</PolicyArn>\n          </member>",
-                                        p.policy_name, p.arn
-                                    )
-                                })
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                    })
-                    .unwrap_or_default();
-
-                let instance_profiles: String = state
-                    .instance_profiles
-                    .values()
-                    .filter(|ip| ip.roles.contains(&r.role_name))
-                    .map(|ip| {
-                        format!(
-                            "          <member>\n            <InstanceProfileName>{}</InstanceProfileName>\n            <InstanceProfileId>{}</InstanceProfileId>\n            <Arn>{}</Arn>\n            <Path>{}</Path>\n            <CreateDate>{}</CreateDate>\n          </member>",
-                            ip.instance_profile_name, ip.instance_profile_id, ip.arn, ip.path, ip.created_at.format("%Y-%m-%dT%H:%M:%SZ")
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-
-                let tags_members = tags_xml(&r.tags);
-
-                format!(
-                    "      <member>\n        <Path>{}</Path>\n        <RoleName>{}</RoleName>\n        <RoleId>{}</RoleId>\n        <Arn>{}</Arn>\n        <CreateDate>{}</CreateDate>\n        <AssumeRolePolicyDocument>{}</AssumeRolePolicyDocument>\n        <RolePolicyList>\n{inline_policies}\n        </RolePolicyList>\n        <AttachedManagedPolicies>\n{attached}\n        </AttachedManagedPolicies>\n        <InstanceProfileList>\n{instance_profiles}\n        </InstanceProfileList>\n        <Tags>\n{tags_members}\n        </Tags>\n      </member>",
-                    r.path, r.role_name, r.role_id, r.arn, r.created_at.format("%Y-%m-%dT%H:%M:%SZ"),
-                    url_encode(&r.assume_role_policy_document),
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        // Build group details
-        let group_details: String = state
-            .groups
-            .values()
-            .map(|g| {
-                let inline_policies: String = g
-                    .inline_policies
-                    .iter()
-                    .map(|(name, doc)| {
-                        format!(
-                            "          <member>\n            <PolicyName>{}</PolicyName>\n            <PolicyDocument>{}</PolicyDocument>\n          </member>",
-                            xml_escape(name),
-                            url_encode(doc)
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-
-                let attached: String = g
-                    .attached_policies
-                    .iter()
-                    .filter_map(|arn| {
-                        state.policies.get(arn).map(|p| {
-                            format!(
-                                "          <member>\n            <PolicyName>{}</PolicyName>\n            <PolicyArn>{}</PolicyArn>\n          </member>",
-                                p.policy_name, p.arn
-                            )
-                        })
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-
-                format!(
-                    "      <member>\n        <Path>{}</Path>\n        <GroupName>{}</GroupName>\n        <GroupId>{}</GroupId>\n        <Arn>{}</Arn>\n        <CreateDate>{}</CreateDate>\n        <GroupPolicyList>\n{inline_policies}\n        </GroupPolicyList>\n        <AttachedManagedPolicies>\n{attached}\n        </AttachedManagedPolicies>\n      </member>",
-                    g.path, g.group_name, g.group_id, g.arn, g.created_at.format("%Y-%m-%dT%H:%M:%SZ"),
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        // Build policy details
-        let policy_details: String = state
-            .policies
-            .values()
-            .map(|p| {
-                let versions: String = p
-                    .versions
-                    .iter()
-                    .map(|v| {
-                        format!(
-                            "            <member>\n              <VersionId>{}</VersionId>\n              <IsDefaultVersion>{}</IsDefaultVersion>\n              <Document>{}</Document>\n              <CreateDate>{}</CreateDate>\n            </member>",
-                            v.version_id, v.is_default, url_encode(&v.document), v.created_at.format("%Y-%m-%dT%H:%M:%SZ")
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-
-                format!(
-                    "      <member>\n        <PolicyName>{}</PolicyName>\n        <PolicyId>{}</PolicyId>\n        <Arn>{}</Arn>\n        <Path>{}</Path>\n        <DefaultVersionId>{}</DefaultVersionId>\n        <AttachmentCount>{}</AttachmentCount>\n        <IsAttachable>true</IsAttachable>\n        <CreateDate>{}</CreateDate>\n        <PolicyVersionList>\n{versions}\n        </PolicyVersionList>\n      </member>",
-                    p.policy_name, p.policy_id, p.arn, p.path, p.default_version_id,
-                    p.attachment_count, p.created_at.format("%Y-%m-%dT%H:%M:%SZ"),
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+        let user_details = build_user_details_xml(&state);
+        let role_details = build_role_details_xml(&state);
+        let group_details = build_group_details_xml(&state);
+        let policy_details = build_policy_details_xml(&state);
 
         let xml = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -375,95 +493,13 @@ impl IamService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        // Validate constraints
-        let min_len: Option<i64> = req
-            .query_params
-            .get("MinimumPasswordLength")
-            .and_then(|v| v.parse().ok());
-        let max_age: Option<i64> = req
-            .query_params
-            .get("MaxPasswordAge")
-            .and_then(|v| v.parse().ok());
-        let reuse_prevention: Option<i64> = req
-            .query_params
-            .get("PasswordReusePrevention")
-            .and_then(|v| v.parse().ok());
-
-        let mut errors = Vec::new();
-        if let Some(v) = min_len {
-            if v > 128 {
-                errors.push(format!("Value \"{v}\" at \"minimumPasswordLength\" failed to satisfy constraint: Member must have value less than or equal to 128"));
-            }
-        }
-        if let Some(v) = reuse_prevention {
-            if v > 24 {
-                errors.push(format!("Value \"{v}\" at \"passwordReusePrevention\" failed to satisfy constraint: Member must have value less than or equal to 24"));
-            }
-        }
-        if let Some(v) = max_age {
-            if v > 1095 {
-                errors.push(format!("Value \"{v}\" at \"maxPasswordAge\" failed to satisfy constraint: Member must have value less than or equal to 1095"));
-            }
-        }
-        if !errors.is_empty() {
-            let n = errors.len();
-            let msg = format!(
-                "{n} validation error{} detected: {}",
-                if n > 1 { "s" } else { "" },
-                errors.join("; ")
-            );
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ValidationError",
-                msg,
-            ));
-        }
+        validate_password_policy_inputs(req)?;
 
         let mut state = self.state.write();
-
         let policy = state
             .account_password_policy
             .get_or_insert(AccountPasswordPolicy::default());
-
-        if let Some(v) = req
-            .query_params
-            .get("MinimumPasswordLength")
-            .and_then(|v| v.parse().ok())
-        {
-            policy.minimum_password_length = v;
-        }
-        if let Some(v) = req.query_params.get("RequireSymbols") {
-            policy.require_symbols = v == "true";
-        }
-        if let Some(v) = req.query_params.get("RequireNumbers") {
-            policy.require_numbers = v == "true";
-        }
-        if let Some(v) = req.query_params.get("RequireUppercaseCharacters") {
-            policy.require_uppercase_characters = v == "true";
-        }
-        if let Some(v) = req.query_params.get("RequireLowercaseCharacters") {
-            policy.require_lowercase_characters = v == "true";
-        }
-        if let Some(v) = req.query_params.get("AllowUsersToChangePassword") {
-            policy.allow_users_to_change_password = v == "true";
-        }
-        if let Some(v) = req
-            .query_params
-            .get("MaxPasswordAge")
-            .and_then(|v| v.parse().ok())
-        {
-            policy.max_password_age = v;
-        }
-        if let Some(v) = req
-            .query_params
-            .get("PasswordReusePrevention")
-            .and_then(|v| v.parse().ok())
-        {
-            policy.password_reuse_prevention = v;
-        }
-        if let Some(v) = req.query_params.get("HardExpiry") {
-            policy.hard_expiry = v == "true";
-        }
+        apply_password_policy_updates(policy, req);
 
         let xml = empty_response("UpdateAccountPasswordPolicy", &req.request_id);
         Ok(AwsResponse::xml(StatusCode::OK, xml))
