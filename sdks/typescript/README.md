@@ -183,7 +183,7 @@ test("classifier branches on spam vs ham", async () => {
     { promptContains: null, response: '{"label":"ham"}' }, // catch-all
   ]);
 
-  await classify("hello friend");          // user code calls Bedrock
+  await classify("hello friend"); // user code calls Bedrock
   await classify("buy now cheap pills");
 
   const { invocations } = await fc.bedrock.getInvocations();
