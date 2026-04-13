@@ -195,14 +195,18 @@ impl S3State {
 pub type SharedS3State = Arc<RwLock<S3State>>;
 
 /// Read the bytes referenced by a [`BodyRef`]. In memory mode this is the
-/// stored buffer directly; the Disk arm is a complete seam for Phase 4+.
+/// stored buffer directly. For disk-backed bodies this falls back to a direct
+/// filesystem read which bypasses the [`BodyCache`]; cache-aware reads must go
+/// through `S3Store::open_object_body` via [`S3Service`]. TODO(phase-7): thread
+/// the store handle through all read sites so the cache is consulted
+/// everywhere.
 pub fn read_body_bytes(body: &BodyRef) -> Bytes {
     match body {
         BodyRef::Memory(b) => b.clone(),
-        BodyRef::Disk { .. } => {
-            // TODO(phase-4): route through S3Store::open_object_body.
-            panic!("Disk-backed BodyRef not supported in memory mode")
-        }
+        BodyRef::Disk { path, .. } => match std::fs::read(path) {
+            Ok(v) => Bytes::from(v),
+            Err(_) => Bytes::new(),
+        },
     }
 }
 

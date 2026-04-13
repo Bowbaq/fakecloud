@@ -488,11 +488,18 @@ async fn main() {
             let disk = fakecloud_persistence::s3::DiskS3Store::new(s3_root, cache);
             match <fakecloud_persistence::s3::DiskS3Store as fakecloud_persistence::S3Store>::load(&disk) {
                 Ok(snapshot) => {
-                    // TODO(phase-5/6): rehydrate runtime S3State from snapshot (versioning + mpu).
-                    let count: usize = snapshot.buckets.values().map(|b| b.objects.len()).sum();
+                    let bucket_count = snapshot.buckets.len();
+                    let object_count: usize =
+                        snapshot.buckets.values().map(|b| b.objects.len()).sum();
+                    let hydrated = fakecloud_s3::persistence::hydrate_s3_state(
+                        snapshot,
+                        &cli.account_id,
+                        &cli.region,
+                    );
+                    *s3_state.write() = hydrated;
                     tracing::info!(
-                        buckets = snapshot.buckets.len(),
-                        objects = count,
+                        buckets = bucket_count,
+                        objects = object_count,
                         "loaded s3 persistence snapshot",
                     );
                 }

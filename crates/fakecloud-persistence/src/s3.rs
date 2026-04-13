@@ -20,9 +20,18 @@ pub struct S3State {
 pub struct BucketSnapshot {
     pub meta: BucketMeta,
     #[serde(default)]
-    pub objects: HashMap<String, ObjectMeta>,
+    pub objects: HashMap<String, LoadedObject>,
     #[serde(default)]
-    pub object_versions: HashMap<String, Vec<ObjectMeta>>,
+    pub object_versions: HashMap<String, Vec<LoadedObject>>,
+    #[serde(default)]
+    pub subresources: HashMap<String, String>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct LoadedObject {
+    pub meta: ObjectMeta,
+    #[serde(default)]
+    pub body: BodyRef,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -169,6 +178,25 @@ pub enum BucketSubresource {
     Acl,
     Accelerate,
 }
+
+pub const ALL_SUBRESOURCES: &[BucketSubresource] = &[
+    BucketSubresource::Tags,
+    BucketSubresource::Lifecycle,
+    BucketSubresource::Cors,
+    BucketSubresource::Policy,
+    BucketSubresource::Notification,
+    BucketSubresource::Logging,
+    BucketSubresource::Website,
+    BucketSubresource::PublicAccessBlock,
+    BucketSubresource::ObjectLock,
+    BucketSubresource::Replication,
+    BucketSubresource::Ownership,
+    BucketSubresource::Inventory,
+    BucketSubresource::Encryption,
+    BucketSubresource::Versioning,
+    BucketSubresource::Acl,
+    BucketSubresource::Accelerate,
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum BodyRef {
@@ -477,13 +505,30 @@ impl S3Store for DiskS3Store {
                 continue;
             }
             let meta_text = std::fs::read_to_string(&meta_path)?;
-            let meta: BucketMeta =
+            let mut meta: BucketMeta =
                 toml::from_str(&meta_text).map_err(|e| StoreError::Serde(e.to_string()))?;
             let mut snap = BucketSnapshot {
                 meta: meta.clone(),
                 objects: HashMap::new(),
                 object_versions: HashMap::new(),
+                subresources: HashMap::new(),
             };
+
+            for kind in ALL_SUBRESOURCES {
+                let fname = Self::subresource_filename(*kind);
+                let path = bdir.join(fname);
+                if path.exists() {
+                    let text = std::fs::read_to_string(&path)?;
+                    if *kind == BucketSubresource::Versioning && snap.meta.versioning.is_none() {
+                        let stripped = text.trim();
+                        if !stripped.is_empty() {
+                            snap.meta.versioning = Some(stripped.to_string());
+                            meta.versioning = snap.meta.versioning.clone();
+                        }
+                    }
+                    snap.subresources.insert(fname.to_string(), text);
+                }
+            }
 
             let objects_root = bdir.join("objects");
             if objects_root.exists() {
@@ -493,6 +538,8 @@ impl S3Store for DiskS3Store {
                         continue;
                     }
                     let key_dir = okey_entry.path();
+                    let mut versioned: Vec<LoadedObject> = Vec::new();
+                    let mut key_name: Option<String> = None;
                     for version_entry in std::fs::read_dir(&key_dir)? {
                         let version_entry = version_entry?;
                         let path = version_entry.path();
@@ -503,19 +550,58 @@ impl S3Store for DiskS3Store {
                             continue;
                         }
                         let version_tag = &fname[..fname.len() - 5];
-                        if version_tag != "null" {
-                            // TODO(phase-5): load versioned objects.
-                            continue;
-                        }
                         let toml_text = std::fs::read_to_string(&path)?;
                         let obj_meta: ObjectMeta = toml::from_str(&toml_text)
                             .map_err(|e| StoreError::Serde(e.to_string()))?;
-                        snap.objects.insert(obj_meta.key.clone(), obj_meta);
+                        let bin_path = key_dir.join(format!("{}.bin", version_tag));
+                        let (body, size) = if obj_meta.is_delete_marker {
+                            (BodyRef::Memory(Bytes::new()), 0u64)
+                        } else if bin_path.exists() {
+                            let sz = std::fs::metadata(&bin_path)?.len();
+                            (
+                                BodyRef::Disk {
+                                    bucket: meta.name.clone(),
+                                    key: obj_meta.key.clone(),
+                                    version: if version_tag == "null" {
+                                        None
+                                    } else {
+                                        Some(version_tag.to_string())
+                                    },
+                                    path: bin_path,
+                                    size: sz,
+                                },
+                                sz,
+                            )
+                        } else {
+                            (BodyRef::Memory(Bytes::new()), 0u64)
+                        };
+                        let _ = size;
+                        key_name.get_or_insert_with(|| obj_meta.key.clone());
+                        if version_tag == "null" && obj_meta.version_id.is_none() {
+                            snap.objects.insert(
+                                obj_meta.key.clone(),
+                                LoadedObject {
+                                    meta: obj_meta,
+                                    body,
+                                },
+                            );
+                        } else {
+                            versioned.push(LoadedObject {
+                                meta: obj_meta,
+                                body,
+                            });
+                        }
+                    }
+                    if !versioned.is_empty() {
+                        versioned.sort_by(|a, b| a.meta.last_modified.cmp(&b.meta.last_modified));
+                        if let Some(key) = key_name {
+                            snap.object_versions.insert(key, versioned);
+                        }
                     }
                 }
             }
 
-            // TODO(phase-6): mpu/ directory is ignored in phase 4.
+            // TODO(phase-6): mpu/ directory is ignored.
             let _ = bdir.join("mpu");
 
             state.buckets.insert(meta.name.clone(), snap);
@@ -573,12 +659,13 @@ impl S3Store for DiskS3Store {
         body: BodySource,
         meta: &ObjectMeta,
     ) -> StoreResult<BodyRef> {
-        if version.is_some() {
-            // TODO(phase-5): persist versioned objects.
-            return Err(io_other("versioned put_object not yet implemented — phase 5"));
-        }
         let (dir, bin_path, toml_path) = self.object_paths(bucket, key, version);
         std::fs::create_dir_all(&dir)?;
+
+        if meta.is_delete_marker {
+            crate::atomic::write_atomic_toml(&toml_path, meta)?;
+            return Ok(BodyRef::Memory(Bytes::new()));
+        }
 
         let size: u64;
         let bytes_for_cache: Option<Bytes>;
@@ -629,12 +716,6 @@ impl S3Store for DiskS3Store {
         version: Option<&str>,
         meta: &ObjectMeta,
     ) -> StoreResult<()> {
-        if version.is_some() {
-            // TODO(phase-5): versioned put_object_meta.
-            return Err(io_other(
-                "versioned put_object_meta not yet implemented — phase 5",
-            ));
-        }
         let (dir, _bin, toml_path) = self.object_paths(bucket, key, version);
         std::fs::create_dir_all(&dir)?;
         crate::atomic::write_atomic_toml(&toml_path, meta)?;
@@ -647,10 +728,6 @@ impl S3Store for DiskS3Store {
         key: &str,
         version: Option<&str>,
     ) -> StoreResult<()> {
-        if version.is_some() {
-            // TODO(phase-5): versioned delete.
-            return Err(io_other("versioned delete_object not yet implemented — phase 5"));
-        }
         let (dir, bin_path, toml_path) = self.object_paths(bucket, key, version);
         for p in [&bin_path, &toml_path] {
             match std::fs::remove_file(p) {
@@ -860,7 +937,7 @@ mod disk_tests {
         let loaded = store.load().unwrap();
         let snap = loaded.buckets.get("b").unwrap();
         let obj = snap.objects.get("k1").unwrap();
-        assert_eq!(obj.size, data.len() as u64);
+        assert_eq!(obj.meta.size, data.len() as u64);
     }
 
     #[test]
@@ -908,7 +985,7 @@ mod disk_tests {
         assert_eq!(std::fs::read(&bin).unwrap(), before);
         let loaded = store.load().unwrap();
         let obj = loaded.buckets.get("b").unwrap().objects.get("k").unwrap();
-        assert_eq!(obj.tags.get("x").map(String::as_str), Some("y"));
+        assert_eq!(obj.meta.tags.get("x").map(String::as_str), Some("y"));
     }
 
     #[test]
@@ -996,7 +1073,7 @@ mod disk_tests {
     }
 
     #[test]
-    fn load_ignores_mpu_and_versioned_files() {
+    fn load_ignores_mpu_dir() {
         let tmp = TempDir::new().unwrap();
         let store = new_store(&tmp);
         store
@@ -1010,19 +1087,202 @@ mod disk_tests {
         store
             .put_object("b", "k", None, BodySource::Bytes(data), &meta)
             .unwrap();
-        // Plant an mpu dir and a versioned sidecar — neither should break load.
+        // TODO(phase-6): mpu dir is ignored by load.
         let mpu = store.bucket_dir("b").join("mpu").join("upload1");
         std::fs::create_dir_all(&mpu).unwrap();
         std::fs::write(mpu.join("init.toml"), "x").unwrap();
-        let (key_dir, _, _) = store.object_paths("b", "k", None);
-        std::fs::write(
-            key_dir.join("some-version-id.toml"),
-            "# TODO(phase-5)\n",
-        )
-        .unwrap();
 
         let loaded = store.load().unwrap();
         let snap = loaded.buckets.get("b").unwrap();
         assert_eq!(snap.objects.len(), 1);
+    }
+
+    #[test]
+    fn load_reads_bucket_subresources() {
+        let tmp = TempDir::new().unwrap();
+        let store = new_store(&tmp);
+        store
+            .put_bucket_meta("b", &BucketMeta {
+                name: "b".to_string(),
+                ..Default::default()
+            })
+            .unwrap();
+        store
+            .put_bucket_subresource("b", BucketSubresource::Lifecycle, "<Lifecycle/>")
+            .unwrap();
+        store
+            .put_bucket_subresource("b", BucketSubresource::Cors, "<Cors/>")
+            .unwrap();
+        store
+            .put_bucket_subresource("b", BucketSubresource::Policy, "{}")
+            .unwrap();
+        store
+            .put_bucket_subresource("b", BucketSubresource::Tags, "x=1")
+            .unwrap();
+        let loaded = store.load().unwrap();
+        let snap = loaded.buckets.get("b").unwrap();
+        assert_eq!(
+            snap.subresources.get("lifecycle.toml").map(String::as_str),
+            Some("<Lifecycle/>"),
+        );
+        assert_eq!(
+            snap.subresources.get("cors.toml").map(String::as_str),
+            Some("<Cors/>"),
+        );
+        assert_eq!(
+            snap.subresources.get("policy.toml").map(String::as_str),
+            Some("{}"),
+        );
+        assert_eq!(
+            snap.subresources.get("tags.toml").map(String::as_str),
+            Some("x=1"),
+        );
+    }
+
+    #[test]
+    fn versioned_put_load_roundtrip() {
+        let tmp = TempDir::new().unwrap();
+        let store = new_store(&tmp);
+        store
+            .put_bucket_meta("b", &BucketMeta {
+                name: "b".to_string(),
+                versioning: Some("Enabled".to_string()),
+                ..Default::default()
+            })
+            .unwrap();
+        let base = chrono::Utc::now();
+        for (i, (vid, body)) in [("v1", "one"), ("v2", "two"), ("v3", "three")]
+            .iter()
+            .enumerate()
+        {
+            let mut m = sample_meta("k", body.len() as u64);
+            m.version_id = Some((*vid).to_string());
+            m.last_modified = base + chrono::Duration::seconds(i as i64);
+            store
+                .put_object(
+                    "b",
+                    "k",
+                    Some(*vid),
+                    BodySource::Bytes(Bytes::copy_from_slice(body.as_bytes())),
+                    &m,
+                )
+                .unwrap();
+        }
+        let loaded = store.load().unwrap();
+        let snap = loaded.buckets.get("b").unwrap();
+        let versions = snap.object_versions.get("k").expect("versions present");
+        assert_eq!(versions.len(), 3);
+        assert_eq!(versions[0].meta.version_id.as_deref(), Some("v1"));
+        assert_eq!(versions[1].meta.version_id.as_deref(), Some("v2"));
+        assert_eq!(versions[2].meta.version_id.as_deref(), Some("v3"));
+        for v in versions {
+            match &v.body {
+                BodyRef::Disk { size, .. } => assert!(*size > 0),
+                _ => panic!("expected Disk body"),
+            }
+        }
+    }
+
+    #[test]
+    fn delete_marker_roundtrip_no_body_file() {
+        let tmp = TempDir::new().unwrap();
+        let store = new_store(&tmp);
+        store
+            .put_bucket_meta("b", &BucketMeta {
+                name: "b".to_string(),
+                versioning: Some("Enabled".to_string()),
+                ..Default::default()
+            })
+            .unwrap();
+        let mut m = sample_meta("k", 0);
+        m.version_id = Some("dm1".to_string());
+        m.is_delete_marker = true;
+        store
+            .put_object("b", "k", Some("dm1"), BodySource::Bytes(Bytes::new()), &m)
+            .unwrap();
+        // No .bin file on disk for delete markers.
+        let (_, bin, toml_path) = store.object_paths("b", "k", Some("dm1"));
+        assert!(!bin.exists(), "delete marker must not have a .bin file");
+        assert!(toml_path.exists());
+
+        let loaded = store.load().unwrap();
+        let versions = loaded
+            .buckets
+            .get("b")
+            .unwrap()
+            .object_versions
+            .get("k")
+            .unwrap();
+        assert_eq!(versions.len(), 1);
+        assert!(versions[0].meta.is_delete_marker);
+        match &versions[0].body {
+            BodyRef::Memory(b) => assert_eq!(b.len(), 0),
+            _ => panic!("delete marker body should be empty Memory"),
+        }
+    }
+
+    #[test]
+    fn mixed_nonversioned_and_versioned_buckets() {
+        let tmp = TempDir::new().unwrap();
+        let store = new_store(&tmp);
+        store
+            .put_bucket_meta("a", &BucketMeta {
+                name: "a".to_string(),
+                ..Default::default()
+            })
+            .unwrap();
+        store
+            .put_bucket_meta("b", &BucketMeta {
+                name: "b".to_string(),
+                versioning: Some("Enabled".to_string()),
+                ..Default::default()
+            })
+            .unwrap();
+        let ma = sample_meta("only", 3);
+        store
+            .put_object("a", "only", None, BodySource::Bytes(Bytes::from_static(b"aaa")), &ma)
+            .unwrap();
+        let base = chrono::Utc::now();
+        for (i, vid) in ["v1", "v2"].iter().enumerate() {
+            let mut m = sample_meta("twice", 2);
+            m.version_id = Some((*vid).to_string());
+            m.last_modified = base + chrono::Duration::seconds(i as i64);
+            store
+                .put_object(
+                    "b",
+                    "twice",
+                    Some(*vid),
+                    BodySource::Bytes(Bytes::from_static(b"xx")),
+                    &m,
+                )
+                .unwrap();
+        }
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.buckets.len(), 2);
+        let a = loaded.buckets.get("a").unwrap();
+        assert_eq!(a.objects.len(), 1);
+        assert!(a.object_versions.is_empty());
+        let b = loaded.buckets.get("b").unwrap();
+        assert!(b.objects.is_empty());
+        assert_eq!(b.object_versions.get("twice").unwrap().len(), 2);
+    }
+
+    #[test]
+    fn legacy_versioning_file_is_read() {
+        let tmp = TempDir::new().unwrap();
+        let store = new_store(&tmp);
+        // Bucket meta with no versioning field set.
+        store
+            .put_bucket_meta("b", &BucketMeta {
+                name: "b".to_string(),
+                ..Default::default()
+            })
+            .unwrap();
+        // Legacy sidecar: a bare versioning.toml with "Enabled".
+        let path = store.bucket_dir("b").join("versioning.toml");
+        std::fs::write(&path, "Enabled").unwrap();
+        let loaded = store.load().unwrap();
+        let snap = loaded.buckets.get("b").unwrap();
+        assert_eq!(snap.meta.versioning.as_deref(), Some("Enabled"));
     }
 }
