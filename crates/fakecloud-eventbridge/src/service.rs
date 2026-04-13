@@ -1812,37 +1812,17 @@ impl EventBridgeService {
                 resources: resources.clone(),
             };
 
-            // Archive matching events
-            let archive_keys: Vec<String> = state.archives.keys().cloned().collect();
-            for akey in archive_keys {
-                let (archive_bus, archive_pattern, archive_enabled) = {
-                    let a = &state.archives[&akey];
-                    (
-                        state.resolve_bus_name(&a.event_source_arn),
-                        a.event_pattern.clone(),
-                        a.state == "ENABLED",
-                    )
-                };
-                if archive_bus == event_bus_name && archive_enabled {
-                    // Check if event matches archive's event pattern
-                    let pattern_matches = matches_pattern(
-                        archive_pattern.as_deref(),
-                        &source,
-                        &detail_type,
-                        &detail,
-                        &req.account_id,
-                        &req.region,
-                        &resources,
-                    );
-                    if pattern_matches {
-                        if let Some(archive) = state.archives.get_mut(&akey) {
-                            archive.event_count += 1;
-                            archive.size_bytes += detail.len() as i64;
-                            archive.events.push(event.clone());
-                        }
-                    }
-                }
-            }
+            archive_matching_event(
+                &mut state,
+                &event,
+                &event_bus_name,
+                &source,
+                &detail_type,
+                &detail,
+                &req.account_id,
+                &req.region,
+                &resources,
+            );
 
             state.events.push(event);
 
@@ -3648,6 +3628,54 @@ fn matches_single(pattern_elem: &Value, event_value: &Value) -> bool {
             false
         }
         _ => values_equal(pattern_elem, event_value),
+    }
+}
+
+/// For each archive on `event_bus_name` whose event pattern matches the
+/// event, append a clone of it to the archive's stored events and bump
+/// the archive's counters.
+#[allow(clippy::too_many_arguments)]
+fn archive_matching_event(
+    state: &mut crate::state::EventBridgeState,
+    event: &PutEvent,
+    event_bus_name: &str,
+    source: &str,
+    detail_type: &str,
+    detail: &str,
+    account_id: &str,
+    region: &str,
+    resources: &[String],
+) {
+    let archive_keys: Vec<String> = state.archives.keys().cloned().collect();
+    for akey in archive_keys {
+        let (archive_bus, archive_pattern, archive_enabled) = {
+            let a = &state.archives[&akey];
+            (
+                state.resolve_bus_name(&a.event_source_arn),
+                a.event_pattern.clone(),
+                a.state == "ENABLED",
+            )
+        };
+        if archive_bus != event_bus_name || !archive_enabled {
+            continue;
+        }
+        let pattern_matches = matches_pattern(
+            archive_pattern.as_deref(),
+            source,
+            detail_type,
+            detail,
+            account_id,
+            region,
+            resources,
+        );
+        if !pattern_matches {
+            continue;
+        }
+        if let Some(archive) = state.archives.get_mut(&akey) {
+            archive.event_count += 1;
+            archive.size_bytes += detail.len() as i64;
+            archive.events.push(event.clone());
+        }
     }
 }
 
