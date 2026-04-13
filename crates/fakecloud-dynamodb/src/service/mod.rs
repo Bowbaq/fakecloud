@@ -2794,7 +2794,7 @@ mod tests {
             }),
         );
         let create_resp = svc.create_table(&req).unwrap();
-        let create_body: Value = serde_json::from_slice(&create_resp.body).unwrap();
+        let create_body: Value = serde_json::from_slice(create_resp.body.expect_bytes()).unwrap();
         let create_table = &create_body["TableDescription"];
 
         assert_eq!(create_table["TableStatus"], "ACTIVE");
@@ -2807,7 +2807,8 @@ mod tests {
             json!({ "TableName": "warm-throughput-table" }),
         );
         let describe_resp = svc.describe_table(&describe_req).unwrap();
-        let describe_body: Value = serde_json::from_slice(&describe_resp.body).unwrap();
+        let describe_body: Value =
+            serde_json::from_slice(describe_resp.body.expect_bytes()).unwrap();
         let described_table = &describe_body["Table"];
 
         assert_eq!(described_table["TableStatus"], "ACTIVE");
@@ -2815,7 +2816,8 @@ mod tests {
         assert_eq!(described_table["TableId"], table_id);
 
         let describe_resp_again = svc.describe_table(&describe_req).unwrap();
-        let describe_body_again: Value = serde_json::from_slice(&describe_resp_again.body).unwrap();
+        let describe_body_again: Value =
+            serde_json::from_slice(describe_resp_again.body.expect_bytes()).unwrap();
         assert_eq!(describe_body_again["Table"]["TableId"], table_id);
     }
 
