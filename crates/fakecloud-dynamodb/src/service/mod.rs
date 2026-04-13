@@ -1371,6 +1371,35 @@ fn evaluate_in_match(
     })
 }
 
+/// One of the four DynamoDB ``UpdateExpression`` action keywords.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpdateAction {
+    Set,
+    Remove,
+    Add,
+    Delete,
+}
+
+impl UpdateAction {
+    /// All four keywords as written on the wire — these double as the search
+    /// terms for ``parse_update_clauses``.
+    const KEYWORDS: &'static [(&'static str, UpdateAction)] = &[
+        ("SET", UpdateAction::Set),
+        ("REMOVE", UpdateAction::Remove),
+        ("ADD", UpdateAction::Add),
+        ("DELETE", UpdateAction::Delete),
+    ];
+
+    fn keyword(self) -> &'static str {
+        match self {
+            UpdateAction::Set => "SET",
+            UpdateAction::Remove => "REMOVE",
+            UpdateAction::Add => "ADD",
+            UpdateAction::Delete => "DELETE",
+        }
+    }
+}
+
 fn apply_update_expression(
     item: &mut HashMap<String, AttributeValue>,
     expr: &str,
@@ -1386,47 +1415,39 @@ fn apply_update_expression(
         ));
     }
     for (action, assignments) in &clauses {
-        match action.to_ascii_uppercase().as_str() {
-            "SET" => {
+        match action {
+            UpdateAction::Set => {
                 for assignment in assignments {
                     apply_set_assignment(item, assignment, expr_attr_names, expr_attr_values)?;
                 }
             }
-            "REMOVE" => {
+            UpdateAction::Remove => {
                 for attr_ref in assignments {
                     let attr = resolve_attr_name(attr_ref.trim(), expr_attr_names);
                     item.remove(&attr);
                 }
             }
-            "ADD" => {
+            UpdateAction::Add => {
                 for assignment in assignments {
                     apply_add_assignment(item, assignment, expr_attr_names, expr_attr_values)?;
                 }
             }
-            "DELETE" => {
+            UpdateAction::Delete => {
                 for assignment in assignments {
                     apply_delete_assignment(item, assignment, expr_attr_names, expr_attr_values)?;
                 }
-            }
-            other => {
-                return Err(AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "ValidationException",
-                    format!("Invalid UpdateExpression: Invalid action: {}", other),
-                ));
             }
         }
     }
     Ok(())
 }
 
-fn parse_update_clauses(expr: &str) -> Vec<(String, Vec<String>)> {
-    let mut clauses: Vec<(String, Vec<String>)> = Vec::new();
+fn parse_update_clauses(expr: &str) -> Vec<(UpdateAction, Vec<String>)> {
+    let mut clauses: Vec<(UpdateAction, Vec<String>)> = Vec::new();
     let upper = expr.to_ascii_uppercase();
-    let keywords = ["SET", "REMOVE", "ADD", "DELETE"];
-    let mut positions: Vec<(usize, &str)> = Vec::new();
+    let mut positions: Vec<(usize, UpdateAction)> = Vec::new();
 
-    for kw in &keywords {
+    for &(kw, action) in UpdateAction::KEYWORDS {
         let mut search_from = 0;
         while let Some(pos) = upper[search_from..].find(kw) {
             let abs_pos = search_from + pos;
@@ -1435,7 +1456,7 @@ fn parse_update_clauses(expr: &str) -> Vec<(String, Vec<String>)> {
             let after_ok =
                 after_pos >= expr.len() || !expr.as_bytes()[after_pos].is_ascii_alphanumeric();
             if before_ok && after_ok {
-                positions.push((abs_pos, kw));
+                positions.push((abs_pos, action));
             }
             search_from = abs_pos + kw.len();
         }
@@ -1443,8 +1464,8 @@ fn parse_update_clauses(expr: &str) -> Vec<(String, Vec<String>)> {
 
     positions.sort_by_key(|(pos, _)| *pos);
 
-    for (i, &(pos, kw)) in positions.iter().enumerate() {
-        let start = pos + kw.len();
+    for (i, &(pos, action)) in positions.iter().enumerate() {
+        let start = pos + action.keyword().len();
         let end = if i + 1 < positions.len() {
             positions[i + 1].0
         } else {
@@ -1452,7 +1473,7 @@ fn parse_update_clauses(expr: &str) -> Vec<(String, Vec<String>)> {
         };
         let content = expr[start..end].trim();
         let assignments: Vec<String> = content.split(',').map(|s| s.trim().to_string()).collect();
-        clauses.push((kw.to_string(), assignments));
+        clauses.push((action, assignments));
     }
 
     clauses
@@ -2394,7 +2415,7 @@ mod tests {
     fn test_parse_update_clauses_set() {
         let clauses = parse_update_clauses("SET #a = :val1, #b = :val2");
         assert_eq!(clauses.len(), 1);
-        assert_eq!(clauses[0].0, "SET");
+        assert_eq!(clauses[0].0, UpdateAction::Set);
         assert_eq!(clauses[0].1.len(), 2);
     }
 
@@ -2402,8 +2423,8 @@ mod tests {
     fn test_parse_update_clauses_set_and_remove() {
         let clauses = parse_update_clauses("SET #a = :val1 REMOVE #b");
         assert_eq!(clauses.len(), 2);
-        assert_eq!(clauses[0].0, "SET");
-        assert_eq!(clauses[1].0, "REMOVE");
+        assert_eq!(clauses[0].0, UpdateAction::Set);
+        assert_eq!(clauses[1].0, UpdateAction::Remove);
     }
 
     #[test]
