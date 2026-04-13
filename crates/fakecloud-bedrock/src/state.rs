@@ -28,6 +28,9 @@ pub struct BedrockState {
     /// Prompt-conditional response rules per model ID. Evaluated in order;
     /// the first rule whose `prompt_contains` matches wins.
     pub response_rules: HashMap<String, Vec<ResponseRule>>,
+    /// Queued fault-injection rules. Consumed in order; rules with filters
+    /// only trigger when both `model_id` and `operation` match.
+    pub fault_rules: Vec<FaultRule>,
     /// Async invocations keyed by invocation ARN.
     pub async_invocations: HashMap<String, AsyncInvocation>,
     /// Custom models keyed by model ARN.
@@ -84,6 +87,7 @@ impl BedrockState {
             invocations: Vec::new(),
             custom_responses: HashMap::new(),
             response_rules: HashMap::new(),
+            fault_rules: Vec::new(),
             async_invocations: HashMap::new(),
             custom_models: HashMap::new(),
             custom_model_deployments: HashMap::new(),
@@ -117,6 +121,7 @@ impl BedrockState {
         self.invocations.clear();
         self.custom_responses.clear();
         self.response_rules.clear();
+        self.fault_rules.clear();
         self.async_invocations.clear();
         self.custom_models.clear();
         self.custom_model_deployments.clear();
@@ -229,6 +234,19 @@ pub struct ModelInvocation {
     pub input: String,
     pub output: String,
     pub timestamp: DateTime<Utc>,
+    /// `Some("<errorType>: <message>")` when the call was faulted by an
+    /// injected fault rule; `None` for successful calls.
+    pub error: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct FaultRule {
+    pub error_type: String,
+    pub message: String,
+    pub http_status: u16,
+    pub remaining: u32,
+    pub model_id: Option<String>,
+    pub operation: Option<String>,
 }
 
 #[derive(Clone)]

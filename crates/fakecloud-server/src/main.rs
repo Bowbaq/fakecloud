@@ -1484,6 +1484,7 @@ async fn main() {
                                 "input": inv.input,
                                 "output": inv.output,
                                 "timestamp": inv.timestamp.to_rfc3339(),
+                                "error": inv.error,
                             })
                         })
                         .collect();
@@ -1506,70 +1507,101 @@ async fn main() {
                 }
             }),
         )
-        // Bedrock simulation: configure prompt-conditional response rules
+        // Bedrock fault injection: queue / list / clear fault rules
         .route(
-            "/_fakecloud/bedrock/models/{model_id}/responses",
+            "/_fakecloud/bedrock/faults",
             axum::routing::post({
                 let bs = bedrock_state.clone();
-                move |axum::extract::Path(model_id): axum::extract::Path<String>,
-                      axum::Json(body): axum::Json<serde_json::Value>| async move {
-                    let rules_json = body.get("rules").and_then(|r| r.as_array()).cloned();
-                    let Some(rules_json) = rules_json else {
+                move |axum::Json(body): axum::Json<serde_json::Value>| async move {
+                    let error_type = body
+                        .get("errorType")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let message = body
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let http_status_raw =
+                        body.get("httpStatus").and_then(|v| v.as_u64()).unwrap_or(500);
+                    let Ok(http_status) = u16::try_from(http_status_raw) else {
                         return (
                             axum::http::StatusCode::BAD_REQUEST,
                             axum::Json(serde_json::json!({
-                                "error": "body must contain a `rules` array"
+                                "error": "`httpStatus` must fit in a u16"
                             })),
                         );
                     };
-                    let mut parsed = Vec::with_capacity(rules_json.len());
-                    for rule in rules_json {
-                        let prompt_contains = match rule.get("promptContains") {
-                            None | Some(serde_json::Value::Null) => None,
-                            Some(serde_json::Value::String(s)) => Some(s.clone()),
-                            Some(_) => {
-                                return (
-                                    axum::http::StatusCode::BAD_REQUEST,
-                                    axum::Json(serde_json::json!({
-                                        "error": "`promptContains` must be a string when provided"
-                                    })),
-                                );
-                            }
-                        };
-                        let response = match rule.get("response") {
-                            Some(serde_json::Value::String(s)) => s.clone(),
-                            Some(other) => other.to_string(),
-                            None => {
-                                return (
-                                    axum::http::StatusCode::BAD_REQUEST,
-                                    axum::Json(serde_json::json!({
-                                        "error": "each rule must include a `response` field"
-                                    })),
-                                );
-                            }
-                        };
-                        parsed.push(fakecloud_bedrock::state::ResponseRule {
-                            prompt_contains,
-                            response,
-                        });
+                    let count_raw = body.get("count").and_then(|v| v.as_u64()).unwrap_or(1);
+                    let Ok(count) = u32::try_from(count_raw.max(1)) else {
+                        return (
+                            axum::http::StatusCode::BAD_REQUEST,
+                            axum::Json(serde_json::json!({
+                                "error": "`count` must fit in a u32"
+                            })),
+                        );
+                    };
+                    let model_id = body
+                        .get("modelId")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    let operation = body
+                        .get("operation")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    if error_type.is_empty() {
+                        return (
+                            axum::http::StatusCode::BAD_REQUEST,
+                            axum::Json(serde_json::json!({
+                                "error": "`errorType` is required"
+                            })),
+                        );
                     }
                     let mut state = bs.write();
-                    state.response_rules.insert(model_id.clone(), parsed);
+                    state
+                        .fault_rules
+                        .push(fakecloud_bedrock::state::FaultRule {
+                            error_type,
+                            message,
+                            http_status,
+                            remaining: count,
+                            model_id,
+                            operation,
+                        });
                     (
                         axum::http::StatusCode::OK,
-                        axum::Json(serde_json::json!({
-                            "status": "ok",
-                            "modelId": model_id
-                        })),
+                        axum::Json(serde_json::json!({ "status": "ok" })),
                     )
+                }
+            })
+            .get({
+                let bs = bedrock_state.clone();
+                move || async move {
+                    let state = bs.read();
+                    let faults: Vec<serde_json::Value> = state
+                        .fault_rules
+                        .iter()
+                        .map(|f| {
+                            serde_json::json!({
+                                "errorType": f.error_type,
+                                "message": f.message,
+                                "httpStatus": f.http_status,
+                                "remaining": f.remaining,
+                                "modelId": f.model_id,
+                                "operation": f.operation,
+                            })
+                        })
+                        .collect();
+                    axum::Json(serde_json::json!({ "faults": faults }))
                 }
             })
             .delete({
                 let bs = bedrock_state.clone();
-                move |axum::extract::Path(model_id): axum::extract::Path<String>| async move {
+                move || async move {
                     let mut state = bs.write();
-                    state.response_rules.remove(&model_id);
-                    axum::Json(serde_json::json!({ "status": "ok", "modelId": model_id }))
+                    state.fault_rules.clear();
+                    axum::Json(serde_json::json!({ "status": "ok" }))
                 }
             }),
         )

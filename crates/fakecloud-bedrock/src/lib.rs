@@ -8,6 +8,7 @@ pub mod customization;
 
 pub mod enforced_guardrails;
 pub mod evaluation;
+pub mod faults;
 pub mod foundation_model_agreements;
 pub mod guardrails;
 pub mod inference_profiles;
