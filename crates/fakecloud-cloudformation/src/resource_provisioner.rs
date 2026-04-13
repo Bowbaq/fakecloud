@@ -666,6 +666,7 @@ impl ResourceProvisioner {
         let table = DynamoTable {
             name: table_name.to_string(),
             arn: arn.clone(),
+            table_id: Uuid::new_v4().to_string().replace('-', ""),
             key_schema,
             attribute_definitions,
             provisioned_throughput,

@@ -62,6 +62,7 @@ pub struct Projection {
 pub struct DynamoTable {
     pub name: String,
     pub arn: String,
+    pub table_id: String,
     pub key_schema: Vec<KeySchemaElement>,
     pub attribute_definitions: Vec<AttributeDefinition>,
     pub provisioned_throughput: ProvisionedThroughput,

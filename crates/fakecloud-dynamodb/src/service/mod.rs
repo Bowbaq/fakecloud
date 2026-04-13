@@ -1954,6 +1954,7 @@ fn apply_delete_assignment(
 
 pub(super) struct TableDescriptionInput<'a> {
     pub arn: &'a str,
+    pub table_id: &'a str,
     pub key_schema: &'a [KeySchemaElement],
     pub attribute_definitions: &'a [AttributeDefinition],
     pub provisioned_throughput: &'a ProvisionedThroughput,
@@ -1969,6 +1970,7 @@ pub(super) struct TableDescriptionInput<'a> {
 fn build_table_description_json(input: &TableDescriptionInput<'_>) -> Value {
     let TableDescriptionInput {
         arn,
+        table_id,
         key_schema,
         attribute_definitions,
         provisioned_throughput,
@@ -1997,7 +1999,7 @@ fn build_table_description_json(input: &TableDescriptionInput<'_>) -> Value {
     let mut desc = json!({
         "TableName": table_name,
         "TableArn": arn,
-        "TableId": uuid::Uuid::new_v4().to_string().replace('-', ""),
+        "TableId": table_id,
         "TableStatus": status,
         "KeySchema": ks,
         "AttributeDefinitions": ad,
@@ -2018,6 +2020,18 @@ fn build_table_description_json(input: &TableDescriptionInput<'_>) -> Value {
             "ReadCapacityUnits": 0,
             "WriteCapacityUnits": 0,
             "NumberOfDecreasesToday": 0,
+        });
+    }
+
+    // Terraform's AWS provider now waits on WarmThroughput after CreateTable.
+    // Real AWS returns an ACTIVE warm throughput object for active tables,
+    // including PAY_PER_REQUEST tables. Returning null keeps the provider in a
+    // perpetual "still creating" loop.
+    if status == "ACTIVE" {
+        desc["WarmThroughput"] = json!({
+            "ReadUnitsPerSecond": 0,
+            "WriteUnitsPerSecond": 0,
+            "Status": "ACTIVE",
         });
     }
 
@@ -2087,6 +2101,7 @@ fn build_table_description_json(input: &TableDescriptionInput<'_>) -> Value {
 fn build_table_description(table: &DynamoTable) -> Value {
     let mut desc = build_table_description_json(&TableDescriptionInput {
         arn: &table.arn,
+        table_id: &table.table_id,
         key_schema: &table.key_schema,
         attribute_definitions: &table.attribute_definitions,
         provisioned_throughput: &table.provisioned_throughput,
@@ -2752,6 +2767,48 @@ mod tests {
             }),
         );
         svc.create_table(&req).unwrap();
+    }
+
+    #[test]
+    fn describe_table_returns_stable_table_id_and_active_warm_throughput() {
+        let svc = make_service();
+        let req = make_request(
+            "CreateTable",
+            json!({
+                "TableName": "warm-throughput-table",
+                "KeySchema": [
+                    { "AttributeName": "pk", "KeyType": "HASH" }
+                ],
+                "AttributeDefinitions": [
+                    { "AttributeName": "pk", "AttributeType": "S" }
+                ],
+                "BillingMode": "PAY_PER_REQUEST"
+            }),
+        );
+        let create_resp = svc.create_table(&req).unwrap();
+        let create_body: Value = serde_json::from_slice(&create_resp.body).unwrap();
+        let create_table = &create_body["TableDescription"];
+
+        assert_eq!(create_table["TableStatus"], "ACTIVE");
+        assert_eq!(create_table["WarmThroughput"]["Status"], "ACTIVE");
+        let table_id = create_table["TableId"].as_str().unwrap().to_string();
+        assert!(!table_id.is_empty());
+
+        let describe_req = make_request(
+            "DescribeTable",
+            json!({ "TableName": "warm-throughput-table" }),
+        );
+        let describe_resp = svc.describe_table(&describe_req).unwrap();
+        let describe_body: Value = serde_json::from_slice(&describe_resp.body).unwrap();
+        let described_table = &describe_body["Table"];
+
+        assert_eq!(described_table["TableStatus"], "ACTIVE");
+        assert_eq!(described_table["WarmThroughput"]["Status"], "ACTIVE");
+        assert_eq!(described_table["TableId"], table_id);
+
+        let describe_resp_again = svc.describe_table(&describe_req).unwrap();
+        let describe_body_again: Value = serde_json::from_slice(&describe_resp_again.body).unwrap();
+        assert_eq!(describe_body_again["Table"]["TableId"], table_id);
     }
 
     #[test]

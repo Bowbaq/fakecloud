@@ -86,6 +86,7 @@ mod tests {
         DynamoTable {
             name: "test-table".to_string(),
             arn: "arn:aws:dynamodb:eu-west-1:999999999999:table/test-table".to_string(),
+            table_id: "test-table-id".to_string(),
             key_schema: vec![KeySchemaElement {
                 attribute_name: "pk".to_string(),
                 key_type: "HASH".to_string(),
