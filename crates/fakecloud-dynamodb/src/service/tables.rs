@@ -987,6 +987,7 @@ impl DynamoDbService {
 
         // Write to S3 if we have access to S3 state
         let mut export_failed = false;
+        let mut failure_code = "";
         let mut failure_reason = String::new();
         if let Some(ref s3_state) = self.s3_state {
             // Verify the target bucket exists before touching the store —
@@ -994,6 +995,7 @@ impl DynamoDbService {
             // directory that no in-memory bucket references.
             if !s3_state.read().buckets.contains_key(s3_bucket) {
                 export_failed = true;
+                failure_code = "S3NoSuchBucket";
                 failure_reason = format!("S3 bucket does not exist: {s3_bucket}");
             } else {
                 let body_bytes = bytes::Bytes::from(json_lines);
@@ -1054,11 +1056,13 @@ impl DynamoDbService {
                             // disk — best we can do is mark the export
                             // failed and let the operator reconcile.
                             export_failed = true;
+                            failure_code = "S3NoSuchBucket";
                             failure_reason = format!("S3 bucket does not exist: {s3_bucket}");
                         }
                     }
                     Err(reason) => {
                         export_failed = true;
+                        failure_code = "InternalServerError";
                         failure_reason = reason;
                     }
                 }
@@ -1100,7 +1104,7 @@ impl DynamoDbService {
             }
         });
         if export_failed {
-            response["ExportDescription"]["FailureCode"] = json!("S3NoSuchBucket");
+            response["ExportDescription"]["FailureCode"] = json!(failure_code);
             response["ExportDescription"]["FailureMessage"] = json!(failure_reason);
         }
         Self::ok_json(response)
