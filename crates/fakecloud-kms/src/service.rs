@@ -306,6 +306,247 @@ fn signing_algorithms_for_key_spec(key_spec: &str) -> Option<Vec<String>> {
     }
 }
 
+/// Parsed + validated inputs for `CreateKey`.
+struct CreateKeyInput {
+    custom_key_store_id: Option<String>,
+    description: String,
+    key_usage: String,
+    key_spec: String,
+    origin: String,
+    multi_region: bool,
+    policy: Option<String>,
+    tags: HashMap<String, String>,
+}
+
+impl CreateKeyInput {
+    fn from_body(body: &Value) -> Result<Self, AwsServiceError> {
+        validate_optional_string_length(
+            "customKeyStoreId",
+            body["CustomKeyStoreId"].as_str(),
+            1,
+            64,
+        )?;
+        validate_optional_string_length("description", body["Description"].as_str(), 0, 8192)?;
+        validate_optional_enum(
+            "keyUsage",
+            body["KeyUsage"].as_str(),
+            &[
+                "SIGN_VERIFY",
+                "ENCRYPT_DECRYPT",
+                "GENERATE_VERIFY_MAC",
+                "KEY_AGREEMENT",
+            ],
+        )?;
+        validate_optional_enum(
+            "origin",
+            body["Origin"].as_str(),
+            &["AWS_KMS", "EXTERNAL", "AWS_CLOUDHSM", "EXTERNAL_KEY_STORE"],
+        )?;
+        validate_optional_string_length("policy", body["Policy"].as_str(), 1, 131072)?;
+        validate_optional_string_length("xksKeyId", body["XksKeyId"].as_str(), 1, 64)?;
+
+        let key_spec = body["KeySpec"]
+            .as_str()
+            .or_else(|| body["CustomerMasterKeySpec"].as_str())
+            .unwrap_or("SYMMETRIC_DEFAULT")
+            .to_string();
+        if !VALID_KEY_SPECS.contains(&key_spec.as_str()) {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "ValidationException",
+                format!(
+                    "1 validation error detected: Value '{key_spec}' at 'KeySpec' failed to satisfy constraint: Member must satisfy enum value set: {}",
+                    fmt_enum_set(&VALID_KEY_SPECS.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+                ),
+            ));
+        }
+
+        let tags: HashMap<String, String> = body["Tags"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|t| {
+                        let k = t["TagKey"].as_str()?;
+                        let v = t["TagValue"].as_str()?;
+                        Some((k.to_string(), v.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(Self {
+            custom_key_store_id: body["CustomKeyStoreId"].as_str().map(|s| s.to_string()),
+            description: body["Description"].as_str().unwrap_or("").to_string(),
+            key_usage: body["KeyUsage"]
+                .as_str()
+                .unwrap_or("ENCRYPT_DECRYPT")
+                .to_string(),
+            key_spec,
+            origin: body["Origin"].as_str().unwrap_or("AWS_KMS").to_string(),
+            multi_region: body["MultiRegion"].as_bool().unwrap_or(false),
+            policy: body["Policy"].as_str().map(|s| s.to_string()),
+            tags,
+        })
+    }
+}
+
+fn require_string_field(body: &Value, field: &str) -> Result<String, AwsServiceError> {
+    body[field].as_str().map(|s| s.to_string()).ok_or_else(|| {
+        AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "ValidationException",
+            format!("{field} is required"),
+        )
+    })
+}
+
+fn validate_alias_name(alias_name: &str) -> Result<(), AwsServiceError> {
+    if !alias_name.starts_with("alias/") {
+        return Err(AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "ValidationException",
+            "Invalid identifier",
+        ));
+    }
+    if alias_name.starts_with("alias/aws/") {
+        return Err(AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "NotAuthorizedException",
+            "",
+        ));
+    }
+    let alias_suffix = &alias_name["alias/".len()..];
+    if alias_suffix.contains(':') {
+        return Err(AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "ValidationException",
+            format!("{alias_name} contains invalid characters for an alias"),
+        ));
+    }
+    let valid_chars = alias_name
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '/' || c == '_' || c == '-' || c == ':');
+    if !valid_chars {
+        return Err(AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "ValidationException",
+            format!(
+                "1 validation error detected: Value '{alias_name}' at 'aliasName' failed to satisfy constraint: Member must satisfy regular expression pattern: ^[a-zA-Z0-9:/_-]+$"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_alias_target(target_key_id: &str) -> Result<(), AwsServiceError> {
+    if target_key_id.starts_with("alias/") {
+        return Err(AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "ValidationException",
+            "Aliases must refer to keys. Not aliases",
+        ));
+    }
+    Ok(())
+}
+
+/// Decode + length-check an Encrypt plaintext: must be 1..=4096 bytes.
+fn decode_plaintext(plaintext_b64: &str) -> Result<Vec<u8>, AwsServiceError> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(plaintext_b64)
+        .unwrap_or_default();
+    if bytes.is_empty() {
+        return Err(AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "ValidationException",
+            "1 validation error detected: Value at 'plaintext' failed to satisfy constraint: Member must have length greater than or equal to 1",
+        ));
+    }
+    if bytes.len() > 4096 {
+        return Err(AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "ValidationException",
+            "1 validation error detected: Value at 'plaintext' failed to satisfy constraint: Member must have length less than or equal to 4096",
+        ));
+    }
+    Ok(bytes)
+}
+
+/// Build the base64-encoded ciphertext envelope for `Encrypt`. Two
+/// shapes: when imported key material is present, XOR the plaintext
+/// against the material so the ciphertext is deterministic in the
+/// imported key; otherwise the fakecloud envelope just wraps the
+/// original base64 plaintext under a fixed prefix.
+fn build_encrypt_ciphertext(key: &KmsKey, plaintext_b64: &str, plaintext_bytes: &[u8]) -> String {
+    let envelope = if let Some(ref material) = key.imported_material_bytes {
+        let xored: Vec<u8> = plaintext_bytes
+            .iter()
+            .enumerate()
+            .map(|(i, b)| b ^ material[i % material.len()])
+            .collect();
+        let xored_b64 = base64::engine::general_purpose::STANDARD.encode(&xored);
+        format!("fakecloud-imported:{}:{xored_b64}", key.key_id)
+    } else {
+        format!("{FAKE_ENVELOPE_PREFIX}{}:{plaintext_b64}", key.key_id)
+    };
+    base64::engine::general_purpose::STANDARD.encode(envelope.as_bytes())
+}
+
+/// Reject empty/undecodable base64 for `Verify`'s Message and Signature.
+fn require_non_empty_b64(field: &str, b64: &str) -> Result<(), AwsServiceError> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .unwrap_or_default();
+    if bytes.is_empty() {
+        return Err(AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "ValidationException",
+            format!(
+                "1 validation error detected: Value at '{field}' failed to satisfy constraint: Member must have length greater than or equal to 1"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_key_usage_signing(key: &KmsKey, resolved: &str) -> Result<(), AwsServiceError> {
+    if key.key_usage != "SIGN_VERIFY" {
+        return Err(AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "ValidationException",
+            format!(
+                "1 validation error detected: Value '{resolved}' at 'KeyId' failed to satisfy constraint: Member must point to a key with usage: 'SIGN_VERIFY'"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_signing_algorithm(
+    key: &KmsKey,
+    signing_algorithm: &str,
+) -> Result<(), AwsServiceError> {
+    let valid_algs = key.signing_algorithms.as_deref().unwrap_or(&[]);
+    if !valid_algs.iter().any(|a| a == signing_algorithm) {
+        let set: Vec<String> = if valid_algs.is_empty() {
+            VALID_SIGNING_ALGORITHMS
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
+        } else {
+            valid_algs.to_vec()
+        };
+        return Err(AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "ValidationException",
+            format!(
+                "1 validation error detected: Value '{signing_algorithm}' at 'SigningAlgorithm' failed to satisfy constraint: Member must satisfy enum value set: {}",
+                fmt_enum_set(&set)
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn encryption_algorithms_for_key(key_usage: &str, key_spec: &str) -> Option<Vec<String>> {
     if key_usage == "ENCRYPT_DECRYPT" {
         match key_spec {
@@ -409,64 +650,11 @@ impl KmsService {
     }
 
     fn create_key(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = req.json_body();
-
-        validate_optional_string_length(
-            "customKeyStoreId",
-            body["CustomKeyStoreId"].as_str(),
-            1,
-            64,
-        )?;
-
-        validate_optional_string_length("description", body["Description"].as_str(), 0, 8192)?;
-        validate_optional_enum(
-            "keyUsage",
-            body["KeyUsage"].as_str(),
-            &[
-                "SIGN_VERIFY",
-                "ENCRYPT_DECRYPT",
-                "GENERATE_VERIFY_MAC",
-                "KEY_AGREEMENT",
-            ],
-        )?;
-        validate_optional_enum(
-            "origin",
-            body["Origin"].as_str(),
-            &["AWS_KMS", "EXTERNAL", "AWS_CLOUDHSM", "EXTERNAL_KEY_STORE"],
-        )?;
-        validate_optional_string_length("policy", body["Policy"].as_str(), 1, 131072)?;
-        validate_optional_string_length("xksKeyId", body["XksKeyId"].as_str(), 1, 64)?;
-
-        let custom_key_store_id = body["CustomKeyStoreId"].as_str().map(|s| s.to_string());
-        let description = body["Description"].as_str().unwrap_or("").to_string();
-        let key_usage = body["KeyUsage"]
-            .as_str()
-            .unwrap_or("ENCRYPT_DECRYPT")
-            .to_string();
-        let key_spec = body["KeySpec"]
-            .as_str()
-            .or_else(|| body["CustomerMasterKeySpec"].as_str())
-            .unwrap_or("SYMMETRIC_DEFAULT")
-            .to_string();
-        let origin = body["Origin"].as_str().unwrap_or("AWS_KMS").to_string();
-        let multi_region = body["MultiRegion"].as_bool().unwrap_or(false);
-        let policy = body["Policy"].as_str().map(|s| s.to_string());
-
-        // Validate key spec
-        if !VALID_KEY_SPECS.contains(&key_spec.as_str()) {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ValidationException",
-                format!(
-                    "1 validation error detected: Value '{}' at 'KeySpec' failed to satisfy constraint: Member must satisfy enum value set: {}",
-                    key_spec, fmt_enum_set(&VALID_KEY_SPECS.iter().map(|s| s.to_string()).collect::<Vec<_>>())
-                ),
-            ));
-        }
+        let input = CreateKeyInput::from_body(&req.json_body())?;
 
         let mut state = self.state.write();
 
-        let key_id = if multi_region {
+        let key_id = if input.multi_region {
             format!("mrk-{}", Uuid::new_v4().as_simple())
         } else {
             Uuid::new_v4().to_string()
@@ -478,57 +666,43 @@ impl KmsService {
         );
         let now = Utc::now().timestamp() as f64;
 
-        let tags: HashMap<String, String> = body["Tags"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|t| {
-                        let k = t["TagKey"].as_str()?;
-                        let v = t["TagValue"].as_str()?;
-                        Some((k.to_string(), v.to_string()))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let signing_algs = if key_usage == "SIGN_VERIFY" {
-            signing_algorithms_for_key_spec(&key_spec)
+        let signing_algs = if input.key_usage == "SIGN_VERIFY" {
+            signing_algorithms_for_key_spec(&input.key_spec)
+        } else {
+            None
+        };
+        let encryption_algs = encryption_algorithms_for_key(&input.key_usage, &input.key_spec);
+        let mac_algs = if input.key_usage == "GENERATE_VERIFY_MAC" {
+            mac_algorithms_for_key_spec(&input.key_spec)
         } else {
             None
         };
 
-        let encryption_algs = encryption_algorithms_for_key(&key_usage, &key_spec);
-
-        let mac_algs = if key_usage == "GENERATE_VERIFY_MAC" {
-            mac_algorithms_for_key_spec(&key_spec)
-        } else {
-            None
-        };
-
-        let default_policy = default_key_policy(&state.account_id);
-        let key_policy = policy.unwrap_or(default_policy);
+        let key_policy = input
+            .policy
+            .unwrap_or_else(|| default_key_policy(&state.account_id));
 
         let key = KmsKey {
             key_id: key_id.clone(),
             arn: arn.clone(),
             creation_date: now,
-            description,
+            description: input.description,
             enabled: true,
-            key_usage,
-            key_spec,
+            key_usage: input.key_usage,
+            key_spec: input.key_spec,
             key_manager: "CUSTOMER".to_string(),
             key_state: "Enabled".to_string(),
             deletion_date: None,
-            tags,
+            tags: input.tags,
             policy: key_policy,
             key_rotation_enabled: false,
-            origin,
-            multi_region,
+            origin: input.origin,
+            multi_region: input.multi_region,
             rotations: Vec::new(),
             signing_algorithms: signing_algs,
             encryption_algorithms: encryption_algs,
             mac_algorithms: mac_algs,
-            custom_key_store_id,
+            custom_key_store_id: input.custom_key_store_id,
             imported_key_material: false,
             imported_material_bytes: None,
             private_key_seed: rand_bytes(32),
@@ -735,27 +909,7 @@ impl KmsService {
                 "Plaintext is required",
             )
         })?;
-
-        // Decode the plaintext to check length
-        let plaintext_bytes = base64::engine::general_purpose::STANDARD
-            .decode(plaintext_b64)
-            .unwrap_or_default();
-
-        if plaintext_bytes.is_empty() {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ValidationException",
-                "1 validation error detected: Value at 'plaintext' failed to satisfy constraint: Member must have length greater than or equal to 1",
-            ));
-        }
-
-        if plaintext_bytes.len() > 4096 {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ValidationException",
-                "1 validation error detected: Value at 'plaintext' failed to satisfy constraint: Member must have length less than or equal to 4096",
-            ));
-        }
+        let plaintext_bytes = decode_plaintext(plaintext_b64)?;
 
         let resolved = self.resolve_key_id(&key_id).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -781,21 +935,7 @@ impl KmsService {
             ));
         }
 
-        // When imported key material is present, XOR plaintext with imported material
-        // to produce a deterministic ciphertext that depends on the imported key.
-        let envelope = if let Some(ref material) = key.imported_material_bytes {
-            let xored: Vec<u8> = plaintext_bytes
-                .iter()
-                .enumerate()
-                .map(|(i, b)| b ^ material[i % material.len()])
-                .collect();
-            let xored_b64 = base64::engine::general_purpose::STANDARD.encode(&xored);
-            format!("fakecloud-imported:{}:{xored_b64}", key.key_id)
-        } else {
-            // Fake encryption: prefix + key_id + ":" + base64(plaintext_bytes)
-            format!("{FAKE_ENVELOPE_PREFIX}{}:{plaintext_b64}", key.key_id)
-        };
-        let ciphertext_b64 = base64::engine::general_purpose::STANDARD.encode(envelope.as_bytes());
+        let ciphertext_b64 = build_encrypt_ciphertext(key, plaintext_b64, &plaintext_bytes);
 
         Ok(AwsResponse::json(
             StatusCode::OK,
@@ -1027,78 +1167,11 @@ impl KmsService {
 
     fn create_alias(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = req.json_body();
-        let alias_name = body["AliasName"]
-            .as_str()
-            .ok_or_else(|| {
-                AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "ValidationException",
-                    "AliasName is required",
-                )
-            })?
-            .to_string();
-        let target_key_id = body["TargetKeyId"]
-            .as_str()
-            .ok_or_else(|| {
-                AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "ValidationException",
-                    "TargetKeyId is required",
-                )
-            })?
-            .to_string();
+        let alias_name = require_string_field(&body, "AliasName")?;
+        let target_key_id = require_string_field(&body, "TargetKeyId")?;
 
-        // Validate prefix
-        if !alias_name.starts_with("alias/") {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ValidationException",
-                "Invalid identifier",
-            ));
-        }
-
-        // Check for reserved aliases
-        if alias_name.starts_with("alias/aws/") {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "NotAuthorizedException",
-                "",
-            ));
-        }
-
-        // Check for restricted characters
-        let alias_suffix = &alias_name["alias/".len()..];
-        if alias_suffix.contains(':') {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ValidationException",
-                format!("{alias_name} contains invalid characters for an alias"),
-            ));
-        }
-
-        // Check regex pattern
-        let valid_chars = alias_name
-            .chars()
-            .all(|c| c.is_alphanumeric() || c == '/' || c == '_' || c == '-' || c == ':');
-        if !valid_chars {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ValidationException",
-                format!(
-                    "1 validation error detected: Value '{}' at 'aliasName' failed to satisfy constraint: Member must satisfy regular expression pattern: ^[a-zA-Z0-9:/_-]+$",
-                    alias_name
-                ),
-            ));
-        }
-
-        // Check if target is an alias
-        if target_key_id.starts_with("alias/") {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ValidationException",
-                "Aliases must refer to keys. Not aliases",
-            ));
-        }
+        validate_alias_name(&alias_name)?;
+        validate_alias_target(&target_key_id)?;
 
         let resolved = self.resolve_key_id(&target_key_id).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -1749,30 +1822,8 @@ impl KmsService {
         let signature_b64 = body["Signature"].as_str().unwrap_or("");
         let signing_algorithm = body["SigningAlgorithm"].as_str().unwrap_or("");
 
-        // Validate message
-        let message_bytes = base64::engine::general_purpose::STANDARD
-            .decode(message_b64)
-            .unwrap_or_default();
-
-        if message_bytes.is_empty() {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ValidationException",
-                "1 validation error detected: Value at 'Message' failed to satisfy constraint: Member must have length greater than or equal to 1",
-            ));
-        }
-
-        // Validate signature
-        let sig_bytes = base64::engine::general_purpose::STANDARD
-            .decode(signature_b64)
-            .unwrap_or_default();
-        if sig_bytes.is_empty() {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ValidationException",
-                "1 validation error detected: Value at 'Signature' failed to satisfy constraint: Member must have length greater than or equal to 1",
-            ));
-        }
+        require_non_empty_b64("Message", message_b64)?;
+        require_non_empty_b64("Signature", signature_b64)?;
 
         let resolved = self.resolve_key_id(&key_id).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -1791,40 +1842,10 @@ impl KmsService {
             )
         })?;
 
-        // Validate key usage
-        if key.key_usage != "SIGN_VERIFY" {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ValidationException",
-                format!(
-                    "1 validation error detected: Value '{}' at 'KeyId' failed to satisfy constraint: Member must point to a key with usage: 'SIGN_VERIFY'",
-                    resolved
-                ),
-            ));
-        }
+        validate_key_usage_signing(key, &resolved)?;
+        validate_signing_algorithm(key, signing_algorithm)?;
 
-        // Validate signing algorithm
-        let valid_algs = key.signing_algorithms.as_deref().unwrap_or(&[]);
-        if !valid_algs.iter().any(|a| a == signing_algorithm) {
-            let set: Vec<String> = if valid_algs.is_empty() {
-                VALID_SIGNING_ALGORITHMS
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect()
-            } else {
-                valid_algs.to_vec()
-            };
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ValidationException",
-                format!(
-                    "1 validation error detected: Value '{}' at 'SigningAlgorithm' failed to satisfy constraint: Member must satisfy enum value set: {}",
-                    signing_algorithm, fmt_enum_set(&set)
-                ),
-            ));
-        }
-
-        // Check if signature matches
+        // Check if signature matches the deterministic fakecloud signature.
         let expected_sig_data = format!(
             "fakecloud-sig:{}:{}:{}",
             key.key_id, signing_algorithm, message_b64
