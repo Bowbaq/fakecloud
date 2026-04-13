@@ -298,7 +298,7 @@ fn parse_action(params: &HashMap<String, String>, prefix: &str) -> Option<Receip
     None
 }
 
-/// Serialize a ReceiptRule to XML.
+/// Serialize a `ReceiptRule` to its XML wire form.
 fn rule_to_xml(rule: &ReceiptRule) -> String {
     let mut xml = String::new();
     xml.push_str("<member>");
@@ -320,115 +320,124 @@ fn rule_to_xml(rule: &ReceiptRule) -> String {
         xml.push_str("<Actions>");
         for action in &rule.actions {
             xml.push_str("<member>");
-            match action {
-                ReceiptAction::S3 {
-                    bucket_name,
-                    object_key_prefix,
-                    topic_arn,
-                    kms_key_arn,
-                } => {
-                    xml.push_str("<S3Action>");
-                    xml.push_str(&format!(
-                        "<BucketName>{}</BucketName>",
-                        xml_escape(bucket_name)
-                    ));
-                    if let Some(p) = object_key_prefix {
-                        xml.push_str(&format!(
-                            "<ObjectKeyPrefix>{}</ObjectKeyPrefix>",
-                            xml_escape(p)
-                        ));
-                    }
-                    if let Some(t) = topic_arn {
-                        xml.push_str(&format!("<TopicArn>{}</TopicArn>", xml_escape(t)));
-                    }
-                    if let Some(k) = kms_key_arn {
-                        xml.push_str(&format!("<KmsKeyArn>{}</KmsKeyArn>", xml_escape(k)));
-                    }
-                    xml.push_str("</S3Action>");
-                }
-                ReceiptAction::Sns {
-                    topic_arn,
-                    encoding,
-                } => {
-                    xml.push_str("<SNSAction>");
-                    xml.push_str(&format!("<TopicArn>{}</TopicArn>", xml_escape(topic_arn)));
-                    if let Some(e) = encoding {
-                        xml.push_str(&format!("<Encoding>{}</Encoding>", xml_escape(e)));
-                    }
-                    xml.push_str("</SNSAction>");
-                }
-                ReceiptAction::Lambda {
-                    function_arn,
-                    invocation_type,
-                    topic_arn,
-                } => {
-                    xml.push_str("<LambdaAction>");
-                    xml.push_str(&format!(
-                        "<FunctionArn>{}</FunctionArn>",
-                        xml_escape(function_arn)
-                    ));
-                    if let Some(t) = invocation_type {
-                        xml.push_str(&format!(
-                            "<InvocationType>{}</InvocationType>",
-                            xml_escape(t)
-                        ));
-                    }
-                    if let Some(t) = topic_arn {
-                        xml.push_str(&format!("<TopicArn>{}</TopicArn>", xml_escape(t)));
-                    }
-                    xml.push_str("</LambdaAction>");
-                }
-                ReceiptAction::Bounce {
-                    smtp_reply_code,
-                    message,
-                    sender,
-                    status_code,
-                    topic_arn,
-                } => {
-                    xml.push_str("<BounceAction>");
-                    xml.push_str(&format!(
-                        "<SmtpReplyCode>{}</SmtpReplyCode>",
-                        xml_escape(smtp_reply_code)
-                    ));
-                    xml.push_str(&format!("<Message>{}</Message>", xml_escape(message)));
-                    xml.push_str(&format!("<Sender>{}</Sender>", xml_escape(sender)));
-                    if let Some(sc) = status_code {
-                        xml.push_str(&format!("<StatusCode>{}</StatusCode>", xml_escape(sc)));
-                    }
-                    if let Some(t) = topic_arn {
-                        xml.push_str(&format!("<TopicArn>{}</TopicArn>", xml_escape(t)));
-                    }
-                    xml.push_str("</BounceAction>");
-                }
-                ReceiptAction::AddHeader {
-                    header_name,
-                    header_value,
-                } => {
-                    xml.push_str("<AddHeaderAction>");
-                    xml.push_str(&format!(
-                        "<HeaderName>{}</HeaderName>",
-                        xml_escape(header_name)
-                    ));
-                    xml.push_str(&format!(
-                        "<HeaderValue>{}</HeaderValue>",
-                        xml_escape(header_value)
-                    ));
-                    xml.push_str("</AddHeaderAction>");
-                }
-                ReceiptAction::Stop { scope, topic_arn } => {
-                    xml.push_str("<StopAction>");
-                    xml.push_str(&format!("<Scope>{}</Scope>", xml_escape(scope)));
-                    if let Some(t) = topic_arn {
-                        xml.push_str(&format!("<TopicArn>{}</TopicArn>", xml_escape(t)));
-                    }
-                    xml.push_str("</StopAction>");
-                }
-            }
+            xml.push_str(&receipt_action_xml(action));
             xml.push_str("</member>");
         }
         xml.push_str("</Actions>");
     }
     xml.push_str("</member>");
+    xml
+}
+
+/// Serialize one `ReceiptAction` variant. Each variant has its own AWS
+/// XML element name (`S3Action`, `SNSAction`, …) and a different set of
+/// optional fields, so we just match-and-format per variant.
+fn receipt_action_xml(action: &ReceiptAction) -> String {
+    let mut xml = String::new();
+    match action {
+        ReceiptAction::S3 {
+            bucket_name,
+            object_key_prefix,
+            topic_arn,
+            kms_key_arn,
+        } => {
+            xml.push_str("<S3Action>");
+            xml.push_str(&format!(
+                "<BucketName>{}</BucketName>",
+                xml_escape(bucket_name)
+            ));
+            if let Some(p) = object_key_prefix {
+                xml.push_str(&format!(
+                    "<ObjectKeyPrefix>{}</ObjectKeyPrefix>",
+                    xml_escape(p)
+                ));
+            }
+            if let Some(t) = topic_arn {
+                xml.push_str(&format!("<TopicArn>{}</TopicArn>", xml_escape(t)));
+            }
+            if let Some(k) = kms_key_arn {
+                xml.push_str(&format!("<KmsKeyArn>{}</KmsKeyArn>", xml_escape(k)));
+            }
+            xml.push_str("</S3Action>");
+        }
+        ReceiptAction::Sns {
+            topic_arn,
+            encoding,
+        } => {
+            xml.push_str("<SNSAction>");
+            xml.push_str(&format!("<TopicArn>{}</TopicArn>", xml_escape(topic_arn)));
+            if let Some(e) = encoding {
+                xml.push_str(&format!("<Encoding>{}</Encoding>", xml_escape(e)));
+            }
+            xml.push_str("</SNSAction>");
+        }
+        ReceiptAction::Lambda {
+            function_arn,
+            invocation_type,
+            topic_arn,
+        } => {
+            xml.push_str("<LambdaAction>");
+            xml.push_str(&format!(
+                "<FunctionArn>{}</FunctionArn>",
+                xml_escape(function_arn)
+            ));
+            if let Some(t) = invocation_type {
+                xml.push_str(&format!(
+                    "<InvocationType>{}</InvocationType>",
+                    xml_escape(t)
+                ));
+            }
+            if let Some(t) = topic_arn {
+                xml.push_str(&format!("<TopicArn>{}</TopicArn>", xml_escape(t)));
+            }
+            xml.push_str("</LambdaAction>");
+        }
+        ReceiptAction::Bounce {
+            smtp_reply_code,
+            message,
+            sender,
+            status_code,
+            topic_arn,
+        } => {
+            xml.push_str("<BounceAction>");
+            xml.push_str(&format!(
+                "<SmtpReplyCode>{}</SmtpReplyCode>",
+                xml_escape(smtp_reply_code)
+            ));
+            xml.push_str(&format!("<Message>{}</Message>", xml_escape(message)));
+            xml.push_str(&format!("<Sender>{}</Sender>", xml_escape(sender)));
+            if let Some(sc) = status_code {
+                xml.push_str(&format!("<StatusCode>{}</StatusCode>", xml_escape(sc)));
+            }
+            if let Some(t) = topic_arn {
+                xml.push_str(&format!("<TopicArn>{}</TopicArn>", xml_escape(t)));
+            }
+            xml.push_str("</BounceAction>");
+        }
+        ReceiptAction::AddHeader {
+            header_name,
+            header_value,
+        } => {
+            xml.push_str("<AddHeaderAction>");
+            xml.push_str(&format!(
+                "<HeaderName>{}</HeaderName>",
+                xml_escape(header_name)
+            ));
+            xml.push_str(&format!(
+                "<HeaderValue>{}</HeaderValue>",
+                xml_escape(header_value)
+            ));
+            xml.push_str("</AddHeaderAction>");
+        }
+        ReceiptAction::Stop { scope, topic_arn } => {
+            xml.push_str("<StopAction>");
+            xml.push_str(&format!("<Scope>{}</Scope>", xml_escape(scope)));
+            if let Some(t) = topic_arn {
+                xml.push_str(&format!("<TopicArn>{}</TopicArn>", xml_escape(t)));
+            }
+            xml.push_str("</StopAction>");
+        }
+    }
     xml
 }
 
