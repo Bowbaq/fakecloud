@@ -91,112 +91,80 @@ impl ApiGatewayV2Service {
     ///   GET    /v2/apis/{api-id}/authorizers/{auth-id} -> GetAuthorizer
     ///   PATCH  /v2/apis/{api-id}/authorizers/{auth-id} -> UpdateAuthorizer
     ///   DELETE /v2/apis/{api-id}/authorizers/{auth-id} -> DeleteAuthorizer
-    fn resolve_action(req: &AwsRequest) -> Option<(&str, Option<String>, Option<String>)> {
+    fn resolve_action(req: &AwsRequest) -> Option<(&'static str, Option<String>, Option<String>)> {
         let segs = &req.path_segments;
-        if segs.len() < 2 {
+        if segs.len() < 2 || segs[0] != "v2" || segs[1] != "apis" {
             return None;
         }
 
-        // Expect /v2/apis
-        if segs[0] != "v2" || segs[1] != "apis" {
-            return None;
-        }
+        // `api_id` is segs[2] (the api identifier) for every action below
+        // that has one; `resource_id` is segs[4] (the routes/integrations/
+        // stages/... child id). We resolve both once here so the match
+        // body only picks the action name.
+        let api_id = segs.get(2).map(|s| s.to_string());
+        let resource_id = segs.get(4).map(|s| s.to_string());
+        let collection = segs.get(3).map(|s| s.as_str());
+        let method = &req.method;
 
-        match (req.method.clone(), segs.len()) {
+        let action = match (method, segs.len(), collection) {
             // /v2/apis
-            (Method::POST, 2) => Some(("CreateApi", None, None)),
-            (Method::GET, 2) => Some(("GetApis", None, None)),
+            (&Method::POST, 2, _) => "CreateApi",
+            (&Method::GET, 2, _) => "GetApis",
             // /v2/apis/{api-id}
-            (Method::GET, 3) => Some(("GetApi", Some(segs[2].clone()), None)),
-            (Method::PATCH, 3) => Some(("UpdateApi", Some(segs[2].clone()), None)),
-            (Method::DELETE, 3) => Some(("DeleteApi", Some(segs[2].clone()), None)),
-            // /v2/apis/{api-id}/routes or /v2/apis/{api-id}/integrations
-            (Method::POST, 4) if segs[3] == "routes" => {
-                Some(("CreateRoute", Some(segs[2].clone()), None))
-            }
-            (Method::GET, 4) if segs[3] == "routes" => {
-                Some(("GetRoutes", Some(segs[2].clone()), None))
-            }
-            (Method::POST, 4) if segs[3] == "integrations" => {
-                Some(("CreateIntegration", Some(segs[2].clone()), None))
-            }
-            (Method::GET, 4) if segs[3] == "integrations" => {
-                Some(("GetIntegrations", Some(segs[2].clone()), None))
-            }
-            (Method::POST, 4) if segs[3] == "stages" => {
-                Some(("CreateStage", Some(segs[2].clone()), None))
-            }
-            (Method::GET, 4) if segs[3] == "stages" => {
-                Some(("GetStages", Some(segs[2].clone()), None))
-            }
-            (Method::POST, 4) if segs[3] == "deployments" => {
-                Some(("CreateDeployment", Some(segs[2].clone()), None))
-            }
-            (Method::GET, 4) if segs[3] == "deployments" => {
-                Some(("GetDeployments", Some(segs[2].clone()), None))
-            }
-            (Method::POST, 4) if segs[3] == "authorizers" => {
-                Some(("CreateAuthorizer", Some(segs[2].clone()), None))
-            }
-            (Method::GET, 4) if segs[3] == "authorizers" => {
-                Some(("GetAuthorizers", Some(segs[2].clone()), None))
-            }
-            // /v2/apis/{api-id}/routes/{route-id} or /v2/apis/{api-id}/integrations/{int-id}
-            (Method::GET, 5) if segs[3] == "routes" => {
-                Some(("GetRoute", Some(segs[2].clone()), Some(segs[4].clone())))
-            }
-            (Method::PATCH, 5) if segs[3] == "routes" => {
-                Some(("UpdateRoute", Some(segs[2].clone()), Some(segs[4].clone())))
-            }
-            (Method::DELETE, 5) if segs[3] == "routes" => {
-                Some(("DeleteRoute", Some(segs[2].clone()), Some(segs[4].clone())))
-            }
-            (Method::GET, 5) if segs[3] == "integrations" => Some((
-                "GetIntegration",
-                Some(segs[2].clone()),
-                Some(segs[4].clone()),
-            )),
-            (Method::PATCH, 5) if segs[3] == "integrations" => Some((
-                "UpdateIntegration",
-                Some(segs[2].clone()),
-                Some(segs[4].clone()),
-            )),
-            (Method::DELETE, 5) if segs[3] == "integrations" => Some((
-                "DeleteIntegration",
-                Some(segs[2].clone()),
-                Some(segs[4].clone()),
-            )),
-            (Method::GET, 5) if segs[3] == "stages" => {
-                Some(("GetStage", Some(segs[2].clone()), Some(segs[4].clone())))
-            }
-            (Method::PATCH, 5) if segs[3] == "stages" => {
-                Some(("UpdateStage", Some(segs[2].clone()), Some(segs[4].clone())))
-            }
-            (Method::DELETE, 5) if segs[3] == "stages" => {
-                Some(("DeleteStage", Some(segs[2].clone()), Some(segs[4].clone())))
-            }
-            (Method::GET, 5) if segs[3] == "deployments" => Some((
-                "GetDeployment",
-                Some(segs[2].clone()),
-                Some(segs[4].clone()),
-            )),
-            (Method::GET, 5) if segs[3] == "authorizers" => Some((
-                "GetAuthorizer",
-                Some(segs[2].clone()),
-                Some(segs[4].clone()),
-            )),
-            (Method::PATCH, 5) if segs[3] == "authorizers" => Some((
-                "UpdateAuthorizer",
-                Some(segs[2].clone()),
-                Some(segs[4].clone()),
-            )),
-            (Method::DELETE, 5) if segs[3] == "authorizers" => Some((
-                "DeleteAuthorizer",
-                Some(segs[2].clone()),
-                Some(segs[4].clone()),
-            )),
-            _ => None,
-        }
+            (&Method::GET, 3, _) => "GetApi",
+            (&Method::PATCH, 3, _) => "UpdateApi",
+            (&Method::DELETE, 3, _) => "DeleteApi",
+            // /v2/apis/{api-id}/{collection}
+            (m, 4, Some(col)) => resolve_collection_action(m, col)?,
+            // /v2/apis/{api-id}/{collection}/{resource-id}
+            (m, 5, Some(col)) => resolve_resource_action(m, col)?,
+            _ => return None,
+        };
+
+        Some((action, api_id, resource_id))
+    }
+}
+
+/// Pick the action name for the collection-level endpoints —
+/// /v2/apis/{id}/{collection} — where `col` is one of routes,
+/// integrations, stages, deployments, authorizers and `method`
+/// is either POST (create) or GET (list).
+fn resolve_collection_action(method: &Method, collection: &str) -> Option<&'static str> {
+    match (method.clone(), collection) {
+        (Method::POST, "routes") => Some("CreateRoute"),
+        (Method::GET, "routes") => Some("GetRoutes"),
+        (Method::POST, "integrations") => Some("CreateIntegration"),
+        (Method::GET, "integrations") => Some("GetIntegrations"),
+        (Method::POST, "stages") => Some("CreateStage"),
+        (Method::GET, "stages") => Some("GetStages"),
+        (Method::POST, "deployments") => Some("CreateDeployment"),
+        (Method::GET, "deployments") => Some("GetDeployments"),
+        (Method::POST, "authorizers") => Some("CreateAuthorizer"),
+        (Method::GET, "authorizers") => Some("GetAuthorizers"),
+        _ => None,
+    }
+}
+
+/// Pick the action name for the resource-level endpoints —
+/// /v2/apis/{id}/{collection}/{resource-id} — where `col` is one of
+/// routes, integrations, stages, deployments, authorizers and
+/// `method` is GET (describe), PATCH (update), or DELETE.
+fn resolve_resource_action(method: &Method, collection: &str) -> Option<&'static str> {
+    match (method.clone(), collection) {
+        (Method::GET, "routes") => Some("GetRoute"),
+        (Method::PATCH, "routes") => Some("UpdateRoute"),
+        (Method::DELETE, "routes") => Some("DeleteRoute"),
+        (Method::GET, "integrations") => Some("GetIntegration"),
+        (Method::PATCH, "integrations") => Some("UpdateIntegration"),
+        (Method::DELETE, "integrations") => Some("DeleteIntegration"),
+        (Method::GET, "stages") => Some("GetStage"),
+        (Method::PATCH, "stages") => Some("UpdateStage"),
+        (Method::DELETE, "stages") => Some("DeleteStage"),
+        (Method::GET, "deployments") => Some("GetDeployment"),
+        (Method::GET, "authorizers") => Some("GetAuthorizer"),
+        (Method::PATCH, "authorizers") => Some("UpdateAuthorizer"),
+        (Method::DELETE, "authorizers") => Some("DeleteAuthorizer"),
+        _ => None,
     }
 }
 
