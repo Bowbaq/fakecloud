@@ -21,6 +21,58 @@ use crate::state::{
     PartnerEventSource, PutEvent, Replay, SharedEventBridgeState,
 };
 
+/// Validate a single `PutEvents` entry's required fields (`Source`,
+/// `DetailType`, `Detail`) and that `Detail` is a well-formed JSON
+/// object. Returns the JSON error body AWS surfaces in the matching
+/// `Entries[]` slot on failure.
+fn validate_put_events_entry(source: &str, detail_type: &str, detail: &str) -> Result<(), Value> {
+    if source.is_empty() {
+        return Err(json!({
+            "ErrorCode": "InvalidArgument",
+            "ErrorMessage": "Parameter Source is not valid. Reason: Source is a required argument.",
+        }));
+    }
+    if detail_type.is_empty() {
+        return Err(json!({
+            "ErrorCode": "InvalidArgument",
+            "ErrorMessage": "Parameter DetailType is not valid. Reason: DetailType is a required argument.",
+        }));
+    }
+    if detail.is_empty() {
+        return Err(json!({
+            "ErrorCode": "InvalidArgument",
+            "ErrorMessage": "Parameter Detail is not valid. Reason: Detail is a required argument.",
+        }));
+    }
+    if serde_json::from_str::<Value>(detail).is_err() {
+        return Err(json!({
+            "ErrorCode": "MalformedDetail",
+            "ErrorMessage": "Detail is malformed.",
+        }));
+    }
+    Ok(())
+}
+
+/// Parse an entry's `Time` field, tolerating the three formats AWS
+/// accepts (RFC 3339 string, fractional seconds as a float, integer
+/// seconds). Falls back to "now" if the field is absent or
+/// unparseable, which matches the real service.
+fn parse_put_events_time(raw: &Value) -> DateTime<Utc> {
+    if let Some(s) = raw.as_str() {
+        return DateTime::parse_from_rfc3339(s)
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now());
+    }
+    if let Some(ts) = raw.as_f64() {
+        return DateTime::from_timestamp(ts as i64, ((ts.fract()) * 1_000_000_000.0) as u32)
+            .unwrap_or_else(Utc::now);
+    }
+    if let Some(ts) = raw.as_i64() {
+        return DateTime::from_timestamp(ts, 0).unwrap_or_else(Utc::now);
+    }
+    Utc::now()
+}
+
 pub struct EventBridgeService {
     state: SharedEventBridgeState,
     delivery: Arc<DeliveryBus>,
@@ -1728,39 +1780,9 @@ impl EventBridgeService {
             let detail_type = entry["DetailType"].as_str().unwrap_or("").to_string();
             let detail = entry["Detail"].as_str().unwrap_or("").to_string();
 
-            // Validate required fields
-            if source.is_empty() {
+            if let Err(error) = validate_put_events_entry(&source, &detail_type, &detail) {
                 failed_count += 1;
-                result_entries.push(json!({
-                    "ErrorCode": "InvalidArgument",
-                    "ErrorMessage": "Parameter Source is not valid. Reason: Source is a required argument.",
-                }));
-                continue;
-            }
-            if detail_type.is_empty() {
-                failed_count += 1;
-                result_entries.push(json!({
-                    "ErrorCode": "InvalidArgument",
-                    "ErrorMessage": "Parameter DetailType is not valid. Reason: DetailType is a required argument.",
-                }));
-                continue;
-            }
-            if detail.is_empty() {
-                failed_count += 1;
-                result_entries.push(json!({
-                    "ErrorCode": "InvalidArgument",
-                    "ErrorMessage": "Parameter Detail is not valid. Reason: Detail is a required argument.",
-                }));
-                continue;
-            }
-
-            // Validate Detail is valid JSON
-            if serde_json::from_str::<Value>(&detail).is_err() {
-                failed_count += 1;
-                result_entries.push(json!({
-                    "ErrorCode": "MalformedDetail",
-                    "ErrorMessage": "Detail is malformed.",
-                }));
+                result_entries.push(error);
                 continue;
             }
 
@@ -1770,18 +1792,7 @@ impl EventBridgeService {
                 .unwrap_or("default")
                 .to_string();
             let event_bus_name = state.resolve_bus_name(&raw_bus);
-            let time = if let Some(s) = entry["Time"].as_str() {
-                DateTime::parse_from_rfc3339(s)
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .unwrap_or_else(|_| Utc::now())
-            } else if let Some(ts) = entry["Time"].as_f64() {
-                DateTime::from_timestamp(ts as i64, ((ts.fract()) * 1_000_000_000.0) as u32)
-                    .unwrap_or_else(Utc::now)
-            } else if let Some(ts) = entry["Time"].as_i64() {
-                DateTime::from_timestamp(ts, 0).unwrap_or_else(Utc::now)
-            } else {
-                Utc::now()
-            };
+            let time = parse_put_events_time(&entry["Time"]);
             let resources: Vec<String> = entry["Resources"]
                 .as_array()
                 .map(|arr| {
