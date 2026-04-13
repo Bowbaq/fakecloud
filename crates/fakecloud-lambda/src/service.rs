@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -10,6 +11,103 @@ use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceErr
 
 use crate::runtime::ContainerRuntime;
 use crate::state::{EventSourceMapping, LambdaFunction, SharedLambdaState};
+
+/// All fields of a `CreateFunction` request, already parsed and
+/// defaulted. The code zip (if any) is eagerly base64-decoded so the
+/// caller can hash it without doing the decode again.
+struct CreateFunctionInput {
+    function_name: String,
+    runtime: String,
+    role: String,
+    handler: String,
+    description: String,
+    timeout: i64,
+    memory_size: i64,
+    package_type: String,
+    tags: HashMap<String, String>,
+    environment: HashMap<String, String>,
+    architectures: Vec<String>,
+    code_zip: Option<Vec<u8>>,
+    code_fallback: Vec<u8>,
+}
+
+impl CreateFunctionInput {
+    fn from_body(body: &Value) -> Result<Self, AwsServiceError> {
+        let function_name = body["FunctionName"]
+            .as_str()
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "InvalidParameterValueException",
+                    "FunctionName is required",
+                )
+            })?
+            .to_string();
+
+        let tags: HashMap<String, String> = body["Tags"]
+            .as_object()
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let environment: HashMap<String, String> = body["Environment"]["Variables"]
+            .as_object()
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let architectures = body["Architectures"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_else(|| vec!["x86_64".to_string()]);
+
+        let code_zip: Option<Vec<u8>> = match body["Code"]["ZipFile"].as_str() {
+            Some(b64) => Some(
+                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64).map_err(
+                    |_| {
+                        AwsServiceError::aws_error(
+                            StatusCode::BAD_REQUEST,
+                            "InvalidParameterValueException",
+                            "Could not decode Code.ZipFile: invalid base64",
+                        )
+                    },
+                )?,
+            ),
+            None => None,
+        };
+
+        let code_fallback = serde_json::to_vec(&body["Code"]).unwrap_or_default();
+
+        Ok(Self {
+            function_name,
+            runtime: body["Runtime"].as_str().unwrap_or("python3.12").to_string(),
+            role: body["Role"].as_str().unwrap_or("").to_string(),
+            handler: body["Handler"]
+                .as_str()
+                .unwrap_or("index.handler")
+                .to_string(),
+            description: body["Description"].as_str().unwrap_or("").to_string(),
+            timeout: body["Timeout"].as_i64().unwrap_or(3),
+            memory_size: body["MemorySize"].as_i64().unwrap_or(128),
+            package_type: body["PackageType"].as_str().unwrap_or("Zip").to_string(),
+            tags,
+            environment,
+            architectures,
+            code_zip,
+            code_fallback,
+        })
+    }
+}
 
 pub struct LambdaService {
     state: SharedLambdaState,
@@ -91,85 +189,21 @@ impl LambdaService {
 
     fn create_function(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
-        let function_name = body["FunctionName"]
-            .as_str()
-            .ok_or_else(|| {
-                AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "InvalidParameterValueException",
-                    "FunctionName is required",
-                )
-            })?
-            .to_string();
+        let input = CreateFunctionInput::from_body(&body)?;
 
         let mut state = self.state.write();
 
-        if state.functions.contains_key(&function_name) {
+        if state.functions.contains_key(&input.function_name) {
             return Err(AwsServiceError::aws_error(
                 StatusCode::CONFLICT,
                 "ResourceConflictException",
-                format!("Function already exist: {}", function_name),
+                format!("Function already exist: {}", input.function_name),
             ));
         }
 
-        let runtime = body["Runtime"].as_str().unwrap_or("python3.12").to_string();
-        let role = body["Role"].as_str().unwrap_or("").to_string();
-        let handler = body["Handler"]
-            .as_str()
-            .unwrap_or("index.handler")
-            .to_string();
-        let description = body["Description"].as_str().unwrap_or("").to_string();
-        let timeout = body["Timeout"].as_i64().unwrap_or(3);
-        let memory_size = body["MemorySize"].as_i64().unwrap_or(128);
-        let package_type = body["PackageType"].as_str().unwrap_or("Zip").to_string();
-
-        let tags: std::collections::HashMap<String, String> = body["Tags"]
-            .as_object()
-            .map(|m| {
-                m.iter()
-                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let environment: std::collections::HashMap<String, String> = body["Environment"]
-            ["Variables"]
-            .as_object()
-            .map(|m| {
-                m.iter()
-                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let architectures = body["Architectures"]
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                    .collect()
-            })
-            .unwrap_or_else(|| vec!["x86_64".to_string()]);
-
-        // Decode Code.ZipFile if present (base64-encoded ZIP)
-        let code_zip: Option<Vec<u8>> = match body["Code"]["ZipFile"].as_str() {
-            Some(b64) => Some(
-                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64).map_err(
-                    |_| {
-                        AwsServiceError::aws_error(
-                            StatusCode::BAD_REQUEST,
-                            "InvalidParameterValueException",
-                            "Could not decode Code.ZipFile: invalid base64",
-                        )
-                    },
-                )?,
-            ),
-            None => None,
-        };
-
-        // Compute a code hash from the actual ZIP bytes (or from the Code JSON as fallback)
-        let code_fallback = serde_json::to_vec(&body["Code"]).unwrap_or_default();
-        let code_bytes = code_zip.as_deref().unwrap_or(&code_fallback);
+        // Hash the actual ZIP bytes when available, falling back to the
+        // raw Code JSON so image-based functions still get a stable id.
+        let code_bytes = input.code_zip.as_deref().unwrap_or(&input.code_fallback);
         let mut hasher = Sha256::new();
         hasher.update(code_bytes);
         let hash = hasher.finalize();
@@ -178,33 +212,33 @@ impl LambdaService {
 
         let function_arn = format!(
             "arn:aws:lambda:{}:{}:function:{}",
-            state.region, state.account_id, function_name
+            state.region, state.account_id, input.function_name
         );
         let now = Utc::now();
 
         let func = LambdaFunction {
-            function_name: function_name.clone(),
-            function_arn: function_arn.clone(),
-            runtime: runtime.clone(),
-            role: role.clone(),
-            handler: handler.clone(),
-            description: description.clone(),
-            timeout,
-            memory_size,
-            code_sha256: code_sha256.clone(),
+            function_name: input.function_name.clone(),
+            function_arn,
+            runtime: input.runtime,
+            role: input.role,
+            handler: input.handler,
+            description: input.description,
+            timeout: input.timeout,
+            memory_size: input.memory_size,
+            code_sha256,
             code_size,
             version: "$LATEST".to_string(),
             last_modified: now,
-            tags,
-            environment: environment.clone(),
-            architectures: architectures.clone(),
-            package_type: package_type.clone(),
-            code_zip,
+            tags: input.tags,
+            environment: input.environment,
+            architectures: input.architectures,
+            package_type: input.package_type,
+            code_zip: input.code_zip,
         };
 
         let response = self.function_config_json(&func);
 
-        state.functions.insert(function_name, func);
+        state.functions.insert(input.function_name, func);
 
         Ok(AwsResponse::json(StatusCode::CREATED, response.to_string()))
     }
