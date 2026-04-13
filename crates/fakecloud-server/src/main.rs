@@ -1524,10 +1524,18 @@ async fn main() {
                     };
                     let mut parsed = Vec::with_capacity(rules_json.len());
                     for rule in rules_json {
-                        let prompt_contains = rule
-                            .get("promptContains")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string());
+                        let prompt_contains = match rule.get("promptContains") {
+                            None | Some(serde_json::Value::Null) => None,
+                            Some(serde_json::Value::String(s)) => Some(s.clone()),
+                            Some(_) => {
+                                return (
+                                    axum::http::StatusCode::BAD_REQUEST,
+                                    axum::Json(serde_json::json!({
+                                        "error": "`promptContains` must be a string when provided"
+                                    })),
+                                );
+                            }
+                        };
                         let response = match rule.get("response") {
                             Some(serde_json::Value::String(s)) => s.clone(),
                             Some(other) => other.to_string(),
