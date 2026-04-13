@@ -97,42 +97,15 @@ fn derive_service_linked_role_name(aws_service_name: &str, custom_suffix: Option
 
 impl IamService {
     pub(super) fn create_role(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let role_name = required_param(&req.query_params, "RoleName")?;
-        validate_string_length("roleName", &role_name, 1, 64)?;
-        let assume_role_policy = required_param(&req.query_params, "AssumeRolePolicyDocument")?;
-        let path = req
-            .query_params
-            .get("Path")
-            .cloned()
-            .unwrap_or_else(|| "/".to_string());
-        let description = req.query_params.get("Description").cloned();
-        let max_session_duration = req
-            .query_params
-            .get("MaxSessionDuration")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(3600);
-        let tags = parse_tags(&req.query_params);
-        validate_tags(&tags, 0)?;
-        let permissions_boundary = req.query_params.get("PermissionsBoundary").cloned();
-
-        // Validate permissions boundary ARN format
-        if let Some(ref boundary) = permissions_boundary {
-            if !boundary.contains(":policy/") {
-                return Err(AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "ValidationError",
-                    format!("Value ({boundary}) for parameter PermissionsBoundary is invalid."),
-                ));
-            }
-        }
+        let input = CreateRoleInput::from_query(&req.query_params)?;
 
         let mut state = self.state.write();
 
-        if state.roles.contains_key(&role_name) {
+        if state.roles.contains_key(&input.role_name) {
             return Err(AwsServiceError::aws_error(
                 StatusCode::CONFLICT,
                 "EntityAlreadyExists",
-                format!("Role with name {role_name} already exists."),
+                format!("Role with name {} already exists.", input.role_name),
             ));
         }
 
@@ -140,28 +113,27 @@ impl IamService {
 
         // Note: AWS does not validate the assume role policy document format
         // during CreateRole, only during UpdateAssumeRolePolicy.
-
         let role = IamRole {
             role_id: crate::xml_responses::generate_role_id(),
             arn: format!(
                 "arn:{}:iam::{}:role{}{}",
                 partition,
                 state.account_id,
-                if path == "/" { "/" } else { &path },
-                role_name
+                if input.path == "/" { "/" } else { &input.path },
+                input.role_name
             ),
-            role_name: role_name.clone(),
-            path,
-            assume_role_policy_document: assume_role_policy,
+            role_name: input.role_name.clone(),
+            path: input.path,
+            assume_role_policy_document: input.assume_role_policy,
             created_at: Utc::now(),
-            description,
-            max_session_duration,
-            tags,
-            permissions_boundary,
+            description: input.description,
+            max_session_duration: input.max_session_duration,
+            tags: input.tags,
+            permissions_boundary: input.permissions_boundary,
         };
 
         let xml = xml_responses::create_role_response(&role, &req.request_id);
-        state.roles.insert(role_name, role);
+        state.roles.insert(input.role_name, role);
 
         Ok(AwsResponse::xml(StatusCode::OK, xml))
     }
@@ -945,5 +917,56 @@ impl IamService {
             task.status, req.request_id
         );
         Ok(AwsResponse::xml(StatusCode::OK, xml))
+    }
+}
+
+/// Parsed + validated inputs for `CreateRole`.
+struct CreateRoleInput {
+    role_name: String,
+    assume_role_policy: String,
+    path: String,
+    description: Option<String>,
+    max_session_duration: i32,
+    tags: Vec<crate::state::Tag>,
+    permissions_boundary: Option<String>,
+}
+
+impl CreateRoleInput {
+    fn from_query(
+        params: &std::collections::HashMap<String, String>,
+    ) -> Result<Self, AwsServiceError> {
+        let role_name = required_param(params, "RoleName")?;
+        validate_string_length("roleName", &role_name, 1, 64)?;
+        let assume_role_policy = required_param(params, "AssumeRolePolicyDocument")?;
+        let path = params
+            .get("Path")
+            .cloned()
+            .unwrap_or_else(|| "/".to_string());
+        let description = params.get("Description").cloned();
+        let max_session_duration = params
+            .get("MaxSessionDuration")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3600);
+        let tags = parse_tags(params);
+        validate_tags(&tags, 0)?;
+        let permissions_boundary = params.get("PermissionsBoundary").cloned();
+        if let Some(ref boundary) = permissions_boundary {
+            if !boundary.contains(":policy/") {
+                return Err(AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "ValidationError",
+                    format!("Value ({boundary}) for parameter PermissionsBoundary is invalid."),
+                ));
+            }
+        }
+        Ok(Self {
+            role_name,
+            assume_role_policy,
+            path,
+            description,
+            max_session_duration,
+            tags,
+            permissions_boundary,
+        })
     }
 }
