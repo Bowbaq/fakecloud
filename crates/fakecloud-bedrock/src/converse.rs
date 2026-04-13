@@ -12,6 +12,11 @@ pub fn converse(
     model_id: &str,
     body: &[u8],
 ) -> Result<AwsResponse, AwsServiceError> {
+    if let Some(fault) = crate::faults::take_matching_fault(state, model_id, "Converse") {
+        crate::faults::record_faulted_invocation(state, model_id, body, &fault);
+        return Err(crate::faults::fault_to_error(&fault));
+    }
+
     let input: Value = serde_json::from_slice(body).unwrap_or_default();
 
     let inference_config = input.get("inferenceConfig");
@@ -108,6 +113,7 @@ pub fn converse(
             input: String::from_utf8_lossy(body).to_string(),
             output: response_str.clone(),
             timestamp: Utc::now(),
+            error: None,
         });
     }
 

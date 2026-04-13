@@ -22,6 +22,12 @@ pub fn invoke_model(
         ));
     }
 
+    // Fault injection: if a matching rule is queued, record the attempt and fail.
+    if let Some(fault) = crate::faults::take_matching_fault(state, model_id, "InvokeModel") {
+        crate::faults::record_faulted_invocation(state, model_id, body, &fault);
+        return Err(crate::faults::fault_to_error(&fault));
+    }
+
     let input: Value = serde_json::from_slice(body).unwrap_or_default();
 
     let response_body = crate::prompt::resolve_override(state, model_id, body)
@@ -35,6 +41,7 @@ pub fn invoke_model(
             input: String::from_utf8_lossy(body).to_string(),
             output: response_body.clone(),
             timestamp: Utc::now(),
+            error: None,
         });
     }
 

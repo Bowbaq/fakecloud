@@ -707,197 +707,244 @@ async fn bedrock_simulation_custom_response() {
     assert_eq!(response_body["content"][0]["text"], "Custom test response!");
 }
 
-#[tokio::test]
-async fn bedrock_prompt_conditional_responses() {
-    let server = TestServer::start().await;
-    let runtime_client = server.bedrock_runtime_client().await;
-    let http_client = reqwest::Client::new();
-    let model_id = "anthropic.claude-3-5-sonnet-20241022-v2:0";
+// Fault injection
 
-    let spam_body = serde_json::json!({
-        "id": "msg_spam",
-        "type": "message",
-        "role": "assistant",
-        "content": [{"type": "text", "text": "spam detected"}],
-        "model": model_id,
-        "stop_reason": "end_turn",
-        "usage": {"input_tokens": 5, "output_tokens": 5}
-    });
-    let urgent_body = serde_json::json!({
-        "id": "msg_urgent",
-        "type": "message",
-        "role": "assistant",
-        "content": [{"type": "text", "text": "urgent reply"}],
-        "model": model_id,
-        "stop_reason": "end_turn",
-        "usage": {"input_tokens": 5, "output_tokens": 5}
-    });
+/// Build a Bedrock runtime client that never retries, so fault-injection
+/// tests see the first-attempt error instead of an SDK-automatic retry.
+async fn bedrock_runtime_no_retry(server: &TestServer) -> aws_sdk_bedrockruntime::Client {
+    let base = server.aws_config().await;
+    let cfg = aws_sdk_bedrockruntime::config::Builder::from(&base)
+        .retry_config(aws_sdk_bedrockruntime::config::retry::RetryConfig::disabled())
+        .build();
+    aws_sdk_bedrockruntime::Client::from_conf(cfg)
+}
 
-    let resp = http_client
-        .post(format!(
-            "{}/_fakecloud/bedrock/models/{}/responses",
-            server.endpoint(),
-            model_id
-        ))
-        .json(&serde_json::json!({
-            "rules": [
-                { "promptContains": "spam", "response": spam_body },
-                { "promptContains": "urgent", "response": urgent_body },
-            ]
-        }))
+async fn queue_fault(endpoint: &str, http: &reqwest::Client, body: serde_json::Value) {
+    let resp = http
+        .post(format!("{endpoint}/_fakecloud/bedrock/faults"))
+        .json(&body)
         .send()
         .await
         .unwrap();
     assert!(resp.status().is_success());
+}
 
-    let invoke = |text: &'static str| {
-        let client = runtime_client.clone();
-        async move {
-            let body = serde_json::to_vec(&serde_json::json!({
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 10,
-                "messages": [{"role": "user", "content": text}]
-            }))
-            .unwrap();
-            let resp = client
-                .invoke_model()
-                .model_id(model_id)
-                .content_type("application/json")
-                .accept("application/json")
-                .body(Blob::new(body))
-                .send()
-                .await
-                .unwrap();
-            let parsed: serde_json::Value = serde_json::from_slice(resp.body().as_ref()).unwrap();
-            parsed["content"][0]["text"].as_str().unwrap().to_string()
-        }
-    };
-
-    assert_eq!(
-        invoke("please check this spam message").await,
-        "spam detected"
-    );
-    assert_eq!(invoke("urgent issue happening").await, "urgent reply");
-    // Falls through to canned response when no rule matches.
-    assert_eq!(
-        invoke("nothing interesting").await,
-        "This is a test response from the emulated model."
-    );
+async fn invoke_simple(
+    client: &aws_sdk_bedrockruntime::Client,
+    model_id: &str,
+) -> Result<
+    aws_sdk_bedrockruntime::operation::invoke_model::InvokeModelOutput,
+    aws_sdk_bedrockruntime::error::SdkError<
+        aws_sdk_bedrockruntime::operation::invoke_model::InvokeModelError,
+    >,
+> {
+    let body = serde_json::to_vec(&serde_json::json!({
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": 10,
+        "messages": [{"role": "user", "content": "hi"}]
+    }))
+    .unwrap();
+    client
+        .invoke_model()
+        .model_id(model_id)
+        .content_type("application/json")
+        .accept("application/json")
+        .body(Blob::new(body))
+        .send()
+        .await
 }
 
 #[tokio::test]
-async fn bedrock_prompt_rules_and_legacy_coexist() {
+async fn bedrock_fault_injection_throttling() {
     let server = TestServer::start().await;
-    let runtime_client = server.bedrock_runtime_client().await;
-    let http_client = reqwest::Client::new();
+    let runtime = bedrock_runtime_no_retry(&server).await;
+    let http = reqwest::Client::new();
     let model_id = "anthropic.claude-3-5-sonnet-20241022-v2:0";
 
-    let rule_body = serde_json::json!({
-        "id": "msg_rule",
-        "type": "message",
-        "role": "assistant",
-        "content": [{"type": "text", "text": "rule matched"}],
-        "model": model_id,
-        "stop_reason": "end_turn",
-        "usage": {"input_tokens": 5, "output_tokens": 5}
-    });
-    let legacy_body = serde_json::json!({
-        "id": "msg_legacy",
-        "type": "message",
-        "role": "assistant",
-        "content": [{"type": "text", "text": "legacy default"}],
-        "model": model_id,
-        "stop_reason": "end_turn",
-        "usage": {"input_tokens": 5, "output_tokens": 5}
-    });
+    queue_fault(
+        server.endpoint(),
+        &http,
+        serde_json::json!({
+            "errorType": "ThrottlingException",
+            "message": "Rate exceeded",
+            "httpStatus": 429,
+            "count": 1
+        }),
+    )
+    .await;
 
-    http_client
-        .post(format!(
-            "{}/_fakecloud/bedrock/models/{}/responses",
-            server.endpoint(),
-            model_id
-        ))
-        .json(&serde_json::json!({
-            "rules": [{ "promptContains": "trigger", "response": rule_body }]
-        }))
-        .send()
-        .await
-        .unwrap();
+    let err = invoke_simple(&runtime, model_id).await.unwrap_err();
+    let service_err = err.into_service_error();
+    assert!(
+        service_err
+            .meta()
+            .code()
+            .unwrap_or("")
+            .contains("ThrottlingException"),
+        "expected ThrottlingException, got: {service_err:?}"
+    );
 
-    http_client
-        .post(format!(
-            "{}/_fakecloud/bedrock/models/{}/response",
-            server.endpoint(),
-            model_id
-        ))
-        .body(serde_json::to_string(&legacy_body).unwrap())
-        .send()
-        .await
-        .unwrap();
-
-    let call = |text: &'static str| {
-        let client = runtime_client.clone();
-        async move {
-            let body = serde_json::to_vec(&serde_json::json!({
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 10,
-                "messages": [{"role": "user", "content": text}]
-            }))
-            .unwrap();
-            let resp = client
-                .invoke_model()
-                .model_id(model_id)
-                .content_type("application/json")
-                .accept("application/json")
-                .body(Blob::new(body))
-                .send()
-                .await
-                .unwrap();
-            let parsed: serde_json::Value = serde_json::from_slice(resp.body().as_ref()).unwrap();
-            parsed["content"][0]["text"].as_str().unwrap().to_string()
-        }
-    };
-
-    assert_eq!(call("please trigger me").await, "rule matched");
-    // No rule match — legacy single response applies.
-    assert_eq!(call("nothing").await, "legacy default");
+    // Second call should succeed now that the rule's count is exhausted.
+    invoke_simple(&runtime, model_id).await.unwrap();
 }
 
 #[tokio::test]
-async fn bedrock_prompt_conditional_converse_stream() {
+async fn bedrock_fault_injection_n_calls() {
     let server = TestServer::start().await;
-    let http_client = reqwest::Client::new();
+    let runtime = bedrock_runtime_no_retry(&server).await;
+    let http = reqwest::Client::new();
     let model_id = "anthropic.claude-3-5-sonnet-20241022-v2:0";
 
-    let converse_resp = serde_json::json!({
-        "output": {
-            "message": {
-                "role": "assistant",
-                "content": [{"text": "streamed custom reply"}]
-            }
-        }
-    });
+    queue_fault(
+        server.endpoint(),
+        &http,
+        serde_json::json!({
+            "errorType": "ServiceUnavailableException",
+            "message": "service unavailable",
+            "httpStatus": 503,
+            "count": 3
+        }),
+    )
+    .await;
 
-    http_client
-        .post(format!(
-            "{}/_fakecloud/bedrock/models/{}/responses",
-            server.endpoint(),
-            model_id
-        ))
-        .json(&serde_json::json!({
-            "rules": [{ "promptContains": "hello", "response": converse_resp }]
-        }))
+    for _ in 0..3 {
+        assert!(invoke_simple(&runtime, model_id).await.is_err());
+    }
+    invoke_simple(&runtime, model_id).await.unwrap();
+}
+
+#[tokio::test]
+async fn bedrock_fault_injection_filter_by_model() {
+    let server = TestServer::start().await;
+    let runtime = bedrock_runtime_no_retry(&server).await;
+    let http = reqwest::Client::new();
+    let model_a = "anthropic.claude-3-5-sonnet-20241022-v2:0";
+    let model_b = "amazon.titan-text-express-v1";
+
+    queue_fault(
+        server.endpoint(),
+        &http,
+        serde_json::json!({
+            "errorType": "ValidationException",
+            "message": "bad model",
+            "httpStatus": 400,
+            "count": 5,
+            "modelId": model_a
+        }),
+    )
+    .await;
+
+    // model B is untouched
+    invoke_simple(&runtime, model_b).await.unwrap();
+    // model A faults
+    assert!(invoke_simple(&runtime, model_a).await.is_err());
+}
+
+#[tokio::test]
+async fn bedrock_fault_injection_filter_by_operation() {
+    let server = TestServer::start().await;
+    let runtime = bedrock_runtime_no_retry(&server).await;
+    let http = reqwest::Client::new();
+    let model_id = "anthropic.claude-3-5-sonnet-20241022-v2:0";
+
+    queue_fault(
+        server.endpoint(),
+        &http,
+        serde_json::json!({
+            "errorType": "ThrottlingException",
+            "message": "throttled",
+            "httpStatus": 429,
+            "count": 10,
+            "operation": "Converse"
+        }),
+    )
+    .await;
+
+    // InvokeModel still works
+    invoke_simple(&runtime, model_id).await.unwrap();
+    // Converse faults
+    let converse_err = runtime
+        .converse()
+        .model_id(model_id)
+        .messages(
+            aws_sdk_bedrockruntime::types::Message::builder()
+                .role(aws_sdk_bedrockruntime::types::ConversationRole::User)
+                .content(aws_sdk_bedrockruntime::types::ContentBlock::Text(
+                    "hi".to_string(),
+                ))
+                .build()
+                .unwrap(),
+        )
         .send()
-        .await
-        .unwrap();
+        .await;
+    assert!(converse_err.is_err(), "converse should have faulted");
+}
+
+#[tokio::test]
+async fn bedrock_fault_injection_history_records_errors() {
+    let server = TestServer::start().await;
+    let runtime = bedrock_runtime_no_retry(&server).await;
+    let http = reqwest::Client::new();
+    let model_id = "anthropic.claude-3-5-sonnet-20241022-v2:0";
+
+    queue_fault(
+        server.endpoint(),
+        &http,
+        serde_json::json!({
+            "errorType": "ModelTimeoutException",
+            "message": "timeout",
+            "httpStatus": 408,
+            "count": 1
+        }),
+    )
+    .await;
+
+    assert!(invoke_simple(&runtime, model_id).await.is_err());
+
+    let resp: serde_json::Value = reqwest::get(format!(
+        "{}/_fakecloud/bedrock/invocations",
+        server.endpoint()
+    ))
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+
+    let invocations = resp["invocations"].as_array().unwrap();
+    assert_eq!(invocations.len(), 1);
+    assert_eq!(invocations[0]["modelId"], model_id);
+    let error = invocations[0]["error"]
+        .as_str()
+        .expect("error field should be populated for faulted call");
+    assert!(error.contains("ModelTimeoutException"));
+    assert!(error.contains("timeout"));
+}
+
+#[tokio::test]
+async fn bedrock_fault_injection_converse_stream() {
+    let server = TestServer::start().await;
+    let http = reqwest::Client::new();
+    let model_id = "anthropic.claude-3-5-sonnet-20241022-v2:0";
+
+    queue_fault(
+        server.endpoint(),
+        &http,
+        serde_json::json!({
+            "errorType": "ModelStreamErrorException",
+            "message": "stream failed",
+            "httpStatus": 500,
+            "count": 1,
+            "operation": "ConverseStream"
+        }),
+    )
+    .await;
 
     let body = serde_json::json!({
         "modelId": model_id,
-        "messages": [
-            {"role": "user", "content": [{"text": "hello there"}]}
-        ]
+        "messages": [{"role": "user", "content": [{"text": "hi"}]}]
     });
-    let resp = http_client
+    let resp = http
         .post(format!(
             "{}/model/{}/converse-stream",
             server.endpoint(),
@@ -912,12 +959,11 @@ async fn bedrock_prompt_conditional_converse_stream() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 200);
-    let bytes = resp.bytes().await.unwrap();
-    let as_str = String::from_utf8_lossy(&bytes);
+    assert_eq!(resp.status(), 500);
+    let text = resp.text().await.unwrap();
     assert!(
-        as_str.contains("streamed custom reply"),
-        "expected custom text in stream, got: {as_str:?}"
+        text.contains("ModelStreamErrorException"),
+        "expected error in body, got: {text}"
     );
 }
 

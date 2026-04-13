@@ -1277,6 +1277,19 @@ impl AwsService for BedrockService {
             }
             "InvokeModelWithResponseStream" | "InvokeModelWithBidirectionalStream" => {
                 let model_id = resource_id.unwrap_or_default();
+                if let Some(fault) = crate::faults::take_matching_fault(
+                    &self.state,
+                    &model_id,
+                    "InvokeModelWithResponseStream",
+                ) {
+                    crate::faults::record_faulted_invocation(
+                        &self.state,
+                        &model_id,
+                        &req.body,
+                        &fault,
+                    );
+                    return Err(crate::faults::fault_to_error(&fault));
+                }
                 let response_text =
                     crate::streaming::get_response_text(&self.state, &model_id, &req.body);
                 let body =
@@ -1290,6 +1303,7 @@ impl AwsService for BedrockService {
                         input: String::from_utf8_lossy(&req.body).to_string(),
                         output: response_text,
                         timestamp: chrono::Utc::now(),
+                        error: None,
                     });
                 }
 
@@ -1302,6 +1316,17 @@ impl AwsService for BedrockService {
             }
             "ConverseStream" => {
                 let model_id = resource_id.unwrap_or_default();
+                if let Some(fault) =
+                    crate::faults::take_matching_fault(&self.state, &model_id, "ConverseStream")
+                {
+                    crate::faults::record_faulted_invocation(
+                        &self.state,
+                        &model_id,
+                        &req.body,
+                        &fault,
+                    );
+                    return Err(crate::faults::fault_to_error(&fault));
+                }
                 let response_text =
                     crate::streaming::get_response_text(&self.state, &model_id, &req.body);
                 let body = crate::streaming::build_converse_stream_response(&response_text);
@@ -1314,6 +1339,7 @@ impl AwsService for BedrockService {
                         input: String::from_utf8_lossy(&req.body).to_string(),
                         output: response_text,
                         timestamp: chrono::Utc::now(),
+                        error: None,
                     });
                 }
 
