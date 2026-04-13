@@ -226,76 +226,90 @@ fn parse_receipt_rule(params: &HashMap<String, String>) -> Result<ReceiptRule, A
 }
 
 fn parse_action(params: &HashMap<String, String>, prefix: &str) -> Option<ReceiptAction> {
-    // S3Action
-    if let Some(bucket) = params.get(&format!("{prefix}.S3Action.BucketName")) {
-        return Some(ReceiptAction::S3 {
-            bucket_name: bucket.clone(),
-            object_key_prefix: params
-                .get(&format!("{prefix}.S3Action.ObjectKeyPrefix"))
-                .cloned(),
-            topic_arn: params.get(&format!("{prefix}.S3Action.TopicArn")).cloned(),
-            kms_key_arn: params.get(&format!("{prefix}.S3Action.KmsKeyArn")).cloned(),
-        });
-    }
-    // SNSAction
-    if let Some(topic_arn) = params.get(&format!("{prefix}.SNSAction.TopicArn")) {
-        return Some(ReceiptAction::Sns {
-            topic_arn: topic_arn.clone(),
-            encoding: params.get(&format!("{prefix}.SNSAction.Encoding")).cloned(),
-        });
-    }
-    // LambdaAction
-    if let Some(function_arn) = params.get(&format!("{prefix}.LambdaAction.FunctionArn")) {
-        return Some(ReceiptAction::Lambda {
-            function_arn: function_arn.clone(),
-            invocation_type: params
-                .get(&format!("{prefix}.LambdaAction.InvocationType"))
-                .cloned(),
-            topic_arn: params
-                .get(&format!("{prefix}.LambdaAction.TopicArn"))
-                .cloned(),
-        });
-    }
-    // BounceAction
-    if let Some(smtp_code) = params.get(&format!("{prefix}.BounceAction.SmtpReplyCode")) {
-        return Some(ReceiptAction::Bounce {
-            smtp_reply_code: smtp_code.clone(),
-            message: params
-                .get(&format!("{prefix}.BounceAction.Message"))
-                .cloned()
-                .unwrap_or_default(),
-            sender: params
-                .get(&format!("{prefix}.BounceAction.Sender"))
-                .cloned()
-                .unwrap_or_default(),
-            status_code: params
-                .get(&format!("{prefix}.BounceAction.StatusCode"))
-                .cloned(),
-            topic_arn: params
-                .get(&format!("{prefix}.BounceAction.TopicArn"))
-                .cloned(),
-        });
-    }
-    // AddHeaderAction
-    if let Some(header_name) = params.get(&format!("{prefix}.AddHeaderAction.HeaderName")) {
-        return Some(ReceiptAction::AddHeader {
-            header_name: header_name.clone(),
-            header_value: params
-                .get(&format!("{prefix}.AddHeaderAction.HeaderValue"))
-                .cloned()
-                .unwrap_or_default(),
-        });
-    }
-    // StopAction
-    if let Some(scope) = params.get(&format!("{prefix}.StopAction.Scope")) {
-        return Some(ReceiptAction::Stop {
-            scope: scope.clone(),
-            topic_arn: params
-                .get(&format!("{prefix}.StopAction.TopicArn"))
-                .cloned(),
-        });
-    }
-    None
+    parse_s3_action(params, prefix)
+        .or_else(|| parse_sns_action(params, prefix))
+        .or_else(|| parse_lambda_action(params, prefix))
+        .or_else(|| parse_bounce_action(params, prefix))
+        .or_else(|| parse_add_header_action(params, prefix))
+        .or_else(|| parse_stop_action(params, prefix))
+}
+
+fn parse_s3_action(params: &HashMap<String, String>, prefix: &str) -> Option<ReceiptAction> {
+    let bucket = params.get(&format!("{prefix}.S3Action.BucketName"))?;
+    Some(ReceiptAction::S3 {
+        bucket_name: bucket.clone(),
+        object_key_prefix: params
+            .get(&format!("{prefix}.S3Action.ObjectKeyPrefix"))
+            .cloned(),
+        topic_arn: params.get(&format!("{prefix}.S3Action.TopicArn")).cloned(),
+        kms_key_arn: params.get(&format!("{prefix}.S3Action.KmsKeyArn")).cloned(),
+    })
+}
+
+fn parse_sns_action(params: &HashMap<String, String>, prefix: &str) -> Option<ReceiptAction> {
+    let topic_arn = params.get(&format!("{prefix}.SNSAction.TopicArn"))?;
+    Some(ReceiptAction::Sns {
+        topic_arn: topic_arn.clone(),
+        encoding: params.get(&format!("{prefix}.SNSAction.Encoding")).cloned(),
+    })
+}
+
+fn parse_lambda_action(params: &HashMap<String, String>, prefix: &str) -> Option<ReceiptAction> {
+    let function_arn = params.get(&format!("{prefix}.LambdaAction.FunctionArn"))?;
+    Some(ReceiptAction::Lambda {
+        function_arn: function_arn.clone(),
+        invocation_type: params
+            .get(&format!("{prefix}.LambdaAction.InvocationType"))
+            .cloned(),
+        topic_arn: params
+            .get(&format!("{prefix}.LambdaAction.TopicArn"))
+            .cloned(),
+    })
+}
+
+fn parse_bounce_action(params: &HashMap<String, String>, prefix: &str) -> Option<ReceiptAction> {
+    let smtp_code = params.get(&format!("{prefix}.BounceAction.SmtpReplyCode"))?;
+    Some(ReceiptAction::Bounce {
+        smtp_reply_code: smtp_code.clone(),
+        message: params
+            .get(&format!("{prefix}.BounceAction.Message"))
+            .cloned()
+            .unwrap_or_default(),
+        sender: params
+            .get(&format!("{prefix}.BounceAction.Sender"))
+            .cloned()
+            .unwrap_or_default(),
+        status_code: params
+            .get(&format!("{prefix}.BounceAction.StatusCode"))
+            .cloned(),
+        topic_arn: params
+            .get(&format!("{prefix}.BounceAction.TopicArn"))
+            .cloned(),
+    })
+}
+
+fn parse_add_header_action(
+    params: &HashMap<String, String>,
+    prefix: &str,
+) -> Option<ReceiptAction> {
+    let header_name = params.get(&format!("{prefix}.AddHeaderAction.HeaderName"))?;
+    Some(ReceiptAction::AddHeader {
+        header_name: header_name.clone(),
+        header_value: params
+            .get(&format!("{prefix}.AddHeaderAction.HeaderValue"))
+            .cloned()
+            .unwrap_or_default(),
+    })
+}
+
+fn parse_stop_action(params: &HashMap<String, String>, prefix: &str) -> Option<ReceiptAction> {
+    let scope = params.get(&format!("{prefix}.StopAction.Scope"))?;
+    Some(ReceiptAction::Stop {
+        scope: scope.clone(),
+        topic_arn: params
+            .get(&format!("{prefix}.StopAction.TopicArn"))
+            .cloned(),
+    })
 }
 
 /// Serialize a `ReceiptRule` to its XML wire form.
@@ -1026,60 +1040,31 @@ fn send_bulk_templated_email(
         .cloned()
         .unwrap_or_else(|| "{}".to_string());
 
-    // Verify template exists
-    let st = state.read();
-    if !st.templates.contains_key(template_name) {
+    if !state.read().templates.contains_key(template_name) {
         return Err(AwsServiceError::aws_error(
             StatusCode::BAD_REQUEST,
             "TemplateDoesNotExistException",
             format!("Template '{template_name}' does not exist"),
         ));
     }
-    drop(st);
 
-    // Parse destinations: Destinations.member.N.Destination.ToAddresses.member.M
     let mut inner = String::from("<Status>");
     for i in 1.. {
         let dest_prefix = format!("Destinations.member.{i}");
-        let to_key = format!("{dest_prefix}.Destination.ToAddresses.member.1");
-        if !req.query_params.contains_key(&to_key) {
+        if !req
+            .query_params
+            .contains_key(&format!("{dest_prefix}.Destination.ToAddresses.member.1"))
+        {
             break;
         }
-        let to = parse_member_list(
+        let message_id = send_bulk_destination(
+            state,
             &req.query_params,
-            &format!("{dest_prefix}.Destination.ToAddresses"),
+            &dest_prefix,
+            from,
+            template_name,
+            &default_template_data,
         );
-        let replacement_data = req
-            .query_params
-            .get(&format!("{dest_prefix}.ReplacementTemplateData"))
-            .cloned()
-            .unwrap_or_else(|| default_template_data.clone());
-
-        let message_id = format!(
-            "{:016x}{:016x}-{:08x}-{:04x}",
-            rand_u64(),
-            rand_u64(),
-            rand_u32(),
-            rand_u16(),
-        );
-
-        let sent = SentEmail {
-            message_id: message_id.clone(),
-            from: from.to_string(),
-            to,
-            cc: Vec::new(),
-            bcc: Vec::new(),
-            subject: None,
-            html_body: None,
-            text_body: None,
-            raw_data: None,
-            template_name: Some(template_name.to_string()),
-            template_data: Some(replacement_data),
-            timestamp: Utc::now(),
-        };
-
-        state.write().sent_emails.push(sent);
-
         inner.push_str(&format!(
             "<member><Status>Success</Status><MessageId>{message_id}</MessageId></member>"
         ));
@@ -1089,6 +1074,49 @@ fn send_bulk_templated_email(
         StatusCode::OK,
         xml_wrap("SendBulkTemplatedEmail", &inner, &req.request_id),
     ))
+}
+
+/// Record one destination entry from a SendBulkTemplatedEmail call and
+/// return the generated message id.
+fn send_bulk_destination(
+    state: &SharedSesState,
+    params: &HashMap<String, String>,
+    dest_prefix: &str,
+    from: &str,
+    template_name: &str,
+    default_template_data: &str,
+) -> String {
+    let to = parse_member_list(params, &format!("{dest_prefix}.Destination.ToAddresses"));
+    let replacement_data = params
+        .get(&format!("{dest_prefix}.ReplacementTemplateData"))
+        .cloned()
+        .unwrap_or_else(|| default_template_data.to_string());
+
+    let message_id = format!(
+        "{:016x}{:016x}-{:08x}-{:04x}",
+        rand_u64(),
+        rand_u64(),
+        rand_u32(),
+        rand_u16(),
+    );
+
+    let sent = SentEmail {
+        message_id: message_id.clone(),
+        from: from.to_string(),
+        to,
+        cc: Vec::new(),
+        bcc: Vec::new(),
+        subject: None,
+        html_body: None,
+        text_body: None,
+        raw_data: None,
+        template_name: Some(template_name.to_string()),
+        template_data: Some(replacement_data),
+        timestamp: Utc::now(),
+    };
+
+    state.write().sent_emails.push(sent);
+    message_id
 }
 
 // ── Template operations ──
