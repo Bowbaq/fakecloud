@@ -16,9 +16,89 @@ use fakecloud_sqs::state::SharedSqsState;
 use fakecloud_ssm::state::SharedSsmState;
 
 use crate::resource_provisioner::ResourceProvisioner;
-use crate::state::{SharedCloudFormationState, Stack};
+use crate::state::{SharedCloudFormationState, Stack, StackResource};
 use crate::template;
 use crate::xml_responses;
+
+/// Multi-pass provisioning for all resources in a parsed template.
+///
+/// Resources may `Ref` each other in either direction, and JSON object
+/// iteration order isn't stable, so a single forward pass isn't enough
+/// to resolve them. We loop: each pass tries every pending resource, and
+/// any resource whose `Ref` targets are still unknown just stays pending
+/// for the next pass. When no pass makes progress we report the first
+/// pending failure and rollback.
+fn provision_stack_resources(
+    provisioner: &ResourceProvisioner,
+    resource_defs: &[template::ResourceDefinition],
+    template_body: &str,
+    parameters: &HashMap<String, String>,
+) -> Result<Vec<StackResource>, AwsServiceError> {
+    let mut resources = Vec::new();
+    let mut physical_ids: HashMap<String, String> = HashMap::new();
+    let mut pending: Vec<&template::ResourceDefinition> = resource_defs.iter().collect();
+    let max_passes = pending.len() + 1;
+
+    for _ in 0..max_passes {
+        if pending.is_empty() {
+            break;
+        }
+        let mut still_pending = Vec::new();
+        let mut made_progress = false;
+
+        for resource_def in pending {
+            let resolved_def = template::resolve_resource_properties(
+                resource_def,
+                template_body,
+                parameters,
+                &physical_ids,
+            )
+            .map_err(|e| {
+                AwsServiceError::aws_error(StatusCode::BAD_REQUEST, "ValidationError", e)
+            })?;
+
+            match provisioner.create_resource(&resolved_def) {
+                Ok(stack_resource) => {
+                    physical_ids.insert(
+                        stack_resource.logical_id.clone(),
+                        stack_resource.physical_id.clone(),
+                    );
+                    resources.push(stack_resource);
+                    made_progress = true;
+                }
+                Err(_) => still_pending.push(resource_def),
+            }
+        }
+
+        pending = still_pending;
+        if !made_progress && !pending.is_empty() {
+            // No progress — report the first failure and rollback anything
+            // we already created.
+            let resource_def = pending[0];
+            let resolved_def = template::resolve_resource_properties(
+                resource_def,
+                template_body,
+                parameters,
+                &physical_ids,
+            )
+            .unwrap_or_else(|_| resource_def.clone());
+            let err = provisioner.create_resource(&resolved_def).unwrap_err();
+            for r in &resources {
+                let _ = provisioner.delete_resource(r);
+            }
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "ValidationError",
+                format!(
+                    "Failed to create resource {}: {err}",
+                    resource_def.logical_id
+                ),
+            ));
+        }
+    }
+
+    Ok(resources)
+}
 
 /// State references for every service CloudFormation can provision resources in.
 pub struct CloudFormationDeps {
@@ -200,73 +280,8 @@ impl CloudFormationService {
         };
 
         let provisioner = self.provisioner(&stack_id);
-        let mut resources = Vec::new();
-        let mut physical_ids: HashMap<String, String> = HashMap::new();
-
-        // Create resources incrementally, re-resolving Refs with known physical IDs.
-        // Use multi-pass to handle dependency ordering (resources may reference each
-        // other via Ref, and JSON object key order is not guaranteed).
-        let mut pending: Vec<&template::ResourceDefinition> = parsed.resources.iter().collect();
-        let max_passes = pending.len() + 1;
-        for _ in 0..max_passes {
-            if pending.is_empty() {
-                break;
-            }
-            let mut still_pending = Vec::new();
-            let mut made_progress = false;
-
-            for resource_def in pending {
-                let resolved_def = template::resolve_resource_properties(
-                    resource_def,
-                    template_body,
-                    &parameters,
-                    &physical_ids,
-                )
-                .map_err(|e| {
-                    AwsServiceError::aws_error(StatusCode::BAD_REQUEST, "ValidationError", e)
-                })?;
-
-                match provisioner.create_resource(&resolved_def) {
-                    Ok(stack_resource) => {
-                        physical_ids.insert(
-                            stack_resource.logical_id.clone(),
-                            stack_resource.physical_id.clone(),
-                        );
-                        resources.push(stack_resource);
-                        made_progress = true;
-                    }
-                    Err(_) => {
-                        still_pending.push(resource_def);
-                    }
-                }
-            }
-
-            pending = still_pending;
-            if !made_progress && !pending.is_empty() {
-                // No progress made — report the first failure
-                let resource_def = pending[0];
-                let resolved_def = template::resolve_resource_properties(
-                    resource_def,
-                    template_body,
-                    &parameters,
-                    &physical_ids,
-                )
-                .unwrap_or_else(|_| resource_def.clone());
-                let err = provisioner.create_resource(&resolved_def).unwrap_err();
-                // Rollback
-                for r in &resources {
-                    let _ = provisioner.delete_resource(r);
-                }
-                return Err(AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "ValidationError",
-                    format!(
-                        "Failed to create resource {}: {err}",
-                        resource_def.logical_id
-                    ),
-                ));
-            }
-        }
+        let resources =
+            provision_stack_resources(&provisioner, &parsed.resources, template_body, &parameters)?;
 
         let stack = Stack {
             name: stack_name.clone(),
