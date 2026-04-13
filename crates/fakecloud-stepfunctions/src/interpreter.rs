@@ -289,22 +289,13 @@ fn run_states<'a>(
                             }
                         }
                         Err((error, cause)) => {
-                            let catchers =
-                                state_def["Catch"].as_array().cloned().unwrap_or_default();
-
-                            if let Some((next, result_path)) = find_catcher(&catchers, &error) {
-                                let error_output = json!({
-                                    "Error": error,
-                                    "Cause": cause,
-                                });
-                                effective_input = apply_result_path(
-                                    &effective_input,
-                                    &error_output,
-                                    result_path.as_deref(),
-                                );
-                                current_state = next;
-                            } else {
-                                return Err((error, cause));
+                            match apply_state_catcher(&state_def, &effective_input, &error, &cause)
+                            {
+                                Some((next, new_input)) => {
+                                    effective_input = new_input;
+                                    current_state = next;
+                                }
+                                None => return Err((error, cause)),
                             }
                         }
                     }
@@ -434,22 +425,13 @@ fn run_states<'a>(
                             }
                         }
                         Err((error, cause)) => {
-                            let catchers =
-                                state_def["Catch"].as_array().cloned().unwrap_or_default();
-
-                            if let Some((next, result_path)) = find_catcher(&catchers, &error) {
-                                let error_output = json!({
-                                    "Error": error,
-                                    "Cause": cause,
-                                });
-                                effective_input = apply_result_path(
-                                    &effective_input,
-                                    &error_output,
-                                    result_path.as_deref(),
-                                );
-                                current_state = next;
-                            } else {
-                                return Err((error, cause));
+                            match apply_state_catcher(&state_def, &effective_input, &error, &cause)
+                            {
+                                Some((next, new_input)) => {
+                                    effective_input = new_input;
+                                    current_state = next;
+                                }
+                                None => return Err((error, cause)),
                             }
                         }
                     }
@@ -501,22 +483,13 @@ fn run_states<'a>(
                             }
                         }
                         Err((error, cause)) => {
-                            let catchers =
-                                state_def["Catch"].as_array().cloned().unwrap_or_default();
-
-                            if let Some((next, result_path)) = find_catcher(&catchers, &error) {
-                                let error_output = json!({
-                                    "Error": error,
-                                    "Cause": cause,
-                                });
-                                effective_input = apply_result_path(
-                                    &effective_input,
-                                    &error_output,
-                                    result_path.as_deref(),
-                                );
-                                current_state = next;
-                            } else {
-                                return Err((error, cause));
+                            match apply_state_catcher(&state_def, &effective_input, &error, &cause)
+                            {
+                                Some((next, new_input)) => {
+                                    effective_input = new_input;
+                                    current_state = next;
+                                }
+                                None => return Err((error, cause)),
                             }
                         }
                     }
@@ -1498,6 +1471,26 @@ fn next_state(state_def: &Value) -> NextState {
         Some(next) => NextState::Name(next.to_string()),
         None => NextState::Error("State has neither 'End' nor 'Next' field".to_string()),
     }
+}
+
+/// Find the first `Catch` clause on `state_def` that matches `error` and
+/// apply its `ResultPath` to produce the state to transition to and the
+/// new effective input. Returns None when no catcher applies, in which
+/// case the error should propagate up.
+fn apply_state_catcher(
+    state_def: &Value,
+    effective_input: &Value,
+    error: &str,
+    cause: &str,
+) -> Option<(String, Value)> {
+    let catchers = state_def["Catch"].as_array().cloned().unwrap_or_default();
+    let (next, result_path) = find_catcher(&catchers, error)?;
+    let error_output = json!({
+        "Error": error,
+        "Cause": cause,
+    });
+    let new_input = apply_result_path(effective_input, &error_output, result_path.as_deref());
+    Some((next, new_input))
 }
 
 fn add_event(
