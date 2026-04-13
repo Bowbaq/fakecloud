@@ -444,10 +444,16 @@ def test_bedrock_invocation_decodes_error_field(
     # Second call succeeds
     bedrock.invoke_model(modelId=model_id, body=body)
 
+    # boto3 may auto-retry 429s so the exact count depends on retry config;
+    # the property we care about is that the SDK decodes both a populated
+    # `error` (on the faulted call) and `None` (on any successful call).
     invs = fc.bedrock.get_invocations().invocations
-    assert len(invs) == 2
-    assert invs[0].error is not None and "ThrottlingException" in invs[0].error
-    assert invs[1].error is None
+    assert len(invs) >= 2
+    faulted = [i for i in invs if i.error is not None]
+    succeeded = [i for i in invs if i.error is None]
+    assert len(faulted) >= 1
+    assert len(succeeded) >= 1
+    assert "ThrottlingException" in faulted[0].error  # type: ignore[operator]
 
 
 # ── Unit tests for serialization logic ────────────────────────────────
