@@ -1277,7 +1277,8 @@ impl AwsService for BedrockService {
             }
             "InvokeModelWithResponseStream" | "InvokeModelWithBidirectionalStream" => {
                 let model_id = resource_id.unwrap_or_default();
-                let response_text = crate::streaming::get_response_text(&self.state, &model_id);
+                let response_text =
+                    crate::streaming::get_response_text(&self.state, &model_id, &req.body);
                 let body =
                     crate::streaming::build_invoke_stream_response(&model_id, &response_text);
 
@@ -1301,7 +1302,8 @@ impl AwsService for BedrockService {
             }
             "ConverseStream" => {
                 let model_id = resource_id.unwrap_or_default();
-                let response_text = crate::streaming::get_response_text(&self.state, &model_id);
+                let response_text =
+                    crate::streaming::get_response_text(&self.state, &model_id, &req.body);
                 let body = crate::streaming::build_converse_stream_response(&response_text);
 
                 // Record invocation

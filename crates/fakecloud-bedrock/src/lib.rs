@@ -18,6 +18,7 @@ pub mod marketplace;
 pub mod model_copy;
 pub mod model_import;
 pub mod models;
+pub mod prompt;
 pub mod prompt_routers;
 pub mod resource_policies;
 pub mod service;

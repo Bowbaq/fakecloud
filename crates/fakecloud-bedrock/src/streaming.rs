@@ -191,23 +191,26 @@ pub fn default_stream_text() -> &'static str {
     "This is a test response from the emulated model."
 }
 
-/// Generate the canned response text, checking for custom overrides
-pub fn get_response_text(state: &crate::state::SharedBedrockState, model_id: &str) -> String {
-    let s = state.read();
-    if let Some(custom) = s.custom_responses.get(model_id) {
-        // Try to extract text from a JSON response
-        if let Ok(parsed) = serde_json::from_str::<Value>(custom) {
-            // Anthropic format
-            if let Some(text) = parsed["content"][0]["text"].as_str() {
-                return text.to_string();
-            }
-            // Converse format
-            if let Some(text) = parsed["output"]["message"]["content"][0]["text"].as_str() {
-                return text.to_string();
-            }
+/// Generate the canned response text, checking for prompt-conditional and
+/// legacy custom overrides for the given call.
+pub fn get_response_text(
+    state: &crate::state::SharedBedrockState,
+    model_id: &str,
+    body: &[u8],
+) -> String {
+    let Some(custom) = crate::prompt::resolve_override(state, model_id, body) else {
+        return default_stream_text().to_string();
+    };
+    // Try to extract text from a JSON response body.
+    if let Ok(parsed) = serde_json::from_str::<Value>(&custom) {
+        // Anthropic format
+        if let Some(text) = parsed["content"][0]["text"].as_str() {
+            return text.to_string();
         }
-        custom.clone()
-    } else {
-        default_stream_text().to_string()
+        // Converse format
+        if let Some(text) = parsed["output"]["message"]["content"][0]["text"].as_str() {
+            return text.to_string();
+        }
     }
+    custom
 }

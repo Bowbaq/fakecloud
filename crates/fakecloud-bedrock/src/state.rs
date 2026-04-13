@@ -25,6 +25,9 @@ pub struct BedrockState {
     pub invocations: Vec<ModelInvocation>,
     /// Custom responses configured per model ID via simulation endpoint.
     pub custom_responses: HashMap<String, String>,
+    /// Prompt-conditional response rules per model ID. Evaluated in order;
+    /// the first rule whose `prompt_contains` matches wins.
+    pub response_rules: HashMap<String, Vec<ResponseRule>>,
     /// Async invocations keyed by invocation ARN.
     pub async_invocations: HashMap<String, AsyncInvocation>,
     /// Custom models keyed by model ARN.
@@ -80,6 +83,7 @@ impl BedrockState {
             logging_config: None,
             invocations: Vec::new(),
             custom_responses: HashMap::new(),
+            response_rules: HashMap::new(),
             async_invocations: HashMap::new(),
             custom_models: HashMap::new(),
             custom_model_deployments: HashMap::new(),
@@ -112,6 +116,7 @@ impl BedrockState {
         self.logging_config = None;
         self.invocations.clear();
         self.custom_responses.clear();
+        self.response_rules.clear();
         self.async_invocations.clear();
         self.custom_models.clear();
         self.custom_model_deployments.clear();
@@ -207,6 +212,15 @@ pub struct LoggingConfig {
     pub text_data_delivery_enabled: bool,
     pub image_data_delivery_enabled: bool,
     pub embedding_data_delivery_enabled: bool,
+}
+
+#[derive(Clone)]
+pub struct ResponseRule {
+    /// Substring to look for in the extracted prompt text. `None` or empty
+    /// matches any prompt.
+    pub prompt_contains: Option<String>,
+    /// Raw response body to return when the rule matches.
+    pub response: String,
 }
 
 #[derive(Clone)]

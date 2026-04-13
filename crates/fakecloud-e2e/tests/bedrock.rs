@@ -707,6 +707,220 @@ async fn bedrock_simulation_custom_response() {
     assert_eq!(response_body["content"][0]["text"], "Custom test response!");
 }
 
+#[tokio::test]
+async fn bedrock_prompt_conditional_responses() {
+    let server = TestServer::start().await;
+    let runtime_client = server.bedrock_runtime_client().await;
+    let http_client = reqwest::Client::new();
+    let model_id = "anthropic.claude-3-5-sonnet-20241022-v2:0";
+
+    let spam_body = serde_json::json!({
+        "id": "msg_spam",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "spam detected"}],
+        "model": model_id,
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 5, "output_tokens": 5}
+    });
+    let urgent_body = serde_json::json!({
+        "id": "msg_urgent",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "urgent reply"}],
+        "model": model_id,
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 5, "output_tokens": 5}
+    });
+
+    let resp = http_client
+        .post(format!(
+            "{}/_fakecloud/bedrock/models/{}/responses",
+            server.endpoint(),
+            model_id
+        ))
+        .json(&serde_json::json!({
+            "rules": [
+                { "promptContains": "spam", "response": spam_body },
+                { "promptContains": "urgent", "response": urgent_body },
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+
+    let invoke = |text: &'static str| {
+        let client = runtime_client.clone();
+        async move {
+            let body = serde_json::to_vec(&serde_json::json!({
+                "anthropic_version": "bedrock-2023-05-31",
+                "max_tokens": 10,
+                "messages": [{"role": "user", "content": text}]
+            }))
+            .unwrap();
+            let resp = client
+                .invoke_model()
+                .model_id(model_id)
+                .content_type("application/json")
+                .accept("application/json")
+                .body(Blob::new(body))
+                .send()
+                .await
+                .unwrap();
+            let parsed: serde_json::Value = serde_json::from_slice(resp.body().as_ref()).unwrap();
+            parsed["content"][0]["text"].as_str().unwrap().to_string()
+        }
+    };
+
+    assert_eq!(
+        invoke("please check this spam message").await,
+        "spam detected"
+    );
+    assert_eq!(invoke("urgent issue happening").await, "urgent reply");
+    // Falls through to canned response when no rule matches.
+    assert_eq!(
+        invoke("nothing interesting").await,
+        "This is a test response from the emulated model."
+    );
+}
+
+#[tokio::test]
+async fn bedrock_prompt_rules_and_legacy_coexist() {
+    let server = TestServer::start().await;
+    let runtime_client = server.bedrock_runtime_client().await;
+    let http_client = reqwest::Client::new();
+    let model_id = "anthropic.claude-3-5-sonnet-20241022-v2:0";
+
+    let rule_body = serde_json::json!({
+        "id": "msg_rule",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "rule matched"}],
+        "model": model_id,
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 5, "output_tokens": 5}
+    });
+    let legacy_body = serde_json::json!({
+        "id": "msg_legacy",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "legacy default"}],
+        "model": model_id,
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 5, "output_tokens": 5}
+    });
+
+    http_client
+        .post(format!(
+            "{}/_fakecloud/bedrock/models/{}/responses",
+            server.endpoint(),
+            model_id
+        ))
+        .json(&serde_json::json!({
+            "rules": [{ "promptContains": "trigger", "response": rule_body }]
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    http_client
+        .post(format!(
+            "{}/_fakecloud/bedrock/models/{}/response",
+            server.endpoint(),
+            model_id
+        ))
+        .body(serde_json::to_string(&legacy_body).unwrap())
+        .send()
+        .await
+        .unwrap();
+
+    let call = |text: &'static str| {
+        let client = runtime_client.clone();
+        async move {
+            let body = serde_json::to_vec(&serde_json::json!({
+                "anthropic_version": "bedrock-2023-05-31",
+                "max_tokens": 10,
+                "messages": [{"role": "user", "content": text}]
+            }))
+            .unwrap();
+            let resp = client
+                .invoke_model()
+                .model_id(model_id)
+                .content_type("application/json")
+                .accept("application/json")
+                .body(Blob::new(body))
+                .send()
+                .await
+                .unwrap();
+            let parsed: serde_json::Value = serde_json::from_slice(resp.body().as_ref()).unwrap();
+            parsed["content"][0]["text"].as_str().unwrap().to_string()
+        }
+    };
+
+    assert_eq!(call("please trigger me").await, "rule matched");
+    // No rule match — legacy single response applies.
+    assert_eq!(call("nothing").await, "legacy default");
+}
+
+#[tokio::test]
+async fn bedrock_prompt_conditional_converse_stream() {
+    let server = TestServer::start().await;
+    let http_client = reqwest::Client::new();
+    let model_id = "anthropic.claude-3-5-sonnet-20241022-v2:0";
+
+    let converse_resp = serde_json::json!({
+        "output": {
+            "message": {
+                "role": "assistant",
+                "content": [{"text": "streamed custom reply"}]
+            }
+        }
+    });
+
+    http_client
+        .post(format!(
+            "{}/_fakecloud/bedrock/models/{}/responses",
+            server.endpoint(),
+            model_id
+        ))
+        .json(&serde_json::json!({
+            "rules": [{ "promptContains": "hello", "response": converse_resp }]
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    let body = serde_json::json!({
+        "modelId": model_id,
+        "messages": [
+            {"role": "user", "content": [{"text": "hello there"}]}
+        ]
+    });
+    let resp = http_client
+        .post(format!(
+            "{}/model/{}/converse-stream",
+            server.endpoint(),
+            model_id
+        ))
+        .header("content-type", "application/json")
+        .header(
+            "authorization",
+            "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20260411/us-east-1/bedrock/aws4_request, SignedHeaders=host, Signature=fake",
+        )
+        .body(serde_json::to_string(&body).unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let bytes = resp.bytes().await.unwrap();
+    let as_str = String::from_utf8_lossy(&bytes);
+    assert!(
+        as_str.contains("streamed custom reply"),
+        "expected custom text in stream, got: {as_str:?}"
+    );
+}
+
 // ApplyGuardrail (Runtime)
 
 #[tokio::test]
