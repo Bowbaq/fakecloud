@@ -15,19 +15,33 @@ use crate::user_status;
 
 use super::{
     ensure_user_pool_exists, generate_confirmation_code, generate_tokens, parse_user_attributes,
-    require_str, validate_password, CognitoService,
+    require_str, validate_password, CognitoService, TokenSet,
 };
 
-impl CognitoService {
-    pub(super) async fn admin_initiate_auth(
-        &self,
-        req: &AwsRequest,
-    ) -> Result<AwsResponse, AwsServiceError> {
-        let body = req.json_body();
+struct AdminAuthInput {
+    pool_id: String,
+    client_id: String,
+    auth_flow: String,
+    username: String,
+    password: String,
+}
 
-        let pool_id = require_str(&body, "UserPoolId")?;
-        let client_id = require_str(&body, "ClientId")?;
-        let auth_flow = require_str(&body, "AuthFlow")?;
+impl AdminAuthInput {
+    fn from_request(body: &Value) -> Result<Self, AwsServiceError> {
+        let pool_id = require_str(body, "UserPoolId")?.to_string();
+        let client_id = require_str(body, "ClientId")?.to_string();
+        let auth_flow = require_str(body, "AuthFlow")?.to_string();
+
+        match auth_flow.as_str() {
+            "ADMIN_NO_SRP_AUTH" | "ADMIN_USER_PASSWORD_AUTH" => {}
+            other => {
+                return Err(AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "InvalidParameterException",
+                    format!("Unsupported auth flow: {other}"),
+                ));
+            }
+        }
 
         let auth_params = body["AuthParameters"].as_object().ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -36,17 +50,6 @@ impl CognitoService {
                 "AuthParameters is required",
             )
         })?;
-
-        match auth_flow {
-            "ADMIN_NO_SRP_AUTH" | "ADMIN_USER_PASSWORD_AUTH" => {}
-            _ => {
-                return Err(AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "InvalidParameterException",
-                    format!("Unsupported auth flow: {auth_flow}"),
-                ));
-            }
-        }
 
         let username = auth_params
             .get("USERNAME")
@@ -57,7 +60,8 @@ impl CognitoService {
                     "InvalidParameterException",
                     "USERNAME is required in AuthParameters",
                 )
-            })?;
+            })?
+            .to_string();
 
         let password = auth_params
             .get("PASSWORD")
@@ -68,101 +72,54 @@ impl CognitoService {
                     "InvalidParameterException",
                     "PASSWORD is required in AuthParameters",
                 )
-            })?;
+            })?
+            .to_string();
 
-        // First lock scope: validate user exists, extract trigger data, then drop lock
-        let (user_attrs, region, account_id, pool_id_owned, username_owned, client_id_owned) = {
-            let state = self.state.read();
+        Ok(Self {
+            pool_id,
+            client_id,
+            auth_flow,
+            username,
+            password,
+        })
+    }
+}
 
-            // Validate pool exists
-            ensure_user_pool_exists(&state, pool_id)?;
+/// Per-request snapshot collected under the read lock that the trigger
+/// invocation needs after the lock is dropped.
+struct AdminAuthLookup {
+    user_attrs: Vec<UserAttribute>,
+    region: String,
+    account_id: String,
+}
 
-            // Validate client exists and belongs to pool
-            let client = state.user_pool_clients.get(client_id).ok_or_else(|| {
-                AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "ResourceNotFoundException",
-                    format!("User pool client {client_id} does not exist."),
-                )
-            })?;
-            if client.user_pool_id != pool_id {
-                return Err(AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "ResourceNotFoundException",
-                    format!("User pool client {client_id} does not exist."),
-                ));
-            }
+enum AdminAuthOutcome {
+    Tokens(TokenSet),
+    NewPasswordRequired { session: String },
+}
 
-            // Validate ExplicitAuthFlows allows this auth flow
-            let allowed = match auth_flow {
-                "ADMIN_NO_SRP_AUTH" => client
-                    .explicit_auth_flows
-                    .iter()
-                    .any(|f| f == "ADMIN_NO_SRP_AUTH" || f == "ALLOW_ADMIN_USER_PASSWORD_AUTH"),
-                "ADMIN_USER_PASSWORD_AUTH" => client.explicit_auth_flows.iter().any(|f| {
-                    f == "ADMIN_USER_PASSWORD_AUTH" || f == "ALLOW_ADMIN_USER_PASSWORD_AUTH"
-                }),
-                _ => false,
-            };
-            if !allowed {
-                return Err(AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "InvalidParameterException",
-                    "Client is not allowed for this auth flow.",
-                ));
-            }
+impl CognitoService {
+    pub(super) async fn admin_initiate_auth(
+        &self,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let input = AdminAuthInput::from_request(&req.json_body())?;
+        let lookup = self.admin_auth_lookup(&input)?;
 
-            // Validate user exists and is enabled
-            let user = state
-                .users
-                .get(pool_id)
-                .and_then(|users| users.get(username))
-                .ok_or_else(|| {
-                    AwsServiceError::aws_error(
-                        StatusCode::BAD_REQUEST,
-                        "UserNotFoundException",
-                        "User does not exist.",
-                    )
-                })?;
-
-            if !user.enabled {
-                return Err(AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "NotAuthorizedException",
-                    "User is disabled.",
-                ));
-            }
-
-            // Collect user attributes for triggers
-            let user_attrs = triggers::collect_user_attributes(user);
-            let region = state.region.clone();
-            let account_id = state.account_id.clone();
-
-            (
-                user_attrs,
-                region,
-                account_id,
-                pool_id.to_string(),
-                username.to_string(),
-                client_id.to_string(),
-            )
-        };
-
-        // PreAuthentication_Authentication trigger (synchronous — can reject auth)
-        if let Some(ref ctx) = self.delivery_ctx {
+        if let Some(ctx) = self.delivery_ctx.as_ref() {
             if let Some(function_arn) = triggers::get_trigger_arn(
                 &self.state,
-                &pool_id_owned,
+                &input.pool_id,
                 TriggerSource::PreAuthenticationAuthentication,
             ) {
                 let event = triggers::build_trigger_event(
                     TriggerSource::PreAuthenticationAuthentication,
-                    &pool_id_owned,
-                    Some(&client_id_owned),
-                    &username_owned,
-                    &user_attrs,
-                    &region,
-                    &account_id,
+                    &input.pool_id,
+                    Some(&input.client_id),
+                    &input.username,
+                    &lookup.user_attrs,
+                    &lookup.region,
+                    &lookup.account_id,
                 );
                 if triggers::invoke_trigger(ctx, &function_arn, &event)
                     .await
@@ -177,127 +134,35 @@ impl CognitoService {
             }
         }
 
-        // Second lock scope: password check, token generation, state mutations
-        let tokens = {
-            let mut state = self.state.write();
-
-            // Re-validate user exists (could have been modified between lock scopes)
-            let user = state
-                .users
-                .get(pool_id)
-                .and_then(|users| users.get(username))
-                .ok_or_else(|| {
-                    AwsServiceError::aws_error(
-                        StatusCode::BAD_REQUEST,
-                        "UserNotFoundException",
-                        "User does not exist.",
-                    )
-                })?;
-
-            // Validate password
-            let password_matches = match (&user.password, &user.temporary_password) {
-                (Some(p), _) if p == password => true,
-                (_, Some(tp)) if tp == password => true,
-                _ => false,
-            };
-            if !password_matches {
-                state.auth_events.push(AuthEvent {
-                    event_id: Uuid::new_v4().to_string(),
-                    event_type: "SIGN_IN_FAILURE".to_string(),
-                    username: username.to_string(),
-                    user_pool_id: pool_id.to_string(),
-                    client_id: Some(client_id.to_string()),
-                    timestamp: Utc::now(),
-                    success: false,
-                    feedback_value: None,
-                });
-                return Err(AwsServiceError::aws_error(
-                    StatusCode::BAD_REQUEST,
-                    "NotAuthorizedException",
-                    "Incorrect username or password.",
-                ));
-            }
-
-            // Check if user needs to change password
-            if user.user_status == user_status::FORCE_CHANGE_PASSWORD {
-                let session = Uuid::new_v4().to_string();
-                state.sessions.insert(
-                    session.clone(),
-                    SessionData {
-                        user_pool_id: pool_id.to_string(),
-                        username: username.to_string(),
-                        client_id: client_id.to_string(),
-                        challenge_name: "NEW_PASSWORD_REQUIRED".to_string(),
-                        challenge_results: vec![],
-                        challenge_metadata: None,
-                    },
-                );
+        let tokens = match self.admin_auth_verify(&input, &lookup.region)? {
+            AdminAuthOutcome::NewPasswordRequired { session } => {
                 return Ok(AwsResponse::ok_json(json!({
                     "ChallengeName": "NEW_PASSWORD_REQUIRED",
                     "Session": session,
                     "ChallengeParameters": {
-                        "USER_ID_FOR_SRP": username,
+                        "USER_ID_FOR_SRP": input.username,
                         "requiredAttributes": "[]",
                         "userAttributes": "{}"
                     }
                 })));
             }
-
-            // Generate tokens
-            let sub = user.sub.clone();
-            let tokens = generate_tokens(pool_id, client_id, &sub, username, &region);
-
-            // Store refresh token
-            state.refresh_tokens.insert(
-                tokens.refresh_token.clone(),
-                RefreshTokenData {
-                    user_pool_id: pool_id.to_string(),
-                    username: username.to_string(),
-                    client_id: client_id.to_string(),
-                    issued_at: Utc::now(),
-                },
-            );
-
-            // Store access token
-            state.access_tokens.insert(
-                tokens.access_token.clone(),
-                AccessTokenData {
-                    user_pool_id: pool_id.to_string(),
-                    username: username.to_string(),
-                    client_id: client_id.to_string(),
-                    issued_at: Utc::now(),
-                },
-            );
-
-            state.auth_events.push(AuthEvent {
-                event_id: Uuid::new_v4().to_string(),
-                event_type: "SIGN_IN".to_string(),
-                username: username.to_string(),
-                user_pool_id: pool_id.to_string(),
-                client_id: Some(client_id.to_string()),
-                timestamp: Utc::now(),
-                success: true,
-                feedback_value: None,
-            });
-
-            tokens
+            AdminAuthOutcome::Tokens(tokens) => tokens,
         };
 
-        // PostAuthentication_Authentication trigger (fire-and-forget)
-        if let Some(ref ctx) = self.delivery_ctx {
+        if let Some(ctx) = self.delivery_ctx.as_ref() {
             if let Some(function_arn) = triggers::get_trigger_arn(
                 &self.state,
-                &pool_id_owned,
+                &input.pool_id,
                 TriggerSource::PostAuthenticationAuthentication,
             ) {
                 let event = triggers::build_trigger_event(
                     TriggerSource::PostAuthenticationAuthentication,
-                    &pool_id_owned,
-                    Some(&client_id_owned),
-                    &username_owned,
-                    &user_attrs,
-                    &region,
-                    &account_id,
+                    &input.pool_id,
+                    Some(&input.client_id),
+                    &input.username,
+                    &lookup.user_attrs,
+                    &lookup.region,
+                    &lookup.account_id,
                 );
                 triggers::invoke_trigger_fire_and_forget(ctx, function_arn, event);
             }
@@ -312,6 +177,179 @@ impl CognitoService {
                 "ExpiresIn": 3600
             }
         })))
+    }
+
+    fn admin_auth_lookup(
+        &self,
+        input: &AdminAuthInput,
+    ) -> Result<AdminAuthLookup, AwsServiceError> {
+        let state = self.state.read();
+
+        ensure_user_pool_exists(&state, &input.pool_id)?;
+
+        let client = state
+            .user_pool_clients
+            .get(&input.client_id)
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "ResourceNotFoundException",
+                    format!("User pool client {} does not exist.", input.client_id),
+                )
+            })?;
+        if client.user_pool_id != input.pool_id {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "ResourceNotFoundException",
+                format!("User pool client {} does not exist.", input.client_id),
+            ));
+        }
+
+        let allowed = match input.auth_flow.as_str() {
+            "ADMIN_NO_SRP_AUTH" => client
+                .explicit_auth_flows
+                .iter()
+                .any(|f| f == "ADMIN_NO_SRP_AUTH" || f == "ALLOW_ADMIN_USER_PASSWORD_AUTH"),
+            "ADMIN_USER_PASSWORD_AUTH" => client
+                .explicit_auth_flows
+                .iter()
+                .any(|f| f == "ADMIN_USER_PASSWORD_AUTH" || f == "ALLOW_ADMIN_USER_PASSWORD_AUTH"),
+            _ => false,
+        };
+        if !allowed {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidParameterException",
+                "Client is not allowed for this auth flow.",
+            ));
+        }
+
+        let user = state
+            .users
+            .get(&input.pool_id)
+            .and_then(|users| users.get(&input.username))
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "UserNotFoundException",
+                    "User does not exist.",
+                )
+            })?;
+
+        if !user.enabled {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "NotAuthorizedException",
+                "User is disabled.",
+            ));
+        }
+
+        Ok(AdminAuthLookup {
+            user_attrs: triggers::collect_user_attributes(user),
+            region: state.region.clone(),
+            account_id: state.account_id.clone(),
+        })
+    }
+
+    fn admin_auth_verify(
+        &self,
+        input: &AdminAuthInput,
+        region: &str,
+    ) -> Result<AdminAuthOutcome, AwsServiceError> {
+        let mut state = self.state.write();
+
+        let user = state
+            .users
+            .get(&input.pool_id)
+            .and_then(|users| users.get(&input.username))
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "UserNotFoundException",
+                    "User does not exist.",
+                )
+            })?;
+
+        let password_matches = match (&user.password, &user.temporary_password) {
+            (Some(p), _) if p == &input.password => true,
+            (_, Some(tp)) if tp == &input.password => true,
+            _ => false,
+        };
+        if !password_matches {
+            state.auth_events.push(AuthEvent {
+                event_id: Uuid::new_v4().to_string(),
+                event_type: "SIGN_IN_FAILURE".to_string(),
+                username: input.username.clone(),
+                user_pool_id: input.pool_id.clone(),
+                client_id: Some(input.client_id.clone()),
+                timestamp: Utc::now(),
+                success: false,
+                feedback_value: None,
+            });
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "NotAuthorizedException",
+                "Incorrect username or password.",
+            ));
+        }
+
+        if user.user_status == user_status::FORCE_CHANGE_PASSWORD {
+            let session = Uuid::new_v4().to_string();
+            state.sessions.insert(
+                session.clone(),
+                SessionData {
+                    user_pool_id: input.pool_id.clone(),
+                    username: input.username.clone(),
+                    client_id: input.client_id.clone(),
+                    challenge_name: "NEW_PASSWORD_REQUIRED".to_string(),
+                    challenge_results: vec![],
+                    challenge_metadata: None,
+                },
+            );
+            return Ok(AdminAuthOutcome::NewPasswordRequired { session });
+        }
+
+        let sub = user.sub.clone();
+        let tokens = generate_tokens(
+            &input.pool_id,
+            &input.client_id,
+            &sub,
+            &input.username,
+            region,
+        );
+
+        state.refresh_tokens.insert(
+            tokens.refresh_token.clone(),
+            RefreshTokenData {
+                user_pool_id: input.pool_id.clone(),
+                username: input.username.clone(),
+                client_id: input.client_id.clone(),
+                issued_at: Utc::now(),
+            },
+        );
+
+        state.access_tokens.insert(
+            tokens.access_token.clone(),
+            AccessTokenData {
+                user_pool_id: input.pool_id.clone(),
+                username: input.username.clone(),
+                client_id: input.client_id.clone(),
+                issued_at: Utc::now(),
+            },
+        );
+
+        state.auth_events.push(AuthEvent {
+            event_id: Uuid::new_v4().to_string(),
+            event_type: "SIGN_IN".to_string(),
+            username: input.username.clone(),
+            user_pool_id: input.pool_id.clone(),
+            client_id: Some(input.client_id.clone()),
+            timestamp: Utc::now(),
+            success: true,
+            feedback_value: None,
+        });
+
+        Ok(AdminAuthOutcome::Tokens(tokens))
     }
 
     pub(super) async fn initiate_auth(
