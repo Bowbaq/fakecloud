@@ -484,31 +484,11 @@ impl CloudFormationService {
     }
 
     fn update_stack(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let params = Self::get_all_params(req);
-
-        let stack_name = params.get("StackName").ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ValidationError",
-                "StackName is required",
-            )
-        })?;
-
-        let template_body = params.get("TemplateBody").ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "ValidationError",
-                "TemplateBody is required",
-            )
-        })?;
-
-        let new_parameters = Self::extract_parameters(&params);
-        let new_tags = Self::extract_tags(&params);
-        let new_notification_arns = Self::extract_notification_arns(&params);
-
-        let parsed = template::parse_template(template_body, &new_parameters).map_err(|e| {
-            AwsServiceError::aws_error(StatusCode::BAD_REQUEST, "ValidationError", e)
-        })?;
+        let input = UpdateStackInput::from_params(req)?;
+        let parsed =
+            template::parse_template(&input.template_body, &input.parameters).map_err(|e| {
+                AwsServiceError::aws_error(StatusCode::BAD_REQUEST, "ValidationError", e)
+            })?;
 
         // Get stack_id before write lock for the provisioner
         let found_stack_id = {
@@ -517,7 +497,7 @@ impl CloudFormationService {
                 .stacks
                 .values()
                 .find(|s| {
-                    (s.name == *stack_name || s.stack_id == *stack_name)
+                    (s.name == input.stack_name || s.stack_id == input.stack_name)
                         && s.status != "DELETE_COMPLETE"
                 })
                 .map(|s| s.stack_id.clone())
@@ -531,112 +511,45 @@ impl CloudFormationService {
             .stacks
             .values_mut()
             .find(|s| {
-                (s.name == *stack_name || s.stack_id == *stack_name)
+                (s.name == input.stack_name || s.stack_id == input.stack_name)
                     && s.status != "DELETE_COMPLETE"
             })
             .ok_or_else(|| {
                 AwsServiceError::aws_error(
                     StatusCode::BAD_REQUEST,
                     "ValidationError",
-                    format!("Stack [{stack_name}] does not exist"),
+                    format!("Stack [{}] does not exist", input.stack_name),
                 )
             })?;
 
-        // Determine which resources to add and remove
-        let old_logical_ids: std::collections::HashSet<String> = stack
-            .resources
-            .iter()
-            .map(|r| r.logical_id.clone())
-            .collect();
-        let new_logical_ids: std::collections::HashSet<String> = parsed
-            .resources
-            .iter()
-            .map(|r| r.logical_id.clone())
-            .collect();
-
-        // Delete resources that are no longer in the template
-        let to_remove: Vec<_> = stack
-            .resources
-            .iter()
-            .filter(|r| !new_logical_ids.contains(&r.logical_id))
-            .cloned()
-            .collect();
-        for resource in &to_remove {
-            let _ = provisioner.delete_resource(resource);
-        }
-        stack
-            .resources
-            .retain(|r| new_logical_ids.contains(&r.logical_id));
-
-        // Build physical ID map from existing resources
-        let mut physical_ids: HashMap<String, String> = stack
-            .resources
-            .iter()
-            .map(|r| (r.logical_id.clone(), r.physical_id.clone()))
-            .collect();
-
-        // Create new resources
-        let mut update_failed = false;
-        let mut update_error_msg = String::new();
-        for resource_def in &parsed.resources {
-            if !old_logical_ids.contains(&resource_def.logical_id) {
-                let resolved_def = match template::resolve_resource_properties(
-                    resource_def,
-                    template_body,
-                    &new_parameters,
-                    &physical_ids,
-                ) {
-                    Ok(d) => d,
-                    Err(e) => {
-                        update_failed = true;
-                        update_error_msg = format!(
-                            "Failed to resolve resource {}: {e}",
-                            resource_def.logical_id
-                        );
-                        continue;
-                    }
-                };
-                match provisioner.create_resource(&resolved_def) {
-                    Ok(stack_resource) => {
-                        physical_ids.insert(
-                            stack_resource.logical_id.clone(),
-                            stack_resource.physical_id.clone(),
-                        );
-                        stack.resources.push(stack_resource);
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "Failed to create resource {} during update: {e}",
-                            resource_def.logical_id
-                        );
-                        update_failed = true;
-                        update_error_msg =
-                            format!("Failed to create resource {}: {e}", resource_def.logical_id);
-                    }
-                }
-            }
-        }
+        let update_result = apply_resource_updates(
+            stack,
+            &parsed.resources,
+            &input.template_body,
+            &input.parameters,
+            &provisioner,
+        );
 
         let stack_id = stack.stack_id.clone();
-        stack.template = template_body.clone();
-        stack.status = if update_failed {
+        stack.template = input.template_body.clone();
+        stack.status = if update_result.is_err() {
             "UPDATE_FAILED".to_string()
         } else {
             "UPDATE_COMPLETE".to_string()
         };
-        stack.parameters = new_parameters;
-        if !new_tags.is_empty() {
-            stack.tags = new_tags;
+        stack.parameters = input.parameters;
+        if !input.tags.is_empty() {
+            stack.tags = input.tags;
         }
         stack.updated_at = Some(Utc::now());
         stack.description = parsed.description;
-        if !new_notification_arns.is_empty() {
-            stack.notification_arns = new_notification_arns;
+        if !input.notification_arns.is_empty() {
+            stack.notification_arns = input.notification_arns.clone();
         }
         let notification_arns = stack.notification_arns.clone();
         let stack_name_for_notif = stack.name.clone();
 
-        if update_failed {
+        if let Err(error_msg) = update_result {
             drop(state);
             Self::send_stack_notification(
                 &self.deps.delivery,
@@ -648,7 +561,7 @@ impl CloudFormationService {
             return Err(AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
                 "ValidationError",
-                update_error_msg,
+                error_msg,
             ));
         }
 
@@ -733,6 +646,132 @@ impl AwsService for CloudFormationService {
             "GetTemplate",
         ]
     }
+}
+
+/// Parsed + validated inputs for `UpdateStack`.
+struct UpdateStackInput {
+    stack_name: String,
+    template_body: String,
+    parameters: HashMap<String, String>,
+    tags: HashMap<String, String>,
+    notification_arns: Vec<String>,
+}
+
+impl UpdateStackInput {
+    fn from_params(req: &AwsRequest) -> Result<Self, AwsServiceError> {
+        let params = CloudFormationService::get_all_params(req);
+
+        let stack_name = params
+            .get("StackName")
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "ValidationError",
+                    "StackName is required",
+                )
+            })?
+            .to_string();
+
+        let template_body = params
+            .get("TemplateBody")
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "ValidationError",
+                    "TemplateBody is required",
+                )
+            })?
+            .to_string();
+
+        Ok(Self {
+            stack_name,
+            template_body,
+            parameters: CloudFormationService::extract_parameters(&params),
+            tags: CloudFormationService::extract_tags(&params),
+            notification_arns: CloudFormationService::extract_notification_arns(&params),
+        })
+    }
+}
+
+/// Apply resource updates: delete removed resources, create new ones.
+/// Returns Err(msg) if any resource operation fails.
+fn apply_resource_updates(
+    stack: &mut crate::state::Stack,
+    new_resource_defs: &[template::ResourceDefinition],
+    template_body: &str,
+    parameters: &HashMap<String, String>,
+    provisioner: &crate::resource_provisioner::ResourceProvisioner,
+) -> Result<(), String> {
+    let old_logical_ids: std::collections::HashSet<String> = stack
+        .resources
+        .iter()
+        .map(|r| r.logical_id.clone())
+        .collect();
+    let new_logical_ids: std::collections::HashSet<String> = new_resource_defs
+        .iter()
+        .map(|r| r.logical_id.clone())
+        .collect();
+
+    // Delete resources no longer in template
+    let to_remove: Vec<_> = stack
+        .resources
+        .iter()
+        .filter(|r| !new_logical_ids.contains(&r.logical_id))
+        .cloned()
+        .collect();
+    for resource in &to_remove {
+        let _ = provisioner.delete_resource(resource);
+    }
+    stack
+        .resources
+        .retain(|r| new_logical_ids.contains(&r.logical_id));
+
+    // Build physical ID map from existing resources
+    let mut physical_ids: HashMap<String, String> = stack
+        .resources
+        .iter()
+        .map(|r| (r.logical_id.clone(), r.physical_id.clone()))
+        .collect();
+
+    // Create new resources
+    for resource_def in new_resource_defs {
+        if !old_logical_ids.contains(&resource_def.logical_id) {
+            let resolved_def = template::resolve_resource_properties(
+                resource_def,
+                template_body,
+                parameters,
+                &physical_ids,
+            )
+            .map_err(|e| {
+                format!(
+                    "Failed to resolve resource {}: {e}",
+                    resource_def.logical_id
+                )
+            })?;
+
+            match provisioner.create_resource(&resolved_def) {
+                Ok(stack_resource) => {
+                    physical_ids.insert(
+                        stack_resource.logical_id.clone(),
+                        stack_resource.physical_id.clone(),
+                    );
+                    stack.resources.push(stack_resource);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to create resource {} during update: {e}",
+                        resource_def.logical_id
+                    );
+                    return Err(format!(
+                        "Failed to create resource {}: {e}",
+                        resource_def.logical_id
+                    ));
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
