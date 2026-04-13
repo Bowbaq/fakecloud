@@ -17,6 +17,28 @@ use fakecloud_aws::xml::xml_escape;
 
 use crate::policy_validation::validate_policy_document;
 
+/// IAM ``ListPolicies`` ``Scope`` filter.
+///
+/// ``All`` (the default) returns both AWS-managed and customer-managed policies,
+/// ``Aws`` returns only AWS-managed, and ``Local`` returns only
+/// customer-managed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PolicyScope {
+    All,
+    Aws,
+    Local,
+}
+
+impl PolicyScope {
+    fn from_query(value: Option<&str>) -> Self {
+        match value {
+            Some("AWS") => Self::Aws,
+            Some("Local") => Self::Local,
+            _ => Self::All,
+        }
+    }
+}
+
 impl IamService {
     pub(super) fn create_policy(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let policy_name = required_param(&req.query_params, "PolicyName")?;
@@ -171,17 +193,15 @@ impl IamService {
 
         let state = self.state.read();
         let path_prefix = req.query_params.get("PathPrefix").cloned();
-        let scope = req.query_params.get("Scope").cloned();
+        let scope = PolicyScope::from_query(req.query_params.get("Scope").map(|s| s.as_str()));
         let mut policies: Vec<IamPolicy> = state.policies.values().cloned().collect();
         if let Some(prefix) = path_prefix {
             policies.retain(|p| p.path.starts_with(&prefix));
         }
-        // If scope is "Local", show only customer-managed
-        // If scope is "AWS", show only AWS-managed (we have none)
-        if let Some(s) = scope {
-            if s == "AWS" {
-                policies.clear();
-            }
+        if matches!(scope, PolicyScope::Aws) {
+            // We don't carry any AWS-managed policies in fakecloud, so an
+            // explicit ``Scope=AWS`` filter returns an empty list.
+            policies.clear();
         }
         let xml = xml_responses::list_policies_response(&policies, &req.request_id);
         Ok(AwsResponse::xml(StatusCode::OK, xml))

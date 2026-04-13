@@ -19,6 +19,23 @@ use crate::state::{
 };
 
 const ELASTICACHE_NS: &str = "http://elasticache.amazonaws.com/doc/2015-02-02/";
+
+/// Cache engine wire values. Stored as ``String`` on ``CacheCluster`` etc., but
+/// validated against this list at the wire boundary so a typo can't slip in.
+const ENGINE_REDIS: &str = "redis";
+const ENGINE_VALKEY: &str = "valkey";
+const SUPPORTED_ENGINES: &[&str] = &[ENGINE_REDIS, ENGINE_VALKEY];
+
+fn validate_engine(engine: &str) -> Result<(), AwsServiceError> {
+    if !SUPPORTED_ENGINES.contains(&engine) {
+        return Err(AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "InvalidParameterValue",
+            format!("Invalid value for Engine: {engine}. Supported engines: redis, valkey"),
+        ));
+    }
+    Ok(())
+}
 const SUPPORTED_ACTIONS: &[&str] = &[
     "AddTagsToResource",
     "CreateCacheCluster",
@@ -598,16 +615,14 @@ impl ElastiCacheService {
         request: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let cache_cluster_id = required_param(request, "CacheClusterId")?;
-        let engine = optional_param(request, "Engine").unwrap_or_else(|| "redis".to_string());
-        if engine != "redis" && engine != "valkey" {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "InvalidParameterValue",
-                format!("Invalid value for Engine: {engine}. Supported engines: redis, valkey"),
-            ));
-        }
+        let engine = optional_param(request, "Engine").unwrap_or_else(|| ENGINE_REDIS.to_string());
+        validate_engine(&engine)?;
 
-        let default_version = if engine == "valkey" { "8.0" } else { "7.1" };
+        let default_version = if engine == ENGINE_VALKEY {
+            "8.0"
+        } else {
+            "7.1"
+        };
         let engine_version =
             optional_param(request, "EngineVersion").unwrap_or_else(|| default_version.to_string());
         let cache_node_type = optional_param(request, "CacheNodeType")
@@ -846,15 +861,13 @@ impl ElastiCacheService {
     ) -> Result<AwsResponse, AwsServiceError> {
         let replication_group_id = required_param(request, "ReplicationGroupId")?;
         let description = required_param(request, "ReplicationGroupDescription")?;
-        let engine = optional_param(request, "Engine").unwrap_or_else(|| "redis".to_string());
-        if engine != "redis" && engine != "valkey" {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "InvalidParameterValue",
-                format!("Invalid value for Engine: {engine}. Supported engines: redis, valkey"),
-            ));
-        }
-        let default_version = if engine == "valkey" { "8.0" } else { "7.1" };
+        let engine = optional_param(request, "Engine").unwrap_or_else(|| ENGINE_REDIS.to_string());
+        validate_engine(&engine)?;
+        let default_version = if engine == ENGINE_VALKEY {
+            "8.0"
+        } else {
+            "7.1"
+        };
         let engine_version =
             optional_param(request, "EngineVersion").unwrap_or_else(|| default_version.to_string());
         let cache_node_type = optional_param(request, "CacheNodeType")
@@ -2438,13 +2451,7 @@ impl ElastiCacheService {
         let engine = required_param(request, "Engine")?;
         let access_string = required_param(request, "AccessString")?;
 
-        if engine != "redis" && engine != "valkey" {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "InvalidParameterValue",
-                format!("Invalid value for Engine: {engine}. Supported engines: redis, valkey"),
-            ));
-        }
+        validate_engine(&engine)?;
 
         let no_password_required =
             parse_optional_bool(optional_param(request, "NoPasswordRequired").as_deref())?
@@ -2502,7 +2509,7 @@ impl ElastiCacheService {
             ("no-password".to_string(), 0)
         };
 
-        let minimum_engine_version = if engine == "valkey" {
+        let minimum_engine_version = if engine == ENGINE_VALKEY {
             "8.0".to_string()
         } else {
             "6.0".to_string()
@@ -2632,17 +2639,11 @@ impl ElastiCacheService {
         let user_group_id = required_param(request, "UserGroupId")?;
         let engine = required_param(request, "Engine")?;
 
-        if engine != "redis" && engine != "valkey" {
-            return Err(AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "InvalidParameterValue",
-                format!("Invalid value for Engine: {engine}. Supported engines: redis, valkey"),
-            ));
-        }
+        validate_engine(&engine)?;
 
         let user_ids = parse_member_list(&request.query_params, "UserIds", "member");
 
-        let minimum_engine_version = if engine == "valkey" {
+        let minimum_engine_version = if engine == ENGINE_VALKEY {
             "8.0".to_string()
         } else {
             "6.0".to_string()
@@ -2890,19 +2891,11 @@ fn parse_required_bool(req: &AwsRequest, name: &str) -> Result<bool, AwsServiceE
 }
 
 fn validate_serverless_engine(engine: &str) -> Result<(), AwsServiceError> {
-    if engine == "redis" || engine == "valkey" {
-        Ok(())
-    } else {
-        Err(AwsServiceError::aws_error(
-            StatusCode::BAD_REQUEST,
-            "InvalidParameterValue",
-            format!("Invalid value for Engine: {engine}. Supported engines: redis, valkey"),
-        ))
-    }
+    validate_engine(engine)
 }
 
 fn default_major_engine_version(engine: &str) -> &'static str {
-    if engine == "valkey" {
+    if engine == ENGINE_VALKEY {
         "8.0"
     } else {
         "7.1"
@@ -2921,8 +2914,8 @@ fn default_full_engine_version(
         ));
     }
 
-    if (engine == "redis" && !major_engine_version.starts_with('7'))
-        || (engine == "valkey" && !major_engine_version.starts_with('8'))
+    if (engine == ENGINE_REDIS && !major_engine_version.starts_with('7'))
+        || (engine == ENGINE_VALKEY && !major_engine_version.starts_with('8'))
     {
         return Err(AwsServiceError::aws_error(
             StatusCode::BAD_REQUEST,
