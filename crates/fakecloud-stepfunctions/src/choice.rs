@@ -19,128 +19,159 @@ pub fn evaluate_choice(state_def: &Value, input: &Value) -> Option<String> {
 
 /// Evaluate a single choice rule (may be compound via And/Or/Not).
 fn evaluate_rule(rule: &Value, input: &Value) -> bool {
-    // Logical operators
-    if let Some(and_rules) = rule["And"].as_array() {
-        return and_rules.iter().all(|r| evaluate_rule(r, input));
-    }
-    if let Some(or_rules) = rule["Or"].as_array() {
-        return or_rules.iter().any(|r| evaluate_rule(r, input));
-    }
-    if rule.get("Not").is_some() {
-        return !evaluate_rule(&rule["Not"], input);
+    if let Some(result) = evaluate_logical(rule, input) {
+        return result;
     }
 
-    // Get the variable value
     let variable = match rule["Variable"].as_str() {
         Some(v) => v,
         None => return false,
     };
     let value = resolve_path(input, variable);
 
-    // Presence/type checks
+    if let Some(result) = evaluate_presence_or_type(rule, input, variable, &value) {
+        return result;
+    }
+    if let Some(result) = evaluate_string_comparison(rule, input, &value) {
+        return result;
+    }
+    if let Some(result) = evaluate_numeric_comparison(rule, input, &value) {
+        return result;
+    }
+    if let Some(result) = evaluate_boolean_comparison(rule, input, &value) {
+        return result;
+    }
+    if let Some(result) = evaluate_timestamp_comparison(rule, &value) {
+        return result;
+    }
+
+    false
+}
+
+fn evaluate_logical(rule: &Value, input: &Value) -> Option<bool> {
+    if let Some(and_rules) = rule["And"].as_array() {
+        return Some(and_rules.iter().all(|r| evaluate_rule(r, input)));
+    }
+    if let Some(or_rules) = rule["Or"].as_array() {
+        return Some(or_rules.iter().any(|r| evaluate_rule(r, input)));
+    }
+    if rule.get("Not").is_some() {
+        return Some(!evaluate_rule(&rule["Not"], input));
+    }
+    None
+}
+
+fn evaluate_presence_or_type(
+    rule: &Value,
+    input: &Value,
+    variable: &str,
+    value: &Value,
+) -> Option<bool> {
     if let Some(expected) = rule.get("IsPresent") {
-        // Check if the field exists in the input (including explicit null).
         // resolve_path returns Value::Null for both missing and null fields,
-        // so we need to check the parent object directly.
+        // so check the parent object directly.
         let is_present = field_exists_in_input(input, variable);
-        return expected.as_bool().unwrap_or(false) == is_present;
+        return Some(expected.as_bool().unwrap_or(false) == is_present);
     }
     if let Some(expected) = rule.get("IsNull") {
-        let is_null = value.is_null();
-        return expected.as_bool().unwrap_or(false) == is_null;
+        return Some(expected.as_bool().unwrap_or(false) == value.is_null());
     }
     if let Some(expected) = rule.get("IsNumeric") {
-        let is_numeric = value.is_number();
-        return expected.as_bool().unwrap_or(false) == is_numeric;
+        return Some(expected.as_bool().unwrap_or(false) == value.is_number());
     }
     if let Some(expected) = rule.get("IsString") {
-        let is_string = value.is_string();
-        return expected.as_bool().unwrap_or(false) == is_string;
+        return Some(expected.as_bool().unwrap_or(false) == value.is_string());
     }
     if let Some(expected) = rule.get("IsBoolean") {
-        let is_boolean = value.is_boolean();
-        return expected.as_bool().unwrap_or(false) == is_boolean;
+        return Some(expected.as_bool().unwrap_or(false) == value.is_boolean());
     }
     if let Some(expected) = rule.get("IsTimestamp") {
         let is_ts = value
             .as_str()
             .map(|s| chrono::DateTime::parse_from_rfc3339(s).is_ok())
             .unwrap_or(false);
-        return expected.as_bool().unwrap_or(false) == is_ts;
+        return Some(expected.as_bool().unwrap_or(false) == is_ts);
     }
+    None
+}
 
-    // String comparisons
+fn evaluate_string_comparison(rule: &Value, input: &Value, value: &Value) -> Option<bool> {
     if let Some(expected) = rule["StringEquals"].as_str() {
-        return value.as_str() == Some(expected);
+        return Some(value.as_str() == Some(expected));
     }
     if let Some(path) = rule["StringEqualsPath"].as_str() {
         let other = resolve_path(input, path);
-        return value.as_str().is_some() && value.as_str() == other.as_str();
+        return Some(value.as_str().is_some() && value.as_str() == other.as_str());
     }
     if let Some(expected) = rule["StringLessThan"].as_str() {
-        return value.as_str().is_some_and(|v| v < expected);
+        return Some(value.as_str().is_some_and(|v| v < expected));
     }
     if let Some(expected) = rule["StringGreaterThan"].as_str() {
-        return value.as_str().is_some_and(|v| v > expected);
+        return Some(value.as_str().is_some_and(|v| v > expected));
     }
     if let Some(expected) = rule["StringLessThanEquals"].as_str() {
-        return value.as_str().is_some_and(|v| v <= expected);
+        return Some(value.as_str().is_some_and(|v| v <= expected));
     }
     if let Some(expected) = rule["StringGreaterThanEquals"].as_str() {
-        return value.as_str().is_some_and(|v| v >= expected);
+        return Some(value.as_str().is_some_and(|v| v >= expected));
     }
     if let Some(pattern) = rule["StringMatches"].as_str() {
-        return value.as_str().is_some_and(|v| string_matches(v, pattern));
+        return Some(value.as_str().is_some_and(|v| string_matches(v, pattern)));
     }
+    None
+}
 
-    // Numeric comparisons
+fn evaluate_numeric_comparison(rule: &Value, input: &Value, value: &Value) -> Option<bool> {
     if let Some(expected) = rule["NumericEquals"].as_f64() {
-        return value.as_f64() == Some(expected);
+        return Some(value.as_f64() == Some(expected));
     }
     if let Some(path) = rule["NumericEqualsPath"].as_str() {
         let other = resolve_path(input, path);
-        return value.as_f64().is_some() && value.as_f64() == other.as_f64();
+        return Some(value.as_f64().is_some() && value.as_f64() == other.as_f64());
     }
     if let Some(expected) = rule["NumericLessThan"].as_f64() {
-        return value.as_f64().is_some_and(|v| v < expected);
+        return Some(value.as_f64().is_some_and(|v| v < expected));
     }
     if let Some(expected) = rule["NumericGreaterThan"].as_f64() {
-        return value.as_f64().is_some_and(|v| v > expected);
+        return Some(value.as_f64().is_some_and(|v| v > expected));
     }
     if let Some(expected) = rule["NumericLessThanEquals"].as_f64() {
-        return value.as_f64().is_some_and(|v| v <= expected);
+        return Some(value.as_f64().is_some_and(|v| v <= expected));
     }
     if let Some(expected) = rule["NumericGreaterThanEquals"].as_f64() {
-        return value.as_f64().is_some_and(|v| v >= expected);
+        return Some(value.as_f64().is_some_and(|v| v >= expected));
     }
+    None
+}
 
-    // Boolean comparisons
+fn evaluate_boolean_comparison(rule: &Value, input: &Value, value: &Value) -> Option<bool> {
     if let Some(expected) = rule["BooleanEquals"].as_bool() {
-        return value.as_bool() == Some(expected);
+        return Some(value.as_bool() == Some(expected));
     }
     if let Some(path) = rule["BooleanEqualsPath"].as_str() {
         let other = resolve_path(input, path);
-        return value.as_bool().is_some() && value.as_bool() == other.as_bool();
+        return Some(value.as_bool().is_some() && value.as_bool() == other.as_bool());
     }
+    None
+}
 
-    // Timestamp comparisons
+fn evaluate_timestamp_comparison(rule: &Value, value: &Value) -> Option<bool> {
     if let Some(expected) = rule["TimestampEquals"].as_str() {
-        return compare_timestamps(&value, expected, |a, b| a == b);
+        return Some(compare_timestamps(value, expected, |a, b| a == b));
     }
     if let Some(expected) = rule["TimestampLessThan"].as_str() {
-        return compare_timestamps(&value, expected, |a, b| a < b);
+        return Some(compare_timestamps(value, expected, |a, b| a < b));
     }
     if let Some(expected) = rule["TimestampGreaterThan"].as_str() {
-        return compare_timestamps(&value, expected, |a, b| a > b);
+        return Some(compare_timestamps(value, expected, |a, b| a > b));
     }
     if let Some(expected) = rule["TimestampLessThanEquals"].as_str() {
-        return compare_timestamps(&value, expected, |a, b| a <= b);
+        return Some(compare_timestamps(value, expected, |a, b| a <= b));
     }
     if let Some(expected) = rule["TimestampGreaterThanEquals"].as_str() {
-        return compare_timestamps(&value, expected, |a, b| a >= b);
+        return Some(compare_timestamps(value, expected, |a, b| a >= b));
     }
-
-    false
+    None
 }
 
 /// Compare two RFC3339 timestamps using the provided comparison function.
@@ -166,72 +197,66 @@ where
 /// Glob-style pattern matching for StringMatches.
 /// Supports `*` (matches any sequence) and `\*` (literal asterisk).
 fn string_matches(value: &str, pattern: &str) -> bool {
-    let mut pattern_chars: Vec<char> = pattern.chars().collect();
-    let value_chars: Vec<char> = value.chars().collect();
+    let compiled = compile_glob_pattern(pattern);
+    glob_dp_match(&value.chars().collect::<Vec<_>>(), &compiled)
+}
 
-    // Preprocess: handle escaped asterisks
-    let mut segments: Vec<PatternSegment> = Vec::new();
-    let mut current = String::new();
+/// Compile a glob pattern into a token vector where `GlobToken::Wildcard`
+/// represents `*` and `GlobToken::Char(c)` represents a literal character
+/// (including escaped `\*`).
+fn compile_glob_pattern(pattern: &str) -> Vec<GlobToken> {
+    let mut out = Vec::new();
+    let chars: Vec<char> = pattern.chars().collect();
     let mut i = 0;
-    while i < pattern_chars.len() {
-        if pattern_chars[i] == '\\' && i + 1 < pattern_chars.len() && pattern_chars[i + 1] == '*' {
-            current.push('*');
+    while i < chars.len() {
+        if chars[i] == '\\' && i + 1 < chars.len() && chars[i + 1] == '*' {
+            out.push(GlobToken::Char('*'));
             i += 2;
-        } else if pattern_chars[i] == '*' {
-            if !current.is_empty() {
-                segments.push(PatternSegment::Literal(current.clone()));
-                current.clear();
-            }
-            segments.push(PatternSegment::Wildcard);
+        } else if chars[i] == '*' {
+            out.push(GlobToken::Wildcard);
             i += 1;
         } else {
-            current.push(pattern_chars[i]);
+            out.push(GlobToken::Char(chars[i]));
             i += 1;
         }
     }
-    if !current.is_empty() {
-        segments.push(PatternSegment::Literal(current));
-    }
+    out
+}
 
-    // Use cleaned-up pattern_chars for matching
-    pattern_chars = Vec::new();
-    for seg in &segments {
-        match seg {
-            PatternSegment::Literal(s) => {
-                for c in s.chars() {
-                    pattern_chars.push(c);
-                }
-            }
-            PatternSegment::Wildcard => {
-                pattern_chars.push('\0'); // sentinel for wildcard
-            }
-        }
-    }
-
-    // DP matching
-    let m = value_chars.len();
-    let n = pattern_chars.len();
+/// Match a compiled glob pattern against a value using dynamic programming.
+fn glob_dp_match(value: &[char], pattern: &[GlobToken]) -> bool {
+    let m = value.len();
+    let n = pattern.len();
     let mut dp = vec![vec![false; n + 1]; m + 1];
     dp[0][0] = true;
 
-    // Handle leading wildcards
     for j in 1..=n {
-        if pattern_chars[j - 1] == '\0' {
+        if matches!(pattern[j - 1], GlobToken::Wildcard) {
             dp[0][j] = dp[0][j - 1];
         }
     }
 
     for i in 1..=m {
         for j in 1..=n {
-            if pattern_chars[j - 1] == '\0' {
-                dp[i][j] = dp[i][j - 1] || dp[i - 1][j];
-            } else if pattern_chars[j - 1] == value_chars[i - 1] {
-                dp[i][j] = dp[i - 1][j - 1];
+            match pattern[j - 1] {
+                GlobToken::Wildcard => {
+                    dp[i][j] = dp[i][j - 1] || dp[i - 1][j];
+                }
+                GlobToken::Char(c) if c == value[i - 1] => {
+                    dp[i][j] = dp[i - 1][j - 1];
+                }
+                GlobToken::Char(_) => {}
             }
         }
     }
 
     dp[m][n]
+}
+
+#[derive(Clone, Copy)]
+enum GlobToken {
+    Char(char),
+    Wildcard,
 }
 
 /// Check if a field referenced by a JsonPath expression actually exists in the input,
@@ -291,11 +316,6 @@ fn field_exists_in_input(root: &Value, path: &str) -> bool {
         }
     }
     false
-}
-
-enum PatternSegment {
-    Literal(String),
-    Wildcard,
 }
 
 #[cfg(test)]

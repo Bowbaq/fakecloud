@@ -143,367 +143,458 @@ fn run_states<'a>(
                 "Executing state"
             );
 
-            match state_type.as_str() {
-                "Pass" => {
-                    let entered_event_id = add_event(
-                        shared_state,
-                        execution_arn,
-                        "PassStateEntered",
-                        0,
-                        json!({
-                            "name": current_state,
-                            "input": serde_json::to_string(&effective_input).unwrap_or_default(),
-                        }),
-                    );
-
-                    let result = execute_pass_state(&state_def, &effective_input);
-
-                    add_event(
-                        shared_state,
-                        execution_arn,
-                        "PassStateExited",
-                        entered_event_id,
-                        json!({
-                            "name": current_state,
-                            "output": serde_json::to_string(&result).unwrap_or_default(),
-                        }),
-                    );
-
-                    effective_input = result;
-
-                    match next_state(&state_def) {
-                        NextState::Name(next) => current_state = next,
-                        NextState::End => return Ok(effective_input),
-                        NextState::Error(msg) => {
-                            return Err(("States.Runtime".to_string(), msg));
-                        }
-                    }
-                }
-
-                "Succeed" => {
-                    add_event(
-                        shared_state,
-                        execution_arn,
-                        "SucceedStateEntered",
-                        0,
-                        json!({
-                            "name": current_state,
-                            "input": serde_json::to_string(&effective_input).unwrap_or_default(),
-                        }),
-                    );
-
-                    let input_path = state_def["InputPath"].as_str();
-                    let output_path = state_def["OutputPath"].as_str();
-
-                    let processed = if input_path == Some("null") {
-                        json!({})
-                    } else {
-                        apply_input_path(&effective_input, input_path)
-                    };
-
-                    let output = if output_path == Some("null") {
-                        json!({})
-                    } else {
-                        apply_output_path(&processed, output_path)
-                    };
-
-                    add_event(
-                        shared_state,
-                        execution_arn,
-                        "SucceedStateExited",
-                        0,
-                        json!({
-                            "name": current_state,
-                            "output": serde_json::to_string(&output).unwrap_or_default(),
-                        }),
-                    );
-
-                    return Ok(output);
-                }
-
-                "Fail" => {
-                    let error = state_def["Error"]
-                        .as_str()
-                        .unwrap_or("States.Fail")
-                        .to_string();
-                    let cause = state_def["Cause"].as_str().unwrap_or("").to_string();
-
-                    add_event(
-                        shared_state,
-                        execution_arn,
-                        "FailStateEntered",
-                        0,
-                        json!({
-                            "name": current_state,
-                            "input": serde_json::to_string(&effective_input).unwrap_or_default(),
-                        }),
-                    );
-
-                    return Err((error, cause));
-                }
-
-                "Task" => {
-                    let entered_event_id = add_event(
-                        shared_state,
-                        execution_arn,
-                        "TaskStateEntered",
-                        0,
-                        json!({
-                            "name": current_state,
-                            "input": serde_json::to_string(&effective_input).unwrap_or_default(),
-                        }),
-                    );
-
-                    let result = execute_task_state(
-                        &state_def,
-                        &effective_input,
-                        delivery,
-                        dynamodb_state,
-                        shared_state,
-                        execution_arn,
-                        entered_event_id,
-                    )
-                    .await;
-
-                    match result {
-                        Ok(output) => {
-                            add_event(
-                                shared_state,
-                                execution_arn,
-                                "TaskStateExited",
-                                entered_event_id,
-                                json!({
-                                    "name": current_state,
-                                    "output": serde_json::to_string(&output).unwrap_or_default(),
-                                }),
-                            );
-
-                            effective_input = output;
-
-                            match next_state(&state_def) {
-                                NextState::Name(next) => current_state = next,
-                                NextState::End => return Ok(effective_input),
-                                NextState::Error(msg) => {
-                                    return Err(("States.Runtime".to_string(), msg));
-                                }
-                            }
-                        }
-                        Err((error, cause)) => {
-                            match apply_state_catcher(&state_def, &effective_input, &error, &cause)
-                            {
-                                Some((next, new_input)) => {
-                                    effective_input = new_input;
-                                    current_state = next;
-                                }
-                                None => return Err((error, cause)),
-                            }
-                        }
-                    }
-                }
-
-                "Choice" => {
-                    let entered_event_id = add_event(
-                        shared_state,
-                        execution_arn,
-                        "ChoiceStateEntered",
-                        0,
-                        json!({
-                            "name": current_state,
-                            "input": serde_json::to_string(&effective_input).unwrap_or_default(),
-                        }),
-                    );
-
-                    let input_path = state_def["InputPath"].as_str();
-                    let processed_input = if input_path == Some("null") {
-                        json!({})
-                    } else {
-                        apply_input_path(&effective_input, input_path)
-                    };
-
-                    match evaluate_choice(&state_def, &processed_input) {
-                        Some(next) => {
-                            add_event(
-                                shared_state,
-                                execution_arn,
-                                "ChoiceStateExited",
-                                entered_event_id,
-                                json!({
-                                    "name": current_state,
-                                    "output": serde_json::to_string(&effective_input).unwrap_or_default(),
-                                }),
-                            );
-                            current_state = next;
-                        }
-                        None => {
-                            return Err((
-                                "States.NoChoiceMatched".to_string(),
-                                format!(
-                                    "No choice rule matched and no Default in state '{current_state}'"
-                                ),
-                            ));
-                        }
-                    }
-                }
-
+            let advance = match state_type.as_str() {
+                "Pass" => run_pass_state(
+                    &current_state,
+                    &state_def,
+                    effective_input,
+                    shared_state,
+                    execution_arn,
+                ),
+                "Succeed" => run_succeed_state(
+                    &current_state,
+                    &state_def,
+                    effective_input,
+                    shared_state,
+                    execution_arn,
+                ),
+                "Fail" => run_fail_state(
+                    &current_state,
+                    &state_def,
+                    effective_input,
+                    shared_state,
+                    execution_arn,
+                ),
+                "Choice" => run_choice_state(
+                    &current_state,
+                    &state_def,
+                    effective_input,
+                    shared_state,
+                    execution_arn,
+                ),
                 "Wait" => {
-                    let entered_event_id = add_event(
+                    run_wait_state(
+                        &current_state,
+                        &state_def,
+                        effective_input,
                         shared_state,
                         execution_arn,
-                        "WaitStateEntered",
-                        0,
-                        json!({
-                            "name": current_state,
-                            "input": serde_json::to_string(&effective_input).unwrap_or_default(),
-                        }),
-                    );
-
-                    execute_wait_state(&state_def, &effective_input).await;
-
-                    add_event(
-                        shared_state,
-                        execution_arn,
-                        "WaitStateExited",
-                        entered_event_id,
-                        json!({
-                            "name": current_state,
-                            "output": serde_json::to_string(&effective_input).unwrap_or_default(),
-                        }),
-                    );
-
-                    match next_state(&state_def) {
-                        NextState::Name(next) => current_state = next,
-                        NextState::End => return Ok(effective_input),
-                        NextState::Error(msg) => {
-                            return Err(("States.Runtime".to_string(), msg));
-                        }
-                    }
+                    )
+                    .await
                 }
-
+                "Task" => {
+                    run_task_state(
+                        &current_state,
+                        &state_def,
+                        effective_input,
+                        delivery,
+                        dynamodb_state,
+                        shared_state,
+                        execution_arn,
+                    )
+                    .await
+                }
                 "Parallel" => {
-                    let entered_event_id = add_event(
-                        shared_state,
-                        execution_arn,
-                        "ParallelStateEntered",
-                        0,
-                        json!({
-                            "name": current_state,
-                            "input": serde_json::to_string(&effective_input).unwrap_or_default(),
-                        }),
-                    );
-
-                    let result = execute_parallel_state(
+                    run_parallel_state(
+                        &current_state,
                         &state_def,
-                        &effective_input,
+                        effective_input,
                         delivery,
                         dynamodb_state,
                         shared_state,
                         execution_arn,
                     )
-                    .await;
-
-                    match result {
-                        Ok(output) => {
-                            add_event(
-                                shared_state,
-                                execution_arn,
-                                "ParallelStateExited",
-                                entered_event_id,
-                                json!({
-                                    "name": current_state,
-                                    "output": serde_json::to_string(&output).unwrap_or_default(),
-                                }),
-                            );
-
-                            effective_input = output;
-
-                            match next_state(&state_def) {
-                                NextState::Name(next) => current_state = next,
-                                NextState::End => return Ok(effective_input),
-                                NextState::Error(msg) => {
-                                    return Err(("States.Runtime".to_string(), msg));
-                                }
-                            }
-                        }
-                        Err((error, cause)) => {
-                            match apply_state_catcher(&state_def, &effective_input, &error, &cause)
-                            {
-                                Some((next, new_input)) => {
-                                    effective_input = new_input;
-                                    current_state = next;
-                                }
-                                None => return Err((error, cause)),
-                            }
-                        }
-                    }
+                    .await
                 }
-
                 "Map" => {
-                    let entered_event_id = add_event(
-                        shared_state,
-                        execution_arn,
-                        "MapStateEntered",
-                        0,
-                        json!({
-                            "name": current_state,
-                            "input": serde_json::to_string(&effective_input).unwrap_or_default(),
-                        }),
-                    );
-
-                    let result = execute_map_state(
+                    run_map_state(
+                        &current_state,
                         &state_def,
-                        &effective_input,
+                        effective_input,
                         delivery,
                         dynamodb_state,
                         shared_state,
                         execution_arn,
                     )
-                    .await;
-
-                    match result {
-                        Ok(output) => {
-                            add_event(
-                                shared_state,
-                                execution_arn,
-                                "MapStateExited",
-                                entered_event_id,
-                                json!({
-                                    "name": current_state,
-                                    "output": serde_json::to_string(&output).unwrap_or_default(),
-                                }),
-                            );
-
-                            effective_input = output;
-
-                            match next_state(&state_def) {
-                                NextState::Name(next) => current_state = next,
-                                NextState::End => return Ok(effective_input),
-                                NextState::Error(msg) => {
-                                    return Err(("States.Runtime".to_string(), msg));
-                                }
-                            }
-                        }
-                        Err((error, cause)) => {
-                            match apply_state_catcher(&state_def, &effective_input, &error, &cause)
-                            {
-                                Some((next, new_input)) => {
-                                    effective_input = new_input;
-                                    current_state = next;
-                                }
-                                None => return Err((error, cause)),
-                            }
-                        }
-                    }
+                    .await
                 }
+                other => Advance::Fail(
+                    "States.Runtime".to_string(),
+                    format!("Unsupported state type: '{other}'"),
+                ),
+            };
 
-                other => {
-                    return Err((
-                        "States.Runtime".to_string(),
-                        format!("Unsupported state type: '{other}'"),
-                    ));
+            match advance {
+                Advance::Next(next, new_input) => {
+                    effective_input = new_input;
+                    current_state = next;
                 }
+                Advance::End(output) => return Ok(output),
+                Advance::Fail(error, cause) => return Err((error, cause)),
             }
         }
     })
+}
+
+/// Result of executing a single state in the state machine.
+enum Advance {
+    /// Continue to the given state with the given input.
+    Next(String, Value),
+    /// Terminate the state machine with the given output.
+    End(Value),
+    /// Fail the state machine with the given error and cause.
+    Fail(String, String),
+}
+
+fn advance_from_next(state_def: &Value, input: Value) -> Advance {
+    match next_state(state_def) {
+        NextState::Name(next) => Advance::Next(next, input),
+        NextState::End => Advance::End(input),
+        NextState::Error(msg) => Advance::Fail("States.Runtime".to_string(), msg),
+    }
+}
+
+fn advance_from_error(state_def: &Value, input: &Value, error: String, cause: String) -> Advance {
+    match apply_state_catcher(state_def, input, &error, &cause) {
+        Some((next, new_input)) => Advance::Next(next, new_input),
+        None => Advance::Fail(error, cause),
+    }
+}
+
+fn run_pass_state(
+    name: &str,
+    state_def: &Value,
+    input: Value,
+    shared_state: &SharedStepFunctionsState,
+    execution_arn: &str,
+) -> Advance {
+    let entered_event_id = add_event(
+        shared_state,
+        execution_arn,
+        "PassStateEntered",
+        0,
+        json!({
+            "name": name,
+            "input": serde_json::to_string(&input).unwrap_or_default(),
+        }),
+    );
+
+    let result = execute_pass_state(state_def, &input);
+
+    add_event(
+        shared_state,
+        execution_arn,
+        "PassStateExited",
+        entered_event_id,
+        json!({
+            "name": name,
+            "output": serde_json::to_string(&result).unwrap_or_default(),
+        }),
+    );
+
+    advance_from_next(state_def, result)
+}
+
+fn run_succeed_state(
+    name: &str,
+    state_def: &Value,
+    input: Value,
+    shared_state: &SharedStepFunctionsState,
+    execution_arn: &str,
+) -> Advance {
+    add_event(
+        shared_state,
+        execution_arn,
+        "SucceedStateEntered",
+        0,
+        json!({
+            "name": name,
+            "input": serde_json::to_string(&input).unwrap_or_default(),
+        }),
+    );
+
+    let input_path = state_def["InputPath"].as_str();
+    let output_path = state_def["OutputPath"].as_str();
+
+    let processed = if input_path == Some("null") {
+        json!({})
+    } else {
+        apply_input_path(&input, input_path)
+    };
+
+    let output = if output_path == Some("null") {
+        json!({})
+    } else {
+        apply_output_path(&processed, output_path)
+    };
+
+    add_event(
+        shared_state,
+        execution_arn,
+        "SucceedStateExited",
+        0,
+        json!({
+            "name": name,
+            "output": serde_json::to_string(&output).unwrap_or_default(),
+        }),
+    );
+
+    Advance::End(output)
+}
+
+fn run_fail_state(
+    name: &str,
+    state_def: &Value,
+    input: Value,
+    shared_state: &SharedStepFunctionsState,
+    execution_arn: &str,
+) -> Advance {
+    let error = state_def["Error"]
+        .as_str()
+        .unwrap_or("States.Fail")
+        .to_string();
+    let cause = state_def["Cause"].as_str().unwrap_or("").to_string();
+
+    add_event(
+        shared_state,
+        execution_arn,
+        "FailStateEntered",
+        0,
+        json!({
+            "name": name,
+            "input": serde_json::to_string(&input).unwrap_or_default(),
+        }),
+    );
+
+    Advance::Fail(error, cause)
+}
+
+fn run_choice_state(
+    name: &str,
+    state_def: &Value,
+    input: Value,
+    shared_state: &SharedStepFunctionsState,
+    execution_arn: &str,
+) -> Advance {
+    let entered_event_id = add_event(
+        shared_state,
+        execution_arn,
+        "ChoiceStateEntered",
+        0,
+        json!({
+            "name": name,
+            "input": serde_json::to_string(&input).unwrap_or_default(),
+        }),
+    );
+
+    let input_path = state_def["InputPath"].as_str();
+    let processed_input = if input_path == Some("null") {
+        json!({})
+    } else {
+        apply_input_path(&input, input_path)
+    };
+
+    match evaluate_choice(state_def, &processed_input) {
+        Some(next) => {
+            add_event(
+                shared_state,
+                execution_arn,
+                "ChoiceStateExited",
+                entered_event_id,
+                json!({
+                    "name": name,
+                    "output": serde_json::to_string(&input).unwrap_or_default(),
+                }),
+            );
+            Advance::Next(next, input)
+        }
+        None => Advance::Fail(
+            "States.NoChoiceMatched".to_string(),
+            format!("No choice rule matched and no Default in state '{name}'"),
+        ),
+    }
+}
+
+async fn run_wait_state(
+    name: &str,
+    state_def: &Value,
+    input: Value,
+    shared_state: &SharedStepFunctionsState,
+    execution_arn: &str,
+) -> Advance {
+    let entered_event_id = add_event(
+        shared_state,
+        execution_arn,
+        "WaitStateEntered",
+        0,
+        json!({
+            "name": name,
+            "input": serde_json::to_string(&input).unwrap_or_default(),
+        }),
+    );
+
+    execute_wait_state(state_def, &input).await;
+
+    add_event(
+        shared_state,
+        execution_arn,
+        "WaitStateExited",
+        entered_event_id,
+        json!({
+            "name": name,
+            "output": serde_json::to_string(&input).unwrap_or_default(),
+        }),
+    );
+
+    advance_from_next(state_def, input)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_task_state(
+    name: &str,
+    state_def: &Value,
+    input: Value,
+    delivery: &Option<Arc<DeliveryBus>>,
+    dynamodb_state: &Option<SharedDynamoDbState>,
+    shared_state: &SharedStepFunctionsState,
+    execution_arn: &str,
+) -> Advance {
+    let entered_event_id = add_event(
+        shared_state,
+        execution_arn,
+        "TaskStateEntered",
+        0,
+        json!({
+            "name": name,
+            "input": serde_json::to_string(&input).unwrap_or_default(),
+        }),
+    );
+
+    let result = execute_task_state(
+        state_def,
+        &input,
+        delivery,
+        dynamodb_state,
+        shared_state,
+        execution_arn,
+        entered_event_id,
+    )
+    .await;
+
+    match result {
+        Ok(output) => {
+            add_event(
+                shared_state,
+                execution_arn,
+                "TaskStateExited",
+                entered_event_id,
+                json!({
+                    "name": name,
+                    "output": serde_json::to_string(&output).unwrap_or_default(),
+                }),
+            );
+            advance_from_next(state_def, output)
+        }
+        Err((error, cause)) => advance_from_error(state_def, &input, error, cause),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_parallel_state(
+    name: &str,
+    state_def: &Value,
+    input: Value,
+    delivery: &Option<Arc<DeliveryBus>>,
+    dynamodb_state: &Option<SharedDynamoDbState>,
+    shared_state: &SharedStepFunctionsState,
+    execution_arn: &str,
+) -> Advance {
+    let entered_event_id = add_event(
+        shared_state,
+        execution_arn,
+        "ParallelStateEntered",
+        0,
+        json!({
+            "name": name,
+            "input": serde_json::to_string(&input).unwrap_or_default(),
+        }),
+    );
+
+    let result = execute_parallel_state(
+        state_def,
+        &input,
+        delivery,
+        dynamodb_state,
+        shared_state,
+        execution_arn,
+    )
+    .await;
+
+    match result {
+        Ok(output) => {
+            add_event(
+                shared_state,
+                execution_arn,
+                "ParallelStateExited",
+                entered_event_id,
+                json!({
+                    "name": name,
+                    "output": serde_json::to_string(&output).unwrap_or_default(),
+                }),
+            );
+            advance_from_next(state_def, output)
+        }
+        Err((error, cause)) => advance_from_error(state_def, &input, error, cause),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_map_state(
+    name: &str,
+    state_def: &Value,
+    input: Value,
+    delivery: &Option<Arc<DeliveryBus>>,
+    dynamodb_state: &Option<SharedDynamoDbState>,
+    shared_state: &SharedStepFunctionsState,
+    execution_arn: &str,
+) -> Advance {
+    let entered_event_id = add_event(
+        shared_state,
+        execution_arn,
+        "MapStateEntered",
+        0,
+        json!({
+            "name": name,
+            "input": serde_json::to_string(&input).unwrap_or_default(),
+        }),
+    );
+
+    let result = execute_map_state(
+        state_def,
+        &input,
+        delivery,
+        dynamodb_state,
+        shared_state,
+        execution_arn,
+    )
+    .await;
+
+    match result {
+        Ok(output) => {
+            add_event(
+                shared_state,
+                execution_arn,
+                "MapStateExited",
+                entered_event_id,
+                json!({
+                    "name": name,
+                    "output": serde_json::to_string(&output).unwrap_or_default(),
+                }),
+            );
+            advance_from_next(state_def, output)
+        }
+        Err((error, cause)) => advance_from_error(state_def, &input, error, cause),
+    }
 }
 
 /// Execute a Wait state: pause execution for a specified duration or until a timestamp.
