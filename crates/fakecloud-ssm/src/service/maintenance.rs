@@ -11,44 +11,56 @@ use crate::state::{MaintenanceWindow, MaintenanceWindowTarget, MaintenanceWindow
 
 use super::{missing, SsmService};
 
-impl SsmService {
-    pub(super) fn create_maintenance_window(
-        &self,
-        req: &AwsRequest,
-    ) -> Result<AwsResponse, AwsServiceError> {
-        let body = req.json_body();
+/// All fields of a `CreateMaintenanceWindow` request, parsed and validated.
+struct CreateMaintenanceWindowInput {
+    name: String,
+    schedule: String,
+    duration: i64,
+    cutoff: i64,
+    allow_unassociated_targets: bool,
+    description: Option<String>,
+    schedule_timezone: Option<String>,
+    schedule_offset: Option<i64>,
+    start_date: Option<String>,
+    end_date: Option<String>,
+    client_token: Option<String>,
+    tags: HashMap<String, String>,
+}
+
+impl CreateMaintenanceWindowInput {
+    fn from_body(body: &Value) -> Result<Self, AwsServiceError> {
         let name = body["Name"]
             .as_str()
             .ok_or_else(|| missing("Name"))?
             .to_string();
         validate_string_length("Name", &name, 3, 128)?;
+
         let schedule = body["Schedule"]
             .as_str()
             .ok_or_else(|| missing("Schedule"))?
             .to_string();
         validate_string_length("Schedule", &schedule, 1, 256)?;
+
         let duration = body["Duration"]
             .as_i64()
             .ok_or_else(|| missing("Duration"))?;
         validate_range_i64("Duration", duration, 1, 24)?;
+
         let cutoff = body["Cutoff"].as_i64().ok_or_else(|| missing("Cutoff"))?;
         validate_range_i64("Cutoff", cutoff, 0, 23)?;
+
         validate_required(
             "AllowUnassociatedTargets",
             &body["AllowUnassociatedTargets"],
         )?;
         let allow_unassociated_targets =
             body["AllowUnassociatedTargets"].as_bool().unwrap_or(false);
+
         validate_optional_string_length("Description", body["Description"].as_str(), 1, 128)?;
         validate_optional_string_length("ClientToken", body["ClientToken"].as_str(), 1, 64)?;
-        let description = body["Description"].as_str().map(|s| s.to_string());
-        let schedule_timezone = body["ScheduleTimezone"].as_str().map(|s| s.to_string());
         let schedule_offset = body["ScheduleOffset"].as_i64();
         validate_optional_range_i64("ScheduleOffset", schedule_offset, 1, 6)?;
-        let start_date = body["StartDate"].as_str().map(|s| s.to_string());
-        let end_date = body["EndDate"].as_str().map(|s| s.to_string());
 
-        let client_token = body["ClientToken"].as_str().map(|s| s.to_string());
         let tags: HashMap<String, String> = body["Tags"]
             .as_array()
             .map(|arr| {
@@ -62,10 +74,35 @@ impl SsmService {
             })
             .unwrap_or_default();
 
+        Ok(Self {
+            name,
+            schedule,
+            duration,
+            cutoff,
+            allow_unassociated_targets,
+            description: body["Description"].as_str().map(|s| s.to_string()),
+            schedule_timezone: body["ScheduleTimezone"].as_str().map(|s| s.to_string()),
+            schedule_offset,
+            start_date: body["StartDate"].as_str().map(|s| s.to_string()),
+            end_date: body["EndDate"].as_str().map(|s| s.to_string()),
+            client_token: body["ClientToken"].as_str().map(|s| s.to_string()),
+            tags,
+        })
+    }
+}
+
+impl SsmService {
+    pub(super) fn create_maintenance_window(
+        &self,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let input = CreateMaintenanceWindowInput::from_body(&req.json_body())?;
+
         let mut state = self.state.write();
 
-        // Idempotency: if a window with the same ClientToken already exists, return it
-        if let Some(ref token) = client_token {
+        // Idempotency: if a window with the same ClientToken already exists,
+        // hand back its id without creating a new window.
+        if let Some(ref token) = input.client_token {
             if let Some(existing) = state
                 .maintenance_windows
                 .values()
@@ -79,21 +116,21 @@ impl SsmService {
 
         let mw = MaintenanceWindow {
             id: window_id.clone(),
-            name,
-            schedule,
-            duration,
-            cutoff,
-            allow_unassociated_targets,
+            name: input.name,
+            schedule: input.schedule,
+            duration: input.duration,
+            cutoff: input.cutoff,
+            allow_unassociated_targets: input.allow_unassociated_targets,
             enabled: true,
-            description,
-            tags,
+            description: input.description,
+            tags: input.tags,
             targets: Vec::new(),
             tasks: Vec::new(),
-            schedule_timezone,
-            schedule_offset,
-            start_date,
-            end_date,
-            client_token,
+            schedule_timezone: input.schedule_timezone,
+            schedule_offset: input.schedule_offset,
+            start_date: input.start_date,
+            end_date: input.end_date,
+            client_token: input.client_token,
         };
 
         state.maintenance_windows.insert(window_id.clone(), mw);

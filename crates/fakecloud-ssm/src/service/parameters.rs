@@ -13,6 +13,34 @@ use crate::state::{SsmParameter, SsmParameterVersion};
 
 use super::{missing, SsmService, PARAMETER_VERSION_LIMIT};
 
+/// Build the JSON `Parameter` body for a historical version of `param`.
+/// `Get*Parameter*` returns the same shape whether the lookup landed on
+/// the current version or pulled an older one out of the history list,
+/// so the only thing this helper has to encode is the SecureString
+/// masking rule (mask the value when the caller did not pass
+/// `WithDecryption=true`).
+fn build_param_history_value(
+    param: &SsmParameter,
+    hist: &SsmParameterVersion,
+    with_decryption: bool,
+    region: &str,
+) -> Value {
+    let mut v = json!({
+        "Name": param.name,
+        "Type": hist.param_type,
+        "Version": hist.version,
+        "ARN": rewrite_arn_region(&param.arn, region),
+        "LastModifiedDate": hist.last_modified.timestamp_millis() as f64 / 1000.0,
+        "DataType": param.data_type,
+    });
+    if hist.param_type == "SecureString" && !with_decryption {
+        v["Value"] = json!("****");
+    } else {
+        v["Value"] = json!(hist.value);
+    }
+    v
+}
+
 /// All fields of a ``PutParameter`` request, already parsed and validated.
 struct PutParameterInput {
     name: String,
@@ -400,21 +428,8 @@ impl SsmService {
                         "Parameter": param_to_json(param, true, with_decryption, &req.region),
                     })));
                 }
-                // Look in history
                 if let Some(hist) = param.history.iter().find(|h| h.version == ver) {
-                    let mut v = json!({
-                        "Name": param.name,
-                        "Type": hist.param_type,
-                        "Version": hist.version,
-                        "ARN": rewrite_arn_region(&param.arn, &req.region),
-                        "LastModifiedDate": hist.last_modified.timestamp_millis() as f64 / 1000.0,
-                        "DataType": param.data_type,
-                    });
-                    if param.param_type == "SecureString" && !with_decryption {
-                        v["Value"] = json!("****");
-                    } else {
-                        v["Value"] = json!(hist.value);
-                    }
+                    let v = build_param_history_value(param, hist, with_decryption, &req.region);
                     return Ok(AwsResponse::ok_json(json!({ "Parameter": v })));
                 }
                 Err(AwsServiceError::aws_error(
@@ -428,7 +443,6 @@ impl SsmService {
                 ))
             }
             ParamSelector::Label(label) => {
-                // Find version with this label
                 for (ver, labels) in &param.labels {
                     if labels.contains(&label) {
                         if *ver == param.version {
@@ -437,19 +451,12 @@ impl SsmService {
                             })));
                         }
                         if let Some(hist) = param.history.iter().find(|h| h.version == *ver) {
-                            let mut v = json!({
-                                "Name": param.name,
-                                "Type": hist.param_type,
-                                "Version": hist.version,
-                                "ARN": rewrite_arn_region(&param.arn, &req.region),
-                                "LastModifiedDate": hist.last_modified.timestamp_millis() as f64 / 1000.0,
-                                "DataType": param.data_type,
-                            });
-                            if param.param_type == "SecureString" && !with_decryption {
-                                v["Value"] = json!("****");
-                            } else {
-                                v["Value"] = json!(hist.value);
-                            }
+                            let v = build_param_history_value(
+                                param,
+                                hist,
+                                with_decryption,
+                                &req.region,
+                            );
                             return Ok(AwsResponse::ok_json(json!({ "Parameter": v })));
                         }
                     }
@@ -530,20 +537,12 @@ impl SsmService {
                             } else if let Some(hist) =
                                 param.history.iter().find(|h| h.version == ver)
                             {
-                                let mut v = json!({
-                                    "Name": param.name,
-                                    "Type": hist.param_type,
-                                    "Version": hist.version,
-                                    "ARN": rewrite_arn_region(&param.arn, &req.region),
-                                    "LastModifiedDate": hist.last_modified.timestamp_millis() as f64 / 1000.0,
-                                    "DataType": param.data_type,
-                                });
-                                if hist.param_type == "SecureString" && !with_decryption {
-                                    v["Value"] = json!("****");
-                                } else {
-                                    v["Value"] = json!(hist.value);
-                                }
-                                parameters.push(v);
+                                parameters.push(build_param_history_value(
+                                    param,
+                                    hist,
+                                    with_decryption,
+                                    &req.region,
+                                ));
                             } else {
                                 invalid.push(raw_name.to_string());
                             }
@@ -566,20 +565,12 @@ impl SsmService {
                                     } else if let Some(hist) =
                                         param.history.iter().find(|h| h.version == *ver)
                                     {
-                                        let mut v = json!({
-                                            "Name": param.name,
-                                            "Type": hist.param_type,
-                                            "Version": hist.version,
-                                            "ARN": rewrite_arn_region(&param.arn, &req.region),
-                                            "LastModifiedDate": hist.last_modified.timestamp_millis() as f64 / 1000.0,
-                                            "DataType": param.data_type,
-                                        });
-                                        if hist.param_type == "SecureString" && !with_decryption {
-                                            v["Value"] = json!("****");
-                                        } else {
-                                            v["Value"] = json!(hist.value);
-                                        }
-                                        parameters.push(v);
+                                        parameters.push(build_param_history_value(
+                                            param,
+                                            hist,
+                                            with_decryption,
+                                            &req.region,
+                                        ));
                                     }
                                     found = true;
                                     break;

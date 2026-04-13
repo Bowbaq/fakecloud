@@ -12,15 +12,32 @@ use crate::state::SsmCommand;
 
 use super::{missing, SsmService};
 
-impl SsmService {
-    pub(super) fn send_command(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let body = req.json_body();
+/// All fields of a `SendCommand` request, parsed and validated.
+struct SendCommandInput {
+    document_name: String,
+    instance_ids: Vec<String>,
+    targets: Vec<Value>,
+    parameters: HashMap<String, Vec<String>>,
+    comment: Option<String>,
+    output_s3_bucket: Option<String>,
+    output_s3_prefix: Option<String>,
+    output_s3_region: Option<String>,
+    timeout: Option<i64>,
+    max_concurrency: Option<String>,
+    max_errors: Option<String>,
+    service_role: Option<String>,
+    notification: Option<Value>,
+    document_hash: Option<String>,
+    document_hash_type: Option<String>,
+}
+
+impl SendCommandInput {
+    fn from_body(body: &Value) -> Result<Self, AwsServiceError> {
         let document_name = body["DocumentName"]
             .as_str()
             .ok_or_else(|| missing("DocumentName"))?
             .to_string();
 
-        // Validate optional fields
         validate_optional_string_length("DocumentHash", body["DocumentHash"].as_str(), 0, 256)?;
         validate_optional_enum(
             "DocumentHashType",
@@ -77,79 +94,93 @@ impl SsmService {
                     .collect()
             })
             .unwrap_or_default();
-        let comment = body["Comment"].as_str().map(|s| s.to_string());
-        let output_s3_bucket = body["OutputS3BucketName"].as_str().map(|s| s.to_string());
-        let output_s3_prefix = body["OutputS3KeyPrefix"].as_str().map(|s| s.to_string());
-        let output_s3_region = body["OutputS3Region"].as_str().map(|s| s.to_string());
-        let timeout = body["TimeoutSeconds"].as_i64();
-        let max_concurrency = body["MaxConcurrency"].as_str().map(|s| s.to_string());
-        let max_errors = body["MaxErrors"].as_str().map(|s| s.to_string());
-        let service_role = body["ServiceRoleArn"].as_str().map(|s| s.to_string());
-        let notification = body.get("NotificationConfig").cloned();
-        let document_hash = body["DocumentHash"].as_str().map(|s| s.to_string());
-        let document_hash_type = body["DocumentHashType"].as_str().map(|s| s.to_string());
+
+        Ok(Self {
+            document_name,
+            instance_ids,
+            targets,
+            parameters,
+            comment: body["Comment"].as_str().map(|s| s.to_string()),
+            output_s3_bucket: body["OutputS3BucketName"].as_str().map(|s| s.to_string()),
+            output_s3_prefix: body["OutputS3KeyPrefix"].as_str().map(|s| s.to_string()),
+            output_s3_region: body["OutputS3Region"].as_str().map(|s| s.to_string()),
+            timeout: body["TimeoutSeconds"].as_i64(),
+            max_concurrency: body["MaxConcurrency"].as_str().map(|s| s.to_string()),
+            max_errors: body["MaxErrors"].as_str().map(|s| s.to_string()),
+            service_role: body["ServiceRoleArn"].as_str().map(|s| s.to_string()),
+            notification: body.get("NotificationConfig").cloned(),
+            document_hash: body["DocumentHash"].as_str().map(|s| s.to_string()),
+            document_hash_type: body["DocumentHashType"].as_str().map(|s| s.to_string()),
+        })
+    }
+}
+
+impl SsmService {
+    pub(super) fn send_command(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let input = SendCommandInput::from_body(&req.json_body())?;
 
         let command_id = uuid::Uuid::new_v4().to_string();
         let now = Utc::now();
 
-        // Resolve targets to instance IDs (for tag-based targets, just use the instance_ids)
-        let effective_instance_ids = if instance_ids.is_empty() && !targets.is_empty() {
-            // For tag-based targets, we'll simulate with some dummy instance IDs
+        // Tag-based targets are not modelled in fakecloud, so we surface a
+        // single placeholder instance for them. Direct InstanceIds requests
+        // pass through unchanged.
+        let effective_instance_ids = if input.instance_ids.is_empty() && !input.targets.is_empty() {
             vec!["i-placeholder".to_string()]
         } else {
-            instance_ids.clone()
+            input.instance_ids.clone()
         };
 
         let cmd = SsmCommand {
             command_id: command_id.clone(),
-            document_name: document_name.clone(),
+            document_name: input.document_name.clone(),
             instance_ids: effective_instance_ids.clone(),
-            parameters: parameters.clone(),
+            parameters: input.parameters.clone(),
             status: "Success".to_string(),
             requested_date_time: now,
-            comment: comment.clone(),
-            output_s3_bucket_name: output_s3_bucket.clone(),
-            output_s3_key_prefix: output_s3_prefix.clone(),
-            output_s3_region: output_s3_region.clone(),
-            timeout_seconds: timeout,
-            service_role_arn: service_role.clone(),
-            notification_config: notification.clone(),
-            targets: targets.clone(),
-            document_hash: document_hash.clone(),
-            document_hash_type: document_hash_type.clone(),
+            comment: input.comment.clone(),
+            output_s3_bucket_name: input.output_s3_bucket.clone(),
+            output_s3_key_prefix: input.output_s3_prefix.clone(),
+            output_s3_region: input.output_s3_region.clone(),
+            timeout_seconds: input.timeout,
+            service_role_arn: input.service_role.clone(),
+            notification_config: input.notification.clone(),
+            targets: input.targets.clone(),
+            document_hash: input.document_hash.clone(),
+            document_hash_type: input.document_hash_type.clone(),
         };
 
         let mut state = self.state.write();
         state.commands.push(cmd);
 
-        let expires = now + chrono::Duration::seconds(timeout.unwrap_or(3600));
+        let expires = now + chrono::Duration::seconds(input.timeout.unwrap_or(3600));
         let mut cmd_obj = json!({
             "CommandId": command_id,
-            "DocumentName": document_name,
+            "DocumentName": input.document_name,
             "InstanceIds": effective_instance_ids,
-            "Targets": targets,
-            "Parameters": parameters,
+            "Targets": input.targets,
+            "Parameters": input.parameters,
             "Status": "Success",
             "StatusDetails": "Details placeholder",
             "RequestedDateTime": now.timestamp_millis() as f64 / 1000.0,
             "ExpiresAfter": expires.timestamp_millis() as f64 / 1000.0,
-            "MaxConcurrency": max_concurrency.unwrap_or_default(),
-            "MaxErrors": max_errors.unwrap_or_default(),
+            "MaxConcurrency": input.max_concurrency.clone().unwrap_or_default(),
+            "MaxErrors": input.max_errors.clone().unwrap_or_default(),
             "DeliveryTimedOutCount": 0,
         });
-        if let Some(ref c) = comment {
+        if let Some(ref c) = input.comment {
             cmd_obj["Comment"] = json!(c);
         }
-        if let Some(ref r) = output_s3_region {
+        if let Some(ref r) = input.output_s3_region {
             cmd_obj["OutputS3Region"] = json!(r);
         }
-        if let Some(ref b) = output_s3_bucket {
+        if let Some(ref b) = input.output_s3_bucket {
             cmd_obj["OutputS3BucketName"] = json!(b);
         }
-        if let Some(ref p) = output_s3_prefix {
+        if let Some(ref p) = input.output_s3_prefix {
             cmd_obj["OutputS3KeyPrefix"] = json!(p);
         }
-        if let Some(t) = timeout {
+        if let Some(t) = input.timeout {
             cmd_obj["TimeoutSeconds"] = json!(t);
         }
 
