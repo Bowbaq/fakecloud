@@ -387,9 +387,7 @@ class BedrockClient:
         _check(resp)
         return BedrockModelResponseConfig.from_dict(resp.json())
 
-    async def clear_response_rules(
-        self, model_id: str
-    ) -> BedrockModelResponseConfig:
+    async def clear_response_rules(self, model_id: str) -> BedrockModelResponseConfig:
         """Clear all prompt-conditional response rules for a model."""
         resp = await self._client.delete(
             f"{self._base}/_fakecloud/bedrock/models/{model_id}/responses",

@@ -958,9 +958,7 @@ class BedrockFaultsResponse:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> BedrockFaultsResponse:
         return cls(
-            faults=[
-                BedrockFaultRuleState.from_dict(f) for f in data.get("faults", [])
-            ],
+            faults=[BedrockFaultRuleState.from_dict(f) for f in data.get("faults", [])],
         )
 
 

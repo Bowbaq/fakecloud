@@ -368,12 +368,8 @@ def test_bedrock_response_rules_roundtrip(
     cfg = fc.bedrock.set_response_rules(
         model_id,
         [
-            BedrockResponseRule(
-                prompt_contains="spam:", response='{"label":"spam"}'
-            ),
-            BedrockResponseRule(
-                prompt_contains=None, response='{"label":"ham"}'
-            ),
+            BedrockResponseRule(prompt_contains="spam:", response='{"label":"spam"}'),
+            BedrockResponseRule(prompt_contains=None, response='{"label":"ham"}'),
         ],
     )
     assert cfg.status == "ok"
@@ -383,9 +379,7 @@ def test_bedrock_response_rules_roundtrip(
     assert cleared.status == "ok"
 
 
-def test_bedrock_faults_roundtrip(
-    fc: FakeCloudSync, fakecloud_url: str
-) -> None:
+def test_bedrock_faults_roundtrip(fc: FakeCloudSync, fakecloud_url: str) -> None:
     queued = fc.bedrock.queue_fault(
         BedrockFaultRule(
             error_type="ThrottlingException",
