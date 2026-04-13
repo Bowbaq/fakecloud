@@ -117,454 +117,58 @@ impl SesV2Service {
     ///   PUT    /v2/email/reputation/entities/{type}/{ref}/policy          -> UpdateReputationEntityPolicy
     ///   GET    /v2/email/reputation/entities/{type}/{ref}                 -> GetReputationEntity
     ///   POST   /v2/email/metrics/batch                                   -> BatchGetMetricData
-    fn resolve_action(req: &AwsRequest) -> Option<(&str, Option<String>, Option<String>)> {
+    fn resolve_action(req: &AwsRequest) -> Option<(&'static str, Option<String>, Option<String>)> {
         let segs = &req.path_segments;
 
-        // Expect first two segments to be "v2" and "email"
         if segs.len() < 3 || segs[0] != "v2" || segs[1] != "email" {
             return None;
         }
 
-        // URL-decode the resource name (e.g. test%40example.com -> test@example.com)
-        let decode = |s: &str| {
-            percent_encoding::percent_decode_str(s)
-                .decode_utf8_lossy()
-                .into_owned()
-        };
-        let resource = segs.get(3).map(|s| decode(s));
+        let method = &req.method;
+        let resource = segs.get(3).map(|s| decode_segment(s));
+        let collection = segs[2].as_str();
 
-        match (req.method.clone(), segs.len()) {
-            // /v2/email/account
-            (Method::GET, 3) if segs[2] == "account" => Some(("GetAccount", None, None)),
-
-            // /v2/email/identities
-            (Method::POST, 3) if segs[2] == "identities" => {
-                Some(("CreateEmailIdentity", None, None))
+        match collection {
+            "account" => resolve_account_action(method, segs),
+            "identities" => resolve_identities_action(method, segs, resource),
+            "configuration-sets" => resolve_configuration_sets_action(method, segs, resource),
+            "templates" => resolve_templates_action(method, segs, resource),
+            "contact-lists" => resolve_contact_lists_action(method, segs, resource),
+            "suppression" => resolve_suppression_action(method, segs),
+            "tags" if segs.len() == 3 => match *method {
+                Method::POST => Some(("TagResource", None, None)),
+                Method::DELETE => Some(("UntagResource", None, None)),
+                Method::GET => Some(("ListTagsForResource", None, None)),
+                _ => None,
+            },
+            "outbound-emails" if segs.len() == 3 && *method == Method::POST => {
+                Some(("SendEmail", None, None))
             }
-            (Method::GET, 3) if segs[2] == "identities" => {
-                Some(("ListEmailIdentities", None, None))
-            }
-            // /v2/email/identities/{id}
-            (Method::GET, 4) if segs[2] == "identities" => {
-                Some(("GetEmailIdentity", resource, None))
-            }
-            (Method::DELETE, 4) if segs[2] == "identities" => {
-                Some(("DeleteEmailIdentity", resource, None))
-            }
-
-            // /v2/email/configuration-sets
-            (Method::POST, 3) if segs[2] == "configuration-sets" => {
-                Some(("CreateConfigurationSet", None, None))
-            }
-            (Method::GET, 3) if segs[2] == "configuration-sets" => {
-                Some(("ListConfigurationSets", None, None))
-            }
-            // /v2/email/configuration-sets/{name}
-            (Method::GET, 4) if segs[2] == "configuration-sets" => {
-                Some(("GetConfigurationSet", resource, None))
-            }
-            (Method::DELETE, 4) if segs[2] == "configuration-sets" => {
-                Some(("DeleteConfigurationSet", resource, None))
-            }
-
-            // /v2/email/templates
-            (Method::POST, 3) if segs[2] == "templates" => {
-                Some(("CreateEmailTemplate", None, None))
-            }
-            (Method::GET, 3) if segs[2] == "templates" => Some(("ListEmailTemplates", None, None)),
-            // /v2/email/templates/{name}
-            (Method::GET, 4) if segs[2] == "templates" => {
-                Some(("GetEmailTemplate", resource, None))
-            }
-            (Method::PUT, 4) if segs[2] == "templates" => {
-                Some(("UpdateEmailTemplate", resource, None))
-            }
-            (Method::DELETE, 4) if segs[2] == "templates" => {
-                Some(("DeleteEmailTemplate", resource, None))
-            }
-
-            // /v2/email/outbound-emails
-            (Method::POST, 3) if segs[2] == "outbound-emails" => Some(("SendEmail", None, None)),
-
-            // /v2/email/outbound-bulk-emails
-            (Method::POST, 3) if segs[2] == "outbound-bulk-emails" => {
+            "outbound-bulk-emails" if segs.len() == 3 && *method == Method::POST => {
                 Some(("SendBulkEmail", None, None))
             }
-
-            // /v2/email/contact-lists
-            (Method::POST, 3) if segs[2] == "contact-lists" => {
-                Some(("CreateContactList", None, None))
-            }
-            (Method::GET, 3) if segs[2] == "contact-lists" => {
-                Some(("ListContactLists", None, None))
-            }
-            // /v2/email/contact-lists/{name}
-            (Method::GET, 4) if segs[2] == "contact-lists" => {
-                Some(("GetContactList", resource, None))
-            }
-            (Method::PUT, 4) if segs[2] == "contact-lists" => {
-                Some(("UpdateContactList", resource, None))
-            }
-            (Method::DELETE, 4) if segs[2] == "contact-lists" => {
-                Some(("DeleteContactList", resource, None))
-            }
-            // /v2/email/tags
-            (Method::POST, 3) if segs[2] == "tags" => Some(("TagResource", None, None)),
-            (Method::DELETE, 3) if segs[2] == "tags" => Some(("UntagResource", None, None)),
-            (Method::GET, 3) if segs[2] == "tags" => Some(("ListTagsForResource", None, None)),
-
-            // /v2/email/contact-lists/{name}/contacts
-            (Method::POST, 5) if segs[2] == "contact-lists" && segs[4] == "contacts" => {
-                Some(("CreateContact", resource, None))
-            }
-            (Method::GET, 5) if segs[2] == "contact-lists" && segs[4] == "contacts" => {
-                Some(("ListContacts", resource, None))
-            }
-            // /v2/email/contact-lists/{name}/contacts/list (SDK sends POST for ListContacts)
-            (Method::POST, 6)
-                if segs[2] == "contact-lists" && segs[4] == "contacts" && segs[5] == "list" =>
-            {
-                Some(("ListContacts", resource, None))
-            }
-            // /v2/email/contact-lists/{name}/contacts/{email}
-            (Method::GET, 6) if segs[2] == "contact-lists" && segs[4] == "contacts" => {
-                Some(("GetContact", resource, Some(decode(&segs[5]))))
-            }
-            (Method::PUT, 6) if segs[2] == "contact-lists" && segs[4] == "contacts" => {
-                Some(("UpdateContact", resource, Some(decode(&segs[5]))))
-            }
-            (Method::DELETE, 6) if segs[2] == "contact-lists" && segs[4] == "contacts" => {
-                Some(("DeleteContact", resource, Some(decode(&segs[5]))))
-            }
-
-            // /v2/email/suppression/addresses
-            (Method::PUT, 4) if segs[2] == "suppression" && segs[3] == "addresses" => {
-                Some(("PutSuppressedDestination", None, None))
-            }
-            (Method::GET, 4) if segs[2] == "suppression" && segs[3] == "addresses" => {
-                Some(("ListSuppressedDestinations", None, None))
-            }
-            // /v2/email/suppression/addresses/{email}
-            (Method::GET, 5) if segs[2] == "suppression" && segs[3] == "addresses" => {
-                Some(("GetSuppressedDestination", Some(decode(&segs[4])), None))
-            }
-            (Method::DELETE, 5) if segs[2] == "suppression" && segs[3] == "addresses" => {
-                Some(("DeleteSuppressedDestination", Some(decode(&segs[4])), None))
-            }
-
-            // /v2/email/configuration-sets/{name}/event-destinations
-            (Method::POST, 5)
-                if segs[2] == "configuration-sets" && segs[4] == "event-destinations" =>
-            {
-                Some(("CreateConfigurationSetEventDestination", resource, None))
-            }
-            (Method::GET, 5)
-                if segs[2] == "configuration-sets" && segs[4] == "event-destinations" =>
-            {
-                Some(("GetConfigurationSetEventDestinations", resource, None))
-            }
-            // /v2/email/configuration-sets/{name}/event-destinations/{dest-name}
-            (Method::PUT, 6)
-                if segs[2] == "configuration-sets" && segs[4] == "event-destinations" =>
-            {
-                Some((
-                    "UpdateConfigurationSetEventDestination",
-                    resource,
-                    Some(decode(&segs[5])),
-                ))
-            }
-            (Method::DELETE, 6)
-                if segs[2] == "configuration-sets" && segs[4] == "event-destinations" =>
-            {
-                Some((
-                    "DeleteConfigurationSetEventDestination",
-                    resource,
-                    Some(decode(&segs[5])),
-                ))
-            }
-
-            // /v2/email/identities/{id}/policies
-            (Method::GET, 5) if segs[2] == "identities" && segs[4] == "policies" => {
-                Some(("GetEmailIdentityPolicies", resource, None))
-            }
-            // /v2/email/identities/{id}/policies/{policy-name}
-            (Method::POST, 6) if segs[2] == "identities" && segs[4] == "policies" => Some((
-                "CreateEmailIdentityPolicy",
-                resource,
-                Some(decode(&segs[5])),
-            )),
-            (Method::PUT, 6) if segs[2] == "identities" && segs[4] == "policies" => Some((
-                "UpdateEmailIdentityPolicy",
-                resource,
-                Some(decode(&segs[5])),
-            )),
-            (Method::DELETE, 6) if segs[2] == "identities" && segs[4] == "policies" => Some((
-                "DeleteEmailIdentityPolicy",
-                resource,
-                Some(decode(&segs[5])),
-            )),
-
-            // /v2/email/identities/{id}/dkim/signing (6 segments, must come before dkim at 5)
-            (Method::PUT, 6)
-                if segs[2] == "identities" && segs[4] == "dkim" && segs[5] == "signing" =>
-            {
-                Some(("PutEmailIdentityDkimSigningAttributes", resource, None))
-            }
-
-            // /v2/email/identities/{id}/dkim
-            (Method::PUT, 5) if segs[2] == "identities" && segs[4] == "dkim" => {
-                Some(("PutEmailIdentityDkimAttributes", resource, None))
-            }
-            // /v2/email/identities/{id}/feedback
-            (Method::PUT, 5) if segs[2] == "identities" && segs[4] == "feedback" => {
-                Some(("PutEmailIdentityFeedbackAttributes", resource, None))
-            }
-            // /v2/email/identities/{id}/mail-from
-            (Method::PUT, 5) if segs[2] == "identities" && segs[4] == "mail-from" => {
-                Some(("PutEmailIdentityMailFromAttributes", resource, None))
-            }
-            // /v2/email/identities/{id}/configuration-set
-            (Method::PUT, 5) if segs[2] == "identities" && segs[4] == "configuration-set" => {
-                Some(("PutEmailIdentityConfigurationSetAttributes", resource, None))
-            }
-
-            // /v2/email/configuration-sets/{name}/sending
-            (Method::PUT, 5) if segs[2] == "configuration-sets" && segs[4] == "sending" => {
-                Some(("PutConfigurationSetSendingOptions", resource, None))
-            }
-            // /v2/email/configuration-sets/{name}/delivery-options
-            (Method::PUT, 5)
-                if segs[2] == "configuration-sets" && segs[4] == "delivery-options" =>
-            {
-                Some(("PutConfigurationSetDeliveryOptions", resource, None))
-            }
-            // /v2/email/configuration-sets/{name}/tracking-options
-            (Method::PUT, 5)
-                if segs[2] == "configuration-sets" && segs[4] == "tracking-options" =>
-            {
-                Some(("PutConfigurationSetTrackingOptions", resource, None))
-            }
-            // /v2/email/configuration-sets/{name}/suppression-options
-            (Method::PUT, 5)
-                if segs[2] == "configuration-sets" && segs[4] == "suppression-options" =>
-            {
-                Some(("PutConfigurationSetSuppressionOptions", resource, None))
-            }
-            // /v2/email/configuration-sets/{name}/reputation-options
-            (Method::PUT, 5)
-                if segs[2] == "configuration-sets" && segs[4] == "reputation-options" =>
-            {
-                Some(("PutConfigurationSetReputationOptions", resource, None))
-            }
-            // /v2/email/configuration-sets/{name}/vdm-options
-            (Method::PUT, 5) if segs[2] == "configuration-sets" && segs[4] == "vdm-options" => {
-                Some(("PutConfigurationSetVdmOptions", resource, None))
-            }
-            // /v2/email/configuration-sets/{name}/archiving-options
-            (Method::PUT, 5)
-                if segs[2] == "configuration-sets" && segs[4] == "archiving-options" =>
-            {
-                Some(("PutConfigurationSetArchivingOptions", resource, None))
-            }
-
-            // /v2/email/custom-verification-email-templates
-            (Method::POST, 3) if segs[2] == "custom-verification-email-templates" => {
-                Some(("CreateCustomVerificationEmailTemplate", None, None))
-            }
-            (Method::GET, 3) if segs[2] == "custom-verification-email-templates" => {
-                Some(("ListCustomVerificationEmailTemplates", None, None))
-            }
-            // /v2/email/custom-verification-email-templates/{name}
-            (Method::GET, 4) if segs[2] == "custom-verification-email-templates" => {
-                Some(("GetCustomVerificationEmailTemplate", resource, None))
-            }
-            (Method::PUT, 4) if segs[2] == "custom-verification-email-templates" => {
-                Some(("UpdateCustomVerificationEmailTemplate", resource, None))
-            }
-            (Method::DELETE, 4) if segs[2] == "custom-verification-email-templates" => {
-                Some(("DeleteCustomVerificationEmailTemplate", resource, None))
-            }
-
-            // /v2/email/outbound-custom-verification-emails
-            (Method::POST, 3) if segs[2] == "outbound-custom-verification-emails" => {
+            "outbound-custom-verification-emails" if segs.len() == 3 && *method == Method::POST => {
                 Some(("SendCustomVerificationEmail", None, None))
             }
-
-            // /v2/email/templates/{name}/render
-            (Method::POST, 5) if segs[2] == "templates" && segs[4] == "render" => {
-                Some(("TestRenderEmailTemplate", resource, None))
+            "custom-verification-email-templates" => {
+                resolve_custom_verification_template_action(method, segs, resource)
             }
-
-            // /v2/email/dedicated-ip-pools
-            (Method::POST, 3) if segs[2] == "dedicated-ip-pools" => {
-                Some(("CreateDedicatedIpPool", None, None))
+            "dedicated-ip-pools" => resolve_dedicated_ip_pools_action(method, segs, resource),
+            "dedicated-ips" => resolve_dedicated_ips_action(method, segs, resource),
+            "multi-region-endpoints" => {
+                resolve_multi_region_endpoints_action(method, segs, resource)
             }
-            (Method::GET, 3) if segs[2] == "dedicated-ip-pools" => {
-                Some(("ListDedicatedIpPools", None, None))
-            }
-            // /v2/email/dedicated-ip-pools/{name}
-            (Method::DELETE, 4) if segs[2] == "dedicated-ip-pools" => {
-                Some(("DeleteDedicatedIpPool", resource, None))
-            }
-            // Note: GetDedicatedIpPool is not in scope but the SDK may hit it via
-            // the dedicated-ip-pools/{name} GET path — we route to a pool-level getter.
-
-            // /v2/email/dedicated-ip-pools/{name}/scaling
-            (Method::PUT, 5) if segs[2] == "dedicated-ip-pools" && segs[4] == "scaling" => {
-                Some(("PutDedicatedIpPoolScalingAttributes", resource, None))
-            }
-
-            // /v2/email/dedicated-ips
-            (Method::GET, 3) if segs[2] == "dedicated-ips" => Some(("GetDedicatedIps", None, None)),
-            // /v2/email/dedicated-ips/{ip}/pool (5 segments, must come before 4-segment match)
-            (Method::PUT, 5) if segs[2] == "dedicated-ips" && segs[4] == "pool" => {
-                Some(("PutDedicatedIpInPool", resource, None))
-            }
-            // /v2/email/dedicated-ips/{ip}/warmup
-            (Method::PUT, 5) if segs[2] == "dedicated-ips" && segs[4] == "warmup" => {
-                Some(("PutDedicatedIpWarmupAttributes", resource, None))
-            }
-            // /v2/email/dedicated-ips/{ip}
-            (Method::GET, 4) if segs[2] == "dedicated-ips" => {
-                Some(("GetDedicatedIp", resource, None))
-            }
-
-            // /v2/email/account/dedicated-ips/warmup
-            (Method::PUT, 5)
-                if segs[2] == "account" && segs[3] == "dedicated-ips" && segs[4] == "warmup" =>
-            {
-                Some(("PutAccountDedicatedIpWarmupAttributes", None, None))
-            }
-
-            // /v2/email/account/details
-            (Method::POST, 4) if segs[2] == "account" && segs[3] == "details" => {
-                Some(("PutAccountDetails", None, None))
-            }
-            // /v2/email/account/sending
-            (Method::PUT, 4) if segs[2] == "account" && segs[3] == "sending" => {
-                Some(("PutAccountSendingAttributes", None, None))
-            }
-            // /v2/email/account/suppression
-            (Method::PUT, 4) if segs[2] == "account" && segs[3] == "suppression" => {
-                Some(("PutAccountSuppressionAttributes", None, None))
-            }
-            // /v2/email/account/vdm
-            (Method::PUT, 4) if segs[2] == "account" && segs[3] == "vdm" => {
-                Some(("PutAccountVdmAttributes", None, None))
-            }
-
-            // /v2/email/multi-region-endpoints
-            (Method::POST, 3) if segs[2] == "multi-region-endpoints" => {
-                Some(("CreateMultiRegionEndpoint", None, None))
-            }
-            (Method::GET, 3) if segs[2] == "multi-region-endpoints" => {
-                Some(("ListMultiRegionEndpoints", None, None))
-            }
-            // /v2/email/multi-region-endpoints/{name}
-            (Method::GET, 4) if segs[2] == "multi-region-endpoints" => {
-                Some(("GetMultiRegionEndpoint", resource, None))
-            }
-            (Method::DELETE, 4) if segs[2] == "multi-region-endpoints" => {
-                Some(("DeleteMultiRegionEndpoint", resource, None))
-            }
-
-            // /v2/email/import-jobs
-            (Method::POST, 3) if segs[2] == "import-jobs" => Some(("CreateImportJob", None, None)),
-            // /v2/email/import-jobs/list (SDK sends POST for ListImportJobs)
-            (Method::POST, 4) if segs[2] == "import-jobs" && segs[3] == "list" => {
-                Some(("ListImportJobs", None, None))
-            }
-            // /v2/email/import-jobs/{id}
-            (Method::GET, 4) if segs[2] == "import-jobs" => Some(("GetImportJob", resource, None)),
-
-            // /v2/email/export-jobs
-            (Method::POST, 3) if segs[2] == "export-jobs" => Some(("CreateExportJob", None, None)),
-            // /v2/email/list-export-jobs (SDK sends POST for ListExportJobs)
-            (Method::POST, 3) if segs[2] == "list-export-jobs" => {
+            "import-jobs" => resolve_import_jobs_action(method, segs, resource),
+            "export-jobs" => resolve_export_jobs_action(method, segs, resource),
+            "list-export-jobs" if segs.len() == 3 && *method == Method::POST => {
                 Some(("ListExportJobs", None, None))
             }
-            // /v2/email/export-jobs/{id}/cancel
-            (Method::PUT, 5) if segs[2] == "export-jobs" && segs[4] == "cancel" => {
-                Some(("CancelExportJob", resource, None))
-            }
-            // /v2/email/export-jobs/{id}
-            (Method::GET, 4) if segs[2] == "export-jobs" => Some(("GetExportJob", resource, None)),
-
-            // /v2/email/tenants
-            (Method::POST, 3) if segs[2] == "tenants" => Some(("CreateTenant", None, None)),
-            // /v2/email/tenants/list
-            (Method::POST, 4) if segs[2] == "tenants" && segs[3] == "list" => {
-                Some(("ListTenants", None, None))
-            }
-            // /v2/email/tenants/get
-            (Method::POST, 4) if segs[2] == "tenants" && segs[3] == "get" => {
-                Some(("GetTenant", None, None))
-            }
-            // /v2/email/tenants/delete
-            (Method::POST, 4) if segs[2] == "tenants" && segs[3] == "delete" => {
-                Some(("DeleteTenant", None, None))
-            }
-            // /v2/email/tenants/resources (CreateTenantResourceAssociation)
-            (Method::POST, 4) if segs[2] == "tenants" && segs[3] == "resources" => {
-                Some(("CreateTenantResourceAssociation", None, None))
-            }
-            // /v2/email/tenants/resources/delete (DeleteTenantResourceAssociation)
-            (Method::POST, 5)
-                if segs[2] == "tenants" && segs[3] == "resources" && segs[4] == "delete" =>
-            {
-                Some(("DeleteTenantResourceAssociation", None, None))
-            }
-            // /v2/email/tenants/resources/list (ListTenantResources)
-            (Method::POST, 5)
-                if segs[2] == "tenants" && segs[3] == "resources" && segs[4] == "list" =>
-            {
-                Some(("ListTenantResources", None, None))
-            }
-            // /v2/email/resources/tenants/list (ListResourceTenants)
-            (Method::POST, 5)
-                if segs[2] == "resources" && segs[3] == "tenants" && segs[4] == "list" =>
-            {
-                Some(("ListResourceTenants", None, None))
-            }
-
-            // /v2/email/reputation/entities (ListReputationEntities)
-            (Method::POST, 4) if segs[2] == "reputation" && segs[3] == "entities" => {
-                Some(("ListReputationEntities", None, None))
-            }
-            // /v2/email/reputation/entities/{type}/{ref}/customer-managed-status
-            (Method::PUT, 7)
-                if segs[2] == "reputation"
-                    && segs[3] == "entities"
-                    && segs[6] == "customer-managed-status" =>
-            {
-                Some((
-                    "UpdateReputationEntityCustomerManagedStatus",
-                    Some(decode(&segs[4])),
-                    Some(decode(&segs[5])),
-                ))
-            }
-            // /v2/email/reputation/entities/{type}/{ref}/policy
-            (Method::PUT, 7)
-                if segs[2] == "reputation" && segs[3] == "entities" && segs[6] == "policy" =>
-            {
-                Some((
-                    "UpdateReputationEntityPolicy",
-                    Some(decode(&segs[4])),
-                    Some(decode(&segs[5])),
-                ))
-            }
-            // /v2/email/reputation/entities/{type}/{ref}
-            (Method::GET, 6) if segs[2] == "reputation" && segs[3] == "entities" => Some((
-                "GetReputationEntity",
-                Some(decode(&segs[4])),
-                Some(decode(&segs[5])),
-            )),
-
-            // /v2/email/metrics/batch
-            (Method::POST, 4) if segs[2] == "metrics" && segs[3] == "batch" => {
+            "tenants" => resolve_tenants_action(method, segs),
+            "resources" => resolve_resources_action(method, segs),
+            "reputation" => resolve_reputation_action(method, segs),
+            "metrics" if segs.len() == 4 && segs[3] == "batch" && *method == Method::POST => {
                 Some(("BatchGetMetricData", None, None))
             }
-
             _ => None,
         }
     }
@@ -585,6 +189,340 @@ impl SesV2Service {
             "message": message,
         });
         AwsResponse::json(status, body.to_string())
+    }
+}
+
+/// URL-decode a path segment (e.g. `test%40example.com` -> `test@example.com`).
+fn decode_segment(s: &str) -> String {
+    percent_encoding::percent_decode_str(s)
+        .decode_utf8_lossy()
+        .into_owned()
+}
+
+type ResolvedAction = Option<(&'static str, Option<String>, Option<String>)>;
+
+fn resolve_account_action(method: &Method, segs: &[String]) -> ResolvedAction {
+    match (method, segs.len()) {
+        (&Method::GET, 3) => Some(("GetAccount", None, None)),
+        (&Method::POST, 4) if segs[3] == "details" => Some(("PutAccountDetails", None, None)),
+        (&Method::PUT, 4) if segs[3] == "sending" => {
+            Some(("PutAccountSendingAttributes", None, None))
+        }
+        (&Method::PUT, 4) if segs[3] == "suppression" => {
+            Some(("PutAccountSuppressionAttributes", None, None))
+        }
+        (&Method::PUT, 4) if segs[3] == "vdm" => Some(("PutAccountVdmAttributes", None, None)),
+        (&Method::PUT, 5) if segs[3] == "dedicated-ips" && segs[4] == "warmup" => {
+            Some(("PutAccountDedicatedIpWarmupAttributes", None, None))
+        }
+        _ => None,
+    }
+}
+
+fn resolve_identities_action(
+    method: &Method,
+    segs: &[String],
+    resource: Option<String>,
+) -> ResolvedAction {
+    match (method, segs.len()) {
+        (&Method::POST, 3) => Some(("CreateEmailIdentity", None, None)),
+        (&Method::GET, 3) => Some(("ListEmailIdentities", None, None)),
+        (&Method::GET, 4) => Some(("GetEmailIdentity", resource, None)),
+        (&Method::DELETE, 4) => Some(("DeleteEmailIdentity", resource, None)),
+        (&Method::PUT, 5) if segs[4] == "dkim" => {
+            Some(("PutEmailIdentityDkimAttributes", resource, None))
+        }
+        (&Method::PUT, 5) if segs[4] == "feedback" => {
+            Some(("PutEmailIdentityFeedbackAttributes", resource, None))
+        }
+        (&Method::PUT, 5) if segs[4] == "mail-from" => {
+            Some(("PutEmailIdentityMailFromAttributes", resource, None))
+        }
+        (&Method::PUT, 5) if segs[4] == "configuration-set" => {
+            Some(("PutEmailIdentityConfigurationSetAttributes", resource, None))
+        }
+        (&Method::GET, 5) if segs[4] == "policies" => {
+            Some(("GetEmailIdentityPolicies", resource, None))
+        }
+        (&Method::PUT, 6) if segs[4] == "dkim" && segs[5] == "signing" => {
+            Some(("PutEmailIdentityDkimSigningAttributes", resource, None))
+        }
+        (&Method::POST, 6) if segs[4] == "policies" => Some((
+            "CreateEmailIdentityPolicy",
+            resource,
+            Some(decode_segment(&segs[5])),
+        )),
+        (&Method::PUT, 6) if segs[4] == "policies" => Some((
+            "UpdateEmailIdentityPolicy",
+            resource,
+            Some(decode_segment(&segs[5])),
+        )),
+        (&Method::DELETE, 6) if segs[4] == "policies" => Some((
+            "DeleteEmailIdentityPolicy",
+            resource,
+            Some(decode_segment(&segs[5])),
+        )),
+        _ => None,
+    }
+}
+
+fn resolve_configuration_sets_action(
+    method: &Method,
+    segs: &[String],
+    resource: Option<String>,
+) -> ResolvedAction {
+    match (method, segs.len()) {
+        (&Method::POST, 3) => Some(("CreateConfigurationSet", None, None)),
+        (&Method::GET, 3) => Some(("ListConfigurationSets", None, None)),
+        (&Method::GET, 4) => Some(("GetConfigurationSet", resource, None)),
+        (&Method::DELETE, 4) => Some(("DeleteConfigurationSet", resource, None)),
+        (&Method::POST, 5) if segs[4] == "event-destinations" => {
+            Some(("CreateConfigurationSetEventDestination", resource, None))
+        }
+        (&Method::GET, 5) if segs[4] == "event-destinations" => {
+            Some(("GetConfigurationSetEventDestinations", resource, None))
+        }
+        (&Method::PUT, 5) if segs[4] == "sending" => {
+            Some(("PutConfigurationSetSendingOptions", resource, None))
+        }
+        (&Method::PUT, 5) if segs[4] == "delivery-options" => {
+            Some(("PutConfigurationSetDeliveryOptions", resource, None))
+        }
+        (&Method::PUT, 5) if segs[4] == "tracking-options" => {
+            Some(("PutConfigurationSetTrackingOptions", resource, None))
+        }
+        (&Method::PUT, 5) if segs[4] == "suppression-options" => {
+            Some(("PutConfigurationSetSuppressionOptions", resource, None))
+        }
+        (&Method::PUT, 5) if segs[4] == "reputation-options" => {
+            Some(("PutConfigurationSetReputationOptions", resource, None))
+        }
+        (&Method::PUT, 5) if segs[4] == "vdm-options" => {
+            Some(("PutConfigurationSetVdmOptions", resource, None))
+        }
+        (&Method::PUT, 5) if segs[4] == "archiving-options" => {
+            Some(("PutConfigurationSetArchivingOptions", resource, None))
+        }
+        (&Method::PUT, 6) if segs[4] == "event-destinations" => Some((
+            "UpdateConfigurationSetEventDestination",
+            resource,
+            Some(decode_segment(&segs[5])),
+        )),
+        (&Method::DELETE, 6) if segs[4] == "event-destinations" => Some((
+            "DeleteConfigurationSetEventDestination",
+            resource,
+            Some(decode_segment(&segs[5])),
+        )),
+        _ => None,
+    }
+}
+
+fn resolve_templates_action(
+    method: &Method,
+    segs: &[String],
+    resource: Option<String>,
+) -> ResolvedAction {
+    match (method, segs.len()) {
+        (&Method::POST, 3) => Some(("CreateEmailTemplate", None, None)),
+        (&Method::GET, 3) => Some(("ListEmailTemplates", None, None)),
+        (&Method::GET, 4) => Some(("GetEmailTemplate", resource, None)),
+        (&Method::PUT, 4) => Some(("UpdateEmailTemplate", resource, None)),
+        (&Method::DELETE, 4) => Some(("DeleteEmailTemplate", resource, None)),
+        (&Method::POST, 5) if segs[4] == "render" => {
+            Some(("TestRenderEmailTemplate", resource, None))
+        }
+        _ => None,
+    }
+}
+
+fn resolve_contact_lists_action(
+    method: &Method,
+    segs: &[String],
+    resource: Option<String>,
+) -> ResolvedAction {
+    match (method, segs.len()) {
+        (&Method::POST, 3) => Some(("CreateContactList", None, None)),
+        (&Method::GET, 3) => Some(("ListContactLists", None, None)),
+        (&Method::GET, 4) => Some(("GetContactList", resource, None)),
+        (&Method::PUT, 4) => Some(("UpdateContactList", resource, None)),
+        (&Method::DELETE, 4) => Some(("DeleteContactList", resource, None)),
+        (&Method::POST, 5) if segs[4] == "contacts" => Some(("CreateContact", resource, None)),
+        (&Method::GET, 5) if segs[4] == "contacts" => Some(("ListContacts", resource, None)),
+        // SDK sends POST .../contacts/list for ListContacts
+        (&Method::POST, 6) if segs[4] == "contacts" && segs[5] == "list" => {
+            Some(("ListContacts", resource, None))
+        }
+        (&Method::GET, 6) if segs[4] == "contacts" => {
+            Some(("GetContact", resource, Some(decode_segment(&segs[5]))))
+        }
+        (&Method::PUT, 6) if segs[4] == "contacts" => {
+            Some(("UpdateContact", resource, Some(decode_segment(&segs[5]))))
+        }
+        (&Method::DELETE, 6) if segs[4] == "contacts" => {
+            Some(("DeleteContact", resource, Some(decode_segment(&segs[5]))))
+        }
+        _ => None,
+    }
+}
+
+fn resolve_suppression_action(method: &Method, segs: &[String]) -> ResolvedAction {
+    if segs.get(3).map(|s| s.as_str()) != Some("addresses") {
+        return None;
+    }
+    match (method, segs.len()) {
+        (&Method::PUT, 4) => Some(("PutSuppressedDestination", None, None)),
+        (&Method::GET, 4) => Some(("ListSuppressedDestinations", None, None)),
+        (&Method::GET, 5) => Some((
+            "GetSuppressedDestination",
+            Some(decode_segment(&segs[4])),
+            None,
+        )),
+        (&Method::DELETE, 5) => Some((
+            "DeleteSuppressedDestination",
+            Some(decode_segment(&segs[4])),
+            None,
+        )),
+        _ => None,
+    }
+}
+
+fn resolve_custom_verification_template_action(
+    method: &Method,
+    segs: &[String],
+    resource: Option<String>,
+) -> ResolvedAction {
+    match (method, segs.len()) {
+        (&Method::POST, 3) => Some(("CreateCustomVerificationEmailTemplate", None, None)),
+        (&Method::GET, 3) => Some(("ListCustomVerificationEmailTemplates", None, None)),
+        (&Method::GET, 4) => Some(("GetCustomVerificationEmailTemplate", resource, None)),
+        (&Method::PUT, 4) => Some(("UpdateCustomVerificationEmailTemplate", resource, None)),
+        (&Method::DELETE, 4) => Some(("DeleteCustomVerificationEmailTemplate", resource, None)),
+        _ => None,
+    }
+}
+
+fn resolve_dedicated_ip_pools_action(
+    method: &Method,
+    segs: &[String],
+    resource: Option<String>,
+) -> ResolvedAction {
+    match (method, segs.len()) {
+        (&Method::POST, 3) => Some(("CreateDedicatedIpPool", None, None)),
+        (&Method::GET, 3) => Some(("ListDedicatedIpPools", None, None)),
+        (&Method::DELETE, 4) => Some(("DeleteDedicatedIpPool", resource, None)),
+        (&Method::PUT, 5) if segs[4] == "scaling" => {
+            Some(("PutDedicatedIpPoolScalingAttributes", resource, None))
+        }
+        _ => None,
+    }
+}
+
+fn resolve_dedicated_ips_action(
+    method: &Method,
+    segs: &[String],
+    resource: Option<String>,
+) -> ResolvedAction {
+    match (method, segs.len()) {
+        (&Method::GET, 3) => Some(("GetDedicatedIps", None, None)),
+        (&Method::GET, 4) => Some(("GetDedicatedIp", resource, None)),
+        (&Method::PUT, 5) if segs[4] == "pool" => Some(("PutDedicatedIpInPool", resource, None)),
+        (&Method::PUT, 5) if segs[4] == "warmup" => {
+            Some(("PutDedicatedIpWarmupAttributes", resource, None))
+        }
+        _ => None,
+    }
+}
+
+fn resolve_multi_region_endpoints_action(
+    method: &Method,
+    segs: &[String],
+    resource: Option<String>,
+) -> ResolvedAction {
+    match (method, segs.len()) {
+        (&Method::POST, 3) => Some(("CreateMultiRegionEndpoint", None, None)),
+        (&Method::GET, 3) => Some(("ListMultiRegionEndpoints", None, None)),
+        (&Method::GET, 4) => Some(("GetMultiRegionEndpoint", resource, None)),
+        (&Method::DELETE, 4) => Some(("DeleteMultiRegionEndpoint", resource, None)),
+        _ => None,
+    }
+}
+
+fn resolve_import_jobs_action(
+    method: &Method,
+    segs: &[String],
+    resource: Option<String>,
+) -> ResolvedAction {
+    match (method, segs.len()) {
+        (&Method::POST, 3) => Some(("CreateImportJob", None, None)),
+        (&Method::POST, 4) if segs[3] == "list" => Some(("ListImportJobs", None, None)),
+        (&Method::GET, 4) => Some(("GetImportJob", resource, None)),
+        _ => None,
+    }
+}
+
+fn resolve_export_jobs_action(
+    method: &Method,
+    segs: &[String],
+    resource: Option<String>,
+) -> ResolvedAction {
+    match (method, segs.len()) {
+        (&Method::POST, 3) => Some(("CreateExportJob", None, None)),
+        (&Method::GET, 4) => Some(("GetExportJob", resource, None)),
+        (&Method::PUT, 5) if segs[4] == "cancel" => Some(("CancelExportJob", resource, None)),
+        _ => None,
+    }
+}
+
+fn resolve_tenants_action(method: &Method, segs: &[String]) -> ResolvedAction {
+    match (method, segs.len()) {
+        (&Method::POST, 3) => Some(("CreateTenant", None, None)),
+        (&Method::POST, 4) if segs[3] == "list" => Some(("ListTenants", None, None)),
+        (&Method::POST, 4) if segs[3] == "get" => Some(("GetTenant", None, None)),
+        (&Method::POST, 4) if segs[3] == "delete" => Some(("DeleteTenant", None, None)),
+        (&Method::POST, 4) if segs[3] == "resources" => {
+            Some(("CreateTenantResourceAssociation", None, None))
+        }
+        (&Method::POST, 5) if segs[3] == "resources" && segs[4] == "delete" => {
+            Some(("DeleteTenantResourceAssociation", None, None))
+        }
+        (&Method::POST, 5) if segs[3] == "resources" && segs[4] == "list" => {
+            Some(("ListTenantResources", None, None))
+        }
+        _ => None,
+    }
+}
+
+fn resolve_resources_action(method: &Method, segs: &[String]) -> ResolvedAction {
+    match (method, segs.len()) {
+        (&Method::POST, 5) if segs[3] == "tenants" && segs[4] == "list" => {
+            Some(("ListResourceTenants", None, None))
+        }
+        _ => None,
+    }
+}
+
+fn resolve_reputation_action(method: &Method, segs: &[String]) -> ResolvedAction {
+    if segs.get(3).map(|s| s.as_str()) != Some("entities") {
+        return None;
+    }
+    match (method, segs.len()) {
+        (&Method::POST, 4) => Some(("ListReputationEntities", None, None)),
+        (&Method::GET, 6) => Some((
+            "GetReputationEntity",
+            Some(decode_segment(&segs[4])),
+            Some(decode_segment(&segs[5])),
+        )),
+        (&Method::PUT, 7) if segs[6] == "customer-managed-status" => Some((
+            "UpdateReputationEntityCustomerManagedStatus",
+            Some(decode_segment(&segs[4])),
+            Some(decode_segment(&segs[5])),
+        )),
+        (&Method::PUT, 7) if segs[6] == "policy" => Some((
+            "UpdateReputationEntityPolicy",
+            Some(decode_segment(&segs[4])),
+            Some(decode_segment(&segs[5])),
+        )),
+        _ => None,
     }
 }
 
