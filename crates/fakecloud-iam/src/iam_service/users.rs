@@ -487,19 +487,19 @@ impl IamService {
             .unwrap_or_else(|| resolve_calling_user(&self.state.read(), &req.account_id));
         let access_key_id = required_param(&req.query_params, "AccessKeyId")?;
         validate_string_length("accessKeyId", &access_key_id, 16, 128)?;
-        let mut state = self.state.write();
 
-        if let Some(keys) = state.access_keys.get_mut(&user_name) {
-            let len_before = keys.len();
-            keys.retain(|k| k.access_key_id != access_key_id);
-            if keys.len() == len_before {
-                return Err(AwsServiceError::aws_error(
-                    StatusCode::NOT_FOUND,
-                    "NoSuchEntity",
-                    format!("The Access Key with id {access_key_id} cannot be found."),
-                ));
-            }
-        } else {
+        let mut state = self.state.write();
+        let removed = state
+            .access_keys
+            .get_mut(&user_name)
+            .map(|keys| {
+                let len_before = keys.len();
+                keys.retain(|k| k.access_key_id != access_key_id);
+                keys.len() < len_before
+            })
+            .unwrap_or(false);
+
+        if !removed {
             return Err(AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
                 "NoSuchEntity",
