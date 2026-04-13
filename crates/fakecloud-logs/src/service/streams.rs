@@ -491,86 +491,16 @@ impl LogsService {
 
         drop(state);
 
-        // Deliver to subscription filter destinations
         if !filters_to_deliver.is_empty() && !accepted_events.is_empty() {
             for (filter_name, filter_pattern, destination_arn) in &filters_to_deliver {
-                let matching_events: Vec<&LogEvent> = accepted_events
-                    .iter()
-                    .filter(|e| matches_filter_pattern(filter_pattern, &e.message))
-                    .collect();
-
-                if matching_events.is_empty() {
-                    continue;
-                }
-
-                let log_events_json: Vec<Value> = matching_events
-                    .iter()
-                    .enumerate()
-                    .map(|(i, e)| {
-                        json!({
-                            "id": format!("{:032}", i),
-                            "timestamp": e.timestamp,
-                            "message": e.message,
-                        })
-                    })
-                    .collect();
-
-                let payload = json!({
-                    "messageType": "DATA_MESSAGE",
-                    "owner": "123456789012",
-                    "logGroup": group_name_owned,
-                    "logStream": stream_name_owned,
-                    "subscriptionFilters": [filter_name],
-                    "logEvents": log_events_json,
-                });
-
-                let payload_str = serde_json::to_string(&payload).unwrap();
-                let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-                encoder.write_all(payload_str.as_bytes()).unwrap();
-                let compressed = encoder.finish().unwrap();
-                let encoded = base64::engine::general_purpose::STANDARD.encode(&compressed);
-
-                // Route to the appropriate destination based on ARN
-                if destination_arn.contains(":sqs:") {
-                    self.delivery_bus
-                        .send_to_sqs(destination_arn, &encoded, &HashMap::new());
-                } else if destination_arn.contains(":lambda:") {
-                    // Lambda subscriptions receive the gzipped+base64 data in a special event format
-                    let lambda_event = json!({
-                        "awslogs": {
-                            "data": encoded,
-                        }
-                    });
-                    let lambda_payload = serde_json::to_string(&lambda_event).unwrap();
-                    tokio::spawn({
-                        let bus = self.delivery_bus.clone();
-                        let arn = destination_arn.clone();
-                        async move {
-                            if let Some(result) = bus.invoke_lambda(&arn, &lambda_payload).await {
-                                match result {
-                                    Ok(_) => {
-                                        tracing::debug!(
-                                            function_arn = %arn,
-                                            "CloudWatch Logs -> Lambda subscription delivered"
-                                        );
-                                    }
-                                    Err(e) => {
-                                        tracing::error!(
-                                            function_arn = %arn,
-                                            error = %e,
-                                            "CloudWatch Logs -> Lambda subscription failed"
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    });
-                } else if destination_arn.contains(":kinesis:") {
-                    // Kinesis subscriptions receive the gzipped+base64 data as the record data
-                    let partition_key = format!("{}-{}", group_name_owned, stream_name_owned);
-                    self.delivery_bus
-                        .send_to_kinesis(destination_arn, &encoded, &partition_key);
-                }
+                self.deliver_to_subscription_filter(
+                    filter_name,
+                    filter_pattern,
+                    destination_arn,
+                    &group_name_owned,
+                    &stream_name_owned,
+                    &accepted_events,
+                );
             }
         }
 
@@ -585,6 +515,96 @@ impl LogsService {
             StatusCode::OK,
             serde_json::to_string(&response).unwrap(),
         ))
+    }
+
+    /// Apply a subscription filter's pattern to a batch of accepted log
+    /// events and deliver the matches to the filter's destination ARN.
+    /// CloudWatch wraps the matches in the documented DATA_MESSAGE
+    /// envelope, gzip-compresses it, and base64-encodes the result;
+    /// every destination flavour (SQS, Lambda, Kinesis) consumes that
+    /// same payload but expects a different wire shape.
+    fn deliver_to_subscription_filter(
+        &self,
+        filter_name: &str,
+        filter_pattern: &str,
+        destination_arn: &str,
+        group_name: &str,
+        stream_name: &str,
+        accepted_events: &[LogEvent],
+    ) {
+        let matching_events: Vec<&LogEvent> = accepted_events
+            .iter()
+            .filter(|e| matches_filter_pattern(filter_pattern, &e.message))
+            .collect();
+        if matching_events.is_empty() {
+            return;
+        }
+
+        let log_events_json: Vec<Value> = matching_events
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                json!({
+                    "id": format!("{:032}", i),
+                    "timestamp": e.timestamp,
+                    "message": e.message,
+                })
+            })
+            .collect();
+
+        let payload = json!({
+            "messageType": "DATA_MESSAGE",
+            "owner": "123456789012",
+            "logGroup": group_name,
+            "logStream": stream_name,
+            "subscriptionFilters": [filter_name],
+            "logEvents": log_events_json,
+        });
+
+        let payload_str = serde_json::to_string(&payload).unwrap();
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(payload_str.as_bytes()).unwrap();
+        let compressed = encoder.finish().unwrap();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&compressed);
+
+        if destination_arn.contains(":sqs:") {
+            self.delivery_bus
+                .send_to_sqs(destination_arn, &encoded, &HashMap::new());
+        } else if destination_arn.contains(":lambda:") {
+            let lambda_event = json!({
+                "awslogs": {
+                    "data": encoded,
+                }
+            });
+            let lambda_payload = serde_json::to_string(&lambda_event).unwrap();
+            tokio::spawn({
+                let bus = self.delivery_bus.clone();
+                let arn = destination_arn.to_string();
+                async move {
+                    if let Some(result) = bus.invoke_lambda(&arn, &lambda_payload).await {
+                        match result {
+                            Ok(_) => {
+                                tracing::debug!(
+                                    function_arn = %arn,
+                                    "CloudWatch Logs -> Lambda subscription delivered"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    function_arn = %arn,
+                                    error = %e,
+                                    "CloudWatch Logs -> Lambda subscription failed"
+                                );
+                            }
+                        }
+                    }
+                }
+            });
+        } else if destination_arn.contains(":kinesis:") {
+            let partition_key = format!("{}-{}", group_name, stream_name);
+            self.delivery_bus
+                .send_to_kinesis(destination_arn, &encoded, &partition_key);
+        }
     }
 
     pub(crate) fn get_log_events(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
