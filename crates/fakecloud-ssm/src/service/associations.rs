@@ -14,156 +14,52 @@ use super::{missing, SsmService};
 
 impl SsmService {
     pub(super) fn create_association_inner(&self, body: &Value) -> Result<Value, AwsServiceError> {
-        validate_optional_string_length(
-            "AssociationDispatchAssumeRole",
-            body["AssociationDispatchAssumeRole"].as_str(),
-            1,
-            512,
-        )?;
-        validate_optional_string_length(
-            "AutomationTargetParameterName",
-            body["AutomationTargetParameterName"].as_str(),
-            1,
-            50,
-        )?;
-        validate_optional_string_length(
-            "ScheduleExpression",
-            body["ScheduleExpression"].as_str(),
-            1,
-            256,
-        )?;
-        validate_optional_string_length("MaxConcurrency", body["MaxConcurrency"].as_str(), 1, 7)?;
-        validate_optional_string_length("MaxErrors", body["MaxErrors"].as_str(), 1, 7)?;
-        validate_optional_enum(
-            "ComplianceSeverity",
-            body["ComplianceSeverity"].as_str(),
-            &["Critical", "High", "Medium", "Low", "Unspecified"],
-        )?;
-        validate_optional_enum(
-            "SyncCompliance",
-            body["SyncCompliance"].as_str(),
-            &["Auto", "Manual"],
-        )?;
-        validate_optional_range_i64("Duration", body["Duration"].as_i64(), 1, 24)?;
-        validate_optional_range_i64("ScheduleOffset", body["ScheduleOffset"].as_i64(), 1, 6)?;
-
-        let name = body["Name"]
-            .as_str()
-            .ok_or_else(|| missing("Name"))?
-            .to_string();
-
-        let targets: Vec<serde_json::Value> =
-            body["Targets"].as_array().cloned().unwrap_or_default();
-        let instance_id = body["InstanceId"].as_str().map(|s| s.to_string());
-
-        // Must have either Targets or InstanceId
-        if targets.is_empty() && instance_id.is_none() {
-            // Accept it anyway like AWS does for document-only associations
-        }
-
-        let schedule_expression = body["ScheduleExpression"].as_str().map(|s| s.to_string());
-        let parameters: HashMap<String, Vec<String>> = body["Parameters"]
-            .as_object()
-            .map(|obj| {
-                obj.iter()
-                    .map(|(k, v)| {
-                        let vals = v
-                            .as_array()
-                            .map(|a| {
-                                a.iter()
-                                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
-                                    .collect()
-                            })
-                            .unwrap_or_default();
-                        (k.clone(), vals)
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        let association_name = body["AssociationName"].as_str().map(|s| s.to_string());
-        let document_version = body["DocumentVersion"].as_str().map(|s| s.to_string());
-        let output_location = body.get("OutputLocation").filter(|v| !v.is_null()).cloned();
-        let automation_target_parameter_name = body["AutomationTargetParameterName"]
-            .as_str()
-            .map(|s| s.to_string());
-        let max_errors = body["MaxErrors"].as_str().map(|s| s.to_string());
-        let max_concurrency = body["MaxConcurrency"].as_str().map(|s| s.to_string());
-        let compliance_severity = body["ComplianceSeverity"].as_str().map(|s| s.to_string());
-        let sync_compliance = body["SyncCompliance"].as_str().map(|s| s.to_string());
-        let apply_only_at_cron_interval =
-            body["ApplyOnlyAtCronInterval"].as_bool().unwrap_or(false);
-        let calendar_names: Vec<String> = body["CalendarNames"]
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let target_locations: Vec<serde_json::Value> = body["TargetLocations"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
-        let schedule_offset = body["ScheduleOffset"].as_i64();
-        let target_maps: Vec<serde_json::Value> =
-            body["TargetMaps"].as_array().cloned().unwrap_or_default();
-        let tags: HashMap<String, String> = body["Tags"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|t| {
-                        let k = t["Key"].as_str()?;
-                        let v = t["Value"].as_str()?;
-                        Some((k.to_string(), v.to_string()))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        let input = CreateAssociationInput::from_body(body)?;
 
         let now = Utc::now();
         let association_id = uuid::Uuid::new_v4().to_string();
 
         let version = SsmAssociationVersion {
             version: 1,
-            name: name.clone(),
-            targets: targets.clone(),
-            schedule_expression: schedule_expression.clone(),
-            parameters: parameters.clone(),
-            document_version: document_version.clone(),
+            name: input.name.clone(),
+            targets: input.targets.clone(),
+            schedule_expression: input.schedule_expression.clone(),
+            parameters: input.parameters.clone(),
+            document_version: input.document_version.clone(),
             created_date: now,
-            association_name: association_name.clone(),
-            max_errors: max_errors.clone(),
-            max_concurrency: max_concurrency.clone(),
-            compliance_severity: compliance_severity.clone(),
+            association_name: input.association_name.clone(),
+            max_errors: input.max_errors.clone(),
+            max_concurrency: input.max_concurrency.clone(),
+            compliance_severity: input.compliance_severity.clone(),
         };
 
         let assoc = SsmAssociation {
             association_id: association_id.clone(),
-            name: name.clone(),
-            targets: targets.clone(),
-            schedule_expression,
-            parameters,
-            association_name: association_name.clone(),
-            document_version,
-            output_location,
-            automation_target_parameter_name,
-            max_errors,
-            max_concurrency,
-            compliance_severity,
-            sync_compliance,
-            apply_only_at_cron_interval,
-            calendar_names,
-            target_locations,
-            schedule_offset,
-            target_maps,
-            tags,
+            name: input.name,
+            targets: input.targets,
+            schedule_expression: input.schedule_expression,
+            parameters: input.parameters,
+            association_name: input.association_name,
+            document_version: input.document_version,
+            output_location: input.output_location,
+            automation_target_parameter_name: input.automation_target_parameter_name,
+            max_errors: input.max_errors,
+            max_concurrency: input.max_concurrency,
+            compliance_severity: input.compliance_severity,
+            sync_compliance: input.sync_compliance,
+            apply_only_at_cron_interval: input.apply_only_at_cron_interval,
+            calendar_names: input.calendar_names,
+            target_locations: input.target_locations,
+            schedule_offset: input.schedule_offset,
+            target_maps: input.target_maps,
+            tags: input.tags,
             status: "Pending".to_string(),
             status_date: now,
             overview: json!({"Status": "Pending", "DetailedStatus": "Creating", "AssociationStatusAggregatedCount": {}}),
             created_date: now,
             last_update_association_date: now,
             last_execution_date: None,
-            instance_id,
+            instance_id: input.instance_id,
             versions: vec![version],
         };
 
@@ -651,6 +547,139 @@ impl SsmService {
         Ok(AwsResponse::ok_json(
             json!({ "InstanceAssociationStatusInfos": statuses }),
         ))
+    }
+}
+
+/// Parsed + validated inputs for `CreateAssociation`.
+struct CreateAssociationInput {
+    name: String,
+    targets: Vec<Value>,
+    instance_id: Option<String>,
+    schedule_expression: Option<String>,
+    parameters: HashMap<String, Vec<String>>,
+    association_name: Option<String>,
+    document_version: Option<String>,
+    output_location: Option<Value>,
+    automation_target_parameter_name: Option<String>,
+    max_errors: Option<String>,
+    max_concurrency: Option<String>,
+    compliance_severity: Option<String>,
+    sync_compliance: Option<String>,
+    apply_only_at_cron_interval: bool,
+    calendar_names: Vec<String>,
+    target_locations: Vec<Value>,
+    schedule_offset: Option<i64>,
+    target_maps: Vec<Value>,
+    tags: HashMap<String, String>,
+}
+
+impl CreateAssociationInput {
+    fn from_body(body: &Value) -> Result<Self, AwsServiceError> {
+        validate_optional_string_length(
+            "AssociationDispatchAssumeRole",
+            body["AssociationDispatchAssumeRole"].as_str(),
+            1,
+            512,
+        )?;
+        validate_optional_string_length(
+            "AutomationTargetParameterName",
+            body["AutomationTargetParameterName"].as_str(),
+            1,
+            50,
+        )?;
+        validate_optional_string_length(
+            "ScheduleExpression",
+            body["ScheduleExpression"].as_str(),
+            1,
+            256,
+        )?;
+        validate_optional_string_length("MaxConcurrency", body["MaxConcurrency"].as_str(), 1, 7)?;
+        validate_optional_string_length("MaxErrors", body["MaxErrors"].as_str(), 1, 7)?;
+        validate_optional_enum(
+            "ComplianceSeverity",
+            body["ComplianceSeverity"].as_str(),
+            &["Critical", "High", "Medium", "Low", "Unspecified"],
+        )?;
+        validate_optional_enum(
+            "SyncCompliance",
+            body["SyncCompliance"].as_str(),
+            &["Auto", "Manual"],
+        )?;
+        validate_optional_range_i64("Duration", body["Duration"].as_i64(), 1, 24)?;
+        validate_optional_range_i64("ScheduleOffset", body["ScheduleOffset"].as_i64(), 1, 6)?;
+
+        let name = body["Name"]
+            .as_str()
+            .ok_or_else(|| missing("Name"))?
+            .to_string();
+
+        let parameters: HashMap<String, Vec<String>> = body["Parameters"]
+            .as_object()
+            .map(|obj| {
+                obj.iter()
+                    .map(|(k, v)| {
+                        let vals = v
+                            .as_array()
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        (k.clone(), vals)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let calendar_names: Vec<String> = body["CalendarNames"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let tags: HashMap<String, String> = body["Tags"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|t| {
+                        let k = t["Key"].as_str()?;
+                        let v = t["Value"].as_str()?;
+                        Some((k.to_string(), v.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(Self {
+            name,
+            targets: body["Targets"].as_array().cloned().unwrap_or_default(),
+            instance_id: body["InstanceId"].as_str().map(|s| s.to_string()),
+            schedule_expression: body["ScheduleExpression"].as_str().map(|s| s.to_string()),
+            parameters,
+            association_name: body["AssociationName"].as_str().map(|s| s.to_string()),
+            document_version: body["DocumentVersion"].as_str().map(|s| s.to_string()),
+            output_location: body.get("OutputLocation").filter(|v| !v.is_null()).cloned(),
+            automation_target_parameter_name: body["AutomationTargetParameterName"]
+                .as_str()
+                .map(|s| s.to_string()),
+            max_errors: body["MaxErrors"].as_str().map(|s| s.to_string()),
+            max_concurrency: body["MaxConcurrency"].as_str().map(|s| s.to_string()),
+            compliance_severity: body["ComplianceSeverity"].as_str().map(|s| s.to_string()),
+            sync_compliance: body["SyncCompliance"].as_str().map(|s| s.to_string()),
+            apply_only_at_cron_interval: body["ApplyOnlyAtCronInterval"].as_bool().unwrap_or(false),
+            calendar_names,
+            target_locations: body["TargetLocations"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default(),
+            schedule_offset: body["ScheduleOffset"].as_i64(),
+            target_maps: body["TargetMaps"].as_array().cloned().unwrap_or_default(),
+            tags,
+        })
     }
 }
 
