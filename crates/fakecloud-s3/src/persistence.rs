@@ -189,13 +189,28 @@ pub fn s3_bucket_from_snapshot(
     } else {
         meta.region.clone()
     };
+    // Default owner grant, mirroring `S3Bucket::new`. Used when no `acl.toml`
+    // sidecar was persisted (bucket created without a custom ACL).
+    let owner_id = meta.acl_owner_id.clone();
+    let default_owner_grant = AclGrant {
+        grantee_type: "CanonicalUser".to_string(),
+        grantee_id: Some(owner_id.clone()),
+        grantee_display_name: Some(owner_id.clone()),
+        grantee_uri: None,
+        permission: "FULL_CONTROL".to_string(),
+    };
+    let has_acl_sidecar = subresources.contains_key("acl.toml");
     let mut b = S3Bucket {
         name: name.to_string(),
         creation_date: meta.creation_date,
         region,
         objects: BTreeMap::new(),
         tags: HashMap::new(),
-        acl_grants: Vec::new(),
+        acl_grants: if has_acl_sidecar {
+            Vec::new()
+        } else {
+            vec![default_owner_grant]
+        },
         acl_owner_id: meta.acl_owner_id.clone(),
         multipart_uploads: HashMap::new(),
         versioning: meta.versioning.clone(),
@@ -285,4 +300,53 @@ pub fn hydrate_s3_state(
         state.buckets.insert(name, bucket);
     }
     Ok(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hydrate_bucket_without_acl_sidecar_gets_default_owner_grant() {
+        let snap = BucketSnapshot {
+            meta: BucketMeta {
+                name: "b".into(),
+                acl_owner_id: "owner-xyz".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let b = s3_bucket_from_snapshot("b", snap, "us-east-1").unwrap();
+        assert_eq!(b.acl_grants.len(), 1);
+        let g = &b.acl_grants[0];
+        assert_eq!(g.grantee_type, "CanonicalUser");
+        assert_eq!(g.grantee_id.as_deref(), Some("owner-xyz"));
+        assert_eq!(g.permission, "FULL_CONTROL");
+    }
+
+    #[test]
+    fn hydrate_bucket_with_acl_sidecar_uses_sidecar() {
+        let acl_toml = r#"
+owner_id = "owner-xyz"
+[[grants]]
+grantee_type = "CanonicalUser"
+grantee_id = "grantee-a"
+permission = "READ"
+"#;
+        let mut subresources = HashMap::new();
+        subresources.insert("acl.toml".to_string(), acl_toml.to_string());
+        let snap = BucketSnapshot {
+            meta: BucketMeta {
+                name: "b".into(),
+                acl_owner_id: "owner-xyz".into(),
+                ..Default::default()
+            },
+            subresources,
+            ..Default::default()
+        };
+        let b = s3_bucket_from_snapshot("b", snap, "us-east-1").unwrap();
+        assert_eq!(b.acl_grants.len(), 1);
+        assert_eq!(b.acl_grants[0].grantee_id.as_deref(), Some("grantee-a"));
+        assert_eq!(b.acl_grants[0].permission, "READ");
+    }
 }

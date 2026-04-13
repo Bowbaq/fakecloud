@@ -1171,7 +1171,13 @@ impl DynamoDbService {
                 if !prefix.is_empty() && !key.starts_with(&prefix) {
                     continue;
                 }
-                let obj_bytes = fakecloud_s3::state::read_body_bytes(&obj.body);
+                let obj_bytes = s3.read_body(&obj.body).map_err(|e| {
+                    AwsServiceError::aws_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "InternalServerError",
+                        format!("failed to read S3 object body for import: {e}"),
+                    )
+                })?;
                 let data = std::str::from_utf8(&obj_bytes).unwrap_or("");
                 processed_size_bytes += obj.size as i64;
                 for line in data.lines() {

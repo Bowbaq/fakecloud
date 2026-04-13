@@ -6,7 +6,7 @@ use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 
 use fakecloud_persistence::BodySource;
 
-use crate::persistence::{mpu_init_snapshot, object_meta_snapshot, upload_part_meta_snapshot};
+use crate::persistence::{mpu_init_snapshot, object_meta_snapshot};
 use crate::state::{MultipartUpload, S3Object, UploadPart};
 
 use md5::{Digest, Md5};
@@ -107,7 +107,9 @@ impl S3Service {
         };
         let init_snapshot = mpu_init_snapshot(&upload);
         b.multipart_uploads.insert(upload_id.clone(), upload);
-        let _ = self.store.mpu_create(bucket, &upload_id, &init_snapshot);
+        self.store
+            .mpu_create(bucket, &upload_id, &init_snapshot)
+            .map_err(super::persistence_error)?;
 
         let mut headers = HeaderMap::new();
         if let Some(algo) = &sse_algorithm {
@@ -188,15 +190,16 @@ impl S3Service {
             size: data.len() as u64,
             last_modified: Utc::now(),
         };
-        let _ = upload_part_meta_snapshot(&part);
         upload.parts.insert(pn, part);
-        let _ = self.store.mpu_put_part(
-            bucket,
-            upload_id,
-            pn,
-            BodySource::Bytes(data.clone()),
-            &etag,
-        );
+        self.store
+            .mpu_put_part(
+                bucket,
+                upload_id,
+                pn,
+                BodySource::Bytes(data.clone()),
+                &etag,
+            )
+            .map_err(super::persistence_error)?;
 
         let mut headers = HeaderMap::new();
         headers.insert("etag", format!("\"{etag}\"").parse().unwrap());
@@ -265,7 +268,7 @@ impl S3Service {
             .and_then(|v| v.to_str().ok());
 
         let mut state = self.state.write();
-        let src_data = {
+        let src_body_ref = {
             let sb = state
                 .buckets
                 .get(src_bucket)
@@ -278,21 +281,21 @@ impl S3Service {
                     .get(src_key)
                     .ok_or_else(|| no_such_key(src_key))?
             };
-
-            let src_bytes = crate::state::read_body_bytes(&src_obj.body);
-            if let Some(range_str) = copy_range {
-                let range_part = range_str.strip_prefix("bytes=").unwrap_or(range_str);
-                if let Some((start_str, end_str)) = range_part.split_once('-') {
-                    let start: usize = start_str.parse().unwrap_or(0);
-                    let end: usize = end_str.parse().unwrap_or(src_bytes.len() - 1);
-                    let end = std::cmp::min(end + 1, src_bytes.len());
-                    src_bytes.slice(start..end)
-                } else {
-                    src_bytes.clone()
-                }
+            src_obj.body.clone()
+        };
+        let src_bytes = state.read_body(&src_body_ref).map_err(super::io_to_aws)?;
+        let src_data = if let Some(range_str) = copy_range {
+            let range_part = range_str.strip_prefix("bytes=").unwrap_or(range_str);
+            if let Some((start_str, end_str)) = range_part.split_once('-') {
+                let start: usize = start_str.parse().unwrap_or(0);
+                let end: usize = end_str.parse().unwrap_or(src_bytes.len() - 1);
+                let end = std::cmp::min(end + 1, src_bytes.len());
+                src_bytes.slice(start..end)
             } else {
                 src_bytes.clone()
             }
+        } else {
+            src_bytes.clone()
         };
 
         let data_len = src_data.len() as u64;
@@ -318,13 +321,15 @@ impl S3Service {
             last_modified: Utc::now(),
         };
         upload.parts.insert(part_number as u32, part);
-        let _ = self.store.mpu_put_part(
-            bucket,
-            upload_id,
-            part_number as u32,
-            BodySource::Bytes(store_body),
-            &etag,
-        );
+        self.store
+            .mpu_put_part(
+                bucket,
+                upload_id,
+                part_number as u32,
+                BodySource::Bytes(store_body),
+                &etag,
+            )
+            .map_err(super::persistence_error)?;
 
         let body = format!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
@@ -363,14 +368,23 @@ impl S3Service {
             .map(|s| s.to_string());
 
         let mut state = self.state.write();
-        let b = state
-            .buckets
-            .get_mut(bucket)
-            .ok_or_else(|| no_such_bucket(bucket))?;
-
-        let upload = match b.multipart_uploads.get(upload_id) {
-            Some(u) => u.clone(),
+        let (upload, already_has_object) = {
+            let b = state
+                .buckets
+                .get(bucket)
+                .ok_or_else(|| no_such_bucket(bucket))?;
+            match b.multipart_uploads.get(upload_id) {
+                Some(u) => (Some(u.clone()), b.objects.contains_key(key)),
+                None => (None, b.objects.contains_key(key)),
+            }
+        };
+        let upload = match upload {
+            Some(u) => u,
             None => {
+                let b = state
+                    .buckets
+                    .get(bucket)
+                    .ok_or_else(|| no_such_bucket(bucket))?;
                 // Upload already completed - return existing object if it exists
                 // IfNoneMatch does NOT apply to re-completions
                 if let Some(obj) = b.objects.get(key) {
@@ -403,7 +417,7 @@ impl S3Service {
 
         // IfNoneMatch: if "*" and object already exists, reject (only for real completions)
         if let Some(ref inm) = if_none_match {
-            if inm == "*" && b.objects.contains_key(key) {
+            if inm == "*" && already_has_object {
                 return Err(precondition_failed("If-None-Match"));
             }
         }
@@ -471,7 +485,7 @@ impl S3Service {
                     "One or more of the specified parts could not be found. The part may not have been uploaded, or the specified entity tag may not have matched the part's entity tag.",
                 ));
             }
-            let part_bytes = crate::state::read_body_bytes(&part.body);
+            let part_bytes = state.read_body(&part.body).map_err(super::io_to_aws)?;
             combined_data.extend_from_slice(&part_bytes);
             let part_md5 = Md5::digest(&part_bytes);
             md5_digests.extend_from_slice(&part_md5);
@@ -494,6 +508,10 @@ impl S3Service {
             std::collections::HashMap::new()
         };
 
+        let b = state
+            .buckets
+            .get_mut(bucket)
+            .ok_or_else(|| no_such_bucket(bucket))?;
         let version_id = if b.versioning.as_deref() == Some("Enabled") {
             Some(uuid::Uuid::new_v4().to_string())
         } else {
@@ -525,18 +543,20 @@ impl S3Service {
         b.multipart_uploads.remove(upload_id);
         if let Some(o) = b.objects.get(key) {
             let meta = object_meta_snapshot(o);
-            let _ =
-                self.store
-                    .mpu_complete(bucket, upload_id, key, meta.version_id.as_deref(), &meta);
+            self.store
+                .mpu_complete(bucket, upload_id, key, meta.version_id.as_deref(), &meta)
+                .map_err(super::persistence_error)?;
             // TODO(phase-4): mpu_complete should consume the part files; for memory
             // mode we also ensure the put_object seam is exercised.
-            let _ = self.store.put_object(
-                bucket,
-                key,
-                meta.version_id.as_deref(),
-                BodySource::Bytes(store_body.clone()),
-                &meta,
-            );
+            self.store
+                .put_object(
+                    bucket,
+                    key,
+                    meta.version_id.as_deref(),
+                    BodySource::Bytes(store_body.clone()),
+                    &meta,
+                )
+                .map_err(super::persistence_error)?;
         }
 
         let mut headers = HeaderMap::new();
@@ -595,7 +615,9 @@ impl S3Service {
             _ => {}
         }
         b.multipart_uploads.remove(upload_id);
-        let _ = self.store.mpu_abort(bucket, upload_id);
+        self.store
+            .mpu_abort(bucket, upload_id)
+            .map_err(super::persistence_error)?;
 
         Ok(AwsResponse {
             status: StatusCode::NO_CONTENT,

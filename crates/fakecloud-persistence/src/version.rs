@@ -39,6 +39,11 @@ pub enum VersionError {
         on_disk: u32,
         expected: u32,
     },
+    #[error(
+        "persistence data directory {dir} is not empty but has no {file} file. \
+         Refusing to initialize it: either point --data-path at an empty directory or restore the missing version file."
+    )]
+    NonEmptyDirectoryWithoutVersionFile { dir: PathBuf, file: String },
 }
 
 fn version_file_path(dir: &Path) -> PathBuf {
@@ -85,8 +90,50 @@ pub fn check_version_file(dir: &Path) -> Result<(), VersionError> {
 pub fn ensure_version_file(dir: &Path, fakecloud_version: &str) -> Result<(), VersionError> {
     let path = version_file_path(dir);
     if path.exists() {
-        check_version_file(dir)
-    } else {
-        write_version_file(dir, fakecloud_version)
+        return check_version_file(dir);
+    }
+    if dir.exists() {
+        let mut entries = std::fs::read_dir(dir).map_err(|source| VersionError::Io {
+            path: dir.to_path_buf(),
+            source,
+        })?;
+        if entries.next().is_some() {
+            return Err(VersionError::NonEmptyDirectoryWithoutVersionFile {
+                dir: dir.to_path_buf(),
+                file: VERSION_FILE_NAME.to_string(),
+            });
+        }
+    }
+    write_version_file(dir, fakecloud_version)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ensure_creates_version_file_in_empty_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        ensure_version_file(tmp.path(), "test").unwrap();
+        assert!(tmp.path().join(VERSION_FILE_NAME).exists());
+    }
+
+    #[test]
+    fn ensure_rejects_non_empty_dir_without_version_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("stray.txt"), b"hello").unwrap();
+        let err = ensure_version_file(tmp.path(), "test").unwrap_err();
+        matches!(
+            err,
+            VersionError::NonEmptyDirectoryWithoutVersionFile { .. }
+        );
+    }
+
+    #[test]
+    fn ensure_ok_when_version_file_already_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_version_file(tmp.path(), "test").unwrap();
+        std::fs::write(tmp.path().join("stray.txt"), b"hello").unwrap();
+        ensure_version_file(tmp.path(), "test").unwrap();
     }
 }

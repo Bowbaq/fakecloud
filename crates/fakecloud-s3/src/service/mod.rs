@@ -9,7 +9,7 @@ use md5::{Digest, Md5};
 use fakecloud_core::delivery::DeliveryBus;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
 use fakecloud_kms::state::SharedKmsState;
-use fakecloud_persistence::{MemoryS3Store, S3Store};
+use fakecloud_persistence::{MemoryS3Store, S3Store, StoreError};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
@@ -47,6 +47,28 @@ pub struct S3Service {
     kms_state: Option<SharedKmsState>,
     #[allow(dead_code)]
     store: Arc<dyn S3Store>,
+}
+
+/// Map a [`StoreError`] from the persistence layer to a 500 InternalError
+/// response. Invoked at every mutation site when the write-through persistence
+/// call fails: the in-memory mutation has already happened, but we surface the
+/// failure to the client so they know to retry (and so logs/metrics flag it).
+pub(crate) fn persistence_error(err: StoreError) -> AwsServiceError {
+    AwsServiceError::aws_error(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "InternalError",
+        format!("persistence store error: {err}"),
+    )
+}
+
+/// Convert a filesystem IO error from a disk-backed body read into an
+/// InternalError response.
+pub(crate) fn io_to_aws(err: std::io::Error) -> AwsServiceError {
+    AwsServiceError::aws_error(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "InternalError",
+        format!("failed to read object body from disk: {err}"),
+    )
 }
 
 impl S3Service {
@@ -547,6 +569,7 @@ impl AwsService for S3Service {
             let op = logging::operation_name(&req.method, key.as_deref());
             logging::maybe_write_access_log(
                 &self.state,
+                &self.store,
                 b_name,
                 &logging::AccessLogRequest {
                     operation: op,
@@ -2126,7 +2149,7 @@ mod tests {
             .get("test-key");
         assert!(dest_obj.is_some());
         assert_eq!(
-            crate::state::read_body_bytes(&dest_obj.unwrap().body),
+            state.read_body(&dest_obj.unwrap().body).unwrap(),
             Bytes::from_static(b"hello")
         );
     }

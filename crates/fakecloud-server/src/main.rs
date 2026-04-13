@@ -468,6 +468,7 @@ async fn main() {
     ));
     registry.register(Arc::new(LogsService::new(logs_state, delivery_for_logs)));
     registry.register(Arc::new(KmsService::new(kms_state.clone())));
+    let mut shared_body_cache: Option<Arc<fakecloud_persistence::cache::BodyCache>> = None;
     let s3_store: Arc<dyn fakecloud_persistence::S3Store> = match persistence_config.mode {
         fakecloud_persistence::StorageMode::Persistent => {
             let data_path = persistence_config
@@ -485,6 +486,7 @@ async fn main() {
             let cache = Arc::new(fakecloud_persistence::cache::BodyCache::new(
                 persistence_config.s3_cache_bytes,
             ));
+            shared_body_cache = Some(cache.clone());
             let disk = fakecloud_persistence::s3::DiskS3Store::new(s3_root, cache);
             match <fakecloud_persistence::s3::DiskS3Store as fakecloud_persistence::S3Store>::load(
                 &disk,
@@ -520,6 +522,12 @@ async fn main() {
             Arc::new(fakecloud_persistence::s3::MemoryS3Store::new())
         }
     };
+    let s3_store_for_inbound = s3_store.clone();
+    if let Some(ref cache) = shared_body_cache {
+        // Share the cache between the S3Store and S3State so read_body honors
+        // the persistent LRU on every read site, not just open_object_body.
+        s3_state.write().set_body_cache(cache.clone());
+    }
     registry.register(Arc::new(
         S3Service::with_store(s3_state.clone(), delivery_for_s3, s3_store).with_kms(kms_state),
     ));
@@ -731,6 +739,7 @@ async fn main() {
             axum::routing::post({
                 let ss = ses_inbound_state.clone();
                 let s3_for_inbound = s3_introspection_state.clone();
+                let s3_store_for_inbound = s3_store_for_inbound.clone();
                 let delivery_for_inbound = {
                     let mut bus = DeliveryBus::new();
                     let sns_fanout_bus = {
@@ -778,9 +787,9 @@ async fn main() {
                                 let etag = format!("\"{:x}\"", md5::Md5::digest(&data));
                                 let obj = fakecloud_s3::state::S3Object {
                                     key: key.clone(),
-                                    body: fakecloud_persistence::BodyRef::Memory(data),
+                                    body: fakecloud_persistence::BodyRef::Memory(data.clone()),
                                     content_type: "text/plain".to_string(),
-                                    etag,
+                                    etag: etag.clone(),
                                     size,
                                     last_modified: now,
                                     storage_class: "STANDARD".to_string(),
@@ -793,7 +802,24 @@ async fn main() {
                                         key = %key,
                                         "SES inbound: stored email in S3"
                                     );
-                                    bucket.objects.insert(key, obj);
+                                    let meta =
+                                        fakecloud_s3::persistence::object_meta_snapshot(&obj);
+                                    bucket.objects.insert(key.clone(), obj);
+                                    drop(state);
+                                    if let Err(err) = s3_store_for_inbound.put_object(
+                                        bucket_name,
+                                        &key,
+                                        None,
+                                        fakecloud_persistence::BodySource::Bytes(data),
+                                        &meta,
+                                    ) {
+                                        tracing::error!(
+                                            bucket = %bucket_name,
+                                            key = %key,
+                                            error = %err,
+                                            "SES inbound: failed to persist S3 object via store"
+                                        );
+                                    }
                                 } else {
                                     tracing::warn!(
                                         bucket = %bucket_name,

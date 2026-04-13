@@ -177,7 +177,9 @@ impl S3Service {
 
         let meta = bucket_meta_snapshot(&b);
         state.buckets.insert(bucket.to_string(), b);
-        let _ = self.store.put_bucket_meta(bucket, &meta);
+        self.store
+            .put_bucket_meta(bucket, &meta)
+            .map_err(super::persistence_error)?;
 
         let mut headers = HeaderMap::new();
         headers.insert("location", format!("/{bucket}").parse().unwrap());
@@ -215,7 +217,9 @@ impl S3Service {
             ));
         }
         state.buckets.remove(bucket);
-        let _ = self.store.delete_bucket(bucket);
+        self.store
+            .delete_bucket(bucket)
+            .map_err(super::persistence_error)?;
         Ok(AwsResponse {
             status: StatusCode::NO_CONTENT,
             content_type: "application/xml".to_string(),

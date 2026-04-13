@@ -39,14 +39,14 @@ const SAFE: &AsciiSet = &CONTROLS
 
 pub fn escape_key_segment(segment: &str) -> String {
     let encoded: String = utf8_percent_encode(segment, SAFE).collect();
-    let placeholder = if encoded.is_empty() {
-        "_empty_".to_string()
-    } else {
-        encoded
-    };
+    if encoded.is_empty() {
+        // '@' is not in the percent-encoding output alphabet (A-Za-z0-9._-%),
+        // so this sentinel cannot collide with any legitimately encoded segment.
+        return "@empty".to_string();
+    }
 
-    if placeholder.len() <= MAX_SEGMENT_BYTES {
-        return placeholder;
+    if encoded.len() <= MAX_SEGMENT_BYTES {
+        return encoded;
     }
 
     let mut hasher = Sha256::new();
@@ -59,13 +59,15 @@ pub fn escape_key_segment(segment: &str) -> String {
         .collect();
     let hex = &hex[..HASH_SUFFIX_HEX];
 
-    let keep = MAX_SEGMENT_BYTES.saturating_sub(HASH_SUFFIX_HEX + 1);
-    // Truncate at a char boundary within `keep` bytes.
-    let mut end = keep.min(placeholder.len());
-    while end > 0 && !placeholder.is_char_boundary(end) {
+    // Sentinel prefix + hash + truncated head of the encoded segment.
+    // The '@trunc-' prefix cannot appear in a normal percent-encoded segment.
+    let prefix = format!("@trunc-{hex}-");
+    let keep = MAX_SEGMENT_BYTES.saturating_sub(prefix.len());
+    let mut end = keep.min(encoded.len());
+    while end > 0 && !encoded.is_char_boundary(end) {
         end -= 1;
     }
-    format!("{}-{}", &placeholder[..end], hex)
+    format!("{prefix}{}", &encoded[..end])
 }
 
 #[cfg(test)]
@@ -74,7 +76,34 @@ mod tests {
 
     #[test]
     fn empty_string() {
-        assert_eq!(escape_key_segment(""), "_empty_");
+        assert_eq!(escape_key_segment(""), "@empty");
+    }
+
+    #[test]
+    fn literal_underscore_empty_does_not_collide_with_empty_sentinel() {
+        // A user key that literally equals the old sentinel must not escape to
+        // the new one. Percent-encoding leaves `_empty_` untouched (safe
+        // chars), so it stays distinct from `@empty`.
+        assert_eq!(escape_key_segment("_empty_"), "_empty_");
+        assert_ne!(escape_key_segment("_empty_"), escape_key_segment(""));
+    }
+
+    #[test]
+    fn long_keys_with_shared_prefix_get_distinct_hashes() {
+        let a = format!("{}X", "a".repeat(500));
+        let b = format!("{}Y", "a".repeat(500));
+        let ea = escape_key_segment(&a);
+        let eb = escape_key_segment(&b);
+        assert_ne!(ea, eb);
+        assert!(ea.starts_with("@trunc-"));
+        assert!(eb.starts_with("@trunc-"));
+        // A short literal that happens to equal the truncated head cannot
+        // collide with either, because the overflow form is prefixed with `@trunc-`.
+        let short = "a".repeat(100);
+        let es = escape_key_segment(&short);
+        assert!(!es.starts_with('@'));
+        assert_ne!(es, ea);
+        assert_ne!(es, eb);
     }
 
     #[test]

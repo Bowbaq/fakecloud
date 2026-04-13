@@ -997,13 +997,15 @@ impl S3Service {
             if let Some(b2) = state.buckets.get(bucket) {
                 if let Some(o) = b2.objects.get(key) {
                     let meta = object_meta_snapshot(o);
-                    let _ = self.store.put_object(
-                        bucket,
-                        key,
-                        meta.version_id.as_deref(),
-                        BodySource::Bytes(store_body_bytes.clone()),
-                        &meta,
-                    );
+                    self.store
+                        .put_object(
+                            bucket,
+                            key,
+                            meta.version_id.as_deref(),
+                            BodySource::Bytes(store_body_bytes.clone()),
+                            &meta,
+                        )
+                        .map_err(super::persistence_error)?;
                 }
             }
         } // write lock dropped
@@ -1110,7 +1112,6 @@ impl S3Service {
 
         // Conditional checks
         check_get_conditionals(req, obj)?;
-        let obj_bytes = crate::state::read_body_bytes(&obj.body);
         let total_size = obj.size as usize;
         let mut headers = HeaderMap::new();
         headers.insert("etag", format!("\"{}\"", obj.etag).parse().unwrap());
@@ -1200,11 +1201,11 @@ impl S3Service {
                             "content-range",
                             format!("bytes {start}-{end}/{total_size}").parse().unwrap(),
                         );
-                        headers.insert(
-                            "content-length",
-                            (end - start + 1).to_string().parse().unwrap(),
-                        );
-                        response_body = obj_bytes.slice(start..=end);
+                        let len = (end - start + 1) as u64;
+                        headers.insert("content-length", len.to_string().parse().unwrap());
+                        response_body = state
+                            .read_body_range(&obj.body, start as u64, len)
+                            .map_err(super::io_to_aws)?;
                         response_status = StatusCode::PARTIAL_CONTENT;
                         is_range_request = true;
                     }
@@ -1221,12 +1222,12 @@ impl S3Service {
                     }
                     RangeResult::Ignored => {
                         headers.insert("content-length", total_size.to_string().parse().unwrap());
-                        response_body = obj_bytes.clone();
+                        response_body = state.read_body(&obj.body).map_err(super::io_to_aws)?;
                     }
                 }
             } else {
                 headers.insert("content-length", total_size.to_string().parse().unwrap());
-                response_body = obj_bytes.clone();
+                response_body = state.read_body(&obj.body).map_err(super::io_to_aws)?;
             }
         } else if let Some(part_num_str) = req.query_params.get("partNumber") {
             if let Ok(part_num) = part_num_str.parse::<u32>() {
@@ -1263,15 +1264,17 @@ impl S3Service {
                         .unwrap(),
                 );
                 headers.insert("content-length", part_size.to_string().parse().unwrap());
-                response_body = obj_bytes.slice(part_start..part_start + part_size);
+                response_body = state
+                    .read_body_range(&obj.body, part_start as u64, part_size as u64)
+                    .map_err(super::io_to_aws)?;
                 response_status = StatusCode::PARTIAL_CONTENT;
             } else {
                 headers.insert("content-length", total_size.to_string().parse().unwrap());
-                response_body = obj_bytes.clone();
+                response_body = state.read_body(&obj.body).map_err(super::io_to_aws)?;
             }
         } else {
             headers.insert("content-length", total_size.to_string().parse().unwrap());
-            response_body = obj_bytes.clone();
+            response_body = state.read_body(&obj.body).map_err(super::io_to_aws)?;
         }
         // Only include checksum headers for full (non-range) responses
         if !is_range_request {
@@ -1472,7 +1475,9 @@ impl S3Service {
             if is_dm {
                 resp_headers.insert("x-amz-delete-marker", "true".parse().unwrap());
             }
-            let _ = self.store.delete_object(bucket, key, Some(vid.as_str()));
+            self.store
+                .delete_object(bucket, key, Some(vid.as_str()))
+                .map_err(super::persistence_error)?;
             return Ok(AwsResponse {
                 status: StatusCode::NO_CONTENT,
                 content_type: "application/xml".to_string(),
@@ -1521,14 +1526,18 @@ impl S3Service {
             b.objects.insert(key.to_string(), marker);
             resp_headers.insert("x-amz-version-id", dm_id.parse().unwrap());
             resp_headers.insert("x-amz-delete-marker", "true".parse().unwrap());
-            let _ = self.store.delete_object(bucket, key, None);
-            let _ = self.store.put_object(
-                bucket,
-                key,
-                Some(dm_id.as_str()),
-                BodySource::Bytes(Bytes::new()),
-                &marker_meta,
-            );
+            self.store
+                .delete_object(bucket, key, None)
+                .map_err(super::persistence_error)?;
+            self.store
+                .put_object(
+                    bucket,
+                    key,
+                    Some(dm_id.as_str()),
+                    BodySource::Bytes(Bytes::new()),
+                    &marker_meta,
+                )
+                .map_err(super::persistence_error)?;
 
             // Notification for delete
             let notification_config = b.notification_config.clone();
@@ -1566,7 +1575,9 @@ impl S3Service {
         let obj_key = key.to_string();
 
         b.objects.remove(key);
-        let _ = self.store.delete_object(bucket, key, None);
+        self.store
+            .delete_object(bucket, key, None)
+            .map_err(super::persistence_error)?;
         drop(state);
 
         // Deliver S3 event notifications
@@ -2069,7 +2080,7 @@ impl S3Service {
         });
 
         // Checksum: compute new if algorithm specified, or copy from source
-        let src_bytes = crate::state::read_body_bytes(&src_obj.body);
+        let src_bytes = state.read_body(&src_obj.body).map_err(super::io_to_aws)?;
         let (new_checksum_algo, new_checksum_val) = if let Some(ref algo) = checksum_algorithm {
             let val = compute_checksum(algo, &src_bytes);
             (Some(algo.clone()), Some(val))
@@ -2104,7 +2115,11 @@ impl S3Service {
 
         let dest_obj = S3Object {
             key: dest_key.to_string(),
-            body: src_obj.body,
+            // Copy is an independent object — never inherit the source's
+            // disk-backed BodyRef (which would point at the source's file).
+            // The source bytes are read above; the destination's own on-disk
+            // file is written below via `self.store.put_object`.
+            body: crate::state::memory_body(src_bytes.clone()),
             size: src_obj.size,
             etag: etag.clone(),
             last_modified,
@@ -2138,13 +2153,15 @@ impl S3Service {
         db.objects.insert(dest_key.to_string(), dest_obj);
         if let Some(o) = db.objects.get(dest_key) {
             let meta = object_meta_snapshot(o);
-            let _ = self.store.put_object(
-                dest_bucket,
-                dest_key,
-                meta.version_id.as_deref(),
-                BodySource::Bytes(src_bytes.clone()),
-                &meta,
-            );
+            self.store
+                .put_object(
+                    dest_bucket,
+                    dest_key,
+                    meta.version_id.as_deref(),
+                    BodySource::Bytes(src_bytes.clone()),
+                    &meta,
+                )
+                .map_err(super::persistence_error)?;
         }
 
         let mut response_headers = HeaderMap::new();
@@ -2334,7 +2351,9 @@ impl S3Service {
                         b.object_versions.remove(key);
                     }
                 }
-                let _ = self.store.delete_object(bucket, key, Some(vid.as_str()));
+                self.store
+                    .delete_object(bucket, key, Some(vid.as_str()))
+                    .map_err(super::persistence_error)?;
                 deleted_xml.push_str(&format!(
                     "<Deleted><Key>{}</Key><VersionId>{}</VersionId></Deleted>",
                     xml_escape(key),
@@ -2348,14 +2367,18 @@ impl S3Service {
                     .or_default()
                     .push(marker.clone());
                 b.objects.insert(key.to_string(), marker);
-                let _ = self.store.delete_object(bucket, key, None);
+                self.store
+                    .delete_object(bucket, key, None)
+                    .map_err(super::persistence_error)?;
                 deleted_xml.push_str(&format!(
                     "<Deleted><Key>{}</Key><DeleteMarker>true</DeleteMarker><DeleteMarkerVersionId>{}</DeleteMarkerVersionId></Deleted>",
                     xml_escape(key), dm_id,
                 ));
             } else {
                 b.objects.remove(key);
-                let _ = self.store.delete_object(bucket, key, None);
+                self.store
+                    .delete_object(bucket, key, None)
+                    .map_err(super::persistence_error)?;
                 deleted_xml.push_str(&format!(
                     "<Deleted><Key>{}</Key></Deleted>",
                     xml_escape(key)
@@ -2501,9 +2524,9 @@ impl S3Service {
         obj.restore_ongoing = Some(false);
         obj.restore_expiry = Some(expiry);
         let meta = object_meta_snapshot(obj);
-        let _ = self
-            .store
-            .put_object_meta(bucket, key, meta.version_id.as_deref(), &meta);
+        self.store
+            .put_object_meta(bucket, key, meta.version_id.as_deref(), &meta)
+            .map_err(super::persistence_error)?;
         Ok(AwsResponse {
             status,
             content_type: "application/xml".to_string(),

@@ -124,12 +124,15 @@ impl Inner {
     }
 
     fn insert(&mut self, key: BodyKey, bytes: Bytes) {
+        // Always drop any existing entry for this key, even if the new body
+        // is oversized and will bypass the cache — otherwise a stale older
+        // body could be served after an overwrite.
+        if let Some(&idx) = self.index.get(&key) {
+            self.remove(idx);
+        }
         let size = bytes.len() as u64;
         if size > self.single_object_cap {
             return;
-        }
-        if let Some(&idx) = self.index.get(&key) {
-            self.remove(idx);
         }
         self.evict_until_fits(size);
         self.used_bytes += size;
@@ -266,6 +269,21 @@ mod tests {
         // b should be evicted, a should remain.
         assert!(c.get(&k("a")).is_some());
         assert!(c.get(&k("b")).is_none());
+    }
+
+    #[test]
+    fn oversized_overwrite_invalidates_previous_entry() {
+        // 64 MiB capacity, 32 MiB single-object cap
+        let cap = 64 * 1024 * 1024;
+        let c = BodyCache::new(cap);
+        c.insert(k("a"), mk(1024));
+        assert!(c.get(&k("a")).is_some());
+        // Overwrite with an oversized body: the new body bypasses, and the
+        // previous entry must be invalidated so stale bytes are not served.
+        c.insert(k("a"), mk(40 * 1024 * 1024));
+        assert!(c.get(&k("a")).is_none());
+        assert_eq!(c.used_bytes(), 0);
+        assert_eq!(c.len(), 0);
     }
 
     #[test]

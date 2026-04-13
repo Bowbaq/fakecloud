@@ -1,8 +1,10 @@
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
+use fakecloud_persistence::cache::{BodyCache, BodyKey};
 use fakecloud_persistence::BodyRef;
 use parking_lot::RwLock;
 use std::collections::{BTreeMap, HashMap};
+use std::io::{self, Read, Seek, SeekFrom};
 use std::sync::Arc;
 
 /// An ACL grant entry.
@@ -174,6 +176,7 @@ pub struct S3State {
     pub region: String,
     pub buckets: HashMap<String, S3Bucket>,
     pub notification_events: Vec<S3NotificationEvent>,
+    pub body_cache: Option<Arc<BodyCache>>,
 }
 
 impl S3State {
@@ -183,32 +186,72 @@ impl S3State {
             region: region.to_string(),
             buckets: HashMap::new(),
             notification_events: Vec::new(),
+            body_cache: None,
         }
+    }
+
+    pub fn set_body_cache(&mut self, cache: Arc<BodyCache>) {
+        self.body_cache = Some(cache);
     }
 
     pub fn reset(&mut self) {
         self.buckets.clear();
         self.notification_events.clear();
     }
+
+    /// Read the full body referenced by a [`BodyRef`], consulting the
+    /// persistent [`BodyCache`] when one is configured.
+    pub fn read_body(&self, body: &BodyRef) -> io::Result<Bytes> {
+        match body {
+            BodyRef::Memory(b) => Ok(b.clone()),
+            BodyRef::Disk {
+                bucket,
+                key,
+                version,
+                path,
+                ..
+            } => {
+                let cache_key = BodyKey::new(bucket.clone(), key.clone(), version.clone());
+                if let Some(cache) = &self.body_cache {
+                    if let Some(hit) = cache.get(&cache_key) {
+                        return Ok(hit);
+                    }
+                }
+                let data = std::fs::read(path)?;
+                let bytes = Bytes::from(data);
+                if let Some(cache) = &self.body_cache {
+                    cache.insert(cache_key, bytes.clone());
+                }
+                Ok(bytes)
+            }
+        }
+    }
+
+    /// Read a byte range from the body without loading the full object into
+    /// memory. Memory bodies are sliced directly; disk bodies are seek+read'd.
+    /// Ranges bypass the body cache (the cache stores whole objects only).
+    pub fn read_body_range(&self, body: &BodyRef, offset: u64, len: u64) -> io::Result<Bytes> {
+        match body {
+            BodyRef::Memory(b) => {
+                let start = offset as usize;
+                let end = start.saturating_add(len as usize).min(b.len());
+                if start > b.len() {
+                    return Ok(Bytes::new());
+                }
+                Ok(b.slice(start..end))
+            }
+            BodyRef::Disk { path, .. } => {
+                let mut f = std::fs::File::open(path)?;
+                f.seek(SeekFrom::Start(offset))?;
+                let mut buf = vec![0u8; len as usize];
+                f.read_exact(&mut buf)?;
+                Ok(Bytes::from(buf))
+            }
+        }
+    }
 }
 
 pub type SharedS3State = Arc<RwLock<S3State>>;
-
-/// Read the bytes referenced by a [`BodyRef`]. In memory mode this is the
-/// stored buffer directly. For disk-backed bodies this falls back to a direct
-/// filesystem read which bypasses the [`BodyCache`]; cache-aware reads must go
-/// through `S3Store::open_object_body` via [`S3Service`]. TODO(phase-7): thread
-/// the store handle through all read sites so the cache is consulted
-/// everywhere.
-pub fn read_body_bytes(body: &BodyRef) -> Bytes {
-    match body {
-        BodyRef::Memory(b) => b.clone(),
-        BodyRef::Disk { path, .. } => match std::fs::read(path) {
-            Ok(v) => Bytes::from(v),
-            Err(_) => Bytes::new(),
-        },
-    }
-}
 
 /// Construct a memory-backed [`BodyRef`] from [`Bytes`].
 pub fn memory_body(bytes: Bytes) -> BodyRef {
