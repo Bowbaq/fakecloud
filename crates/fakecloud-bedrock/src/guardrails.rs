@@ -293,7 +293,8 @@ pub fn apply_guardrail(
 
     let s = state.read();
 
-    // Build a temporary guardrail for evaluation from DRAFT or versioned
+    // Borrow a GuardrailView over DRAFT or a numbered version, avoiding
+    // the 13-field clone needed to synthesize a temporary Guardrail.
     let not_found_err = || {
         AwsServiceError::aws_error(
             StatusCode::NOT_FOUND,
@@ -302,45 +303,13 @@ pub fn apply_guardrail(
         )
     };
 
-    let temp_guardrail = if guardrail_version == "DRAFT" {
+    let view = if guardrail_version == "DRAFT" {
         let g = s.guardrails.get(guardrail_id).ok_or_else(not_found_err)?;
-        Guardrail {
-            guardrail_id: g.guardrail_id.clone(),
-            guardrail_arn: g.guardrail_arn.clone(),
-            name: g.name.clone(),
-            description: g.description.clone(),
-            status: g.status.clone(),
-            version: g.version.clone(),
-            next_version_number: g.next_version_number,
-            blocked_input_messaging: g.blocked_input_messaging.clone(),
-            blocked_outputs_messaging: g.blocked_outputs_messaging.clone(),
-            content_policy: g.content_policy.clone(),
-            word_policy: g.word_policy.clone(),
-            sensitive_information_policy: g.sensitive_information_policy.clone(),
-            topic_policy: g.topic_policy.clone(),
-            created_at: g.created_at,
-            updated_at: g.updated_at,
-        }
+        GuardrailView::from_guardrail(g)
     } else {
         let key = (guardrail_id.to_string(), guardrail_version.to_string());
         let gv = s.guardrail_versions.get(&key).ok_or_else(not_found_err)?;
-        Guardrail {
-            guardrail_id: gv.guardrail_id.clone(),
-            guardrail_arn: gv.guardrail_arn.clone(),
-            name: gv.name.clone(),
-            description: gv.description.clone(),
-            status: gv.status.clone(),
-            version: gv.version.clone(),
-            next_version_number: 0,
-            blocked_input_messaging: gv.blocked_input_messaging.clone(),
-            blocked_outputs_messaging: gv.blocked_outputs_messaging.clone(),
-            content_policy: gv.content_policy.clone(),
-            word_policy: gv.word_policy.clone(),
-            sensitive_information_policy: gv.sensitive_information_policy.clone(),
-            topic_policy: gv.topic_policy.clone(),
-            created_at: gv.created_at,
-            updated_at: gv.created_at,
-        }
+        GuardrailView::from_version(gv)
     };
 
     // Extract text from content blocks
@@ -362,7 +331,7 @@ pub fn apply_guardrail(
         }
     }
 
-    let assessments = evaluate_content(&temp_guardrail, &all_text);
+    let assessments = evaluate_content_view(&view, &all_text);
     let action = if assessments.is_empty() {
         "NONE"
     } else {
@@ -372,9 +341,9 @@ pub fn apply_guardrail(
     let source = input["source"].as_str().unwrap_or("INPUT");
     let outputs = if action == "GUARDRAIL_INTERVENED" {
         let msg = if source == "INPUT" {
-            &temp_guardrail.blocked_input_messaging
+            view.blocked_input_messaging
         } else {
-            &temp_guardrail.blocked_outputs_messaging
+            view.blocked_outputs_messaging
         };
         vec![json!({"text": msg})]
     } else {
@@ -411,13 +380,51 @@ pub fn apply_guardrail(
 
 // ── Content evaluation ─────────────────────────────────────────────
 
+/// Borrowed projection over the subset of a `Guardrail` or
+/// `GuardrailVersion` that content evaluation needs. Used instead of
+/// cloning 13 fields into a temporary `Guardrail` inside
+/// `apply_guardrail`.
+pub struct GuardrailView<'a> {
+    pub word_policy: Option<&'a Value>,
+    pub topic_policy: Option<&'a Value>,
+    pub sensitive_information_policy: Option<&'a Value>,
+    pub blocked_input_messaging: &'a str,
+    pub blocked_outputs_messaging: &'a str,
+}
+
+impl<'a> GuardrailView<'a> {
+    pub fn from_guardrail(g: &'a Guardrail) -> Self {
+        Self {
+            word_policy: g.word_policy.as_ref(),
+            topic_policy: g.topic_policy.as_ref(),
+            sensitive_information_policy: g.sensitive_information_policy.as_ref(),
+            blocked_input_messaging: &g.blocked_input_messaging,
+            blocked_outputs_messaging: &g.blocked_outputs_messaging,
+        }
+    }
+
+    pub fn from_version(gv: &'a GuardrailVersion) -> Self {
+        Self {
+            word_policy: gv.word_policy.as_ref(),
+            topic_policy: gv.topic_policy.as_ref(),
+            sensitive_information_policy: gv.sensitive_information_policy.as_ref(),
+            blocked_input_messaging: &gv.blocked_input_messaging,
+            blocked_outputs_messaging: &gv.blocked_outputs_messaging,
+        }
+    }
+}
+
 /// Evaluate content against a guardrail's configured policies.
 /// Returns a list of assessment results.
 pub fn evaluate_content(guardrail: &Guardrail, text: &str) -> Vec<Value> {
+    evaluate_content_view(&GuardrailView::from_guardrail(guardrail), text)
+}
+
+fn evaluate_content_view(guardrail: &GuardrailView<'_>, text: &str) -> Vec<Value> {
     let mut assessments = Vec::new();
 
     // Word policy evaluation
-    if let Some(ref word_policy) = guardrail.word_policy {
+    if let Some(word_policy) = guardrail.word_policy {
         if let Some(words) = word_policy.get("wordsConfig").and_then(|w| w.as_array()) {
             for word_entry in words {
                 if let Some(word) = word_entry["text"].as_str() {
@@ -462,7 +469,7 @@ pub fn evaluate_content(guardrail: &Guardrail, text: &str) -> Vec<Value> {
     }
 
     // Topic policy evaluation
-    if let Some(ref topic_policy) = guardrail.topic_policy {
+    if let Some(topic_policy) = guardrail.topic_policy {
         if let Some(topics) = topic_policy.get("topicsConfig").and_then(|t| t.as_array()) {
             for topic in topics {
                 let topic_name = topic["name"].as_str().unwrap_or("");
@@ -489,7 +496,7 @@ pub fn evaluate_content(guardrail: &Guardrail, text: &str) -> Vec<Value> {
     }
 
     // Sensitive information policy evaluation (PII detection)
-    if let Some(ref pii_policy) = guardrail.sensitive_information_policy {
+    if let Some(pii_policy) = guardrail.sensitive_information_policy {
         if let Some(pii_entities) = pii_policy
             .get("piiEntitiesConfig")
             .and_then(|p| p.as_array())
