@@ -84,7 +84,7 @@ pub async fn forward_request(
         status,
         content_type,
         headers,
-        body: Bytes::from(body_bytes.to_vec()),
+        body: Bytes::from(body_bytes.to_vec()).into(),
     })
 }
 

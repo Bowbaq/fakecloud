@@ -2,6 +2,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use http::{HeaderMap, Method, StatusCode};
 use std::collections::HashMap;
+use std::ops::Deref;
+use std::path::PathBuf;
 
 /// A parsed AWS request.
 #[derive(Debug)]
@@ -33,11 +35,98 @@ impl AwsRequest {
     }
 }
 
+/// A response body. Most handlers return [`ResponseBody::Bytes`] built from
+/// an in-memory [`Bytes`] buffer; the [`File`](ResponseBody::File) variant
+/// exists so large disk-backed objects can be streamed straight from the
+/// filesystem to the HTTP body without being materialized into RAM.
+#[derive(Debug)]
+pub enum ResponseBody {
+    Bytes(Bytes),
+    File { path: PathBuf, size: u64 },
+}
+
+impl ResponseBody {
+    pub fn len(&self) -> u64 {
+        match self {
+            ResponseBody::Bytes(b) => b.len() as u64,
+            ResponseBody::File { size, .. } => *size,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl Default for ResponseBody {
+    fn default() -> Self {
+        ResponseBody::Bytes(Bytes::new())
+    }
+}
+
+impl From<Bytes> for ResponseBody {
+    fn from(b: Bytes) -> Self {
+        ResponseBody::Bytes(b)
+    }
+}
+
+impl From<Vec<u8>> for ResponseBody {
+    fn from(v: Vec<u8>) -> Self {
+        ResponseBody::Bytes(Bytes::from(v))
+    }
+}
+
+impl From<&'static [u8]> for ResponseBody {
+    fn from(s: &'static [u8]) -> Self {
+        ResponseBody::Bytes(Bytes::from_static(s))
+    }
+}
+
+impl From<String> for ResponseBody {
+    fn from(s: String) -> Self {
+        ResponseBody::Bytes(Bytes::from(s))
+    }
+}
+
+impl From<&'static str> for ResponseBody {
+    fn from(s: &'static str) -> Self {
+        ResponseBody::Bytes(Bytes::from_static(s.as_bytes()))
+    }
+}
+
+/// Deref gives existing test code that does `&resp.body` a `&[u8]` view.
+/// File-variant responses appear empty to this view — tests only inspect
+/// in-memory bodies.
+impl Deref for ResponseBody {
+    type Target = [u8];
+    fn deref(&self) -> &Self::Target {
+        match self {
+            ResponseBody::Bytes(b) => b,
+            ResponseBody::File { .. } => &[],
+        }
+    }
+}
+
+impl AsRef<[u8]> for ResponseBody {
+    fn as_ref(&self) -> &[u8] {
+        self
+    }
+}
+
+impl PartialEq<Bytes> for ResponseBody {
+    fn eq(&self, other: &Bytes) -> bool {
+        match self {
+            ResponseBody::Bytes(b) => b == other,
+            ResponseBody::File { .. } => false,
+        }
+    }
+}
+
 /// A response from a service handler.
 pub struct AwsResponse {
     pub status: StatusCode,
     pub content_type: String,
-    pub body: Bytes,
+    pub body: ResponseBody,
     pub headers: HeaderMap,
 }
 
@@ -46,7 +135,7 @@ impl AwsResponse {
         Self {
             status,
             content_type: "text/xml".to_string(),
-            body: body.into(),
+            body: ResponseBody::Bytes(body.into()),
             headers: HeaderMap::new(),
         }
     }
@@ -55,7 +144,7 @@ impl AwsResponse {
         Self {
             status,
             content_type: "application/x-amz-json-1.1".to_string(),
-            body: body.into(),
+            body: ResponseBody::Bytes(body.into()),
             headers: HeaderMap::new(),
         }
     }

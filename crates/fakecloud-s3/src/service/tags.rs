@@ -153,9 +153,24 @@ impl S3Service {
             }
         }
 
-        // TODO(phase-4): snapshot-after-mutation for object tagging.
         if let Some(b2) = state.buckets.get(bucket) {
-            if let Some(obj) = b2.objects.get(key) {
+            if let Some(ref vid) = version_id {
+                let versioned = b2
+                    .object_versions
+                    .get(key)
+                    .and_then(|vs| vs.iter().find(|o| o.version_id.as_deref() == Some(vid)));
+                let target = versioned.or_else(|| {
+                    b2.objects
+                        .get(key)
+                        .filter(|o| o.version_id.as_deref() == Some(vid))
+                });
+                if let Some(obj) = target {
+                    let meta = object_meta_snapshot(obj);
+                    self.store
+                        .put_object_meta(bucket, key, Some(vid.as_str()), &meta)
+                        .map_err(super::persistence_error)?;
+                }
+            } else if let Some(obj) = b2.objects.get(key) {
                 let meta = object_meta_snapshot(obj);
                 self.store
                     .put_object_meta(bucket, key, meta.version_id.as_deref(), &meta)
@@ -165,7 +180,7 @@ impl S3Service {
         Ok(AwsResponse {
             status: StatusCode::OK,
             content_type: "application/xml".to_string(),
-            body: Bytes::new(),
+            body: Bytes::new().into(),
             headers: response_headers,
         })
     }
@@ -191,7 +206,7 @@ impl S3Service {
         Ok(AwsResponse {
             status: StatusCode::NO_CONTENT,
             content_type: "application/xml".to_string(),
-            body: Bytes::new(),
+            body: Bytes::new().into(),
             headers: HeaderMap::new(),
         })
     }

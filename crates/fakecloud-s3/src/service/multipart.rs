@@ -105,11 +105,14 @@ impl S3Service {
             acl_grants,
             checksum_algorithm,
         };
+        // Store-first: persist the MPU init before touching memory so a disk
+        // write failure short-circuits the handler cleanly without leaving an
+        // orphaned in-memory upload.
         let init_snapshot = mpu_init_snapshot(&upload);
-        b.multipart_uploads.insert(upload_id.clone(), upload);
         self.store
             .mpu_create(bucket, &upload_id, &init_snapshot)
             .map_err(super::persistence_error)?;
+        b.multipart_uploads.insert(upload_id.clone(), upload);
 
         let mut headers = HeaderMap::new();
         if let Some(algo) = &sse_algorithm {
@@ -183,14 +186,7 @@ impl S3Service {
             return Err(no_such_upload(upload_id));
         }
 
-        let part = UploadPart {
-            part_number: pn,
-            body: crate::state::memory_body(data.clone()),
-            etag: etag.clone(),
-            size: data.len() as u64,
-            last_modified: Utc::now(),
-        };
-        upload.parts.insert(pn, part);
+        // Store-first: durably write the part body before mutating memory.
         self.store
             .mpu_put_part(
                 bucket,
@@ -200,6 +196,14 @@ impl S3Service {
                 &etag,
             )
             .map_err(super::persistence_error)?;
+        let part = UploadPart {
+            part_number: pn,
+            body: crate::state::memory_body(data.clone()),
+            etag: etag.clone(),
+            size: data.len() as u64,
+            last_modified: Utc::now(),
+        };
+        upload.parts.insert(pn, part);
 
         let mut headers = HeaderMap::new();
         headers.insert("etag", format!("\"{etag}\"").parse().unwrap());
@@ -215,7 +219,7 @@ impl S3Service {
         Ok(AwsResponse {
             status: StatusCode::OK,
             content_type: "application/xml".to_string(),
-            body: Bytes::new(),
+            body: Bytes::new().into(),
             headers,
         })
     }
@@ -312,7 +316,16 @@ impl S3Service {
             return Err(no_such_upload(upload_id));
         }
 
-        let store_body = src_data.clone();
+        // Store-first: durably write before the in-memory part is visible.
+        self.store
+            .mpu_put_part(
+                bucket,
+                upload_id,
+                part_number as u32,
+                BodySource::Bytes(src_data.clone()),
+                &etag,
+            )
+            .map_err(super::persistence_error)?;
         let part = UploadPart {
             part_number: part_number as u32,
             body: crate::state::memory_body(src_data),
@@ -321,15 +334,6 @@ impl S3Service {
             last_modified: Utc::now(),
         };
         upload.parts.insert(part_number as u32, part);
-        self.store
-            .mpu_put_part(
-                bucket,
-                upload_id,
-                part_number as u32,
-                BodySource::Bytes(store_body),
-                &etag,
-            )
-            .map_err(super::persistence_error)?;
 
         let body = format!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
@@ -541,22 +545,32 @@ impl S3Service {
         };
         b.objects.insert(key.to_string(), obj);
         b.multipart_uploads.remove(upload_id);
-        if let Some(o) = b.objects.get(key) {
-            let meta = object_meta_snapshot(o);
-            self.store
-                .mpu_complete(bucket, upload_id, key, meta.version_id.as_deref(), &meta)
-                .map_err(super::persistence_error)?;
-            // TODO(phase-4): mpu_complete should consume the part files; for memory
-            // mode we also ensure the put_object seam is exercised.
-            self.store
-                .put_object(
-                    bucket,
-                    key,
-                    meta.version_id.as_deref(),
-                    BodySource::Bytes(store_body.clone()),
-                    &meta,
-                )
-                .map_err(super::persistence_error)?;
+        let meta = {
+            let o = b.objects.get(key).ok_or_else(|| no_such_key(key))?;
+            object_meta_snapshot(o)
+        };
+        self.store
+            .mpu_complete(bucket, upload_id, key, meta.version_id.as_deref(), &meta)
+            .map_err(super::persistence_error)?;
+        let returned_body = self
+            .store
+            .put_object(
+                bucket,
+                key,
+                meta.version_id.as_deref(),
+                BodySource::Bytes(store_body.clone()),
+                &meta,
+            )
+            .map_err(super::persistence_error)?;
+        if let Some(o) = b.objects.get_mut(key) {
+            o.body = returned_body.clone();
+        }
+        if b.versioning.as_deref() == Some("Enabled") {
+            if let Some(versions) = b.object_versions.get_mut(key) {
+                if let Some(last) = versions.last_mut() {
+                    last.body = returned_body;
+                }
+            }
         }
 
         let mut headers = HeaderMap::new();
@@ -614,15 +628,16 @@ impl S3Service {
             }
             _ => {}
         }
-        b.multipart_uploads.remove(upload_id);
+        // Store-first for consistency with other MPU ops.
         self.store
             .mpu_abort(bucket, upload_id)
             .map_err(super::persistence_error)?;
+        b.multipart_uploads.remove(upload_id);
 
         Ok(AwsResponse {
             status: StatusCode::NO_CONTENT,
             content_type: "application/xml".to_string(),
-            body: Bytes::new(),
+            body: Bytes::new().into(),
             headers: HeaderMap::new(),
         })
     }

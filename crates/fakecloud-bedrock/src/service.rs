@@ -1295,7 +1295,7 @@ impl AwsService for BedrockService {
                 Ok(AwsResponse {
                     status: http::StatusCode::OK,
                     content_type: "application/vnd.amazon.eventstream".to_string(),
-                    body: bytes::Bytes::from(body),
+                    body: bytes::Bytes::from(body).into(),
                     headers: http::HeaderMap::new(),
                 })
             }
@@ -1318,7 +1318,7 @@ impl AwsService for BedrockService {
                 Ok(AwsResponse {
                     status: http::StatusCode::OK,
                     content_type: "application/vnd.amazon.eventstream".to_string(),
-                    body: bytes::Bytes::from(body),
+                    body: bytes::Bytes::from(body).into(),
                     headers: http::HeaderMap::new(),
                 })
             }

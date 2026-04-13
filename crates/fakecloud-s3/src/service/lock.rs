@@ -71,8 +71,27 @@ impl S3Service {
             }
         }
 
+        // Snapshot the *specific* object that was just mutated — for a
+        // versioned put, that's the version in b.object_versions, not the
+        // current pointer.
         if let Some(b2) = state.buckets.get(bucket) {
-            if let Some(obj) = b2.objects.get(key) {
+            if let Some(ref vid) = version_id {
+                let versioned = b2
+                    .object_versions
+                    .get(key)
+                    .and_then(|vs| vs.iter().find(|o| o.version_id.as_deref() == Some(vid)));
+                let target = versioned.or_else(|| {
+                    b2.objects
+                        .get(key)
+                        .filter(|o| o.version_id.as_deref() == Some(vid))
+                });
+                if let Some(obj) = target {
+                    let meta = object_meta_snapshot(obj);
+                    self.store
+                        .put_object_meta(bucket, key, Some(vid.as_str()), &meta)
+                        .map_err(super::persistence_error)?;
+                }
+            } else if let Some(obj) = b2.objects.get(key) {
                 let meta = object_meta_snapshot(obj);
                 self.store
                     .put_object_meta(bucket, key, meta.version_id.as_deref(), &meta)
@@ -170,7 +189,23 @@ impl S3Service {
         }
 
         if let Some(b2) = state.buckets.get(bucket) {
-            if let Some(obj) = b2.objects.get(key) {
+            if let Some(ref vid) = version_id {
+                let versioned = b2
+                    .object_versions
+                    .get(key)
+                    .and_then(|vs| vs.iter().find(|o| o.version_id.as_deref() == Some(vid)));
+                let target = versioned.or_else(|| {
+                    b2.objects
+                        .get(key)
+                        .filter(|o| o.version_id.as_deref() == Some(vid))
+                });
+                if let Some(obj) = target {
+                    let meta = object_meta_snapshot(obj);
+                    self.store
+                        .put_object_meta(bucket, key, Some(vid.as_str()), &meta)
+                        .map_err(super::persistence_error)?;
+                }
+            } else if let Some(obj) = b2.objects.get(key) {
                 let meta = object_meta_snapshot(obj);
                 self.store
                     .put_object_meta(bucket, key, meta.version_id.as_deref(), &meta)

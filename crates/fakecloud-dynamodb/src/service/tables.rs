@@ -989,12 +989,47 @@ impl DynamoDbService {
         let mut export_failed = false;
         let mut failure_reason = String::new();
         if let Some(ref s3_state) = self.s3_state {
+            let body_bytes = bytes::Bytes::from(json_lines);
+            let etag = uuid::Uuid::new_v4().to_string().replace('-', "");
+            let meta = fakecloud_persistence::ObjectMeta {
+                key: s3_key.clone(),
+                content_type: "application/json".to_string(),
+                etag: etag.clone(),
+                size: data_size as u64,
+                last_modified: now,
+                storage_class: "STANDARD".to_string(),
+                ..Default::default()
+            };
+            // Persist through the S3 store (Disk in persistent mode, Memory
+            // otherwise) so the export survives restart and the in-memory
+            // runtime body is whatever the store returns.
+            let body_ref = if let Some(ref store) = self.s3_store {
+                match store.put_object(
+                    s3_bucket,
+                    &s3_key,
+                    None,
+                    fakecloud_persistence::BodySource::Bytes(body_bytes.clone()),
+                    &meta,
+                ) {
+                    Ok(bref) => bref,
+                    Err(err) => {
+                        tracing::error!(
+                            bucket = %s3_bucket,
+                            key = %s3_key,
+                            error = %err,
+                            "DynamoDB export: failed to persist result object via store",
+                        );
+                        fakecloud_persistence::BodyRef::Memory(body_bytes.clone())
+                    }
+                }
+            } else {
+                fakecloud_persistence::BodyRef::Memory(body_bytes.clone())
+            };
             let mut s3 = s3_state.write();
             if let Some(bucket) = s3.buckets.get_mut(s3_bucket) {
-                let etag = uuid::Uuid::new_v4().to_string().replace('-', "");
                 let obj = fakecloud_s3::state::S3Object {
                     key: s3_key.clone(),
-                    body: fakecloud_persistence::BodyRef::Memory(bytes::Bytes::from(json_lines)),
+                    body: body_ref,
                     content_type: "application/json".to_string(),
                     etag,
                     size: data_size as u64,

@@ -50,7 +50,7 @@ pub fn handle_preflight(cors_config: &CorsConfiguration, req: &AwsRequest) -> Aw
         status: StatusCode::NO_CONTENT,
         content_type: String::new(),
         headers,
-        body: Bytes::new(),
+        body: Bytes::new().into(),
     }
 }
 
@@ -214,7 +214,7 @@ mod tests {
             status: StatusCode::OK,
             content_type: "application/json".to_string(),
             headers: HeaderMap::new(),
-            body: Bytes::from(b"test".to_vec()),
+            body: Bytes::from(b"test".to_vec()).into(),
         };
 
         let response_with_cors = add_cors_headers(response, &cors_config);

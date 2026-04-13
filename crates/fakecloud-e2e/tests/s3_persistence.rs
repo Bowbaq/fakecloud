@@ -141,17 +141,21 @@ async fn persistence_round_trip_objects_with_metadata() {
             .any(|t| t.key() == "env" && t.value() == "prod"));
     }
 
-    let legal = client
+    let resp = client
         .get_object_legal_hold()
         .bucket("meta-bucket")
         .key("tagged.txt")
         .send()
-        .await;
-    if let Ok(resp) = legal {
-        if let Some(lh) = resp.legal_hold() {
-            assert_eq!(lh.status(), Some(&ObjectLockLegalHoldStatus::On));
-        }
-    }
+        .await
+        .expect("legal hold must round-trip across restart");
+    let lh = resp
+        .legal_hold()
+        .expect("legal hold struct must be present after restart");
+    assert_eq!(
+        lh.status(),
+        Some(&ObjectLockLegalHoldStatus::On),
+        "legal hold status must persist across restart",
+    );
 }
 
 #[tokio::test]

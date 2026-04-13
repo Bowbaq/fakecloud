@@ -21,10 +21,17 @@ impl BodyKey {
     }
 }
 
+/// Per-entry accounting overhead charged to each cache entry in addition to
+/// the raw body size. Without this, zero-length bodies accrue zero bytes
+/// against the capacity and a pathological flood of empty objects would grow
+/// the index unboundedly.
+const PER_ENTRY_OVERHEAD: u64 = 128;
+
 #[derive(Debug)]
 struct Node {
     key: BodyKey,
     bytes: Bytes,
+    charged: u64,
     prev: Option<usize>,
     next: Option<usize>,
 }
@@ -102,7 +109,7 @@ impl Inner {
         self.detach(idx);
         let node = self.nodes[idx].take().unwrap();
         self.free.push(idx);
-        self.used_bytes -= node.bytes.len() as u64;
+        self.used_bytes = self.used_bytes.saturating_sub(node.charged);
         self.index.remove(&node.key);
         node
     }
@@ -134,11 +141,13 @@ impl Inner {
         if size > self.single_object_cap {
             return;
         }
-        self.evict_until_fits(size);
-        self.used_bytes += size;
+        let charged = size.saturating_add(PER_ENTRY_OVERHEAD);
+        self.evict_until_fits(charged);
+        self.used_bytes += charged;
         let node = Node {
             key: key.clone(),
             bytes,
+            charged,
             prev: None,
             next: None,
         };
@@ -216,7 +225,7 @@ mod tests {
         let c = BodyCache::new(1024);
         c.insert(k("a"), mk(100));
         assert_eq!(c.get(&k("a")).unwrap().len(), 100);
-        assert_eq!(c.used_bytes(), 100);
+        assert_eq!(c.used_bytes(), 100 + PER_ENTRY_OVERHEAD);
     }
 
     #[test]
@@ -224,13 +233,14 @@ mod tests {
         let c = BodyCache::new(1024);
         c.insert(k("a"), mk(100));
         c.insert(k("a"), mk(50));
-        assert_eq!(c.used_bytes(), 50);
+        assert_eq!(c.used_bytes(), 50 + PER_ENTRY_OVERHEAD);
         assert_eq!(c.len(), 1);
     }
 
     #[test]
     fn lru_eviction_on_capacity_pressure() {
-        let c = BodyCache::new(300);
+        // Capacity 3 * (100 + overhead) so exactly three entries fit.
+        let c = BodyCache::new(3 * (100 + PER_ENTRY_OVERHEAD));
         c.insert(k("a"), mk(100));
         c.insert(k("b"), mk(100));
         c.insert(k("c"), mk(100));
@@ -241,6 +251,25 @@ mod tests {
         assert!(c.get(&k("a")).is_some());
         assert!(c.get(&k("c")).is_some());
         assert!(c.get(&k("d")).is_some());
+    }
+
+    #[test]
+    fn empty_bodies_still_evict_under_entry_overhead() {
+        // 1 MiB capacity: with 128 bytes of overhead per entry, the cache can
+        // hold at most ~4096 zero-length entries before eviction kicks in.
+        // Insert 10_000 distinct empty keys and assert the index is bounded.
+        let c = BodyCache::new(1024 * 1024);
+        for i in 0..10_000 {
+            c.insert(k(&format!("empty-{i}")), Bytes::new());
+        }
+        let max_entries = (1024 * 1024 / PER_ENTRY_OVERHEAD) as usize;
+        assert!(
+            c.len() <= max_entries,
+            "cache must evict empty bodies: len={} max={}",
+            c.len(),
+            max_entries
+        );
+        assert!(c.used_bytes() <= 1024 * 1024);
     }
 
     #[test]
@@ -260,7 +289,7 @@ mod tests {
 
     #[test]
     fn get_promotes_to_mru() {
-        let c = BodyCache::new(300);
+        let c = BodyCache::new(3 * (100 + PER_ENTRY_OVERHEAD));
         c.insert(k("a"), mk(100));
         c.insert(k("b"), mk(100));
         c.insert(k("c"), mk(100));

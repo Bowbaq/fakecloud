@@ -45,6 +45,16 @@ pub fn escape_key_segment(segment: &str) -> String {
         return "@empty".to_string();
     }
 
+    // Reject `.` and `..` as directory names — they would escape the parent
+    // objects/ directory on disk. Substitute with @dot/@dotdot sentinels
+    // (same '@' prefix guarantee as @empty).
+    if encoded == "." {
+        return "@dot".to_string();
+    }
+    if encoded == ".." {
+        return "@dotdot".to_string();
+    }
+
     if encoded.len() <= MAX_SEGMENT_BYTES {
         return encoded;
     }
@@ -138,6 +148,16 @@ mod tests {
         let ea = escape_key_segment(&a);
         let eb = escape_key_segment(&b);
         assert_ne!(ea, eb);
+    }
+
+    #[test]
+    fn dot_and_dotdot_get_sentinels() {
+        assert_eq!(escape_key_segment("."), "@dot");
+        assert_eq!(escape_key_segment(".."), "@dotdot");
+        // A user key that literally equals the sentinels cannot collide:
+        // `@` is escaped as `%40`.
+        assert_eq!(escape_key_segment("@dot"), "%40dot");
+        assert_eq!(escape_key_segment("@dotdot"), "%40dotdot");
     }
 
     #[test]

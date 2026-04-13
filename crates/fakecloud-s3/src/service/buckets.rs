@@ -130,7 +130,7 @@ impl S3Service {
                 return Ok(AwsResponse {
                     status: StatusCode::OK,
                     content_type: "application/xml".to_string(),
-                    body: Bytes::new(),
+                    body: Bytes::new().into(),
                     headers,
                 });
             }
@@ -190,7 +190,7 @@ impl S3Service {
         Ok(AwsResponse {
             status: StatusCode::OK,
             content_type: "application/xml".to_string(),
-            body: Bytes::new(),
+            body: Bytes::new().into(),
             headers,
         })
     }
@@ -223,7 +223,7 @@ impl S3Service {
         Ok(AwsResponse {
             status: StatusCode::NO_CONTENT,
             content_type: "application/xml".to_string(),
-            body: Bytes::new(),
+            body: Bytes::new().into(),
             headers: HeaderMap::new(),
         })
     }
@@ -240,7 +240,7 @@ impl S3Service {
         Ok(AwsResponse {
             status: StatusCode::OK,
             content_type: "application/xml".to_string(),
-            body: Bytes::new(),
+            body: Bytes::new().into(),
             headers: HeaderMap::new(),
         })
     }

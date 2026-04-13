@@ -444,11 +444,10 @@ async fn main() {
     registry.register(Arc::new(
         SsmService::new(ssm_state).with_secretsmanager(secretsmanager_state.clone()),
     ));
-    registry.register(Arc::new(
-        DynamoDbService::new(dynamodb_state.clone())
-            .with_s3(s3_state.clone())
-            .with_delivery(delivery_for_dynamodb),
-    ));
+    // DynamoDB is registered later, after s3_store is constructed, so the
+    // export path can persist result objects through the S3 store.
+    let dynamodb_state_for_register = dynamodb_state.clone();
+    let delivery_for_dynamodb_register = delivery_for_dynamodb;
     let mut lambda_service = LambdaService::new(lambda_state.clone());
     if let Some(ref rt) = container_runtime {
         lambda_service = lambda_service.with_runtime(rt.clone());
@@ -529,7 +528,14 @@ async fn main() {
         s3_state.write().set_body_cache(cache.clone());
     }
     registry.register(Arc::new(
-        S3Service::with_store(s3_state.clone(), delivery_for_s3, s3_store).with_kms(kms_state),
+        S3Service::with_store(s3_state.clone(), delivery_for_s3, s3_store.clone())
+            .with_kms(kms_state),
+    ));
+    registry.register(Arc::new(
+        DynamoDbService::new(dynamodb_state_for_register)
+            .with_s3(s3_state.clone())
+            .with_s3_store(s3_store.clone())
+            .with_delivery(delivery_for_dynamodb_register),
     ));
     // SES delivery bus (event fanout to SNS topics and EventBridge buses)
     let eb_delivery_for_ses = Arc::new(

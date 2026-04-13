@@ -12,7 +12,7 @@ pub fn create_mock_response() -> AwsResponse {
         status: StatusCode::OK,
         content_type: "application/json".to_string(),
         headers,
-        body: Bytes::from(br#"{"message":"This is a mock response"}"#.to_vec()),
+        body: Bytes::from(br#"{"message":"This is a mock response"}"#.to_vec()).into(),
     }
 }
 

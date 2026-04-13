@@ -624,7 +624,14 @@ impl S3Store for DiskS3Store {
                                 sz,
                             )
                         } else {
-                            (BodyRef::Memory(Bytes::new()), 0u64)
+                            // Fail loud: the sidecar says this object has a
+                            // body but the .bin file is missing. Returning
+                            // silently would hand the caller a truncated
+                            // object and hide data loss.
+                            return Err(StoreError::Other(format!(
+                                "missing body file: {}",
+                                bin_path.display()
+                            )));
                         };
                         let _ = size;
                         key_name.get_or_insert_with(|| obj_meta.key.clone());
@@ -646,6 +653,26 @@ impl S3Store for DiskS3Store {
                     if !versioned.is_empty() {
                         versioned.sort_by(|a, b| a.meta.last_modified.cmp(&b.meta.last_modified));
                         if let Some(key) = key_name {
+                            // Promote the most recent non-delete-marker version
+                            // into snap.objects so unversioned GETs after
+                            // restart see the current object, matching runtime
+                            // semantics where DeleteObject creates a marker
+                            // that hides the object and a subsequent PutObject
+                            // clears it.
+                            if !snap.objects.contains_key(&key) {
+                                let latest_live =
+                                    versioned.iter().rev().find(|v| !v.meta.is_delete_marker);
+                                if let Some(live) = latest_live {
+                                    // Only promote if the *newest* version is
+                                    // also live — a trailing delete marker
+                                    // hides the object until another put.
+                                    if let Some(newest) = versioned.last() {
+                                        if !newest.meta.is_delete_marker {
+                                            snap.objects.insert(key.clone(), live.clone());
+                                        }
+                                    }
+                                }
+                            }
                             snap.object_versions.insert(key, versioned);
                         }
                     }
@@ -1512,6 +1539,93 @@ mod disk_tests {
     }
 
     #[test]
+    fn versioned_load_promotes_latest_live_to_snap_objects() {
+        let tmp = TempDir::new().unwrap();
+        let store = new_store(&tmp);
+        store
+            .put_bucket_meta(
+                "b",
+                &BucketMeta {
+                    name: "b".to_string(),
+                    versioning: Some("Enabled".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let base = chrono::Utc::now();
+        for (i, (vid, body)) in [("v1", "one"), ("v2", "two"), ("v3", "three")]
+            .iter()
+            .enumerate()
+        {
+            let mut m = sample_meta("k", body.len() as u64);
+            m.version_id = Some((*vid).to_string());
+            m.last_modified = base + chrono::Duration::seconds(i as i64);
+            store
+                .put_object(
+                    "b",
+                    "k",
+                    Some(*vid),
+                    BodySource::Bytes(Bytes::copy_from_slice(body.as_bytes())),
+                    &m,
+                )
+                .unwrap();
+        }
+        let loaded = store.load().unwrap();
+        let snap = loaded.buckets.get("b").unwrap();
+        let current = snap.objects.get("k").expect("current object promoted");
+        assert_eq!(current.meta.version_id.as_deref(), Some("v3"));
+    }
+
+    #[test]
+    fn versioned_load_trailing_delete_marker_hides_current() {
+        let tmp = TempDir::new().unwrap();
+        let store = new_store(&tmp);
+        store
+            .put_bucket_meta(
+                "b",
+                &BucketMeta {
+                    name: "b".to_string(),
+                    versioning: Some("Enabled".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let base = chrono::Utc::now();
+        for (i, (vid, body)) in [("v1", "one"), ("v2", "two"), ("v3", "three")]
+            .iter()
+            .enumerate()
+        {
+            let mut m = sample_meta("k", body.len() as u64);
+            m.version_id = Some((*vid).to_string());
+            m.last_modified = base + chrono::Duration::seconds(i as i64);
+            store
+                .put_object(
+                    "b",
+                    "k",
+                    Some(*vid),
+                    BodySource::Bytes(Bytes::copy_from_slice(body.as_bytes())),
+                    &m,
+                )
+                .unwrap();
+        }
+        // Append a delete marker on top.
+        let mut dm = sample_meta("k", 0);
+        dm.version_id = Some("dm1".to_string());
+        dm.is_delete_marker = true;
+        dm.last_modified = base + chrono::Duration::seconds(10);
+        store
+            .put_object("b", "k", Some("dm1"), BodySource::Bytes(Bytes::new()), &dm)
+            .unwrap();
+        let loaded = store.load().unwrap();
+        let snap = loaded.buckets.get("b").unwrap();
+        assert!(
+            !snap.objects.contains_key("k"),
+            "trailing delete marker must hide current object",
+        );
+        assert_eq!(snap.object_versions.get("k").unwrap().len(), 4);
+    }
+
+    #[test]
     fn delete_marker_roundtrip_no_body_file() {
         let tmp = TempDir::new().unwrap();
         let store = new_store(&tmp);
@@ -1606,7 +1720,12 @@ mod disk_tests {
         assert_eq!(a.objects.len(), 1);
         assert!(a.object_versions.is_empty());
         let b = loaded.buckets.get("b").unwrap();
-        assert!(b.objects.is_empty());
+        // Fix #5: the latest live version is promoted into objects so
+        // unversioned GETs see it post-restart.
+        assert_eq!(
+            b.objects.get("twice").unwrap().meta.version_id.as_deref(),
+            Some("v2")
+        );
         assert_eq!(b.object_versions.get("twice").unwrap().len(), 2);
     }
 

@@ -27,8 +27,11 @@ mod objects;
 mod tags;
 
 // Re-export notification helpers for use in sub-modules
+#[cfg(test)]
+use notifications::replicate_object;
 pub(super) use notifications::{
-    deliver_notifications, normalize_notification_ids, normalize_replication_xml, replicate_object,
+    deliver_notifications, normalize_notification_ids, normalize_replication_xml,
+    replicate_through_store,
 };
 
 // Used only within this file (parse_cors_config)
@@ -279,7 +282,7 @@ impl AwsService for S3Service {
                         return Ok(AwsResponse {
                             status: StatusCode::OK,
                             content_type: String::new(),
-                            body: Bytes::new(),
+                            body: Bytes::new().into(),
                             headers,
                         });
                     }
@@ -1100,7 +1103,7 @@ pub(crate) fn s3_xml(status: StatusCode, body: impl Into<Bytes>) -> AwsResponse 
     AwsResponse {
         status,
         content_type: "application/xml".to_string(),
-        body: body.into(),
+        body: body.into().into(),
         headers: HeaderMap::new(),
     }
 }
@@ -1109,7 +1112,7 @@ pub(crate) fn empty_response(status: StatusCode) -> AwsResponse {
     AwsResponse {
         status,
         content_type: "application/xml".to_string(),
-        body: Bytes::new(),
+        body: Bytes::new().into(),
         headers: HeaderMap::new(),
     }
 }

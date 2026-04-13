@@ -211,7 +211,8 @@ pub(crate) fn parse_replication_rules(xml: &str) -> Vec<ReplicationRule> {
 }
 
 /// Replicate an object to destination buckets based on replication configuration.
-/// Called after storing an object in a bucket that has replication enabled.
+/// Kept for tests only; production paths use [`replicate_through_store`].
+#[cfg(test)]
 pub(crate) fn replicate_object(state: &mut crate::state::S3State, source_bucket: &str, key: &str) {
     let replication_config = match state.buckets.get(source_bucket) {
         Some(b) => match &b.replication_config {
@@ -256,6 +257,96 @@ pub(crate) fn replicate_object(state: &mut crate::state::S3State, source_bucket:
             dest_bucket.objects.insert(key.to_string(), replica);
         }
     }
+}
+
+/// Replicate an object to destination buckets AND persist the replica through
+/// the S3 store so disk-mode restarts see it. Called from PutObject/CopyObject
+/// write paths. Replaces the in-memory BodyRef of each replica with the one
+/// returned by `put_object` (Disk in persistent mode, Memory otherwise).
+pub(crate) fn replicate_through_store(
+    state: &mut crate::state::S3State,
+    store: &std::sync::Arc<dyn fakecloud_persistence::S3Store>,
+    source_bucket: &str,
+    key: &str,
+) -> fakecloud_persistence::StoreResult<()> {
+    let replication_config = match state.buckets.get(source_bucket) {
+        Some(b) => match &b.replication_config {
+            Some(config) => config.clone(),
+            None => return Ok(()),
+        },
+        None => return Ok(()),
+    };
+
+    let rules = parse_replication_rules(&replication_config);
+    let src_obj = match state
+        .buckets
+        .get(source_bucket)
+        .and_then(|b| b.objects.get(key))
+    {
+        Some(obj) => obj.clone(),
+        None => return Ok(()),
+    };
+
+    // Read source bytes once (outside of per-destination persist).
+    let src_bytes = state
+        .read_body(&src_obj.body)
+        .map_err(fakecloud_persistence::StoreError::Io)?;
+
+    for rule in &rules {
+        if rule.status != "Enabled" {
+            continue;
+        }
+        if !key.starts_with(&rule.prefix) {
+            continue;
+        }
+        let dest_bucket_name = rule.dest_bucket.clone();
+        let (dest_version_id, dest_meta) = {
+            let Some(dest_bucket) = state.buckets.get_mut(&dest_bucket_name) else {
+                continue;
+            };
+            let mut replica = src_obj.clone();
+            replica.storage_class = "STANDARD".to_string();
+            if dest_bucket.versioning.as_deref() == Some("Enabled") {
+                let vid = uuid::Uuid::new_v4().to_string();
+                replica.version_id = Some(vid.clone());
+                replica.body = crate::state::memory_body(src_bytes.clone());
+                dest_bucket
+                    .object_versions
+                    .entry(key.to_string())
+                    .or_default()
+                    .push(replica.clone());
+                dest_bucket.objects.insert(key.to_string(), replica.clone());
+                (
+                    Some(vid),
+                    crate::persistence::object_meta_snapshot(&replica),
+                )
+            } else {
+                replica.version_id = None;
+                replica.body = crate::state::memory_body(src_bytes.clone());
+                dest_bucket.objects.insert(key.to_string(), replica.clone());
+                (None, crate::persistence::object_meta_snapshot(&replica))
+            }
+        };
+
+        let returned = store.put_object(
+            &dest_bucket_name,
+            key,
+            dest_version_id.as_deref(),
+            fakecloud_persistence::BodySource::Bytes(src_bytes.clone()),
+            &dest_meta,
+        )?;
+        if let Some(dest_bucket) = state.buckets.get_mut(&dest_bucket_name) {
+            if let Some(o) = dest_bucket.objects.get_mut(key) {
+                o.body = returned.clone();
+            }
+            if let Some(versions) = dest_bucket.object_versions.get_mut(key) {
+                if let Some(last) = versions.last_mut() {
+                    last.body = returned;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Build an S3 event notification JSON payload.

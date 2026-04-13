@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use crate::protocol::{self, AwsProtocol};
 use crate::registry::ServiceRegistry;
-use crate::service::AwsRequest;
+use crate::service::{AwsRequest, ResponseBody};
 
 /// The main dispatch handler. All HTTP requests come through here.
 pub async fn dispatch(
@@ -19,7 +19,13 @@ pub async fn dispatch(
     let request_id = uuid::Uuid::new_v4().to_string();
 
     let (parts, body) = request.into_parts();
-    let body_bytes = match axum::body::to_bytes(body, 5 * 1024 * 1024 * 1024).await {
+    // TODO: plumb streaming request bodies end-to-end to remove the cap.
+    // 128 MiB comfortably covers every legitimate single-PutObject (AWS
+    // recommends multipart above ~100 MiB) and each multipart part is
+    // dispatched through here separately, so a 20 GiB upload stays under this
+    // limit per-request.
+    const MAX_BODY_BYTES: usize = 128 * 1024 * 1024;
+    let body_bytes = match axum::body::to_bytes(body, MAX_BODY_BYTES).await {
         Ok(b) => b,
         Err(_) => {
             return build_error_response(
@@ -168,7 +174,33 @@ pub async fn dispatch(
                 builder = builder.header(k, v);
             }
 
-            builder.body(Body::from(resp.body)).unwrap()
+            match resp.body {
+                ResponseBody::Bytes(b) => builder.body(Body::from(b)).unwrap(),
+                ResponseBody::File { path, size } => match tokio::fs::File::open(&path).await {
+                    Ok(f) => {
+                        let stream = tokio_util::io::ReaderStream::new(f);
+                        let body = Body::from_stream(stream);
+                        builder
+                            .header("content-length", size.to_string())
+                            .body(body)
+                            .unwrap()
+                    }
+                    Err(err) => {
+                        tracing::error!(
+                            path = %path.display(),
+                            error = %err,
+                            "failed to open response body file",
+                        );
+                        build_error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "InternalError",
+                            &format!("failed to open response body file: {err}"),
+                            &request_id,
+                            detected.protocol,
+                        )
+                    }
+                },
+            }
         }
         Err(err) => {
             tracing::warn!(

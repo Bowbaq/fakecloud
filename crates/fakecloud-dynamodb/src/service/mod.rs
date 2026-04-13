@@ -16,6 +16,7 @@ use serde_json::{json, Value};
 use fakecloud_core::delivery::DeliveryBus;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
 
+use fakecloud_persistence::S3Store;
 use fakecloud_s3::state::SharedS3State;
 
 use crate::state::{
@@ -38,7 +39,8 @@ pub(super) struct KinesisDeliveryTarget {
 
 pub struct DynamoDbService {
     state: SharedDynamoDbState,
-    s3_state: Option<SharedS3State>,
+    pub(crate) s3_state: Option<SharedS3State>,
+    pub(crate) s3_store: Option<Arc<dyn S3Store>>,
     delivery: Option<Arc<DeliveryBus>>,
 }
 
@@ -47,12 +49,18 @@ impl DynamoDbService {
         Self {
             state,
             s3_state: None,
+            s3_store: None,
             delivery: None,
         }
     }
 
     pub fn with_s3(mut self, s3_state: SharedS3State) -> Self {
         self.s3_state = Some(s3_state);
+        self
+    }
+
+    pub fn with_s3_store(mut self, store: Arc<dyn S3Store>) -> Self {
+        self.s3_store = Some(store);
         self
     }
 
