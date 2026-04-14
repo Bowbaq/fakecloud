@@ -1548,7 +1548,13 @@ fn parse_update_clauses(expr: &str) -> Vec<(UpdateAction, Vec<String>)> {
             expr.len()
         };
         let content = expr[start..end].trim();
-        let assignments: Vec<String> = content.split(',').map(|s| s.trim().to_string()).collect();
+        // Use a paren-aware split so that function-call arguments such as
+        // `list_append(#a, :b)` are kept as a single assignment rather than
+        // being torn apart at the inner comma.
+        let assignments: Vec<String> = split_on_top_level_keyword(content, ",")
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .collect();
         clauses.push((action, assignments));
     }
 
@@ -2574,6 +2580,36 @@ mod tests {
         assert_eq!(clauses.len(), 2);
         assert_eq!(clauses[0].0, UpdateAction::Set);
         assert_eq!(clauses[1].0, UpdateAction::Remove);
+    }
+
+    #[test]
+    fn test_parse_update_clauses_list_append_single_assignment() {
+        // Before fix: naive comma split tore list_append(#0, :0) at the
+        // inner comma, producing two bogus assignments instead of one.
+        let clauses = parse_update_clauses("SET #0 = list_append(#0, :0)");
+        assert_eq!(clauses.len(), 1);
+        assert_eq!(clauses[0].0, UpdateAction::Set);
+        assert_eq!(
+            clauses[0].1.len(),
+            1,
+            "list_append(a, b) must be kept as a single assignment, not split at the inner comma"
+        );
+    }
+
+    #[test]
+    fn test_parse_update_clauses_list_append_mixed_with_plain_set() {
+        // list_append assignment followed by a plain SET — the comma between
+        // the two assignments must still split them, while the comma inside
+        // the list_append call must not.
+        let clauses =
+            parse_update_clauses("SET #0 = list_append(#0, :new), #1 = :other");
+        assert_eq!(clauses.len(), 1);
+        assert_eq!(clauses[0].0, UpdateAction::Set);
+        assert_eq!(
+            clauses[0].1.len(),
+            2,
+            "two SET assignments: one list_append and one plain"
+        );
     }
 
     #[test]
@@ -4642,6 +4678,111 @@ mod tests {
             .unwrap();
         assert_eq!(tags[0].get("S").and_then(|s| s.as_str()), Some("red"));
         assert_eq!(tags[1].get("S").and_then(|s| s.as_str()), Some("green"));
+    }
+
+    #[test]
+    fn test_list_append_into_empty_list() {
+        // Regression: UpdateItem with `SET #0 = list_append(#0, :0)` where
+        // the attribute already exists as an empty list silently no-oped.
+        // Root cause: parse_update_clauses split `list_append(#0, :0)` at
+        // the inner comma, so apply_set_list_append received a truncated
+        // `rest` with no closing ')' and returned early without writing.
+        let mut item = HashMap::new();
+        item.insert("files".to_string(), json!({"L": []}));
+
+        let names = cond_names(&[("#0", "files")]);
+        let mut values = HashMap::new();
+        values.insert(
+            ":0".to_string(),
+            json!({"L": [{"M": {"field": {"S": "value"}}}]}),
+        );
+
+        apply_update_expression(
+            &mut item,
+            "SET #0 = list_append(#0, :0)",
+            &names,
+            &values,
+        )
+        .unwrap();
+
+        let list = item
+            .get("files")
+            .and_then(|v| v.get("L"))
+            .and_then(|v| v.as_array())
+            .expect("files should be an L-typed attribute");
+        assert_eq!(list.len(), 1, "one element should have been appended");
+    }
+
+    #[test]
+    fn test_list_append_into_nonempty_list() {
+        // Verifies the same fix works when the existing list already has elements.
+        let mut item = HashMap::new();
+        item.insert(
+            "files".to_string(),
+            json!({"L": [{"M": {"field": {"S": "existing"}}}]}),
+        );
+
+        let names = cond_names(&[("#0", "files")]);
+        let mut values = HashMap::new();
+        values.insert(
+            ":0".to_string(),
+            json!({"L": [{"M": {"field": {"S": "new"}}}]}),
+        );
+
+        apply_update_expression(
+            &mut item,
+            "SET #0 = list_append(#0, :0)",
+            &names,
+            &values,
+        )
+        .unwrap();
+
+        let list = item
+            .get("files")
+            .and_then(|v| v.get("L"))
+            .and_then(|v| v.as_array())
+            .expect("files should be an L-typed attribute");
+        assert_eq!(list.len(), 2, "existing element plus one new element");
+    }
+
+    #[test]
+    fn test_list_append_combined_with_plain_set() {
+        // Verifies that a mixed expression like
+        // `SET #a = list_append(#a, :v), #b = :other` correctly applies
+        // both assignments after the paren-aware comma split fix.
+        let mut item = HashMap::new();
+        item.insert("logs".to_string(), json!({"L": []}));
+        item.insert("count".to_string(), json!({"N": "0"}));
+
+        let names = cond_names(&[("#a", "logs"), ("#b", "count")]);
+        let mut values = HashMap::new();
+        values.insert(
+            ":v".to_string(),
+            json!({"L": [{"S": "entry"}]}),
+        );
+        values.insert(":other".to_string(), json!({"N": "1"}));
+
+        apply_update_expression(
+            &mut item,
+            "SET #a = list_append(#a, :v), #b = :other",
+            &names,
+            &values,
+        )
+        .unwrap();
+
+        let list = item
+            .get("logs")
+            .and_then(|v| v.get("L"))
+            .and_then(|v| v.as_array())
+            .expect("logs should be an L-typed attribute");
+        assert_eq!(list.len(), 1, "one log entry appended");
+
+        let count = item
+            .get("count")
+            .and_then(|v| v.get("N"))
+            .and_then(|v| v.as_str())
+            .expect("count should be an N-typed attribute");
+        assert_eq!(count, "1", "count updated to 1");
     }
 
     #[test]
