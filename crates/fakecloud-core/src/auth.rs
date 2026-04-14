@@ -330,7 +330,10 @@ mod tests {
         // malformed or unexpected ARNs bypass IAM enforcement, since
         // Principal::is_root short-circuits evaluation. The fallback must
         // be the non-bypassable Unknown variant.
-        assert_eq!(PrincipalType::from_arn("not-an-arn"), PrincipalType::Unknown);
+        assert_eq!(
+            PrincipalType::from_arn("not-an-arn"),
+            PrincipalType::Unknown
+        );
         assert_eq!(PrincipalType::from_arn(""), PrincipalType::Unknown);
         assert_eq!(
             PrincipalType::from_arn("arn:aws:iam::123456789012:something-weird"),
