@@ -174,7 +174,7 @@ Use fakecloud as a local AWS emulator for integration tests.
 - **[Getting started](https://fakecloud.dev/docs/getting-started)** — install, first test, SDK setup
 - **[Guides](https://fakecloud.dev/docs/guides)** — in-depth how-tos (testing Bedrock, cross-service integration, CI setup)
 - **[Reference](https://fakecloud.dev/docs/reference)** — configuration, introspection endpoints, persistence
-- **[Blog](https://fakecloud.dev/blog)** — release notes, deep dives, announcements
+- **[Blog](https://fakecloud.dev/blog)** — essays and hot takes on testing, AWS, and AI-assisted development
 
 ## Contributing
 
