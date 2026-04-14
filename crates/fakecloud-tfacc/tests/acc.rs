@@ -28,6 +28,11 @@ async fn run_service(name: &str) {
 }
 
 #[tokio::test]
+async fn iam_acceptance() {
+    run_service("iam").await;
+}
+
+#[tokio::test]
 async fn ssm_acceptance() {
     run_service("ssm").await;
 }
