@@ -2598,3 +2598,65 @@ async fn dynamodb_kinesis_streaming_delivers_records() {
     assert_eq!(remove_event["eventName"], "REMOVE");
     assert!(remove_event["dynamodb"]["OldImage"].is_object());
 }
+
+#[tokio::test]
+async fn dynamodb_deletion_protection_blocks_delete_table() {
+    // Regression guard for `TestAccDynamoDBTable_deletion_protection`:
+    // CreateTable accepts `DeletionProtectionEnabled`, DescribeTable
+    // returns it, UpdateTable can toggle it, and DeleteTable refuses
+    // with `ResourceInUseException` while it's enabled.
+    let server = TestServer::start().await;
+    let client = server.dynamodb_client().await;
+
+    client
+        .create_table()
+        .table_name("Protected")
+        .key_schema(
+            KeySchemaElement::builder()
+                .attribute_name("pk")
+                .key_type(KeyType::Hash)
+                .build()
+                .unwrap(),
+        )
+        .attribute_definitions(
+            AttributeDefinition::builder()
+                .attribute_name("pk")
+                .attribute_type(ScalarAttributeType::S)
+                .build()
+                .unwrap(),
+        )
+        .billing_mode(BillingMode::PayPerRequest)
+        .deletion_protection_enabled(true)
+        .send()
+        .await
+        .unwrap();
+
+    let desc = client
+        .describe_table()
+        .table_name("Protected")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        desc.table().unwrap().deletion_protection_enabled(),
+        Some(true)
+    );
+
+    let err = client.delete_table().table_name("Protected").send().await;
+    assert!(err.is_err(), "DeleteTable should refuse while protected");
+
+    // Disable protection via UpdateTable; delete now succeeds.
+    client
+        .update_table()
+        .table_name("Protected")
+        .deletion_protection_enabled(false)
+        .send()
+        .await
+        .unwrap();
+    client
+        .delete_table()
+        .table_name("Protected")
+        .send()
+        .await
+        .unwrap();
+}

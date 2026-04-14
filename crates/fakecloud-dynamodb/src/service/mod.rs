@@ -1979,6 +1979,7 @@ pub(super) struct TableDescriptionInput<'a> {
     pub item_count: i64,
     pub size_bytes: i64,
     pub status: &'a str,
+    pub deletion_protection_enabled: bool,
 }
 
 fn build_table_description_json(input: &TableDescriptionInput<'_>) -> Value {
@@ -1995,6 +1996,7 @@ fn build_table_description_json(input: &TableDescriptionInput<'_>) -> Value {
         item_count,
         size_bytes,
         status,
+        deletion_protection_enabled,
     } = *input;
     let table_name = arn.rsplit('/').next().unwrap_or("");
     let creation_timestamp =
@@ -2021,6 +2023,7 @@ fn build_table_description_json(input: &TableDescriptionInput<'_>) -> Value {
         "ItemCount": item_count,
         "TableSizeBytes": size_bytes,
         "BillingModeSummary": { "BillingMode": billing_mode },
+        "DeletionProtectionEnabled": deletion_protection_enabled,
     });
 
     if billing_mode != "PAY_PER_REQUEST" {
@@ -2126,6 +2129,7 @@ fn build_table_description(table: &DynamoTable) -> Value {
         item_count: table.item_count,
         size_bytes: table.size_bytes,
         status: &table.status,
+        deletion_protection_enabled: table.deletion_protection_enabled,
     });
 
     // Add stream specification if streams are enabled

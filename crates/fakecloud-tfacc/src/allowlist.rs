@@ -205,8 +205,6 @@ pub const SERVICES: &[Service] = &[
             "TestAccDynamoDBTable_Disappears_payPerRequestWithGSI",
             // --- gap: GSI capacity update ---
             "TestAccDynamoDBTable_gsiUpdateCapacity",
-            // --- gap: deletion_protection attribute not yet implemented ---
-            "TestAccDynamoDBTable_deletion_protection",
             // --- gap: encryption attribute round-trip ---
             "TestAccDynamoDBTable_encryption",
             // --- hung: did not complete in triage run; revisit in a later batch ---

@@ -38,6 +38,14 @@ impl DynamoDbService {
         let key_schema = parse_key_schema(&body["KeySchema"])?;
         let attribute_definitions = parse_attribute_definitions(&body["AttributeDefinitions"])?;
 
+        if key_schema.is_empty() {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "ValidationException",
+                "KeySchema must contain at least one element",
+            ));
+        }
+
         // Validate that key schema attributes are defined
         for ks in &key_schema {
             if !attribute_definitions
@@ -99,6 +107,11 @@ impl DynamoDbService {
             } else {
                 (false, None)
             };
+
+        let deletion_protection_enabled = body
+            .get("DeletionProtectionEnabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         // Parse SSESpecification
         let (sse_type, sse_kms_key_arn) = if let Some(sse_spec) = body.get("SSESpecification") {
@@ -180,6 +193,7 @@ impl DynamoDbService {
             stream_records: Arc::new(RwLock::new(Vec::new())),
             sse_type,
             sse_kms_key_arn,
+            deletion_protection_enabled,
         };
 
         let table_id = table.table_id.clone();
@@ -198,6 +212,7 @@ impl DynamoDbService {
             item_count: 0,
             size_bytes: 0,
             status: "ACTIVE",
+            deletion_protection_enabled,
         });
 
         Self::ok_json(json!({ "TableDescription": table_desc }))
@@ -208,6 +223,21 @@ impl DynamoDbService {
         let table_name = require_str(&body, "TableName")?;
 
         let mut state = self.state.write();
+        // Refuse if deletion protection is enabled (real AWS returns
+        // ResourceInUseException with this message).
+        if state
+            .tables
+            .get(table_name)
+            .is_some_and(|t| t.deletion_protection_enabled)
+        {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "ResourceInUseException",
+                format!(
+                    "Table '{table_name}' can't be deleted while DeletionProtection is enabled"
+                ),
+            ));
+        }
         let table = state.tables.remove(table_name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -229,6 +259,7 @@ impl DynamoDbService {
             item_count: table.item_count,
             size_bytes: table.size_bytes,
             status: "DELETING",
+            deletion_protection_enabled: table.deletion_protection_enabled,
         });
 
         Self::ok_json(json!({ "TableDescription": table_desc }))
@@ -315,6 +346,13 @@ impl DynamoDbService {
             table.billing_mode = bm.to_string();
         }
 
+        if let Some(dpe) = body
+            .get("DeletionProtectionEnabled")
+            .and_then(|v| v.as_bool())
+        {
+            table.deletion_protection_enabled = dpe;
+        }
+
         // Handle SSESpecification update
         if let Some(sse_spec) = body.get("SSESpecification") {
             let enabled = sse_spec
@@ -352,6 +390,7 @@ impl DynamoDbService {
             item_count: table.item_count,
             size_bytes: table.size_bytes,
             status: &table.status,
+            deletion_protection_enabled: table.deletion_protection_enabled,
         });
 
         Self::ok_json(json!({ "TableDescription": table_desc }))
@@ -780,6 +819,8 @@ impl DynamoDbService {
             stream_records: Arc::new(RwLock::new(Vec::new())),
             sse_type: None,
             sse_kms_key_arn: None,
+
+            deletion_protection_enabled: false,
         };
         table.recalculate_stats();
 
@@ -858,6 +899,8 @@ impl DynamoDbService {
             stream_records: Arc::new(RwLock::new(Vec::new())),
             sse_type: None,
             sse_kms_key_arn: None,
+
+            deletion_protection_enabled: false,
         };
         table.recalculate_stats();
 
@@ -1322,6 +1365,8 @@ impl DynamoDbService {
             stream_records: Arc::new(RwLock::new(Vec::new())),
             sse_type: None,
             sse_kms_key_arn: None,
+
+            deletion_protection_enabled: false,
         };
         table.recalculate_stats();
         state.tables.insert(table_name.to_string(), table);
