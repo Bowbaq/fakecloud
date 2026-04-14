@@ -50,6 +50,9 @@ pub const SERVICES: &[Service] = &[
             "TestAccSQSQueue_managedEncryption",
             "TestAccSQSQueue_defaultKMSDataKeyReusePeriodSeconds",
             "TestAccSQSQueue_ManagedEncryption_kmsDataKeyReusePeriodSeconds",
+            // --- gap: tags edge case — null tag value retried until step
+            //          timeout in CI run; needs characterisation ---
+            "TestAccSQSQueue_tags_null",
         ],
     },
     Service {

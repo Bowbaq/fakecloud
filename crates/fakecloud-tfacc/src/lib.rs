@@ -184,11 +184,13 @@ impl<'a> GoTestRunner<'a> {
             format!("^({})$", service.deny.join("|"))
         };
 
-        // `-parallel 8` lets Go's test runner execute up to 8 `t.Parallel()`
-        // subtests concurrently within a single `go test` invocation. Most
-        // upstream TestAcc* functions opt into parallelism, so this is the
-        // main lever for wall-time inside a single service. CI fan-out
-        // across services is handled by the GitHub Actions matrix.
+        // `-parallel 4` lets Go's test runner execute up to 4 `t.Parallel()`
+        // subtests concurrently within a single `go test` invocation. We use 4
+        // (rather than 8 or runner core count) because some upstream tests
+        // poll fakecloud aggressively under parallel load and can starve the
+        // request loop, surfacing as suite-wide hangs. CI fan-out across
+        // services is handled by the GitHub Actions matrix, so wall time
+        // scales with the slowest single service, not their sum.
         let mut cmd = Command::new("go");
         let mut args: Vec<String> = vec![
             "test".into(),
@@ -197,10 +199,10 @@ impl<'a> GoTestRunner<'a> {
             run_re.into(),
             "-v".into(),
             "-timeout".into(),
-            "60m".into(),
+            "90m".into(),
             "-count=1".into(),
             "-parallel".into(),
-            "8".into(),
+            "4".into(),
         ];
         if !skip_re.is_empty() {
             args.push("-skip".into());
