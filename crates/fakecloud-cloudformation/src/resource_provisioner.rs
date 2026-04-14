@@ -746,6 +746,7 @@ impl ResourceProvisioner {
             index_policies: Vec::new(),
             transformer: None,
             deletion_protection: false,
+            log_group_class: Some("STANDARD".to_string()),
         };
 
         state

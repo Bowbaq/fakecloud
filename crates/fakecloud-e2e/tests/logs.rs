@@ -2463,3 +2463,33 @@ async fn logs_subscription_filter_streams_to_kinesis() {
     assert_eq!(log_events[0]["message"], "event one");
     assert_eq!(log_events[1]["message"], "event two");
 }
+
+#[tokio::test]
+async fn logs_describe_log_groups_returns_log_group_class() {
+    // Regression guard for `TestAccLogsGroup_basic`: real AWS
+    // DescribeLogGroups always returns `logGroupClass` (defaulting to
+    // STANDARD), and Terraform's `aws_cloudwatch_log_group` provider
+    // asserts on the value. Omitting it surfaces as `expected STANDARD
+    // got ""` drift on every refresh.
+    let server = TestServer::start().await;
+    let client = server.logs_client().await;
+
+    client
+        .create_log_group()
+        .log_group_name("class-default")
+        .send()
+        .await
+        .unwrap();
+    let resp = client
+        .describe_log_groups()
+        .log_group_name_prefix("class-default")
+        .send()
+        .await
+        .unwrap();
+    let groups = resp.log_groups();
+    assert_eq!(groups.len(), 1);
+    assert_eq!(
+        groups[0].log_group_class(),
+        Some(&aws_sdk_cloudwatchlogs::types::LogGroupClass::Standard)
+    );
+}

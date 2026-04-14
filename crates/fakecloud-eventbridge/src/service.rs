@@ -3943,6 +3943,7 @@ pub fn deliver_to_logs(
             index_policies: Vec::new(),
             transformer: None,
             deletion_protection: false,
+            log_group_class: Some("STANDARD".to_string()),
         });
 
     let stream = group
