@@ -5,7 +5,7 @@ use axum::response::Response;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::auth::{is_root_bypass, CredentialResolver, IamMode};
+use crate::auth::{is_root_bypass, CredentialResolver, IamMode, IamPolicyEvaluator};
 use crate::protocol::{self, AwsProtocol};
 use crate::registry::ServiceRegistry;
 use crate::service::{AwsRequest, ResponseBody};
@@ -273,6 +273,67 @@ pub async fn dispatch(
         "handling request"
     );
 
+    // Opt-in IAM identity-policy enforcement. Runs before the service
+    // handler so a deny never reaches business logic. Root principals
+    // (both `test*` bypass AKIDs and the account's IAM root) are exempt,
+    // matching AWS behavior. Services that haven't opted in via
+    // `iam_enforceable()` are transparently skipped — the startup log
+    // lists which services are under enforcement so users always know.
+    if config.iam_mode.is_enabled()
+        && service.iam_enforceable()
+        && !is_root_bypass(aws_request.access_key_id.as_deref().unwrap_or(""))
+    {
+        if let Some(evaluator) = config.policy_evaluator.as_ref() {
+            if let Some(principal) = aws_request.principal.as_ref() {
+                if !principal.is_root() {
+                    if let Some(iam_action) = service.iam_action_for(&aws_request) {
+                        let decision = evaluator.evaluate(principal, &iam_action);
+                        if !decision.is_allow() {
+                            tracing::warn!(
+                                target: "fakecloud::iam::audit",
+                                service = %detected.service,
+                                action = %iam_action.action_string(),
+                                resource = %iam_action.resource,
+                                principal = %principal.arn,
+                                decision = ?decision,
+                                mode = %config.iam_mode,
+                                request_id = %request_id,
+                                "IAM policy evaluation denied request"
+                            );
+                            if config.iam_mode.is_strict() {
+                                return build_error_response(
+                                    StatusCode::FORBIDDEN,
+                                    "AccessDeniedException",
+                                    &format!(
+                                        "User: {} is not authorized to perform: {} on resource: {}",
+                                        principal.arn,
+                                        iam_action.action_string(),
+                                        iam_action.resource
+                                    ),
+                                    &request_id,
+                                    detected.protocol,
+                                );
+                            }
+                            // Soft mode: audit log already emitted; fall
+                            // through to the handler.
+                        }
+                    } else {
+                        // Service opted in but didn't return an IamAction
+                        // for this specific operation — programming bug,
+                        // surface it loudly in soft/strict mode so it's
+                        // visible during rollout.
+                        tracing::warn!(
+                            target: "fakecloud::iam::audit",
+                            service = %detected.service,
+                            action = %aws_request.action,
+                            "service is iam_enforceable but has no IamAction mapping for this action; skipping evaluation"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     match service.handle(aws_request).await {
         Ok(resp) => {
             let mut builder = Response::builder()
@@ -352,6 +413,10 @@ pub struct DispatchConfig {
     /// Required when `verify_sigv4` or `iam_mode != Off`. When `None`, both
     /// features gracefully degrade to off-by-default behavior.
     pub credential_resolver: Option<Arc<dyn CredentialResolver>>,
+    /// Evaluates IAM identity policies for a resolved principal + action.
+    /// Required when `iam_mode != Off`. When `None`, enforcement silently
+    /// degrades to off even if `iam_mode` is set.
+    pub policy_evaluator: Option<Arc<dyn IamPolicyEvaluator>>,
 }
 
 impl std::fmt::Debug for DispatchConfig {
@@ -368,6 +433,13 @@ impl std::fmt::Debug for DispatchConfig {
                     .as_ref()
                     .map(|_| "<CredentialResolver>"),
             )
+            .field(
+                "policy_evaluator",
+                &self
+                    .policy_evaluator
+                    .as_ref()
+                    .map(|_| "<IamPolicyEvaluator>"),
+            )
             .finish()
     }
 }
@@ -382,6 +454,7 @@ impl DispatchConfig {
             verify_sigv4: false,
             iam_mode: IamMode::Off,
             credential_resolver: None,
+            policy_evaluator: None,
         }
     }
 }
@@ -473,6 +546,7 @@ mod tests {
             verify_sigv4: true,
             iam_mode: IamMode::Strict,
             credential_resolver: None,
+            policy_evaluator: None,
         };
         assert!(cfg.verify_sigv4);
         assert!(cfg.iam_mode.is_strict());

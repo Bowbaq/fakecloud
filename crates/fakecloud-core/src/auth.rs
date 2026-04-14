@@ -140,6 +140,59 @@ pub trait CredentialResolver: Send + Sync {
     fn resolve(&self, access_key_id: &str) -> Option<ResolvedCredential>;
 }
 
+/// One IAM action that the dispatch layer should evaluate against the
+/// caller's effective policy set.
+///
+/// Produced by [`crate::service::AwsService::iam_action_for`] on services
+/// that opt into enforcement. The `resource` is a fully-qualified AWS ARN
+/// built from `request.principal.account_id` so multi-account isolation
+/// (#381) becomes a state-partitioning change rather than a cross-cutting
+/// rewrite.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IamAction {
+    /// IAM service prefix, e.g. `"s3"`, `"sqs"`, `"iam"`.
+    pub service: &'static str,
+    /// AWS action name, e.g. `"GetObject"`, `"SendMessage"`.
+    pub action: &'static str,
+    /// Fully-qualified ARN of the target resource.
+    pub resource: String,
+}
+
+impl IamAction {
+    /// Compose the canonical `service:Action` string the evaluator
+    /// matches against.
+    pub fn action_string(&self) -> String {
+        format!("{}:{}", self.service, self.action)
+    }
+}
+
+/// Result of evaluating a request against an identity's effective policy
+/// set. Abstract over the concrete evaluator [`Decision`] in
+/// `fakecloud-iam::evaluator` so `fakecloud-core` can consume it without
+/// depending on `fakecloud-iam`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IamDecision {
+    Allow,
+    ImplicitDeny,
+    ExplicitDeny,
+}
+
+impl IamDecision {
+    pub fn is_allow(self) -> bool {
+        matches!(self, IamDecision::Allow)
+    }
+}
+
+/// Abstraction over "given a principal and an action, say Allow / Deny".
+/// Implemented by `fakecloud-iam` against `IamState` + the Phase 1
+/// evaluator. Dispatch calls this for every request when
+/// `FAKECLOUD_IAM != off` and the target service opts into enforcement.
+pub trait IamPolicyEvaluator: Send + Sync {
+    /// Evaluate `action` against the identity policies attached to
+    /// `principal`.
+    fn evaluate(&self, principal: &Principal, action: &IamAction) -> IamDecision;
+}
+
 /// How IAM identity policies are evaluated for incoming requests.
 ///
 /// Default is [`IamMode::Off`] — existing behavior, policies are stored but
