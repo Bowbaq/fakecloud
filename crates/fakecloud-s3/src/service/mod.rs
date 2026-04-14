@@ -671,6 +671,429 @@ impl AwsService for S3Service {
             "ListMultipartUploads",
         ]
     }
+
+    fn iam_enforceable(&self) -> bool {
+        true
+    }
+
+    /// S3 resources are either:
+    /// - Bucket ARN (`arn:aws:s3:::bucket`) for bucket-level actions
+    /// - Object ARN (`arn:aws:s3:::bucket/key`) for object-level actions
+    /// - Wildcard (`*`) for `ListBuckets` which doesn't target a specific
+    ///   resource
+    ///
+    /// S3 ARNs notably omit the account id and region — this is the one
+    /// AWS service that carries neither in its ARN, because bucket names
+    /// are globally unique.
+    fn iam_action_for(&self, request: &AwsRequest) -> Option<fakecloud_core::auth::IamAction> {
+        // S3 doesn't set `request.action` — the handler dispatches on
+        // method + path + query params directly. Re-derive the action
+        // name here so enforcement can match against IAM policies the
+        // same way the real service would.
+        let bucket = request.path_segments.first().map(|s| s.as_str());
+        let key = if request.path_segments.len() > 1 {
+            Some(request.path_segments[1..].join("/"))
+        } else {
+            None
+        };
+        let action = s3_detect_action(
+            request.method.as_str(),
+            bucket,
+            key.as_deref(),
+            &request.query_params,
+        )?;
+        let resource = s3_resource_for(action, bucket, key.as_deref());
+        Some(fakecloud_core::auth::IamAction {
+            service: "s3",
+            action,
+            resource,
+        })
+    }
+}
+
+/// Derive the IAM action name from an S3 REST request. Handles the
+/// common cases (GetObject, PutObject, DeleteObject, ListObjectsV2,
+/// CreateBucket, ...) plus a subset of sub-resource operations
+/// (`?acl`, `?tagging`, `?versioning`, `?policy`, `?cors`, `?website`,
+/// `?lifecycle`, `?encryption`, `?logging`, `?notification`, `?replication`,
+/// `?ownershipControls`, `?publicAccessBlock`, `?accelerate`, `?inventory`,
+/// `?object-lock`, `?uploads`, `?uploadId`).
+///
+/// Returns `None` for requests that don't map to a known action — the
+/// dispatch layer then skips enforcement for that request rather than
+/// guessing (and a warn log fires via the "service is iam_enforceable
+/// but has no mapping" branch in dispatch.rs).
+fn s3_detect_action(
+    method: &str,
+    bucket: Option<&str>,
+    key: Option<&str>,
+    query: &std::collections::HashMap<String, String>,
+) -> Option<&'static str> {
+    let has = |q: &str| query.contains_key(q);
+    let is_get = method == "GET";
+    let is_put = method == "PUT";
+    let is_post = method == "POST";
+    let is_delete = method == "DELETE";
+
+    // Service root
+    if bucket.is_none() {
+        return match method {
+            "GET" => Some("ListBuckets"),
+            _ => None,
+        };
+    }
+    let has_key = key.is_some();
+
+    // Multipart sub-resource forms
+    if has_key && is_post && has("uploads") {
+        return Some("CreateMultipartUpload");
+    }
+    if has_key && is_post && has("uploadId") {
+        return Some("CompleteMultipartUpload");
+    }
+    if has_key && is_put && has("partNumber") && has("uploadId") {
+        return Some("UploadPart");
+    }
+    if has_key && is_delete && has("uploadId") {
+        return Some("AbortMultipartUpload");
+    }
+    if has_key && is_get && has("uploadId") {
+        return Some("ListParts");
+    }
+    if !has_key && is_get && has("uploads") {
+        return Some("ListMultipartUploads");
+    }
+
+    // Sub-resource-keyed actions (?acl, ?tagging, ...). Order matters
+    // since a request can carry multiple; we pick the most specific.
+    // Object-level sub-resources come first (key present).
+    if has_key {
+        if has("tagging") {
+            return Some(match method {
+                "GET" => "GetObjectTagging",
+                "PUT" => "PutObjectTagging",
+                "DELETE" => "DeleteObjectTagging",
+                _ => return None,
+            });
+        }
+        if has("acl") {
+            return Some(match method {
+                "GET" => "GetObjectAcl",
+                "PUT" => "PutObjectAcl",
+                _ => return None,
+            });
+        }
+        if has("retention") {
+            return Some(match method {
+                "GET" => "GetObjectRetention",
+                "PUT" => "PutObjectRetention",
+                _ => return None,
+            });
+        }
+        if has("legal-hold") {
+            return Some(match method {
+                "GET" => "GetObjectLegalHold",
+                "PUT" => "PutObjectLegalHold",
+                _ => return None,
+            });
+        }
+        if has("attributes") {
+            return Some("GetObjectAttributes");
+        }
+        if has("restore") {
+            return Some("RestoreObject");
+        }
+    }
+
+    // Bucket-level sub-resources (key absent).
+    if !has_key {
+        if has("tagging") {
+            return Some(match method {
+                "GET" => "GetBucketTagging",
+                "PUT" => "PutBucketTagging",
+                "DELETE" => "DeleteBucketTagging",
+                _ => return None,
+            });
+        }
+        if has("acl") {
+            return Some(match method {
+                "GET" => "GetBucketAcl",
+                "PUT" => "PutBucketAcl",
+                _ => return None,
+            });
+        }
+        if has("versioning") {
+            return Some(match method {
+                "GET" => "GetBucketVersioning",
+                "PUT" => "PutBucketVersioning",
+                _ => return None,
+            });
+        }
+        if has("cors") {
+            return Some(match method {
+                "GET" => "GetBucketCors",
+                "PUT" => "PutBucketCors",
+                "DELETE" => "DeleteBucketCors",
+                _ => return None,
+            });
+        }
+        if has("policy") {
+            return Some(match method {
+                "GET" => "GetBucketPolicy",
+                "PUT" => "PutBucketPolicy",
+                "DELETE" => "DeleteBucketPolicy",
+                _ => return None,
+            });
+        }
+        if has("website") {
+            return Some(match method {
+                "GET" => "GetBucketWebsite",
+                "PUT" => "PutBucketWebsite",
+                "DELETE" => "DeleteBucketWebsite",
+                _ => return None,
+            });
+        }
+        if has("lifecycle") {
+            return Some(match method {
+                "GET" => "GetBucketLifecycleConfiguration",
+                "PUT" => "PutBucketLifecycleConfiguration",
+                "DELETE" => "DeleteBucketLifecycle",
+                _ => return None,
+            });
+        }
+        if has("encryption") {
+            return Some(match method {
+                "GET" => "GetBucketEncryption",
+                "PUT" => "PutBucketEncryption",
+                "DELETE" => "DeleteBucketEncryption",
+                _ => return None,
+            });
+        }
+        if has("logging") {
+            return Some(match method {
+                "GET" => "GetBucketLogging",
+                "PUT" => "PutBucketLogging",
+                _ => return None,
+            });
+        }
+        if has("notification") {
+            return Some(match method {
+                "GET" => "GetBucketNotificationConfiguration",
+                "PUT" => "PutBucketNotificationConfiguration",
+                _ => return None,
+            });
+        }
+        if has("replication") {
+            return Some(match method {
+                "GET" => "GetBucketReplication",
+                "PUT" => "PutBucketReplication",
+                "DELETE" => "DeleteBucketReplication",
+                _ => return None,
+            });
+        }
+        if has("ownershipControls") {
+            return Some(match method {
+                "GET" => "GetBucketOwnershipControls",
+                "PUT" => "PutBucketOwnershipControls",
+                "DELETE" => "DeleteBucketOwnershipControls",
+                _ => return None,
+            });
+        }
+        if has("publicAccessBlock") {
+            return Some(match method {
+                "GET" => "GetPublicAccessBlock",
+                "PUT" => "PutPublicAccessBlock",
+                "DELETE" => "DeletePublicAccessBlock",
+                _ => return None,
+            });
+        }
+        if has("accelerate") {
+            return Some(match method {
+                "GET" => "GetBucketAccelerateConfiguration",
+                "PUT" => "PutBucketAccelerateConfiguration",
+                _ => return None,
+            });
+        }
+        if has("inventory") {
+            return Some(match method {
+                "GET" => "GetBucketInventoryConfiguration",
+                "PUT" => "PutBucketInventoryConfiguration",
+                "DELETE" => "DeleteBucketInventoryConfiguration",
+                _ => return None,
+            });
+        }
+        if has("object-lock") {
+            return Some(match method {
+                "GET" => "GetObjectLockConfiguration",
+                "PUT" => "PutObjectLockConfiguration",
+                _ => return None,
+            });
+        }
+        if has("location") {
+            return Some("GetBucketLocation");
+        }
+        if is_post && has("delete") {
+            return Some("DeleteObjects");
+        }
+        if is_get && has("versions") {
+            return Some("ListObjectVersions");
+        }
+    }
+
+    // Plain bucket/object methods.
+    match (method, has_key) {
+        ("GET", true) => Some("GetObject"),
+        ("PUT", true) => {
+            // CopyObject uses x-amz-copy-source but we don't have headers
+            // handy here — treat both PutObject and CopyObject as PutObject
+            // for IAM purposes; CopyObject additionally requires
+            // s3:GetObject on the source but that's evaluated per-request
+            // by real AWS, not on the PUT call itself.
+            Some("PutObject")
+        }
+        ("DELETE", true) => Some("DeleteObject"),
+        ("HEAD", true) => Some("HeadObject"),
+        ("GET", false) => {
+            if query.contains_key("list-type") {
+                Some("ListObjectsV2")
+            } else {
+                Some("ListObjects")
+            }
+        }
+        ("PUT", false) => Some("CreateBucket"),
+        ("DELETE", false) => Some("DeleteBucket"),
+        ("HEAD", false) => Some("HeadBucket"),
+        _ => None,
+    }
+}
+
+/// Full list of S3 actions whose resource ARNs are classified by
+/// [`s3_resource_for`]. Not referenced at runtime (S3's action name is
+/// derived from method + path in [`s3_detect_action`]), but kept as a
+/// documented inventory so future work can easily enumerate the
+/// enforcement surface.
+#[allow(dead_code)]
+const S3_SUPPORTED_ACTIONS: &[&str] = &[
+    "ListBuckets",
+    "CreateBucket",
+    "DeleteBucket",
+    "HeadBucket",
+    "GetBucketLocation",
+    "PutObject",
+    "GetObject",
+    "DeleteObject",
+    "HeadObject",
+    "CopyObject",
+    "DeleteObjects",
+    "ListObjectsV2",
+    "ListObjects",
+    "ListObjectVersions",
+    "GetObjectAttributes",
+    "RestoreObject",
+    "PutObjectTagging",
+    "GetObjectTagging",
+    "DeleteObjectTagging",
+    "PutObjectAcl",
+    "GetObjectAcl",
+    "PutObjectRetention",
+    "GetObjectRetention",
+    "PutObjectLegalHold",
+    "GetObjectLegalHold",
+    "PutBucketTagging",
+    "GetBucketTagging",
+    "DeleteBucketTagging",
+    "PutBucketAcl",
+    "GetBucketAcl",
+    "PutBucketVersioning",
+    "GetBucketVersioning",
+    "PutBucketCors",
+    "GetBucketCors",
+    "DeleteBucketCors",
+    "PutBucketNotificationConfiguration",
+    "GetBucketNotificationConfiguration",
+    "PutBucketWebsite",
+    "GetBucketWebsite",
+    "DeleteBucketWebsite",
+    "PutBucketAccelerateConfiguration",
+    "GetBucketAccelerateConfiguration",
+    "PutPublicAccessBlock",
+    "GetPublicAccessBlock",
+    "DeletePublicAccessBlock",
+    "PutBucketEncryption",
+    "GetBucketEncryption",
+    "DeleteBucketEncryption",
+    "PutBucketLifecycleConfiguration",
+    "GetBucketLifecycleConfiguration",
+    "DeleteBucketLifecycle",
+    "PutBucketLogging",
+    "GetBucketLogging",
+    "PutBucketPolicy",
+    "GetBucketPolicy",
+    "DeleteBucketPolicy",
+    "PutObjectLockConfiguration",
+    "GetObjectLockConfiguration",
+    "PutBucketReplication",
+    "GetBucketReplication",
+    "DeleteBucketReplication",
+    "PutBucketOwnershipControls",
+    "GetBucketOwnershipControls",
+    "DeleteBucketOwnershipControls",
+    "PutBucketInventoryConfiguration",
+    "GetBucketInventoryConfiguration",
+    "DeleteBucketInventoryConfiguration",
+    "CreateMultipartUpload",
+    "UploadPart",
+    "UploadPartCopy",
+    "CompleteMultipartUpload",
+    "AbortMultipartUpload",
+    "ListParts",
+    "ListMultipartUploads",
+];
+
+/// Build the S3 resource ARN for an action. Returns `*` for
+/// `ListBuckets` (account-scoped), a bucket ARN for bucket-level
+/// configuration actions, or an object ARN for object-level actions.
+fn s3_resource_for(action: &'static str, bucket: Option<&str>, key: Option<&str>) -> String {
+    // Object-level actions work on `bucket/key`.
+    const OBJECT_ACTIONS: &[&str] = &[
+        "PutObject",
+        "GetObject",
+        "DeleteObject",
+        "HeadObject",
+        "CopyObject",
+        "GetObjectAttributes",
+        "RestoreObject",
+        "PutObjectTagging",
+        "GetObjectTagging",
+        "DeleteObjectTagging",
+        "PutObjectAcl",
+        "GetObjectAcl",
+        "PutObjectRetention",
+        "GetObjectRetention",
+        "PutObjectLegalHold",
+        "GetObjectLegalHold",
+        "CreateMultipartUpload",
+        "UploadPart",
+        "UploadPartCopy",
+        "CompleteMultipartUpload",
+        "AbortMultipartUpload",
+        "ListParts",
+    ];
+    if action == "ListBuckets" {
+        return "*".to_string();
+    }
+    let Some(bucket) = bucket else {
+        return "*".to_string();
+    };
+    if OBJECT_ACTIONS.contains(&action) {
+        match key {
+            Some(k) if !k.is_empty() => format!("arn:aws:s3:::{}/{}", bucket, k),
+            _ => format!("arn:aws:s3:::{}/*", bucket),
+        }
+    } else {
+        // Bucket-level actions (ListObjectsV2, GetBucketTagging, ...).
+        format!("arn:aws:s3:::{}", bucket)
+    }
 }
 
 // Conditional request helpers

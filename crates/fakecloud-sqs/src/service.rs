@@ -420,6 +420,83 @@ impl AwsService for SqsService {
             "ListDeadLetterSourceQueues",
         ]
     }
+
+    fn iam_enforceable(&self) -> bool {
+        true
+    }
+
+    /// SQS resources are queue ARNs of the form
+    /// `arn:{partition}:sqs:{region}:{account}:{queue-name}`. The queue
+    /// name is carried differently depending on the action: queue-targeted
+    /// calls pass a `QueueUrl` that we parse to extract the final path
+    /// segment; `CreateQueue` and `GetQueueUrl` carry a `QueueName`
+    /// parameter instead. Account-level actions (`ListQueues`) target
+    /// `*`.
+    fn iam_action_for(&self, request: &AwsRequest) -> Option<fakecloud_core::auth::IamAction> {
+        static ACTIONS: &[&str] = &[
+            "CreateQueue",
+            "DeleteQueue",
+            "ListQueues",
+            "GetQueueUrl",
+            "GetQueueAttributes",
+            "SetQueueAttributes",
+            "SendMessage",
+            "SendMessageBatch",
+            "ReceiveMessage",
+            "DeleteMessage",
+            "DeleteMessageBatch",
+            "PurgeQueue",
+            "ChangeMessageVisibility",
+            "ChangeMessageVisibilityBatch",
+            "ListQueueTags",
+            "TagQueue",
+            "UntagQueue",
+            "AddPermission",
+            "RemovePermission",
+            "ListDeadLetterSourceQueues",
+        ];
+        let action = ACTIONS.iter().copied().find(|a| *a == request.action)?;
+        let body = parse_body(request);
+        let account = request
+            .principal
+            .as_ref()
+            .map(|p| p.account_id.as_str())
+            .unwrap_or(request.account_id.as_str());
+        let resource = sqs_resource_for(action, account, &request.region, &body);
+        Some(fakecloud_core::auth::IamAction {
+            service: "sqs",
+            action,
+            resource,
+        })
+    }
+}
+
+/// Build the SQS resource ARN for an incoming action. Returns `*` for
+/// account-level actions or when the queue can't be identified from the
+/// request.
+fn sqs_resource_for(action: &str, account: &str, region: &str, body: &Value) -> String {
+    let partition = if region.starts_with("cn-") {
+        "aws-cn"
+    } else if region.starts_with("us-gov-") {
+        "aws-us-gov"
+    } else {
+        "aws"
+    };
+    let queue_arn = |name: &str| format!("arn:{}:sqs:{}:{}:{}", partition, region, account, name);
+    match action {
+        "ListQueues" => "*".to_string(),
+        "CreateQueue" | "GetQueueUrl" => body
+            .get("QueueName")
+            .and_then(|v| v.as_str())
+            .map(queue_arn)
+            .unwrap_or_else(|| "*".to_string()),
+        _ => body
+            .get("QueueUrl")
+            .and_then(|v| v.as_str())
+            .and_then(|url| url.rsplit('/').next())
+            .map(queue_arn)
+            .unwrap_or_else(|| "*".to_string()),
+    }
 }
 
 /// Parse the request body. SQS supports both JSON protocol (modern SDKs like aws-sdk-rust)

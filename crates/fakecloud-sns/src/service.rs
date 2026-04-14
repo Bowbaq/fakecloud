@@ -128,44 +128,117 @@ impl AwsService for SnsService {
     }
 
     fn supported_actions(&self) -> &[&str] {
-        &[
-            "CreateTopic",
-            "DeleteTopic",
-            "ListTopics",
-            "GetTopicAttributes",
-            "SetTopicAttributes",
-            "Subscribe",
-            "ConfirmSubscription",
-            "Unsubscribe",
-            "Publish",
-            "PublishBatch",
-            "ListSubscriptions",
-            "ListSubscriptionsByTopic",
-            "GetSubscriptionAttributes",
-            "SetSubscriptionAttributes",
-            "TagResource",
-            "UntagResource",
-            "ListTagsForResource",
-            "AddPermission",
-            "RemovePermission",
-            "CreatePlatformApplication",
-            "DeletePlatformApplication",
-            "GetPlatformApplicationAttributes",
-            "SetPlatformApplicationAttributes",
-            "ListPlatformApplications",
-            "CreatePlatformEndpoint",
-            "DeleteEndpoint",
-            "GetEndpointAttributes",
-            "SetEndpointAttributes",
-            "ListEndpointsByPlatformApplication",
-            "SetSMSAttributes",
-            "GetSMSAttributes",
-            "CheckIfPhoneNumberIsOptedOut",
-            "ListPhoneNumbersOptedOut",
-            "OptInPhoneNumber",
-        ]
+        SNS_SUPPORTED_ACTIONS
+    }
+
+    fn iam_enforceable(&self) -> bool {
+        true
+    }
+
+    /// SNS resources are topic / subscription / platform-app / endpoint
+    /// ARNs. Topic-targeted actions carry a `TopicArn`; subscription
+    /// actions carry a `SubscriptionArn`; platform-app actions carry
+    /// `PlatformApplicationArn`; endpoint actions carry `EndpointArn`.
+    /// Listing and account-scoped actions target `*`.
+    fn iam_action_for(&self, request: &AwsRequest) -> Option<fakecloud_core::auth::IamAction> {
+        let action = SNS_SUPPORTED_ACTIONS
+            .iter()
+            .copied()
+            .find(|a| *a == request.action)?;
+        let resource = match action {
+            "CreateTopic" => {
+                // The soon-to-be-created topic ARN is derivable from the
+                // principal's account and the `Name` parameter.
+                let account = request
+                    .principal
+                    .as_ref()
+                    .map(|p| p.account_id.as_str())
+                    .unwrap_or(request.account_id.as_str());
+                let partition = if request.region.starts_with("cn-") {
+                    "aws-cn"
+                } else if request.region.starts_with("us-gov-") {
+                    "aws-us-gov"
+                } else {
+                    "aws"
+                };
+                param(request, "Name")
+                    .map(|n| format!("arn:{}:sns:{}:{}:{}", partition, request.region, account, n))
+                    .unwrap_or_else(|| "*".to_string())
+            }
+            "DeleteTopic"
+            | "GetTopicAttributes"
+            | "SetTopicAttributes"
+            | "Subscribe"
+            | "Publish"
+            | "PublishBatch"
+            | "ListSubscriptionsByTopic"
+            | "AddPermission"
+            | "RemovePermission" => param(request, "TopicArn").unwrap_or_else(|| "*".to_string()),
+            "Unsubscribe"
+            | "GetSubscriptionAttributes"
+            | "SetSubscriptionAttributes"
+            | "ConfirmSubscription" => {
+                param(request, "SubscriptionArn").unwrap_or_else(|| "*".to_string())
+            }
+            "TagResource" | "UntagResource" | "ListTagsForResource" => {
+                param(request, "ResourceArn").unwrap_or_else(|| "*".to_string())
+            }
+            "DeletePlatformApplication"
+            | "GetPlatformApplicationAttributes"
+            | "SetPlatformApplicationAttributes"
+            | "CreatePlatformEndpoint"
+            | "ListEndpointsByPlatformApplication" => {
+                param(request, "PlatformApplicationArn").unwrap_or_else(|| "*".to_string())
+            }
+            "DeleteEndpoint" | "GetEndpointAttributes" | "SetEndpointAttributes" => {
+                param(request, "EndpointArn").unwrap_or_else(|| "*".to_string())
+            }
+            _ => "*".to_string(),
+        };
+        Some(fakecloud_core::auth::IamAction {
+            service: "sns",
+            action,
+            resource,
+        })
     }
 }
+
+const SNS_SUPPORTED_ACTIONS: &[&str] = &[
+    "CreateTopic",
+    "DeleteTopic",
+    "ListTopics",
+    "GetTopicAttributes",
+    "SetTopicAttributes",
+    "Subscribe",
+    "ConfirmSubscription",
+    "Unsubscribe",
+    "Publish",
+    "PublishBatch",
+    "ListSubscriptions",
+    "ListSubscriptionsByTopic",
+    "GetSubscriptionAttributes",
+    "SetSubscriptionAttributes",
+    "TagResource",
+    "UntagResource",
+    "ListTagsForResource",
+    "AddPermission",
+    "RemovePermission",
+    "CreatePlatformApplication",
+    "DeletePlatformApplication",
+    "GetPlatformApplicationAttributes",
+    "SetPlatformApplicationAttributes",
+    "ListPlatformApplications",
+    "CreatePlatformEndpoint",
+    "DeleteEndpoint",
+    "GetEndpointAttributes",
+    "SetEndpointAttributes",
+    "ListEndpointsByPlatformApplication",
+    "SetSMSAttributes",
+    "GetSMSAttributes",
+    "CheckIfPhoneNumberIsOptedOut",
+    "ListPhoneNumbersOptedOut",
+    "OptInPhoneNumber",
+];
 
 /// SNS uses Query protocol — params come from query_params (which includes form body).
 fn param(req: &AwsRequest, name: &str) -> Option<String> {
