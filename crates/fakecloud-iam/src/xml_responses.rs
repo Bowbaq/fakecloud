@@ -700,11 +700,14 @@ pub fn assume_role_with_saml_response(info: &AssumedRoleInfo<'_>) -> String {
     )
 }
 
-pub fn get_session_token_response(expiration: &str, request_id: &str) -> String {
-    // AWS docs example credentials (deterministic for local testing)
-    let access_key_id = "FSIAIOSFODNN7EXAMPLE";
-    let secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYzEXAMPLEKEY";
-    let session_token = "AQoEXAMPLEH4aoAH0gNCAPyJxz4BlCFFxWNE1OPTgk5TthT+FvwqnKwRcOIfrRh3c/LTo6UDdyJwOOvEVPvLXCrrrUtdnniCEXAMPLE/IvU1dYUg2RVAJBanLiHb4IgRmpRV3zrkuWJOgQs8IZZaIv2BXIa2R4OlgkBN9bkUDNCJiBeb/AXlzBBko7b15fjrBs2+cTQtpZ3CYWFXG8C5zqx37wnOE49mRl/+OtkIKGO7fAE";
+pub fn get_session_token_response(
+    creds: &StsCredentials,
+    expiration: &str,
+    request_id: &str,
+) -> String {
+    let access_key_id = creds.access_key_id.as_str();
+    let secret_access_key = creds.secret_access_key.as_str();
+    let session_token = creds.session_token.as_str();
 
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -729,6 +732,7 @@ pub fn get_session_token_response(expiration: &str, request_id: &str) -> String 
 }
 
 pub fn get_federation_token_response(
+    creds: &StsCredentials,
     name: &str,
     account_id: &str,
     partition: &str,
@@ -736,10 +740,9 @@ pub fn get_federation_token_response(
     policy: Option<&str>,
     request_id: &str,
 ) -> String {
-    // AWS docs example credentials (deterministic for local testing)
-    let access_key_id = "FSIAIOSFODNN7EXAMPLE";
-    let secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYzEXAMPLEKEY";
-    let session_token = "AQoDYXdzEPT//////////wEXAMPLEtc764bNrC9SAPBSM22wDOk4x4HIZ8j4FZTwdQWLWsKWHGBuFqwAeMicRXmxfpSPfIeoIYRqTflfKD8YUuwthAx7mSEI/qkPpKPi/kMcGdQrmGdeehM4IC1NtBmUpp2wUE8phUZampKsburEDy0KPkyQDYwT7WZ0wq5VSXDvp75YU9HFvlRd8Tx6q6fE8YQcHNVXAkiY9q6d+xo0rKwT38xVqr7ZD0u0iPPkUL64lIZbqBAz+scqKmlzm8FDrypNC9Yjc8fPOLn9FX9KSYvKTr4rvx3iSIlTJabIQwj2ICCR/oLxBA==";
+    let access_key_id = creds.access_key_id.as_str();
+    let secret_access_key = creds.secret_access_key.as_str();
+    let session_token = creds.session_token.as_str();
 
     let name = xml_escape(name);
     let federated_user_arn = format!(

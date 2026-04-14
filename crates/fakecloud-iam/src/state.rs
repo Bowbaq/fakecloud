@@ -190,6 +190,41 @@ pub struct CredentialIdentity {
     pub account_id: String,
 }
 
+/// A temporary credential issued by STS (`AssumeRole`, `AssumeRoleWithWebIdentity`,
+/// `AssumeRoleWithSAML`, `GetSessionToken`, `GetFederationToken`).
+///
+/// Unlike [`CredentialIdentity`], which only remembers the principal ARN for
+/// `GetCallerIdentity`, this struct also retains the secret access key and
+/// session token so that SigV4 verification and IAM enforcement (added in
+/// later batches) can look them up when a client signs a request with
+/// temporary credentials. `expiration` is the absolute wall-clock time at
+/// which the credential becomes invalid.
+#[derive(Debug, Clone)]
+pub struct StsTempCredential {
+    pub access_key_id: String,
+    pub secret_access_key: String,
+    pub session_token: String,
+    pub principal_arn: String,
+    pub user_id: String,
+    pub account_id: String,
+    pub expiration: DateTime<Utc>,
+}
+
+/// Result of looking up a set of credentials by access key ID.
+///
+/// Carries the secret + resolved principal + owning account id. The account
+/// id is intentionally read from the credential itself rather than from
+/// global config, so that once #381 (multi-account isolation) lands, the same
+/// lookup already returns the correct account for the credential.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecretLookup {
+    pub secret_access_key: String,
+    pub session_token: Option<String>,
+    pub principal_arn: String,
+    pub user_id: String,
+    pub account_id: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct SshPublicKey {
     pub ssh_public_key_id: String,
@@ -231,6 +266,11 @@ pub struct IamState {
     pub service_linked_role_deletions: HashMap<String, ServiceLinkedRoleDeletion>,
     /// Maps access key ID to the identity that should be returned by GetCallerIdentity.
     pub credential_identities: HashMap<String, CredentialIdentity>,
+    /// Temporary credentials issued by STS, keyed by access key ID. Includes
+    /// the secret access key and session token — required for SigV4
+    /// verification and IAM enforcement. Expired entries are purged lazily on
+    /// lookup.
+    pub sts_temp_credentials: HashMap<String, StsTempCredential>,
     pub credential_report_generated: bool,
     pub ssh_public_keys: HashMap<String, Vec<SshPublicKey>>, // user_name -> keys
     pub access_key_last_used: HashMap<String, AccessKeyLastUsed>,
@@ -260,6 +300,7 @@ impl IamState {
             virtual_mfa_devices: HashMap::new(),
             service_linked_role_deletions: HashMap::new(),
             credential_identities: HashMap::new(),
+            sts_temp_credentials: HashMap::new(),
             credential_report_generated: false,
             ssh_public_keys: HashMap::new(),
             access_key_last_used: HashMap::new(),
@@ -270,6 +311,202 @@ impl IamState {
         let account_id = self.account_id.clone();
         *self = Self::new(&account_id);
     }
+
+    /// Look up the secret access key, session token, and resolved principal
+    /// for a given access key ID.
+    ///
+    /// Searches IAM user access keys first, then STS temporary credentials.
+    /// Expired STS temporary credentials are purged in-place and skipped.
+    ///
+    /// Returns `None` if the AKID is unknown or its STS credential has
+    /// expired.
+    ///
+    /// Required for SigV4 signature verification (batch 3) and principal
+    /// resolution (batch 4). Callers must hold a write lock on
+    /// [`IamState`] to allow the lazy purge; read-only callers should use
+    /// [`IamState::credential_secret_readonly`].
+    pub fn credential_secret(&mut self, access_key_id: &str) -> Option<SecretLookup> {
+        // IAM user access keys: look up by scanning (same pattern the
+        // existing GetCallerIdentity path uses).
+        for keys in self.access_keys.values() {
+            for key in keys {
+                if key.access_key_id == access_key_id {
+                    if let Some(user) = self.users.get(&key.user_name) {
+                        return Some(SecretLookup {
+                            secret_access_key: key.secret_access_key.clone(),
+                            session_token: None,
+                            principal_arn: user.arn.clone(),
+                            user_id: user.user_id.clone(),
+                            account_id: self.account_id.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
+        // STS temporary credentials: direct hash lookup, with lazy expiry
+        // purging so expired entries don't accumulate.
+        let now = Utc::now();
+        if let Some(temp) = self.sts_temp_credentials.get(access_key_id) {
+            if temp.expiration > now {
+                return Some(SecretLookup {
+                    secret_access_key: temp.secret_access_key.clone(),
+                    session_token: Some(temp.session_token.clone()),
+                    principal_arn: temp.principal_arn.clone(),
+                    user_id: temp.user_id.clone(),
+                    account_id: temp.account_id.clone(),
+                });
+            }
+            self.sts_temp_credentials.remove(access_key_id);
+        }
+        None
+    }
+
+    /// Read-only variant of [`IamState::credential_secret`] that does not
+    /// purge expired entries. Prefer the mutable variant wherever possible
+    /// to keep the temp-credential table small.
+    pub fn credential_secret_readonly(&self, access_key_id: &str) -> Option<SecretLookup> {
+        for keys in self.access_keys.values() {
+            for key in keys {
+                if key.access_key_id == access_key_id {
+                    if let Some(user) = self.users.get(&key.user_name) {
+                        return Some(SecretLookup {
+                            secret_access_key: key.secret_access_key.clone(),
+                            session_token: None,
+                            principal_arn: user.arn.clone(),
+                            user_id: user.user_id.clone(),
+                            account_id: self.account_id.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
+        let now = Utc::now();
+        let temp = self.sts_temp_credentials.get(access_key_id)?;
+        if temp.expiration <= now {
+            return None;
+        }
+        Some(SecretLookup {
+            secret_access_key: temp.secret_access_key.clone(),
+            session_token: Some(temp.session_token.clone()),
+            principal_arn: temp.principal_arn.clone(),
+            user_id: temp.user_id.clone(),
+            account_id: temp.account_id.clone(),
+        })
+    }
 }
 
 pub type SharedIamState = std::sync::Arc<RwLock<IamState>>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn iam_user(name: &str, account_id: &str) -> IamUser {
+        IamUser {
+            user_name: name.to_string(),
+            user_id: format!("AIDA{}", name.to_uppercase()),
+            arn: format!("arn:aws:iam::{}:user/{}", account_id, name),
+            path: "/".to_string(),
+            created_at: Utc::now(),
+            tags: Vec::new(),
+            permissions_boundary: None,
+        }
+    }
+
+    fn iam_key(user: &str, akid: &str, secret: &str) -> IamAccessKey {
+        IamAccessKey {
+            access_key_id: akid.to_string(),
+            secret_access_key: secret.to_string(),
+            user_name: user.to_string(),
+            status: "Active".to_string(),
+            created_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn credential_secret_returns_iam_user_key() {
+        let mut state = IamState::new("123456789012");
+        state
+            .users
+            .insert("alice".to_string(), iam_user("alice", "123456789012"));
+        state.access_keys.insert(
+            "alice".to_string(),
+            vec![iam_key("alice", "FKIAALICE", "secret-alice")],
+        );
+        let lookup = state.credential_secret("FKIAALICE").unwrap();
+        assert_eq!(lookup.secret_access_key, "secret-alice");
+        assert_eq!(lookup.principal_arn, "arn:aws:iam::123456789012:user/alice");
+        assert_eq!(lookup.account_id, "123456789012");
+        assert_eq!(lookup.session_token, None);
+    }
+
+    #[test]
+    fn credential_secret_returns_sts_temp_credential_when_unexpired() {
+        let mut state = IamState::new("123456789012");
+        state.sts_temp_credentials.insert(
+            "FSIATEMPKEY".to_string(),
+            StsTempCredential {
+                access_key_id: "FSIATEMPKEY".to_string(),
+                secret_access_key: "temp-secret".to_string(),
+                session_token: "temp-token".to_string(),
+                principal_arn: "arn:aws:sts::123456789012:assumed-role/R/s".to_string(),
+                user_id: "AROA:session".to_string(),
+                account_id: "123456789012".to_string(),
+                expiration: Utc::now() + chrono::Duration::minutes(30),
+            },
+        );
+        let lookup = state.credential_secret("FSIATEMPKEY").unwrap();
+        assert_eq!(lookup.secret_access_key, "temp-secret");
+        assert_eq!(lookup.session_token.as_deref(), Some("temp-token"));
+        assert_eq!(
+            lookup.principal_arn,
+            "arn:aws:sts::123456789012:assumed-role/R/s"
+        );
+    }
+
+    #[test]
+    fn credential_secret_purges_expired_sts_credentials() {
+        let mut state = IamState::new("123456789012");
+        state.sts_temp_credentials.insert(
+            "FSIAOLD".to_string(),
+            StsTempCredential {
+                access_key_id: "FSIAOLD".to_string(),
+                secret_access_key: "s".to_string(),
+                session_token: "t".to_string(),
+                principal_arn: "arn".to_string(),
+                user_id: "id".to_string(),
+                account_id: "123456789012".to_string(),
+                expiration: Utc::now() - chrono::Duration::seconds(1),
+            },
+        );
+        assert!(state.credential_secret("FSIAOLD").is_none());
+        assert!(!state.sts_temp_credentials.contains_key("FSIAOLD"));
+    }
+
+    #[test]
+    fn credential_secret_readonly_does_not_purge() {
+        let mut state = IamState::new("123456789012");
+        state.sts_temp_credentials.insert(
+            "FSIAOLD".to_string(),
+            StsTempCredential {
+                access_key_id: "FSIAOLD".to_string(),
+                secret_access_key: "s".to_string(),
+                session_token: "t".to_string(),
+                principal_arn: "arn".to_string(),
+                user_id: "id".to_string(),
+                account_id: "123456789012".to_string(),
+                expiration: Utc::now() - chrono::Duration::seconds(1),
+            },
+        );
+        assert!(state.credential_secret_readonly("FSIAOLD").is_none());
+        assert!(state.sts_temp_credentials.contains_key("FSIAOLD"));
+    }
+
+    #[test]
+    fn credential_secret_returns_none_for_unknown_akid() {
+        let mut state = IamState::new("123456789012");
+        assert!(state.credential_secret("FKIAUNKNOWN").is_none());
+    }
+}
