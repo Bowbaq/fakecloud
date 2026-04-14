@@ -1,0 +1,58 @@
++++
+title = "Lambda"
+description = "Real code execution in Docker containers across 13 runtimes. Event source mappings, warm container reuse."
+weight = 5
++++
+
+fakecloud implements **85 of 85** Lambda operations at 100% Smithy conformance. Unlike most emulators, **Lambda functions actually execute** — fakecloud runs your code inside real Docker containers.
+
+## Supported features
+
+- **Function CRUD** — create, update, delete, list, get
+- **Real code execution** — functions run in Docker containers with the official AWS Lambda runtime images
+- **13 runtimes** — Node.js (16/18/20), Python (3.8/3.9/3.10/3.11/3.12), Java (11/17/21), Go, Ruby, .NET
+- **Event source mappings** — SQS, Kinesis, DynamoDB Streams polling loops
+- **Layers** — create, publish, attach to functions
+- **Environment variables** — passed to the container
+- **Aliases and versions** — publish, point aliases at versions
+- **Concurrency controls** — reserved concurrency (recorded, not enforced)
+- **Warm container reuse** — subsequent invocations of the same function reuse the container
+
+## Protocol
+
+REST. Path-based routing for invoke operations, JSON for control plane.
+
+## Introspection
+
+- `GET /_fakecloud/lambda/invocations` — list all Lambda invocations with input/output/errors
+- `GET /_fakecloud/lambda/warm-containers` — list currently warm containers
+- `POST /_fakecloud/lambda/{function-name}/evict-container` — force a cold start on the next invoke
+
+## Cross-service triggers
+
+Lambda is a target for most event-producing services:
+
+- **SQS → Lambda** — Event source mapping polls the queue
+- **Kinesis → Lambda** — Event source mapping polls shards
+- **DynamoDB Streams → Lambda** — Event source mapping polls stream records
+- **S3 → Lambda** — Bucket notifications
+- **SNS → Lambda** — Topic subscriptions
+- **EventBridge → Lambda** — Rule targets
+- **API Gateway v2 → Lambda** — HTTP API proxy integration
+- **Cognito → Lambda** — Triggers (pre-signup, post-confirmation, pre/post-auth, custom message, token generation, migration, custom auth challenge)
+- **Secrets Manager → Lambda** — Rotation (all 4 steps)
+- **CloudFormation → Lambda** — Custom resources via `ServiceToken`
+- **SES Inbound → Lambda** — Receipt rule actions
+- **Step Functions → Lambda** — Task state integrations
+- **CloudWatch Logs → Lambda** — Subscription filters
+
+## Gotchas
+
+- **Requires a Docker socket.** Lambda needs access to `/var/run/docker.sock` to start and stop containers. Only use in environments you trust — Docker socket access is effectively host-level privilege.
+- **First invocation of a runtime pulls the image.** Expect a slower first run while the Lambda runtime image downloads. Subsequent invocations are fast.
+- **Cold vs. warm containers.** fakecloud reuses containers between invocations for the same function. Force a cold start via `/_fakecloud/lambda/{name}/evict-container`.
+
+## Source
+
+- [`crates/fakecloud-lambda`](https://github.com/faiscadev/fakecloud/tree/main/crates/fakecloud-lambda)
+- [AWS Lambda API reference](https://docs.aws.amazon.com/lambda/latest/api/welcome.html)

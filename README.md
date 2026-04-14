@@ -118,7 +118,7 @@ expect(emails).toHaveLength(1);
 await fc.reset();
 ```
 
-Full SDK docs at [fakecloud.dev/docs/sdks](https://fakecloud.dev/docs/sdks).
+Full SDK reference for all four languages: [fakecloud.dev/docs/sdks](https://fakecloud.dev/docs/sdks).
 
 ## Use with AI coding tools
 

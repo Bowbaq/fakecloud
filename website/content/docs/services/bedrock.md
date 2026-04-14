@@ -1,0 +1,80 @@
++++
+title = "Bedrock"
+description = "Foundation models, guardrails, custom models, invocation jobs, evaluation jobs, marketplace endpoints."
+weight = 21
++++
+
+fakecloud implements **111 of 111** Bedrock operations across two APIs:
+
+- **Bedrock** (control plane) — 101 operations
+- **Bedrock Runtime** (invocation) — 10 operations
+
+Both at 100% Smithy conformance. **No other AWS emulator supports Bedrock at any tier.**
+
+For a complete testing guide with code examples, see [Testing Bedrock](/docs/guides/testing-bedrock/). This page is the service reference.
+
+## Control plane (Bedrock)
+
+- **Foundation models** — ListFoundationModels, GetFoundationModel, GetFoundationModelAvailability
+- **Guardrails** — CRUD, versioning, content evaluation, enforced configurations
+- **Custom models** — CRUD with training jobs
+- **Custom model deployments** — deployment lifecycle
+- **Model customization jobs** — CreateModelCustomizationJob, GetModelCustomizationJob
+- **Model invocation jobs** — batch inference jobs
+- **Model import jobs** — CreateModelImportJob, GetModelImportJob
+- **Model copy jobs** — CreateModelCopyJob, GetModelCopyJob
+- **Evaluation jobs** — CreateEvaluationJob, GetEvaluationJob, StopEvaluationJob
+- **Inference profiles** — cross-region routing profiles
+- **Prompt routers** — CRUD
+- **Provisioned throughput** — CRUD
+- **Marketplace model endpoints** — CRUD with foundation model agreements
+- **Resource policies** — CRUD
+- **Automated reasoning policies** — policies, versions, test cases, build workflows, annotations
+
+## Runtime (Bedrock Runtime)
+
+- **InvokeModel** — with canned or configurable responses
+- **InvokeModelWithResponseStream** — streaming, same config surface
+- **Converse** — with message history, tool use
+- **ConverseStream** — streaming variant
+- **ApplyGuardrail** — content evaluation against configured guardrails
+- **CountTokens** — token counting for Anthropic model bodies
+- **Async invoke** — StartAsyncInvoke, GetAsyncInvoke, ListAsyncInvokes
+
+## Supported providers
+
+fakecloud understands request bodies for all Bedrock-supported model providers:
+
+- **Anthropic** (Claude 3 Haiku, Sonnet, Opus; Claude 3.5 Sonnet)
+- **Amazon Titan** (Express, Lite, Embeddings)
+- **Meta Llama** (2, 3)
+- **Cohere** (Command, Command R, Command R+)
+- **Mistral** (Mistral 7B, Mixtral, Mistral Large)
+
+## Protocol
+
+REST. Path-based routing for runtime operations, JSON bodies per provider.
+
+## Introspection
+
+- `GET /_fakecloud/bedrock/invocations` — list runtime invocations with `modelId`, `input`, `output`, `timestamp`, `error`
+- `POST /_fakecloud/bedrock/models/{model_id}/response` — set a single custom response for all calls to a model
+- `POST /_fakecloud/bedrock/models/{model_id}/responses` — set prompt-conditional response rules
+- `DELETE /_fakecloud/bedrock/models/{model_id}/responses` — clear response rules
+- `POST /_fakecloud/bedrock/faults` — queue fault injection rules
+- `GET /_fakecloud/bedrock/faults` — list queued faults
+- `DELETE /_fakecloud/bedrock/faults` — clear all faults
+
+## The full test loop
+
+Configure a response, run code, assert on what was called — see [Testing Bedrock](/docs/guides/testing-bedrock/) for complete examples including fault injection for retry testing.
+
+## Why this matters
+
+Bedrock is untestable locally without fakecloud. Real Bedrock burns tokens on every test run, hits per-account rate limits, returns non-deterministic output, and requires network access. Testing error paths (retries, fallbacks, circuit breakers) is nearly impossible because you can't reliably make real Bedrock fail. fakecloud solves all of this — free, deterministic, offline, controllable.
+
+## Source
+
+- [`crates/fakecloud-bedrock`](https://github.com/faiscadev/fakecloud/tree/main/crates/fakecloud-bedrock)
+- [AWS Bedrock API reference](https://docs.aws.amazon.com/bedrock/latest/APIReference/welcome.html)
+- [AWS Bedrock Runtime API reference](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_Operations_Amazon_Bedrock_Runtime.html)

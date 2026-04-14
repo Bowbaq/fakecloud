@@ -1,0 +1,50 @@
++++
+title = "Cognito User Pools"
+description = "User pools, app clients, MFA, identity providers, full authentication flows."
+weight = 15
++++
+
+fakecloud implements **122 of 122** Cognito User Pools operations at 100% Smithy conformance.
+
+## Supported features
+
+- **User pools** — CRUD, password policies, attribute configuration, account recovery, email/SMS configuration
+- **App clients** — CRUD, OAuth flows, token validity, supported identity providers
+- **Users** — admin create/delete/update, self-signup, group membership
+- **Groups** — CRUD, user membership, precedence
+- **MFA** — SMS, TOTP, software token setup/verification
+- **Identity providers** — SAML, OIDC, social
+- **Resource servers** — CRUD, custom scopes
+- **Domains** — user pool domains
+- **Authentication flows** — USER_PASSWORD_AUTH, USER_SRP_AUTH, REFRESH_TOKEN_AUTH, CUSTOM_AUTH, ADMIN_USER_PASSWORD_AUTH
+- **Password management** — ChangePassword, ForgotPassword, ConfirmForgotPassword
+- **Confirmation codes** — email/SMS confirmation flows
+- **Devices** — Confirm, update, forget, track
+- **Tokens** — access, refresh, ID tokens with real JWT structure
+- **Auth events** — sign-up, sign-in, failures, password changes
+
+## Protocol
+
+JSON protocol. `X-Amz-Target` header, JSON body, JSON responses.
+
+## Introspection
+
+- `GET /_fakecloud/cognito/confirmation-codes` — list all pending confirmation codes across pools
+- `GET /_fakecloud/cognito/confirmation-codes/{pool_id}/{username}` — codes for a specific user
+- `POST /_fakecloud/cognito/confirm-user` — force-confirm a user without the email/SMS flow
+- `GET /_fakecloud/cognito/tokens` — list active tokens (without exposing strings)
+- `POST /_fakecloud/cognito/expire-tokens` — expire tokens for a pool/user
+- `GET /_fakecloud/cognito/auth-events` — list auth events (signup, signin, failures)
+
+## Cross-service delivery
+
+- **Cognito → Lambda** — Triggers: pre-signup, post-confirmation, pre-auth, post-auth, custom message, token generation, migration, custom auth challenge
+
+## Why this matters
+
+LocalStack only offers Cognito behind a paid tier. fakecloud implements the full user pool surface free and open-source, with real JWT issuance, real auth flows, and introspection for the confirmation-code / token state that makes testing auth flows feasible end-to-end.
+
+## Source
+
+- [`crates/fakecloud-cognito`](https://github.com/faiscadev/fakecloud/tree/main/crates/fakecloud-cognito)
+- [AWS Cognito Identity Provider API reference](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/Welcome.html)

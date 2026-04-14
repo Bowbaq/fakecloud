@@ -1,0 +1,37 @@
++++
+title = "SQS"
+description = "FIFO queues, dead-letter queues, long polling, batch operations."
+weight = 2
++++
+
+fakecloud implements **23 of 23** SQS operations at 100% Smithy conformance.
+
+## Supported features
+
+- **Queue management** — CRUD, attributes, tags
+- **FIFO queues** — deduplication, ordering, message group IDs
+- **Dead-letter queues** — redrive policies, `maxReceiveCount` enforcement
+- **Long polling** — `WaitTimeSeconds` on Receive
+- **Batch operations** — SendMessageBatch, DeleteMessageBatch, ChangeMessageVisibilityBatch
+- **MD5 hashing** — body and attribute MD5s returned exactly as AWS does
+- **Message retention** — expiration via `/_fakecloud/sqs/expiration-processor/tick`
+- **Visibility timeout** — ChangeMessageVisibility, per-receive timeout
+
+## Protocol
+
+Query protocol. Form-encoded body, `Action` parameter, XML responses.
+
+## Introspection
+
+- `GET /_fakecloud/sqs/messages` — list all messages across all queues
+- `POST /_fakecloud/sqs/expiration-processor/tick` — expire messages past retention
+- `POST /_fakecloud/sqs/{queue_name}/force-dlq` — force-move messages exceeding `maxReceiveCount` to DLQ
+
+## Cross-service delivery
+
+- **SQS → Lambda** — Event source mapping polls and invokes
+
+## Source
+
+- [`crates/fakecloud-sqs`](https://github.com/faiscadev/fakecloud/tree/main/crates/fakecloud-sqs)
+- [AWS SQS API reference](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/Welcome.html)
