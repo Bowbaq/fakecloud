@@ -91,15 +91,17 @@ fn provider_dir() -> PathBuf {
 
 fn strip_godebug(go_mod: &Path) -> std::io::Result<()> {
     let contents = std::fs::read_to_string(go_mod)?;
-    let stripped: String = contents
-        .lines()
-        .filter(|line| !line.trim_start().starts_with("godebug tlskyber"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    if stripped != contents {
-        std::fs::write(go_mod, format!("{stripped}\n"))?;
+    if !contents.contains("godebug tlskyber") {
+        return Ok(());
     }
-    Ok(())
+    // Preserve the original line endings (including whether the file has a
+    // trailing newline) by splitting on `\n` rather than `lines()`, which
+    // silently swallows the final empty element.
+    let stripped: String = contents
+        .split_inclusive('\n')
+        .filter(|line| !line.trim_start().starts_with("godebug tlskyber"))
+        .collect();
+    std::fs::write(go_mod, stripped)
 }
 
 /// Minimal fakecloud test server — lifecycle only, no SDK clients.
