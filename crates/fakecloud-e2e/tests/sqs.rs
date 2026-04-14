@@ -1492,3 +1492,110 @@ async fn sqs_json_attributes_canonicalized_to_compact() {
         r#"{"Statement":[],"Version":"2012-10-17"}"#,
     );
 }
+
+#[tokio::test]
+async fn sqs_encryption_defaults_and_mode_switch() {
+    // Regression guards for the upstream `TestAccSQSQueue_encryption` and
+    // `_managedEncryption` suites. Four invariants:
+    // 1. CreateQueue without any encryption attrs returns
+    //    `KmsDataKeyReusePeriodSeconds=300` and `SqsManagedSseEnabled=true`
+    //    (real AWS enables SSE-SQS by default since May 2023).
+    // 2. Setting `KmsMasterKeyId` flips managed SSE off automatically.
+    // 3. Setting `SqsManagedSseEnabled=true` clears `KmsMasterKeyId` AND
+    //    resets `KmsDataKeyReusePeriodSeconds` to 300.
+    let server = TestServer::start().await;
+    let client = server.sqs_client().await;
+
+    let q = client
+        .create_queue()
+        .queue_name("encryption-defaults")
+        .send()
+        .await
+        .unwrap();
+    let url = q.queue_url().unwrap().to_string();
+
+    // (1) defaults on a fresh queue.
+    let attrs = client
+        .get_queue_attributes()
+        .queue_url(&url)
+        .attribute_names(QueueAttributeName::KmsDataKeyReusePeriodSeconds)
+        .attribute_names(QueueAttributeName::SqsManagedSseEnabled)
+        .send()
+        .await
+        .unwrap();
+    let map = attrs.attributes().unwrap();
+    assert_eq!(
+        map.get(&QueueAttributeName::KmsDataKeyReusePeriodSeconds)
+            .unwrap(),
+        "300"
+    );
+    assert_eq!(
+        map.get(&QueueAttributeName::SqsManagedSseEnabled).unwrap(),
+        "true"
+    );
+
+    // (2) switch to SSE-KMS: managed SSE flips off, KMS key is recorded.
+    client
+        .set_queue_attributes()
+        .queue_url(&url)
+        .attributes(QueueAttributeName::KmsMasterKeyId, "alias/aws/sqs")
+        .send()
+        .await
+        .unwrap();
+    let attrs = client
+        .get_queue_attributes()
+        .queue_url(&url)
+        .attribute_names(QueueAttributeName::KmsMasterKeyId)
+        .attribute_names(QueueAttributeName::SqsManagedSseEnabled)
+        .send()
+        .await
+        .unwrap();
+    let map = attrs.attributes().unwrap();
+    assert_eq!(
+        map.get(&QueueAttributeName::KmsMasterKeyId).unwrap(),
+        "alias/aws/sqs"
+    );
+    assert_eq!(
+        map.get(&QueueAttributeName::SqsManagedSseEnabled).unwrap(),
+        "false"
+    );
+
+    // Bump the reuse period so we can observe the reset on mode switch.
+    client
+        .set_queue_attributes()
+        .queue_url(&url)
+        .attributes(QueueAttributeName::KmsDataKeyReusePeriodSeconds, "3600")
+        .send()
+        .await
+        .unwrap();
+
+    // (3) switch to SSE-SQS (managed): KMS key is removed AND reuse period
+    // resets to default 300 when the caller doesn't specify it.
+    client
+        .set_queue_attributes()
+        .queue_url(&url)
+        .attributes(QueueAttributeName::SqsManagedSseEnabled, "true")
+        .send()
+        .await
+        .unwrap();
+    let attrs = client
+        .get_queue_attributes()
+        .queue_url(&url)
+        .attribute_names(QueueAttributeName::KmsMasterKeyId)
+        .attribute_names(QueueAttributeName::SqsManagedSseEnabled)
+        .attribute_names(QueueAttributeName::KmsDataKeyReusePeriodSeconds)
+        .send()
+        .await
+        .unwrap();
+    let map = attrs.attributes().unwrap();
+    assert!(map.get(&QueueAttributeName::KmsMasterKeyId).is_none());
+    assert_eq!(
+        map.get(&QueueAttributeName::SqsManagedSseEnabled).unwrap(),
+        "true"
+    );
+    assert_eq!(
+        map.get(&QueueAttributeName::KmsDataKeyReusePeriodSeconds)
+            .unwrap(),
+        "300"
+    );
+}

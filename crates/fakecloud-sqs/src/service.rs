@@ -819,12 +819,24 @@ impl SqsService {
         let queue_url = format!("{}/{}/{}", state.endpoint, state.account_id, queue_name);
 
         let mut attributes = HashMap::new();
-        // Default attributes
+        // Default attributes (real AWS SQS defaults).
         attributes.insert("VisibilityTimeout".to_string(), "30".to_string());
         attributes.insert("DelaySeconds".to_string(), "0".to_string());
         attributes.insert("MaximumMessageSize".to_string(), "1048576".to_string());
         attributes.insert("MessageRetentionPeriod".to_string(), "345600".to_string());
         attributes.insert("ReceiveMessageWaitTimeSeconds".to_string(), "0".to_string());
+        // Encryption defaults. Since May 2023, real AWS SQS enables SSE-SQS
+        // (managed server-side encryption) automatically on every new queue,
+        // so `SqsManagedSseEnabled` defaults to "true" when no KMS key is
+        // configured. `KmsDataKeyReusePeriodSeconds` always defaults to 300
+        // (5 minutes) regardless of which encryption mode is active;
+        // Terraform's provider refreshes both on every plan and enforces
+        // the default when the resource config doesn't specify one.
+        attributes.insert(
+            "KmsDataKeyReusePeriodSeconds".to_string(),
+            "300".to_string(),
+        );
+        attributes.insert("SqsManagedSseEnabled".to_string(), "true".to_string());
         if is_fifo {
             attributes.insert("FifoQueue".to_string(), "true".to_string());
             attributes.insert("ContentBasedDeduplication".to_string(), "false".to_string());
@@ -844,6 +856,20 @@ impl SqsService {
             let key = k.trim().to_string();
             let value = canonicalize_json_attr(&key, v);
             attributes.insert(key, value);
+        }
+
+        // Apply the same SSE-mode mutual-exclusion that SetQueueAttributes
+        // does: a KMS key at create time implies SSE-KMS mode, so managed
+        // SSE must be disabled. And an explicit `SqsManagedSseEnabled=true`
+        // at create time clears any KMS key, matching real AWS behaviour.
+        if attributes
+            .get("KmsMasterKeyId")
+            .is_some_and(|k| !k.is_empty())
+        {
+            attributes.insert("SqsManagedSseEnabled".to_string(), "false".to_string());
+        }
+        if attributes.get("SqsManagedSseEnabled").map(String::as_str) == Some("true") {
+            attributes.remove("KmsMasterKeyId");
         }
 
         let redrive_policy = attributes
@@ -1876,10 +1902,16 @@ impl SqsService {
         if let Some(attrs) = body["Attributes"].as_object() {
             for (k, v) in attrs {
                 if let Some(s) = v.as_str() {
-                    // Setting an empty value for Policy or RedrivePolicy removes it
-                    if s.is_empty()
-                        && (k == "Policy" || k == "RedrivePolicy" || k == "RedriveAllowPolicy")
-                    {
+                    // Setting an empty value clears an existing value. For
+                    // JSON-valued policies and for the KMS master key alias,
+                    // "" means "remove" (Terraform's provider sends "" to
+                    // switch encryption modes). Other attributes are stored
+                    // with their empty string so the round-trip is faithful.
+                    let is_clearable = matches!(
+                        k.as_str(),
+                        "Policy" | "RedrivePolicy" | "RedriveAllowPolicy" | "KmsMasterKeyId"
+                    );
+                    if s.is_empty() && is_clearable {
                         queue.attributes.remove(k);
                         if k == "RedrivePolicy" {
                             queue.redrive_policy = None;
@@ -1890,6 +1922,38 @@ impl SqsService {
                             .insert(k.clone(), canonicalize_json_attr(k, s.to_string()));
                     }
                 }
+            }
+
+            // Encryption-mode mutual exclusion. Switching *to* SSE-SQS
+            // (`SqsManagedSseEnabled=true`) clears the KMS key and resets
+            // the reuse period to 300 — real AWS SQS uses a new data key
+            // on the managed mode, and the upstream `aws_sqs_queue`
+            // provider's refresh expects the default value back.
+            // Switching to SSE-KMS (`KmsMasterKeyId` set to non-empty)
+            // turns off the managed-SSE flag. A mode switch that doesn't
+            // specify `KmsDataKeyReusePeriodSeconds` also resets it to
+            // 300, matching real-AWS behaviour.
+            let sse_mode_switch =
+                attrs.get("SqsManagedSseEnabled").and_then(|v| v.as_str()) == Some("true");
+            let kms_key_switch = attrs
+                .get("KmsMasterKeyId")
+                .and_then(|v| v.as_str())
+                .is_some_and(|k| !k.is_empty());
+            let reuse_period_explicit = attrs.contains_key("KmsDataKeyReusePeriodSeconds");
+
+            if sse_mode_switch {
+                queue.attributes.remove("KmsMasterKeyId");
+                if !reuse_period_explicit {
+                    queue.attributes.insert(
+                        "KmsDataKeyReusePeriodSeconds".to_string(),
+                        "300".to_string(),
+                    );
+                }
+            }
+            if kms_key_switch {
+                queue
+                    .attributes
+                    .insert("SqsManagedSseEnabled".to_string(), "false".to_string());
             }
 
             // Update typed redrive_policy used for runtime DLQ routing.
