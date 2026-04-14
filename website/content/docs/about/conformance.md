@@ -16,7 +16,7 @@ It's worth being precise about what each layer does, because they look similar o
 
 **Parity tests** ask *"does fakecloud behave the same as real AWS on the things they both do?"* They're a separate suite that runs the *same test body* against both fakecloud and a real AWS sandbox account, and the parity signal comes from comparing pass/fail across the two runs. This is what catches subtle behavioral drift — the cases where fakecloud returns the shape AWS documents but fakes the semantics in a way real AWS wouldn't.
 
-**Terraform acceptance tests (tfacc)** ask *"does fakecloud pass HashiCorp's own Terraform provider acceptance tests?"* These are the upstream `TestAcc*` functions from [`hashicorp/terraform-provider-aws`](https://github.com/hashicorp/terraform-provider-aws), pinned to a specific tag, run against fakecloud. Each test does a full `terraform apply` / `plan` / `destroy` cycle and asserts on the returned resource state — covering waiters, drift detection, and field-presence semantics that SDK-only tests miss. It's the strongest single conformance signal we have because the tests were written by the Terraform team against real AWS, not by us, and they can't be gamed by code that accidentally happens to pass them.
+**Terraform acceptance tests (tfacc)** ask *"does fakecloud pass HashiCorp's own Terraform provider acceptance tests?"* These are the upstream `TestAcc*` functions from [`hashicorp/terraform-provider-aws`](https://github.com/hashicorp/terraform-provider-aws), pinned to a specific tag, run against fakecloud. Each test does a full `terraform apply` / `plan` / `destroy` cycle and asserts on the returned resource state — covering waiters, drift detection, and field-presence semantics that SDK-only tests miss. Unlike the other three layers on this page, the assertions in tfacc aren't written by us — they come from an external repository at a pinned version, and we just pull them and point them at fakecloud.
 
 These four layers complement each other. Conformance catches schema drift. E2E catches functional regressions in fakecloud. Parity catches drift between fakecloud and the real thing. tfacc catches drift from what real-world infrastructure-as-code users expect fakecloud to do.
 
@@ -106,13 +106,11 @@ The [`fakecloud-tfacc`](https://github.com/faiscadev/fakecloud/tree/main/crates/
 
 This is semantic coverage that SDK-based tests don't give us: **waiters** (does `CreateDBInstance` actually finish before the test moves on?), **field presence** (does the response include the computed attributes Terraform expects?), **drift detection** (does `terraform plan` report zero changes after a clean apply?), and a huge corpus of resource-lifecycle scenarios the HashiCorp team has collected over years of maintaining the provider.
 
-### Why this is the strongest conformance signal
+### What makes tfacc different
 
-Every other test layer in this page was written by us. Conformance is generated from AWS's Smithy models but the assertions are ours. E2E tests are ours. Parity tests are ours.
+Every other test layer on this page was written by us. Conformance is generated from AWS's Smithy models, but the harness and the pass/fail assertions are ours. E2E tests are ours. Parity tests are ours.
 
-tfacc isn't. The tests are written by the Terraform team against real AWS and live in an external repository at a pinned version. We pull them, point them at fakecloud, and they either pass or fail. There's no opportunity to accidentally write assertions that match what fakecloud happens to do — the assertions already exist, and they describe how real AWS behaves.
-
-That's why this is the test layer we pay the most attention to when adding or changing a service. If the Terraform acceptance tests for a service pass, fakecloud is functionally compatible with the single largest real-world consumer of AWS APIs.
+tfacc isn't. The tests live in an external repository at a pinned version. We pull them, point them at fakecloud, and they either pass or fail. There's no opportunity for us to write assertions that match what fakecloud happens to do — the assertions already exist, and they describe how real AWS behaves as seen by the largest real-world consumer of the AWS API.
 
 ### Current coverage
 
@@ -135,6 +133,6 @@ Running the tfacc crate requires `go` and `terraform` on the machine. If either 
 Fast, broad E2E against fakecloud for functional correctness.
 Narrow, schema-driven conformance against AWS's own models.
 Narrow, behavioral parity against a real AWS sandbox.
-Adversarial, external tfacc against HashiCorp's own Terraform provider acceptance suite.
+External tfacc against HashiCorp's own Terraform provider acceptance suite — tests we don't write, we just run.
 
 Together they're what lets fakecloud make the 100% behavioral parity claim with a straight face.
