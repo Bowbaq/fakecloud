@@ -2177,3 +2177,59 @@ async fn ssm_command_invocations() {
     assert_eq!(resp.command_invocations().len(), 1);
     assert_eq!(resp.command_invocations()[0].command_id().unwrap(), cmd_id);
 }
+
+#[tokio::test]
+async fn ssm_lookup_tolerates_version_suffix() {
+    // Regression guard for `TestAccSSMParameter_basic` step 3, which imports
+    // an SSM parameter using the `name:version` selector. Real AWS accepts
+    // `MyParam:1` as a parameter identifier on GetParameter and
+    // ListTagsForResource — fakecloud must too, otherwise import fails
+    // with InvalidResourceId.
+    let server = TestServer::start().await;
+    let client = server.ssm_client().await;
+
+    client
+        .put_parameter()
+        .name("versioned")
+        .value("v1")
+        .r#type(aws_sdk_ssm::types::ParameterType::String)
+        .send()
+        .await
+        .unwrap();
+    client
+        .add_tags_to_resource()
+        .resource_type(aws_sdk_ssm::types::ResourceTypeForTagging::Parameter)
+        .resource_id("versioned")
+        .tags(
+            aws_sdk_ssm::types::Tag::builder()
+                .key("env")
+                .value("test")
+                .build()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    // GetParameter accepts the `name:version` selector.
+    let got = client
+        .get_parameter()
+        .name("versioned:1")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(got.parameter().unwrap().name().unwrap(), "versioned");
+
+    // ListTagsForResource also accepts the `name:version` selector and
+    // returns the parameter-level tags (which are version-independent).
+    let tags = client
+        .list_tags_for_resource()
+        .resource_type(aws_sdk_ssm::types::ResourceTypeForTagging::Parameter)
+        .resource_id("versioned:1")
+        .send()
+        .await
+        .unwrap();
+    let tag_list = tags.tag_list().to_vec();
+    assert_eq!(tag_list.len(), 1);
+    assert_eq!(tag_list[0].key(), "env");
+}
