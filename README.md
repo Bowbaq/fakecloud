@@ -40,7 +40,7 @@ Other install options (Cargo, Docker, Docker Compose, source) are documented at 
 - **Real cross-service wiring.** EventBridge -> Step Functions, S3 -> Lambda, SES inbound -> S3/SNS/Lambda, and 15+ more integrations actually execute end-to-end.
 - **Real infrastructure for stateful services.** Lambda runs in Docker containers (13 runtimes). RDS runs real Postgres/MySQL/MariaDB. ElastiCache runs real Redis/Valkey.
 - **Single binary.** ~19 MB, ~10 MiB idle memory, ~500ms startup. No Docker required to run fakecloud itself (only to exercise the services that need real containers).
-- **First-party test SDKs** for TypeScript, Python, Go, and Rust. Assert on what your code called without writing raw HTTP.
+- **First-party test SDKs** for TypeScript, Python, Go, Java, and Rust. Assert on what your code called without writing raw HTTP.
 
 ## Supported services
 
@@ -84,7 +84,7 @@ Per-service docs and feature matrices: [fakecloud.dev/docs/services](https://fak
 | Startup time        | ~500ms                                             | ~3s                                                                            |
 | Idle memory         | ~10 MiB                                            | ~150 MiB                                                                       |
 | Install size        | ~19 MB binary                                      | ~1 GB Docker image                                                             |
-| Test assertion SDKs | TypeScript, Python, Go, Rust                       | Python, Java                                                                   |
+| Test assertion SDKs | TypeScript, Python, Go, Java, Rust                 | Python, Java                                                                   |
 | Cognito User Pools  | 122 operations                                     | [Paid only](https://docs.localstack.cloud/references/licensing/)               |
 | SES v2              | Full send + templates + DKIM + suppression         | [Paid only](https://docs.localstack.cloud/references/licensing/)               |
 | SES inbound email   | Real receipt rule action execution                 | [Stored but never executed](https://docs.localstack.cloud/user-guide/aws/ses/) |

@@ -1,0 +1,385 @@
+package dev.fakecloud;
+
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonInclude;
+
+import java.util.List;
+import java.util.Map;
+
+/**
+ * Response and request payload records for the fakecloud introspection API.
+ *
+ * <p>Grouped here as nested records so a single {@code import dev.fakecloud.Types;}
+ * gives access to every shape. All records are deserialized by Jackson; extra
+ * fields from newer fakecloud versions are ignored so older SDK builds keep
+ * working against newer servers.
+ */
+public final class Types {
+    private Types() {}
+
+    // ── Health & Reset ─────────────────────────────────────────────
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record HealthResponse(String status, String version, List<String> services) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record ResetResponse(String status) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record ResetServiceResponse(String reset) {}
+
+    // ── RDS ────────────────────────────────────────────────────────
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record RdsTag(String key, String value) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record RdsInstance(
+            String dbInstanceIdentifier,
+            String dbInstanceArn,
+            String dbInstanceClass,
+            String engine,
+            String engineVersion,
+            String dbInstanceStatus,
+            String masterUsername,
+            String dbName,
+            String endpointAddress,
+            int port,
+            int allocatedStorage,
+            boolean publiclyAccessible,
+            boolean deletionProtection,
+            String createdAt,
+            String dbiResourceId,
+            String containerId,
+            int hostPort,
+            List<RdsTag> tags) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record RdsInstancesResponse(List<RdsInstance> instances) {}
+
+    // ── ElastiCache ────────────────────────────────────────────────
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record ElastiCacheCluster(
+            String cacheClusterId,
+            String cacheClusterStatus,
+            String engine,
+            String engineVersion,
+            String cacheNodeType,
+            int numCacheNodes,
+            String replicationGroupId,
+            Integer port,
+            Integer hostPort,
+            String containerId) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record ElastiCacheClustersResponse(List<ElastiCacheCluster> clusters) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record ElastiCacheReplicationGroupIntrospection(
+            String replicationGroupId,
+            String status,
+            String description,
+            List<String> memberClusters,
+            boolean automaticFailover,
+            boolean multiAz,
+            String engine,
+            String engineVersion,
+            String cacheNodeType,
+            int numCacheClusters) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record ElastiCacheReplicationGroupsResponse(
+            List<ElastiCacheReplicationGroupIntrospection> replicationGroups) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record ElastiCacheServerlessCacheIntrospection(
+            String serverlessCacheName,
+            String status,
+            String engine,
+            String engineVersion,
+            String cacheNodeType) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record ElastiCacheServerlessCachesResponse(
+            List<ElastiCacheServerlessCacheIntrospection> serverlessCaches) {}
+
+    // ── Lambda ─────────────────────────────────────────────────────
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record LambdaInvocation(
+            String functionArn, String payload, String source, String timestamp) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record LambdaInvocationsResponse(List<LambdaInvocation> invocations) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record WarmContainer(
+            String functionName, String runtime, String containerId, long lastUsedSecsAgo) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record WarmContainersResponse(List<WarmContainer> containers) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record EvictContainerResponse(boolean evicted) {}
+
+    // ── SES ────────────────────────────────────────────────────────
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record SentEmail(
+            String messageId,
+            String from,
+            List<String> to,
+            List<String> cc,
+            List<String> bcc,
+            String subject,
+            String htmlBody,
+            String textBody,
+            String rawData,
+            String templateName,
+            String templateData,
+            String timestamp) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record SesEmailsResponse(List<SentEmail> emails) {}
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record InboundEmailRequest(
+            String from, List<String> to, String subject, String body) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record InboundActionExecuted(String rule, String actionType) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record InboundEmailResponse(
+            String messageId,
+            List<String> matchedRules,
+            List<InboundActionExecuted> actionsExecuted) {}
+
+    // ── SNS ────────────────────────────────────────────────────────
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record SnsMessage(
+            String messageId,
+            String topicArn,
+            String message,
+            String subject,
+            String timestamp) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record SnsMessagesResponse(List<SnsMessage> messages) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record PendingConfirmation(
+            String subscriptionArn,
+            String topicArn,
+            String protocol,
+            String endpoint,
+            String token) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record PendingConfirmationsResponse(List<PendingConfirmation> pendingConfirmations) {}
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record ConfirmSubscriptionRequest(String subscriptionArn) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record ConfirmSubscriptionResponse(boolean confirmed) {}
+
+    // ── SQS ────────────────────────────────────────────────────────
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record SqsMessageInfo(
+            String messageId,
+            String body,
+            int receiveCount,
+            boolean inFlight,
+            String createdAt) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record SqsQueueMessages(
+            String queueUrl, String queueName, List<SqsMessageInfo> messages) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record SqsMessagesResponse(List<SqsQueueMessages> queues) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record ExpirationTickResponse(int expiredMessages) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record ForceDlqResponse(int movedMessages) {}
+
+    // ── EventBridge ────────────────────────────────────────────────
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record EventBridgeEvent(
+            String eventId,
+            String source,
+            String detailType,
+            String detail,
+            String busName,
+            String timestamp) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record EventBridgeLambdaDelivery(
+            String functionArn, String payload, String timestamp) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record EventBridgeLogDelivery(
+            String logGroupArn, String payload, String timestamp) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record EventBridgeDeliveries(
+            List<EventBridgeLambdaDelivery> lambda,
+            List<EventBridgeLogDelivery> logs) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record EventHistoryResponse(
+            List<EventBridgeEvent> events, EventBridgeDeliveries deliveries) {}
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record FireRuleRequest(String busName, String ruleName) {
+        public FireRuleRequest(String ruleName) {
+            this(null, ruleName);
+        }
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record FireRuleTarget(String type, String arn) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record FireRuleResponse(List<FireRuleTarget> targets) {}
+
+    // ── S3 ─────────────────────────────────────────────────────────
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record S3Notification(
+            String bucket, String key, String eventType, String timestamp) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record S3NotificationsResponse(List<S3Notification> notifications) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record LifecycleTickResponse(
+            int processedBuckets, int expiredObjects, int transitionedObjects) {}
+
+    // ── DynamoDB ───────────────────────────────────────────────────
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record TtlTickResponse(int expiredItems) {}
+
+    // ── SecretsManager ─────────────────────────────────────────────
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record RotationTickResponse(List<String> rotatedSecrets) {}
+
+    // ── Cognito ────────────────────────────────────────────────────
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record UserConfirmationCodes(
+            String confirmationCode, Map<String, Object> attributeVerificationCodes) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record ConfirmationCode(
+            String poolId, String username, String code, String type, String attribute) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record ConfirmationCodesResponse(List<ConfirmationCode> codes) {}
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record ConfirmUserRequest(String userPoolId, String username) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record ConfirmUserResponse(boolean confirmed, String error) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record TokenInfo(
+            String type,
+            String username,
+            String poolId,
+            String clientId,
+            long issuedAt) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record TokensResponse(List<TokenInfo> tokens) {}
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record ExpireTokensRequest(String userPoolId, String username) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record ExpireTokensResponse(int expiredTokens) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record AuthEvent(
+            String eventType,
+            String username,
+            String userPoolId,
+            String clientId,
+            long timestamp,
+            boolean success) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record AuthEventsResponse(List<AuthEvent> events) {}
+
+    // ── Step Functions ─────────────────────────────────────────────
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record StepFunctionsExecution(
+            String executionArn,
+            String stateMachineArn,
+            String name,
+            String status,
+            String startDate,
+            String input,
+            String output,
+            String stopDate) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record StepFunctionsExecutionsResponse(List<StepFunctionsExecution> executions) {}
+
+    // ── Bedrock ────────────────────────────────────────────────────
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record BedrockInvocation(
+            String modelId, String input, String output, String timestamp, String error) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record BedrockInvocationsResponse(List<BedrockInvocation> invocations) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record BedrockModelResponseConfig(String status, String modelId) {}
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record BedrockResponseRule(String promptContains, String response) {}
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record BedrockFaultRule(
+            String errorType,
+            String message,
+            Integer httpStatus,
+            Integer count,
+            String modelId,
+            String operation) {
+        public BedrockFaultRule(String errorType) {
+            this(errorType, null, null, null, null, null);
+        }
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record BedrockFaultRuleState(
+            String errorType,
+            String message,
+            int httpStatus,
+            int remaining,
+            String modelId,
+            String operation) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record BedrockFaultsResponse(List<BedrockFaultRuleState> faults) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record BedrockStatusResponse(String status) {}
+
+    // ── API Gateway v2 ─────────────────────────────────────────────
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record ApiGatewayV2Request(
+            String requestId,
+            String apiId,
+            String stage,
+            String method,
+            String path,
+            Map<String, String> headers,
+            Map<String, String> queryParams,
+            String body,
+            String timestamp,
+            int statusCode) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record ApiGatewayV2RequestsResponse(List<ApiGatewayV2Request> requests) {}
+}

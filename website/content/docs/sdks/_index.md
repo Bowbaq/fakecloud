@@ -1,13 +1,13 @@
 +++
 title = "SDK reference"
-description = "First-party fakecloud SDKs for TypeScript, Python, Go, and Rust."
+description = "First-party fakecloud SDKs for TypeScript, Python, Go, Java, and Rust."
 sort_by = "weight"
 weight = 6
 template = "docs.html"
 page_template = "docs-page.html"
 +++
 
-fakecloud ships first-party SDKs in four languages for test assertions and simulation control. Each SDK wraps the `/_fakecloud/*` introspection and configuration endpoints into ergonomic helpers that fit the language's testing idioms.
+fakecloud ships first-party SDKs in five languages for test assertions and simulation control. Each SDK wraps the `/_fakecloud/*` introspection and configuration endpoints into ergonomic helpers that fit the language's testing idioms.
 
 These SDKs are **not** the AWS SDK. Your application code still talks to fakecloud through the normal AWS SDK (boto3, aws-sdk-js, aws-sdk-rust, etc.) — the fakecloud SDK is what your tests use to assert on what happened.
 
@@ -18,11 +18,12 @@ These SDKs are **not** the AWS SDK. Your application code still talks to fakeclo
 | TypeScript | `npm install fakecloud`                         | [TypeScript SDK](/docs/sdks/typescript/) |
 | Python     | `pip install fakecloud`                         | [Python SDK](/docs/sdks/python/) |
 | Go         | `go get github.com/faiscadev/fakecloud/sdks/go` | [Go SDK](/docs/sdks/go/) |
+| Java       | `dev.fakecloud:fakecloud:0.1.0`                 | [Java SDK](/docs/sdks/java/) |
 | Rust       | `cargo add fakecloud-sdk`                       | [Rust SDK](/docs/sdks/rust/) |
 
 ## Common surface
 
-All four SDKs cover the same core surface:
+All five SDKs cover the same core surface:
 
 - **Reset:** `reset()` and `resetService(service)` to clear state between tests
 - **Health:** verify fakecloud is reachable
@@ -30,4 +31,4 @@ All four SDKs cover the same core surface:
 - **Simulation and processor ticks:** drive time-dependent behavior on demand (TTL expiration, secret rotation, S3 lifecycle)
 - **Bedrock test harness:** response configuration, fault injection, call history
 
-The method names differ across languages to match each language's idiom (camelCase for TS/JS, snake_case for Python, PascalCase for Go, snake_case for Rust), but the behavior is the same.
+The method names differ across languages to match each language's idiom (camelCase for TS/JS and Java, snake_case for Python, PascalCase for Go, snake_case for Rust), but the behavior is the same.

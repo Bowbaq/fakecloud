@@ -113,9 +113,8 @@ Trigger things that normally come from AWS infrastructure or external systems.
 
 ### SDKs
 
-TypeScript, Python, and Go SDKs now wrap the `/_fakecloud/*` endpoints for
-cleaner test code. Future SDK work, if we need it, will likely focus on Rust and
-Java.
+TypeScript, Python, Go, and Java SDKs now wrap the `/_fakecloud/*` endpoints for
+cleaner test code. Future SDK work, if we need it, will likely focus on Rust.
 
 ## Design principles
 
