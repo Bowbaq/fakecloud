@@ -9,8 +9,14 @@ version.workspace = true
 
 [dependencies]
 bytes = { workspace = true }
+chrono = { workspace = true }
+hex = "0.4"
+hmac = "0.12"
 http = { workspace = true }
+percent-encoding = { workspace = true }
 quick-xml = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
+subtle = "2"
 thiserror = { workspace = true }

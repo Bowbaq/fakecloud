@@ -13,6 +13,35 @@
 use std::fmt;
 use std::str::FromStr;
 
+/// Credentials resolved from an access key ID.
+///
+/// Returned by [`CredentialResolver::resolve`]. `account_id` is always
+/// sourced from the credential's owning account, never from global config,
+/// so that once multi-account isolation (#381) lands the same lookup returns
+/// the correct account for the credential.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedCredential {
+    pub secret_access_key: String,
+    pub session_token: Option<String>,
+    pub principal_arn: String,
+    pub user_id: String,
+    pub account_id: String,
+}
+
+/// Abstraction over "given an access key ID, return the secret and resolved
+/// principal." Implemented by the IAM crate against `IamState`; the core
+/// crate depends only on the trait so there's no circular dependency.
+///
+/// Implementations must be cheap to clone-share via `Arc` and must be
+/// thread-safe — dispatch calls them from an axum handler under a tokio
+/// worker.
+pub trait CredentialResolver: Send + Sync {
+    /// Resolve `access_key_id` to its secret access key and principal.
+    /// Returns `None` when the AKID is unknown or its underlying credential
+    /// has expired.
+    fn resolve(&self, access_key_id: &str) -> Option<ResolvedCredential>;
+}
+
 /// How IAM identity policies are evaluated for incoming requests.
 ///
 /// Default is [`IamMode::Off`] — existing behavior, policies are stored but

@@ -1996,10 +1996,16 @@ name = "fakecloud-aws"
 version = "0.9.1"
 dependencies = [
  "bytes",
+ "chrono",
+ "hex",
+ "hmac 0.12.1",
  "http 1.4.0",
+ "percent-encoding",
  "quick-xml",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "subtle",
  "thiserror 2.0.18",
 ]
 
@@ -2129,6 +2135,7 @@ dependencies = [
  "async-trait",
  "axum",
  "bytes",
+ "chrono",
  "fakecloud-aws",
  "http 1.4.0",
  "serde",
