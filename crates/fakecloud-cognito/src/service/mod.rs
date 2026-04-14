@@ -1326,6 +1326,7 @@ mod tests {
             method: http::Method::POST,
             is_query_protocol: false,
             access_key_id: None,
+            principal: None,
         };
         match svc.create_user_pool(&req) {
             Err(e) => assert_eq!(e.code(), "InvalidParameterException"),
@@ -1389,6 +1390,7 @@ mod tests {
             method: http::Method::POST,
             is_query_protocol: false,
             access_key_id: None,
+            principal: None,
         };
         let pool_resp = svc.create_user_pool(&create_pool_req).unwrap();
         let pool_json: Value =
@@ -1418,6 +1420,7 @@ mod tests {
             method: http::Method::POST,
             is_query_protocol: false,
             access_key_id: None,
+            principal: None,
         };
         let resp = svc.create_user_pool_client(&req).unwrap();
         let resp_json: Value =
@@ -1449,6 +1452,7 @@ mod tests {
             method: http::Method::POST,
             is_query_protocol: false,
             access_key_id: None,
+            principal: None,
         };
         let pool_resp = svc.create_user_pool(&create_pool_req).unwrap();
         let pool_json: Value =
@@ -1479,6 +1483,7 @@ mod tests {
             method: http::Method::POST,
             is_query_protocol: false,
             access_key_id: None,
+            principal: None,
         };
         let resp = svc.create_user_pool_client(&req).unwrap();
         let resp_json: Value =
@@ -1516,6 +1521,7 @@ mod tests {
                 method: http::Method::POST,
                 is_query_protocol: false,
                 access_key_id: None,
+                principal: None,
             };
             svc.create_user_pool(&req).unwrap();
         }
@@ -1546,6 +1552,7 @@ mod tests {
             method: http::Method::POST,
             is_query_protocol: false,
             access_key_id: None,
+            principal: None,
         };
         let resp = svc.create_user_pool_client(&req).unwrap();
         let resp_json: Value =
@@ -1577,6 +1584,7 @@ mod tests {
             method: http::Method::POST,
             is_query_protocol: false,
             access_key_id: None,
+            principal: None,
         };
         match svc.describe_user_pool_client(&req) {
             Err(e) => assert_eq!(e.code(), "ResourceNotFoundException"),
@@ -1739,6 +1747,7 @@ mod tests {
             method: http::Method::POST,
             is_query_protocol: false,
             access_key_id: None,
+            principal: None,
         };
         let pool_resp = svc.create_user_pool(&req).unwrap();
         let pool_json: Value =
@@ -1768,6 +1777,7 @@ mod tests {
             method: http::Method::POST,
             is_query_protocol: false,
             access_key_id: None,
+            principal: None,
         };
         let resp = block_on(svc.admin_create_user(&req)).unwrap();
         let resp_json: Value =
@@ -2036,6 +2046,7 @@ mod tests {
             method: http::Method::POST,
             is_query_protocol: false,
             access_key_id: None,
+            principal: None,
         };
         let resp = svc.create_user_pool(&create_pool_req).unwrap();
         let resp_json: Value =
@@ -2064,6 +2075,7 @@ mod tests {
             method: http::Method::POST,
             is_query_protocol: false,
             access_key_id: None,
+            principal: None,
         };
         let result = svc.create_group(&create_group_req);
         assert!(result.is_ok());
@@ -2108,6 +2120,7 @@ mod tests {
             method: http::Method::POST,
             is_query_protocol: false,
             access_key_id: None,
+            principal: None,
         };
         let resp = svc.create_user_pool(&create_pool_req).unwrap();
         let resp_json: Value =
@@ -2136,6 +2149,7 @@ mod tests {
             method: http::Method::POST,
             is_query_protocol: false,
             access_key_id: None,
+            principal: None,
         };
         block_on(svc.admin_create_user(&create_user_req)).unwrap();
 
@@ -2161,6 +2175,7 @@ mod tests {
             method: http::Method::POST,
             is_query_protocol: false,
             access_key_id: None,
+            principal: None,
         };
         svc.create_group(&create_group_req).unwrap();
 
@@ -2187,6 +2202,7 @@ mod tests {
             method: http::Method::POST,
             is_query_protocol: false,
             access_key_id: None,
+            principal: None,
         };
         svc.admin_add_user_to_group(&add_req).unwrap();
 
@@ -2221,6 +2237,7 @@ mod tests {
             method: http::Method::POST,
             is_query_protocol: false,
             access_key_id: None,
+            principal: None,
         };
         svc.admin_remove_user_from_group(&remove_req).unwrap();
 
@@ -2257,6 +2274,7 @@ mod tests {
             method: http::Method::POST,
             is_query_protocol: false,
             access_key_id: None,
+            principal: None,
         };
         let pool_resp = svc.create_user_pool(&req).unwrap();
         let pool_json: Value =
@@ -2289,6 +2307,7 @@ mod tests {
             method: http::Method::POST,
             is_query_protocol: false,
             access_key_id: None,
+            principal: None,
         };
         block_on(svc.admin_create_user(&req)).unwrap();
 
@@ -2324,6 +2343,7 @@ mod tests {
             method: http::Method::POST,
             is_query_protocol: false,
             access_key_id: None,
+            principal: None,
         };
         let resp = svc.get_user(&req).unwrap();
         let resp_json: Value =
@@ -2348,6 +2368,7 @@ mod tests {
             method: http::Method::POST,
             is_query_protocol: false,
             access_key_id: None,
+            principal: None,
         };
         match svc.get_user(&req) {
             Err(e) => assert_eq!(e.code(), "NotAuthorizedException"),
@@ -2379,6 +2400,7 @@ mod tests {
             method: http::Method::POST,
             is_query_protocol: false,
             access_key_id: None,
+            principal: None,
         };
         let pool_resp = svc.create_user_pool(&req).unwrap();
         let pool_json: Value =
@@ -2408,6 +2430,7 @@ mod tests {
             method: http::Method::POST,
             is_query_protocol: false,
             access_key_id: None,
+            principal: None,
         };
         block_on(svc.admin_create_user(&req)).unwrap();
 
@@ -2452,6 +2475,7 @@ mod tests {
             method: http::Method::POST,
             is_query_protocol: false,
             access_key_id: None,
+            principal: None,
         };
         svc.delete_user(&req).unwrap();
 
@@ -2490,6 +2514,7 @@ mod tests {
             method: http::Method::POST,
             is_query_protocol: false,
             access_key_id: None,
+            principal: None,
         };
         let pool_resp = svc.create_user_pool(&req).unwrap();
         let pool_json: Value =
@@ -2520,6 +2545,7 @@ mod tests {
             method: http::Method::POST,
             is_query_protocol: false,
             access_key_id: None,
+            principal: None,
         };
         block_on(svc.admin_create_user(&req)).unwrap();
 
@@ -2559,6 +2585,7 @@ mod tests {
             method: http::Method::POST,
             is_query_protocol: false,
             access_key_id: None,
+            principal: None,
         };
         let resp = svc.get_user_attribute_verification_code(&req).unwrap();
         let resp_json: Value =
@@ -2599,6 +2626,7 @@ mod tests {
             method: http::Method::POST,
             is_query_protocol: false,
             access_key_id: None,
+            principal: None,
         };
         svc.verify_user_attribute(&req).unwrap();
 
@@ -2636,6 +2664,7 @@ mod tests {
             method: http::Method::POST,
             is_query_protocol: false,
             access_key_id: None,
+            principal: None,
         };
         svc.get_user_attribute_verification_code(&req).unwrap();
 
@@ -2661,6 +2690,7 @@ mod tests {
             method: http::Method::POST,
             is_query_protocol: false,
             access_key_id: None,
+            principal: None,
         };
         match svc.verify_user_attribute(&req) {
             Err(e) => assert_eq!(e.code(), "CodeMismatchException"),
@@ -2716,6 +2746,7 @@ mod tests {
             method: http::Method::POST,
             is_query_protocol: false,
             access_key_id: None,
+            principal: None,
         };
         let pool_resp = svc.create_user_pool(&create_pool_req).unwrap();
         let pool_body: Value = serde_json::from_slice(pool_resp.body.expect_bytes()).unwrap();
@@ -2742,6 +2773,7 @@ mod tests {
             method: http::Method::POST,
             is_query_protocol: false,
             access_key_id: None,
+            principal: None,
         };
         block_on(svc.admin_create_user(&create_user_req)).unwrap();
 
@@ -2775,6 +2807,7 @@ mod tests {
             method: http::Method::POST,
             is_query_protocol: false,
             access_key_id: None,
+            principal: None,
         };
         svc.admin_set_user_mfa_preference(&set_pref_req).unwrap();
 
@@ -2804,6 +2837,7 @@ mod tests {
             method: http::Method::POST,
             is_query_protocol: false,
             access_key_id: None,
+            principal: None,
         }
     }
 

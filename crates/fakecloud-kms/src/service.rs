@@ -3376,6 +3376,7 @@ mod tests {
             method: http::Method::POST,
             is_query_protocol: false,
             access_key_id: None,
+            principal: None,
         }
     }
 

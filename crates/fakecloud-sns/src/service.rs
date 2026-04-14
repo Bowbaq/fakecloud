@@ -3841,6 +3841,7 @@ mod tests {
             method: http::Method::POST,
             is_query_protocol: true,
             access_key_id: None,
+            principal: None,
         };
 
         // This should return an error, not panic
@@ -3889,6 +3890,7 @@ mod tests {
             method: http::Method::POST,
             is_query_protocol: true,
             access_key_id: None,
+            principal: None,
         }
     }
 

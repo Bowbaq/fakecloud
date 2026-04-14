@@ -3,6 +3,8 @@ use bytes::Bytes;
 use http::{HeaderMap, Method, StatusCode};
 use std::collections::HashMap;
 
+use crate::auth::Principal;
+
 /// A parsed AWS request.
 #[derive(Debug)]
 pub struct AwsRequest {
@@ -24,6 +26,13 @@ pub struct AwsRequest {
     pub is_query_protocol: bool,
     /// The access key ID from the SigV4 Authorization header, if present.
     pub access_key_id: Option<String>,
+    /// The resolved caller identity. `None` when the credential is unknown
+    /// or the caller used the reserved root-bypass credentials. Populated
+    /// by dispatch via the configured [`crate::auth::CredentialResolver`]
+    /// so service handlers can make identity-based decisions (e.g.
+    /// `GetCallerIdentity`, IAM enforcement) without re-parsing the
+    /// Authorization header.
+    pub principal: Option<Principal>,
 }
 
 impl AwsRequest {

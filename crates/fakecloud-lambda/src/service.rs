@@ -630,6 +630,7 @@ mod tests {
             method,
             is_query_protocol: false,
             access_key_id: None,
+            principal: None,
         }
     }
 
