@@ -3969,6 +3969,7 @@ mod tests {
             method: http::Method::POST,
             is_query_protocol: true,
             access_key_id: None,
+            principal: None,
         }
     }
 
@@ -5331,6 +5332,7 @@ mod tests {
             method: Method::POST,
             is_query_protocol: true,
             access_key_id: None,
+            principal: None,
         };
         assert_eq!(
             parse_query_list_param(&req, "SecurityGroupIds", "SecurityGroupId"),

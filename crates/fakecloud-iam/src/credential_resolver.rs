@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use fakecloud_core::auth::{CredentialResolver, ResolvedCredential};
+use fakecloud_core::auth::{CredentialResolver, Principal, PrincipalType, ResolvedCredential};
 
 use crate::state::SharedIamState;
 
@@ -33,15 +33,23 @@ impl IamCredentialResolver {
 impl CredentialResolver for IamCredentialResolver {
     fn resolve(&self, access_key_id: &str) -> Option<ResolvedCredential> {
         let mut state = self.state.write();
-        state
-            .credential_secret(access_key_id)
-            .map(|lookup| ResolvedCredential {
-                secret_access_key: lookup.secret_access_key,
-                session_token: lookup.session_token,
-                principal_arn: lookup.principal_arn,
+        let lookup = state.credential_secret(access_key_id)?;
+        // Classify the principal by ARN shape. IAM user access keys carry
+        // a `:user/` ARN; STS temp credentials carry the assumed-role /
+        // federated-user / root ARN that was stashed when the credential
+        // was issued (batch 2).
+        let principal_type = PrincipalType::from_arn(&lookup.principal_arn);
+        Some(ResolvedCredential {
+            secret_access_key: lookup.secret_access_key,
+            session_token: lookup.session_token,
+            principal: Principal {
+                arn: lookup.principal_arn,
                 user_id: lookup.user_id,
                 account_id: lookup.account_id,
-            })
+                principal_type,
+                source_identity: None,
+            },
+        })
     }
 }
 
@@ -89,9 +97,10 @@ mod tests {
         let resolved = resolver.resolve("FKIAALICE").unwrap();
         assert_eq!(resolved.secret_access_key, "the-secret");
         assert_eq!(
-            resolved.principal_arn,
+            resolved.principal.arn,
             "arn:aws:iam::123456789012:user/alice"
         );
+        assert_eq!(resolved.principal.principal_type, PrincipalType::User);
         assert_eq!(resolved.session_token, None);
     }
 
@@ -100,5 +109,30 @@ mod tests {
         let state = IamState::new("123456789012");
         let resolver = IamCredentialResolver::new(Arc::new(RwLock::new(state)));
         assert!(resolver.resolve("FKIANONE").is_none());
+    }
+
+    #[test]
+    fn classifies_sts_assumed_role_principal() {
+        use crate::state::StsTempCredential;
+        let mut state = IamState::new("123456789012");
+        state.sts_temp_credentials.insert(
+            "FSIATEMP".to_string(),
+            StsTempCredential {
+                access_key_id: "FSIATEMP".into(),
+                secret_access_key: "temp-secret".into(),
+                session_token: "temp-token".into(),
+                principal_arn: "arn:aws:sts::123456789012:assumed-role/ops/session".into(),
+                user_id: "AROA:session".into(),
+                account_id: "123456789012".into(),
+                expiration: Utc::now() + chrono::Duration::minutes(30),
+            },
+        );
+        let resolver = IamCredentialResolver::new(Arc::new(RwLock::new(state)));
+        let resolved = resolver.resolve("FSIATEMP").unwrap();
+        assert_eq!(
+            resolved.principal.principal_type,
+            PrincipalType::AssumedRole
+        );
+        assert_eq!(resolved.session_token.as_deref(), Some("temp-token"));
     }
 }

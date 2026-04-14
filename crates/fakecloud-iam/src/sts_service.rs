@@ -125,41 +125,23 @@ fn extract_access_key(req: &AwsRequest) -> Option<String> {
 
 impl StsService {
     fn get_caller_identity(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
-        let partition = partition_for_region(&req.region);
-
-        // Check if caller has credentials that map to a known identity
-        if let Some(access_key) = extract_access_key(req) {
-            // First check credential_identities (assumed roles, etc.)
-            if let Some(identity) = state.credential_identities.get(&access_key) {
-                let xml = xml_responses::get_caller_identity_response(
-                    &identity.account_id,
-                    &identity.arn,
-                    &identity.user_id,
-                    &req.request_id,
-                );
-                return Ok(AwsResponse::xml(StatusCode::OK, xml));
-            }
-
-            // Then check IAM user access keys
-            for keys in state.access_keys.values() {
-                for key in keys {
-                    if key.access_key_id == access_key {
-                        if let Some(user) = state.users.get(&key.user_name) {
-                            let xml = xml_responses::get_caller_identity_response(
-                                &state.account_id,
-                                &user.arn,
-                                &user.user_id,
-                                &req.request_id,
-                            );
-                            return Ok(AwsResponse::xml(StatusCode::OK, xml));
-                        }
-                    }
-                }
-            }
+        // Prefer the pre-resolved principal that dispatch attached via the
+        // credential resolver — avoids re-parsing the Authorization header
+        // and re-walking IamState. Falls back to the account-root identity
+        // when the caller didn't present resolvable credentials (e.g. the
+        // `test` root bypass, or no auth header at all).
+        if let Some(principal) = req.principal.as_ref() {
+            let xml = xml_responses::get_caller_identity_response(
+                &principal.account_id,
+                &principal.arn,
+                &principal.user_id,
+                &req.request_id,
+            );
+            return Ok(AwsResponse::xml(StatusCode::OK, xml));
         }
 
-        // Default identity — matches real AWS root credentials
+        let state = self.state.read();
+        let partition = partition_for_region(&req.region);
         let arn = format!("arn:{}:iam::{}:root", partition, state.account_id);
         let user_id = "FKIAIOSFODNN7EXAMPLE";
         let xml = xml_responses::get_caller_identity_response(
@@ -947,6 +929,7 @@ mod tests {
             method: http::Method::POST,
             is_query_protocol: true,
             access_key_id: None,
+            principal: None,
         }
     }
 

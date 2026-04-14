@@ -242,6 +242,7 @@ mod tests {
             request_id: "request-id".to_string(),
             is_query_protocol: false,
             access_key_id: None,
+            principal: None,
         }
     }
 

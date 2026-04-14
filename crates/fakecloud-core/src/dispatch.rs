@@ -110,97 +110,108 @@ pub async fn dispatch(
         .or_else(|| extract_region_from_user_agent(&parts.headers))
         .unwrap_or_else(|| config.region.clone());
 
+    // Resolve the caller's principal up front so both SigV4 verification
+    // (which needs the secret) and the service handler (which needs the
+    // identity for GetCallerIdentity and IAM enforcement) share a single
+    // lookup. The root-bypass AKID skips resolution entirely — `test`
+    // credentials have no backing identity and must always pass.
+    let caller_akid = access_key_id.as_deref().unwrap_or("");
+    let resolved = if !caller_akid.is_empty() && !is_root_bypass(caller_akid) {
+        config
+            .credential_resolver
+            .as_ref()
+            .and_then(|r| r.resolve(caller_akid))
+    } else {
+        None
+    };
+    let caller_principal = resolved.as_ref().map(|r| r.principal.clone());
+
     // Opt-in SigV4 cryptographic verification. Runs before the service
     // handler so a failing signature never reaches business logic. The
     // reserved `test*` root identity short-circuits verification to keep
     // local-dev workflows frictionless.
-    if config.verify_sigv4 {
-        let caller_akid = access_key_id.as_deref().unwrap_or("");
-        if !is_root_bypass(caller_akid) {
-            if let Some(resolver) = config.credential_resolver.as_ref() {
-                let amz_date = parts
-                    .headers
-                    .get("x-amz-date")
-                    .and_then(|v| v.to_str().ok());
-                let parsed = fakecloud_aws::sigv4::parse_sigv4_header(auth_header, amz_date)
-                    .or_else(|| fakecloud_aws::sigv4::parse_sigv4_presigned(&query_params));
-                let parsed = match parsed {
-                    Some(p) => p,
-                    None => {
-                        return build_error_response(
-                            StatusCode::FORBIDDEN,
-                            "IncompleteSignature",
-                            "Request is missing or has a malformed AWS Signature",
-                            &request_id,
-                            detected.protocol,
-                        );
-                    }
-                };
-                let resolved = match resolver.resolve(&parsed.access_key) {
-                    Some(r) => r,
-                    None => {
-                        return build_error_response(
-                            StatusCode::FORBIDDEN,
-                            "InvalidClientTokenId",
-                            "The security token included in the request is invalid",
-                            &request_id,
-                            detected.protocol,
-                        );
-                    }
-                };
-                let headers_vec = fakecloud_aws::sigv4::headers_from_http(&parts.headers);
-                let raw_query_for_verify = parts.uri.query().unwrap_or("").to_string();
-                let verify_req = fakecloud_aws::sigv4::VerifyRequest {
-                    method: parts.method.as_str(),
-                    path: parts.uri.path(),
-                    query: &raw_query_for_verify,
-                    headers: &headers_vec,
-                    body: &body_bytes,
-                };
-                match fakecloud_aws::sigv4::verify(
-                    &parsed,
-                    &verify_req,
-                    &resolved.secret_access_key,
-                    chrono::Utc::now(),
-                ) {
-                    Ok(()) => {}
-                    Err(fakecloud_aws::sigv4::SigV4Error::RequestTimeTooSkewed { .. }) => {
-                        return build_error_response(
-                            StatusCode::FORBIDDEN,
-                            "RequestTimeTooSkewed",
-                            "The difference between the request time and the current time is too large",
-                            &request_id,
-                            detected.protocol,
-                        );
-                    }
-                    Err(fakecloud_aws::sigv4::SigV4Error::InvalidDate(msg)) => {
-                        return build_error_response(
-                            StatusCode::FORBIDDEN,
-                            "IncompleteSignature",
-                            &format!("Invalid x-amz-date: {msg}"),
-                            &request_id,
-                            detected.protocol,
-                        );
-                    }
-                    Err(fakecloud_aws::sigv4::SigV4Error::Malformed(msg)) => {
-                        return build_error_response(
-                            StatusCode::FORBIDDEN,
-                            "IncompleteSignature",
-                            &format!("Malformed SigV4 signature: {msg}"),
-                            &request_id,
-                            detected.protocol,
-                        );
-                    }
-                    Err(fakecloud_aws::sigv4::SigV4Error::SignatureMismatch) => {
-                        return build_error_response(
-                            StatusCode::FORBIDDEN,
-                            "SignatureDoesNotMatch",
-                            "The request signature we calculated does not match the signature you provided",
-                            &request_id,
-                            detected.protocol,
-                        );
-                    }
-                }
+    if config.verify_sigv4 && !is_root_bypass(caller_akid) && config.credential_resolver.is_some() {
+        let amz_date = parts
+            .headers
+            .get("x-amz-date")
+            .and_then(|v| v.to_str().ok());
+        let parsed = fakecloud_aws::sigv4::parse_sigv4_header(auth_header, amz_date)
+            .or_else(|| fakecloud_aws::sigv4::parse_sigv4_presigned(&query_params));
+        let parsed = match parsed {
+            Some(p) => p,
+            None => {
+                return build_error_response(
+                    StatusCode::FORBIDDEN,
+                    "IncompleteSignature",
+                    "Request is missing or has a malformed AWS Signature",
+                    &request_id,
+                    detected.protocol,
+                );
+            }
+        };
+        let resolved_for_verify = match resolved.as_ref() {
+            Some(r) => r,
+            None => {
+                return build_error_response(
+                    StatusCode::FORBIDDEN,
+                    "InvalidClientTokenId",
+                    "The security token included in the request is invalid",
+                    &request_id,
+                    detected.protocol,
+                );
+            }
+        };
+        let headers_vec = fakecloud_aws::sigv4::headers_from_http(&parts.headers);
+        let raw_query_for_verify = parts.uri.query().unwrap_or("").to_string();
+        let verify_req = fakecloud_aws::sigv4::VerifyRequest {
+            method: parts.method.as_str(),
+            path: parts.uri.path(),
+            query: &raw_query_for_verify,
+            headers: &headers_vec,
+            body: &body_bytes,
+        };
+        match fakecloud_aws::sigv4::verify(
+            &parsed,
+            &verify_req,
+            &resolved_for_verify.secret_access_key,
+            chrono::Utc::now(),
+        ) {
+            Ok(()) => {}
+            Err(fakecloud_aws::sigv4::SigV4Error::RequestTimeTooSkewed { .. }) => {
+                return build_error_response(
+                    StatusCode::FORBIDDEN,
+                    "RequestTimeTooSkewed",
+                    "The difference between the request time and the current time is too large",
+                    &request_id,
+                    detected.protocol,
+                );
+            }
+            Err(fakecloud_aws::sigv4::SigV4Error::InvalidDate(msg)) => {
+                return build_error_response(
+                    StatusCode::FORBIDDEN,
+                    "IncompleteSignature",
+                    &format!("Invalid x-amz-date: {msg}"),
+                    &request_id,
+                    detected.protocol,
+                );
+            }
+            Err(fakecloud_aws::sigv4::SigV4Error::Malformed(msg)) => {
+                return build_error_response(
+                    StatusCode::FORBIDDEN,
+                    "IncompleteSignature",
+                    &format!("Malformed SigV4 signature: {msg}"),
+                    &request_id,
+                    detected.protocol,
+                );
+            }
+            Err(fakecloud_aws::sigv4::SigV4Error::SignatureMismatch) => {
+                return build_error_response(
+                    StatusCode::FORBIDDEN,
+                    "SignatureDoesNotMatch",
+                    "The request signature we calculated does not match the signature you provided",
+                    &request_id,
+                    detected.protocol,
+                );
             }
         }
     }
@@ -252,6 +263,7 @@ pub async fn dispatch(
         method: parts.method,
         is_query_protocol: detected.protocol == AwsProtocol::Query,
         access_key_id,
+        principal: caller_principal,
     };
 
     tracing::info!(

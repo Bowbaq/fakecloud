@@ -13,19 +13,105 @@
 use std::fmt;
 use std::str::FromStr;
 
+/// Kind of principal a set of credentials resolves to.
+///
+/// Used to drive IAM policy evaluation (Phase 2) and the `GetCallerIdentity`
+/// response shape. Inferred from the credential's storage path in
+/// [`IamState`] and — for STS temporary credentials — from the ARN form
+/// `arn:aws:sts::<account>:assumed-role/...` or `federated-user/...`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PrincipalType {
+    /// An IAM user access key (AKID created via `CreateAccessKey`).
+    User,
+    /// An assumed role session issued by `AssumeRole` /
+    /// `AssumeRoleWithWebIdentity` / `AssumeRoleWithSAML`.
+    AssumedRole,
+    /// Credentials issued by `GetFederationToken` — i.e. a federated user.
+    FederatedUser,
+    /// `GetSessionToken` or the default account-root session.
+    Root,
+}
+
+impl PrincipalType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PrincipalType::User => "user",
+            PrincipalType::AssumedRole => "assumed-role",
+            PrincipalType::FederatedUser => "federated-user",
+            PrincipalType::Root => "root",
+        }
+    }
+
+    /// Best-effort classification from an ARN. Falls back to
+    /// [`PrincipalType::Root`] when the ARN can't be classified (e.g. the
+    /// caller didn't present credentials at all).
+    pub fn from_arn(arn: &str) -> Self {
+        if arn.contains(":user/") {
+            PrincipalType::User
+        } else if arn.contains(":assumed-role/") {
+            PrincipalType::AssumedRole
+        } else if arn.contains(":federated-user/") {
+            PrincipalType::FederatedUser
+        } else {
+            PrincipalType::Root
+        }
+    }
+}
+
+/// Identity of the caller making a request, once its credentials have been
+/// resolved. Attached to [`crate::service::AwsRequest::principal`] so
+/// handlers can make identity-based decisions without re-parsing the
+/// Authorization header.
+///
+/// `account_id` is always sourced from the credential itself (via
+/// [`CredentialResolver`]), never from global config — #381 note.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Principal {
+    pub arn: String,
+    pub user_id: String,
+    pub account_id: String,
+    pub principal_type: PrincipalType,
+    /// Optional source identity string, carried through from
+    /// `AssumeRole`'s `SourceIdentity` parameter. Reserved for later
+    /// batches that wire session policies and auditing.
+    pub source_identity: Option<String>,
+}
+
+impl Principal {
+    /// Is this caller the account's root identity? Root bypasses IAM
+    /// evaluation, matching AWS.
+    pub fn is_root(&self) -> bool {
+        matches!(self.principal_type, PrincipalType::Root) || self.arn.ends_with(":root")
+    }
+}
+
 /// Credentials resolved from an access key ID.
 ///
-/// Returned by [`CredentialResolver::resolve`]. `account_id` is always
-/// sourced from the credential's owning account, never from global config,
-/// so that once multi-account isolation (#381) lands the same lookup returns
-/// the correct account for the credential.
+/// Returned by [`CredentialResolver::resolve`]. Holds both the secret access
+/// key (needed for SigV4 verification) and the resolved [`Principal`]
+/// (needed for IAM enforcement and `GetCallerIdentity` consolidation).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedCredential {
     pub secret_access_key: String,
     pub session_token: Option<String>,
-    pub principal_arn: String,
-    pub user_id: String,
-    pub account_id: String,
+    pub principal: Principal,
+}
+
+impl ResolvedCredential {
+    /// Convenience accessors for the flat fields batch 3 callers use. Kept
+    /// as methods rather than re-adding the fields to avoid making the
+    /// shape inconsistent with [`Principal`] itself.
+    pub fn principal_arn(&self) -> &str {
+        &self.principal.arn
+    }
+
+    pub fn user_id(&self) -> &str {
+        &self.principal.user_id
+    }
+
+    pub fn account_id(&self) -> &str {
+        &self.principal.account_id
+    }
 }
 
 /// Abstraction over "given an access key ID, return the secret and resolved
@@ -204,6 +290,66 @@ mod tests {
         assert!(!is_root_bypass("té"));
         assert!(!is_root_bypass("日本語キー"));
         assert!(!is_root_bypass("🔑🔑"));
+    }
+
+    #[test]
+    fn principal_type_from_arn_classifies_known_shapes() {
+        assert_eq!(
+            PrincipalType::from_arn("arn:aws:iam::123456789012:user/alice"),
+            PrincipalType::User
+        );
+        assert_eq!(
+            PrincipalType::from_arn("arn:aws:sts::123456789012:assumed-role/R/s"),
+            PrincipalType::AssumedRole
+        );
+        assert_eq!(
+            PrincipalType::from_arn("arn:aws:sts::123456789012:federated-user/bob"),
+            PrincipalType::FederatedUser
+        );
+        assert_eq!(
+            PrincipalType::from_arn("arn:aws:iam::123456789012:root"),
+            PrincipalType::Root
+        );
+        assert_eq!(PrincipalType::from_arn("not-an-arn"), PrincipalType::Root);
+    }
+
+    #[test]
+    fn principal_is_root_covers_root_type_and_arn_suffix() {
+        let p = Principal {
+            arn: "arn:aws:iam::123456789012:root".to_string(),
+            user_id: "AIDAROOT".to_string(),
+            account_id: "123456789012".to_string(),
+            principal_type: PrincipalType::Root,
+            source_identity: None,
+        };
+        assert!(p.is_root());
+
+        let user = Principal {
+            arn: "arn:aws:iam::123456789012:user/alice".to_string(),
+            user_id: "AIDAALICE".to_string(),
+            account_id: "123456789012".to_string(),
+            principal_type: PrincipalType::User,
+            source_identity: None,
+        };
+        assert!(!user.is_root());
+    }
+
+    #[test]
+    fn resolved_credential_accessors_forward_to_principal() {
+        let rc = ResolvedCredential {
+            secret_access_key: "s".into(),
+            session_token: None,
+            principal: Principal {
+                arn: "arn:aws:iam::123456789012:user/alice".into(),
+                user_id: "AIDAALICE".into(),
+                account_id: "123456789012".into(),
+                principal_type: PrincipalType::User,
+                source_identity: None,
+            },
+        };
+        assert_eq!(rc.principal_arn(), "arn:aws:iam::123456789012:user/alice");
+        assert_eq!(rc.user_id(), "AIDAALICE");
+        assert_eq!(rc.account_id(), "123456789012");
     }
 
     #[test]
