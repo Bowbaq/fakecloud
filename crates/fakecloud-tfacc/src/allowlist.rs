@@ -60,7 +60,12 @@ pub const SERVICES: &[Service] = &[
             "|QueueRedrivePolicy_basic",
             "|QueueRedriveAllowPolicy_basic)$",
         ),
-        deny: &[],
+        deny: &[
+            // --- hung: runs clean locally but never completes in CI,
+            //          blocking the whole service at the 90m timeout.
+            //          Needs characterisation in a follow-up batch. ---
+            "TestAccSQSQueueRedriveAllowPolicy_basic",
+        ],
     },
     Service {
         name: "dynamodb",
