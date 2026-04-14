@@ -69,7 +69,7 @@ This matters most for cross-service wiring—the stuff that's easy to get subtly
 
 **2. Conformance testing the AI didn't write.**
 
-We auto-generate 34,000+ test variants from AWS Smithy models. Every operation, every parameter, every boundary condition, every error case.
+We auto-generate 54,000+ test variants from AWS Smithy models. Every operation, every parameter, every boundary condition, every error case.
 
 The AI can't write code that games these tests because it didn't write the tests. They're generated from AWS's service definitions.
 
@@ -99,7 +99,7 @@ I built fakecloud almost entirely with Claude. 22 AWS services, 1,150+ operation
 
 fakecloud works because the tests verify everything:
 
-- 34,000+ conformance tests generated from AWS Smithy models
+- 54,000+ conformance tests generated from AWS Smithy models
 - E2E tests using real AWS SDKs
 - CI that runs everything on every commit
 - Side-by-side testing against actual AWS

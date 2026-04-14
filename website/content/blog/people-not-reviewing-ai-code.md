@@ -1,6 +1,6 @@
 +++
 title = "People are not reviewing AI-generated code"
-date = 2026-04-17
+date = 2026-04-15
 description = "I'd bet most developers are already shipping AI-generated code without properly reviewing it. Not because they have guardrails—because they're busy and the code looks fine. Here's what I think we should do about it."
 
 [extra]
@@ -13,7 +13,7 @@ Not because they have some sophisticated testing setup. Because it historically 
 
 ## What validation looks like with guardrails
 
-I built fakecloud almost entirely with Claude. 20 AWS services, 1,000+ operations, 100% conformance to AWS behavior.
+I built fakecloud almost entirely with Claude. 22 AWS services, 1,650+ operations, 100% conformance to AWS behavior.
 
 Here's my workflow:
 
@@ -76,7 +76,7 @@ When those systems pass, the code is right regardless of whether anyone read it.
 
 fakecloud works because the tests verify everything. Not me. Not code review. The tests.
 
-- 34,000+ conformance tests generated from AWS Smithy models
+- 54,000+ conformance tests generated from AWS Smithy models
 - E2E tests using real AWS SDKs
 - CI that runs everything on every commit
 - Side-by-side testing against actual AWS
