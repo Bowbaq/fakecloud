@@ -37,6 +37,23 @@ pub struct Service {
 
 pub const SERVICES: &[Service] = &[
     Service {
+        name: "sns",
+        // Batch 7: core `aws_sns_topic` smoke. Passes against fakecloud
+        // out of the box.
+        run_regex: "^TestAccSNSTopic_basic$",
+        deny: &[],
+    },
+    Service {
+        name: "events",
+        // Batch 7: core EventBridge `aws_cloudwatch_event_bus` and
+        // `aws_cloudwatch_event_rule` smokes. Both pass out of the box.
+        // Note: the upstream service directory is `events`, not
+        // `eventbridge` — Terraform uses the legacy CloudWatch Events
+        // naming.
+        run_regex: "^TestAccEvents(Bus|Rule)_basic$",
+        deny: &[],
+    },
+    Service {
         name: "kms",
         // Batch 6: core `aws_kms_key` smoke. Passes against fakecloud
         // out of the box.
