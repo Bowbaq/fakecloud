@@ -97,6 +97,45 @@ impl AwsService for StsService {
             "DecodeAuthorizationMessage",
         ]
     }
+
+    /// STS opts into Phase 1 IAM enforcement.
+    fn iam_enforceable(&self) -> bool {
+        true
+    }
+
+    /// STS actions operate on `*` per AWS — see
+    /// <https://docs.aws.amazon.com/service-authorization/latest/reference/list_awssecuritytokenservice.html>.
+    /// `AssumeRole*` variants additionally carry a role ARN as the
+    /// target resource so policies can scope by role name.
+    fn iam_action_for(
+        &self,
+        request: &fakecloud_core::service::AwsRequest,
+    ) -> Option<fakecloud_core::auth::IamAction> {
+        let action: &'static str = match request.action.as_str() {
+            "GetCallerIdentity" => "GetCallerIdentity",
+            "AssumeRole" => "AssumeRole",
+            "AssumeRoleWithWebIdentity" => "AssumeRoleWithWebIdentity",
+            "AssumeRoleWithSAML" => "AssumeRoleWithSAML",
+            "GetSessionToken" => "GetSessionToken",
+            "GetFederationToken" => "GetFederationToken",
+            "GetAccessKeyInfo" => "GetAccessKeyInfo",
+            "DecodeAuthorizationMessage" => "DecodeAuthorizationMessage",
+            _ => return None,
+        };
+        let resource = match action {
+            "AssumeRole" | "AssumeRoleWithWebIdentity" | "AssumeRoleWithSAML" => request
+                .query_params
+                .get("RoleArn")
+                .cloned()
+                .unwrap_or_else(|| "*".to_string()),
+            _ => "*".to_string(),
+        };
+        Some(fakecloud_core::auth::IamAction {
+            service: "sts",
+            action,
+            resource,
+        })
+    }
 }
 
 /// Get the AWS partition from a region string.
