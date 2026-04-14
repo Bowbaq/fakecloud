@@ -1,0 +1,15 @@
+[package]
+name = "fakecloud-tfacc"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+tokio = { workspace = true }
+reqwest = { workspace = true }
+
+[[bin]]
+name = "tfacc_services"
+path = "src/bin/tfacc_services.rs"

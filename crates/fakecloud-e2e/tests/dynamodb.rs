@@ -2442,11 +2442,13 @@ async fn dynamodb_sse_specification_kms() {
 }
 
 #[tokio::test]
-async fn dynamodb_sse_default_aes256() {
+async fn dynamodb_sse_default_omitted() {
     let server = TestServer::start().await;
     let client = server.dynamodb_client().await;
 
-    // Create table without SSE spec — should default to AES256
+    // A table without an explicit SSE spec uses the default AWS-owned key.
+    // Real AWS DescribeTable omits SSEDescription entirely in that case, and
+    // the Terraform provider enforces this (server_side_encryption.# == 0).
     client
         .create_table()
         .table_name("DefaultSseTable")
@@ -2476,9 +2478,7 @@ async fn dynamodb_sse_default_aes256() {
         .await
         .unwrap();
     let table = desc.table().unwrap();
-    let sse = table.sse_description().unwrap();
-    assert_eq!(sse.status().unwrap().as_str(), "ENABLED");
-    assert_eq!(sse.sse_type().unwrap().as_str(), "AES256");
+    assert!(table.sse_description().is_none());
 }
 
 #[tokio::test]

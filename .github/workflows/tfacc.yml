@@ -1,0 +1,66 @@
+name: Terraform Acceptance
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  tfacc-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.m.outputs.services }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Emit service matrix
+        run: cargo run -q -p fakecloud-tfacc --bin tfacc_services > services.json
+
+      - id: m
+        run: echo "services=$(cat services.json)" >> "$GITHUB_OUTPUT"
+
+  tfacc:
+    name: tfacc ${{ matrix.service }}
+    needs: tfacc-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJson(needs.tfacc-matrix.outputs.services) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.x"
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.14.5"
+          terraform_wrapper: false
+
+      # Cache the upstream provider source and Go caches together — the
+      # checkout dominates first-run time (~300MB shallow clone) and the Go
+      # module + build caches dominate go-test compile time.
+      - name: Cache Go + provider source
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+            target/tfacc
+          key: tfacc-${{ runner.os }}-${{ hashFiles('crates/fakecloud-tfacc/src/lib.rs') }}
+          restore-keys: |
+            tfacc-${{ runner.os }}-
+
+      - name: Build fakecloud
+        run: cargo build --bin fakecloud
+
+      - name: Run ${{ matrix.service }} acceptance tests
+        run: cargo test -p fakecloud-tfacc --test acc ${{ matrix.service }}_acceptance -- --nocapture
