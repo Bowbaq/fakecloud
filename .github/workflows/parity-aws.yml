@@ -1,0 +1,72 @@
+name: Parity (real AWS)
+
+# Runs the fakecloud-parity test suite against a real AWS account, so we
+# can compare pass/fail against the Parity (fakecloud) workflow on main.
+#
+# SECURITY NOTES — READ BEFORE EDITING:
+#
+#  1. There is intentionally NO `pull_request` trigger on this workflow.
+#     Do not add one. Credentials must never be exposed to contributor PRs.
+#     PRs that modify files in `crates/fakecloud-parity/`, this file, or
+#     any other file referenced by this workflow are gated through
+#     CODEOWNERS in `.github/CODEOWNERS` — they cannot merge without an
+#     explicit review from the owner.
+#
+#  2. The `real-aws` job targets a protected GitHub Environment
+#     (`aws-parity`) with a required reviewer. Even on a scheduled run,
+#     GitHub pauses the job and waits for a human click before any step
+#     runs against AWS. This is the second line of defense after
+#     CODEOWNERS.
+#
+#  3. The job is additionally gated on `vars.AWS_PARITY_ROLE_ARN` being
+#     set. Until the sandbox AWS account exists and the repo variable is
+#     populated, the job is a no-op — nothing reaches AWS.
+#
+#  4. OIDC is used instead of long-lived access keys: `role-to-assume`
+#     is read from a repo variable (not a secret — role ARNs are not
+#     sensitive). The assumed role's IAM policy is the ground-truth
+#     blast radius limit — keep it scoped to `fcparity-*` resource
+#     prefixes.
+
+on:
+  schedule:
+    # 07:00 UTC daily. Low-traffic hour, lets us notice drift within 24h.
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+  # Deliberately no `pull_request` trigger. See SECURITY NOTES above.
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  # Serialize real-AWS runs so two ticks can't race and leak resources
+  # past each other's cleanup.
+  group: parity-aws
+  cancel-in-progress: false
+
+jobs:
+  real-aws:
+    # Skip cleanly until the sandbox account exists and the repo variable
+    # is set. Nothing else below this line runs without that gate.
+    if: ${{ vars.AWS_PARITY_ROLE_ARN != '' }}
+    runs-on: ubuntu-latest
+    environment: aws-parity
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PARITY_ROLE_ARN }}
+          aws-region: us-east-1
+          role-session-name: fakecloud-parity-${{ github.run_id }}
+
+      - name: Run parity tests against real AWS
+        env:
+          FAKECLOUD_PARITY_BACKEND: aws
+          AWS_REGION: us-east-1
+        run: cargo test -p fakecloud-parity -- --test-threads=1

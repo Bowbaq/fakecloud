@@ -1,0 +1,24 @@
+[package]
+name = "fakecloud-parity"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+
+[dev-dependencies]
+fakecloud-testkit = { path = "../fakecloud-testkit" }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+aws-config = "1"
+aws-credential-types = "1"
+aws-types = "1"
+aws-sdk-sqs = "1"
+aws-sdk-sns = "1"
+aws-sdk-s3 = "1"
+aws-sdk-dynamodb = "1"
+aws-sdk-kms = "1"
+aws-sdk-secretsmanager = "1"
+aws-sdk-sts = "1"
