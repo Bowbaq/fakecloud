@@ -240,9 +240,11 @@ pub struct GoTestResult {
 
 impl GoTestResult {
     /// On failure, dump the full `go test` output to a stable path under
-    /// `target/tfacc/logs/` and panic with the failing-test list plus the
-    /// path. The full log matters more than a tail because acc-test
-    /// failures usually cite a single line buried thousands of lines up.
+    /// `target/tfacc/logs/` and panic with the failing-test list plus
+    /// the step-level error snippets. Acc-test failures usually cite a
+    /// single line ("Step 1/4 error: Check failed: ..."), so we extract
+    /// any line between `=== NAME` and `--- FAIL` that looks like a
+    /// step error and include it inline in the panic message.
     pub fn assert_pass(self, service: &str) {
         if self.success {
             return;
@@ -253,6 +255,11 @@ impl GoTestResult {
             .lines()
             .filter(|l| l.contains("--- FAIL:"))
             .map(|l| l.to_string())
+            .collect();
+        let step_errors: Vec<String> = stdout
+            .lines()
+            .filter(|l| l.contains("Step ") && l.contains(" error:"))
+            .map(|l| l.trim().to_string())
             .collect();
         let combined = format!("--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}");
 
@@ -266,10 +273,17 @@ impl GoTestResult {
         let log_path = log_dir.join(format!("{service}-failure.log"));
         let _ = std::fs::write(&log_path, &combined);
 
+        let step_error_block = if step_errors.is_empty() {
+            String::from("(no step-level error lines found in output)")
+        } else {
+            step_errors.join("\n")
+        };
+
         panic!(
-            "upstream TestAcc failures in service `{service}` ({} failed):\n{}\n\nFull go test output: {}",
+            "upstream TestAcc failures in service `{service}` ({} failed):\n{}\n\nStep errors:\n{}\n\nFull go test output: {}",
             fails.len(),
             fails.join("\n"),
+            step_error_block,
             log_path.display(),
         );
     }
