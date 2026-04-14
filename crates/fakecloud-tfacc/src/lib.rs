@@ -237,23 +237,38 @@ pub struct GoTestResult {
 }
 
 impl GoTestResult {
-    /// Panics with the last few lines of `go test` output when the service
-    /// run had any failing upstream test. Keeps passing runs silent.
+    /// On failure, dump the full `go test` output to a stable path under
+    /// `target/tfacc/logs/` and panic with the failing-test list plus the
+    /// path. The full log matters more than a tail because acc-test
+    /// failures usually cite a single line buried thousands of lines up.
     pub fn assert_pass(self, service: &str) {
         if self.success {
             return;
         }
         let stdout = String::from_utf8_lossy(&self.output.stdout);
         let stderr = String::from_utf8_lossy(&self.output.stderr);
-        let fails: Vec<&str> = stdout.lines().filter(|l| l.contains("--- FAIL:")).collect();
+        let fails: Vec<String> = stdout
+            .lines()
+            .filter(|l| l.contains("--- FAIL:"))
+            .map(|l| l.to_string())
+            .collect();
         let combined = format!("--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}");
-        let lines: Vec<&str> = combined.lines().collect();
-        let start = lines.len().saturating_sub(200);
-        let tail = lines[start..].join("\n");
+
+        let log_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("target")
+            .join("tfacc")
+            .join("logs");
+        let _ = std::fs::create_dir_all(&log_dir);
+        let log_path = log_dir.join(format!("{service}-failure.log"));
+        let _ = std::fs::write(&log_path, &combined);
+
         panic!(
-            "upstream TestAcc failures in service `{service}` ({} failed):\n{}\n\n{tail}",
+            "upstream TestAcc failures in service `{service}` ({} failed):\n{}\n\nFull go test output: {}",
             fails.len(),
-            fails.join("\n")
+            fails.join("\n"),
+            log_path.display(),
         );
     }
 }

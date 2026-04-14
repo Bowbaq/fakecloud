@@ -1345,3 +1345,150 @@ async fn sqs_simulation_force_dlq() {
     assert_eq!(dlq_recv.messages().len(), 1);
     assert_eq!(dlq_recv.messages()[0].body().unwrap(), "hello dlq");
 }
+
+#[tokio::test]
+async fn sqs_redrive_policy_round_trips_in_compact_json() {
+    // Regression guard for the `aws_sqs_queue` Terraform drift caught by
+    // the upstream `TestAccSQSQueueRedrivePolicy_*` suite: GetQueueAttributes
+    // must echo `RedrivePolicy` in compact JSON form (no spaces after `:`
+    // or `,`) so `terraform plan` after apply is empty. Real AWS and
+    // Terraform's `jsonencode` both emit compact form.
+    let server = TestServer::start().await;
+    let client = server.sqs_client().await;
+
+    client
+        .create_queue()
+        .queue_name("dlq")
+        .send()
+        .await
+        .unwrap();
+    let dlq = client
+        .get_queue_attributes()
+        .queue_url(format!("{}/000000000000/dlq", server.endpoint()))
+        .attribute_names(QueueAttributeName::QueueArn)
+        .send()
+        .await
+        .unwrap();
+    let dlq_arn = dlq
+        .attributes()
+        .unwrap()
+        .get(&QueueAttributeName::QueueArn)
+        .unwrap()
+        .clone();
+
+    // Set RedrivePolicy on a source queue via SetQueueAttributes (the path
+    // Terraform's `aws_sqs_queue` resource exercises on update).
+    let source = client
+        .create_queue()
+        .queue_name("source")
+        .send()
+        .await
+        .unwrap();
+    let source_url = source.queue_url().unwrap().to_string();
+    let policy = format!(r#"{{"deadLetterTargetArn":"{dlq_arn}","maxReceiveCount":4}}"#);
+    client
+        .set_queue_attributes()
+        .queue_url(&source_url)
+        .attributes(QueueAttributeName::RedrivePolicy, &policy)
+        .send()
+        .await
+        .unwrap();
+
+    let attrs = client
+        .get_queue_attributes()
+        .queue_url(&source_url)
+        .attribute_names(QueueAttributeName::RedrivePolicy)
+        .send()
+        .await
+        .unwrap();
+    let stored = attrs
+        .attributes()
+        .unwrap()
+        .get(&QueueAttributeName::RedrivePolicy)
+        .unwrap();
+
+    // Compact form: no whitespace at all, identical to what the client sent.
+    assert_eq!(stored, &policy);
+
+    // And also via the CreateQueue path.
+    let policy2 = format!(r#"{{"deadLetterTargetArn":"{dlq_arn}","maxReceiveCount":7}}"#);
+    client
+        .create_queue()
+        .queue_name("source2")
+        .attributes(QueueAttributeName::RedrivePolicy, &policy2)
+        .send()
+        .await
+        .unwrap();
+    let attrs2 = client
+        .get_queue_attributes()
+        .queue_url(format!("{}/000000000000/source2", server.endpoint()))
+        .attribute_names(QueueAttributeName::RedrivePolicy)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        attrs2
+            .attributes()
+            .unwrap()
+            .get(&QueueAttributeName::RedrivePolicy)
+            .unwrap(),
+        &policy2,
+    );
+}
+
+#[tokio::test]
+async fn sqs_json_attributes_canonicalized_to_compact() {
+    // Same regression class as the redrive test above, but for the other
+    // JSON-valued attributes Terraform writes through `aws_sqs_queue`:
+    // `Policy` and `RedriveAllowPolicy`. Real AWS SQS canonicalizes JSON
+    // server-side, so heredoc-formatted input must come back compact.
+    let server = TestServer::start().await;
+    let client = server.sqs_client().await;
+
+    let q = client
+        .create_queue()
+        .queue_name("policy-canon")
+        .send()
+        .await
+        .unwrap();
+    let url = q.queue_url().unwrap().to_string();
+
+    // RedriveAllowPolicy with whitespace and newlines (heredoc shape).
+    let allow_input = "{\n  \"redrivePermission\": \"allowAll\"\n}\n";
+    client
+        .set_queue_attributes()
+        .queue_url(&url)
+        .attributes(QueueAttributeName::RedriveAllowPolicy, allow_input)
+        .send()
+        .await
+        .unwrap();
+
+    // IAM-style queue policy with whitespace.
+    let policy_input = "{\n  \"Version\": \"2012-10-17\",\n  \"Statement\": []\n}\n";
+    client
+        .set_queue_attributes()
+        .queue_url(&url)
+        .attributes(QueueAttributeName::Policy, policy_input)
+        .send()
+        .await
+        .unwrap();
+
+    let attrs = client
+        .get_queue_attributes()
+        .queue_url(&url)
+        .attribute_names(QueueAttributeName::RedriveAllowPolicy)
+        .attribute_names(QueueAttributeName::Policy)
+        .send()
+        .await
+        .unwrap();
+    let map = attrs.attributes().unwrap();
+
+    assert_eq!(
+        map.get(&QueueAttributeName::RedriveAllowPolicy).unwrap(),
+        r#"{"redrivePermission":"allowAll"}"#,
+    );
+    assert_eq!(
+        map.get(&QueueAttributeName::Policy).unwrap(),
+        r#"{"Statement":[],"Version":"2012-10-17"}"#,
+    );
+}

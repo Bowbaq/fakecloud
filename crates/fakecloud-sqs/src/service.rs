@@ -48,6 +48,25 @@ fn validate_create_queue_attributes(
     Ok(())
 }
 
+/// Names of queue attributes whose stored value is a JSON document.
+/// We canonicalize these to compact JSON on write so the round-trip
+/// through `GetQueueAttributes` matches what Terraform's `jsonencode`
+/// emits — real AWS SQS canonicalizes the same way server-side.
+const JSON_VALUED_ATTRS: &[&str] = &["Policy", "RedrivePolicy", "RedriveAllowPolicy"];
+
+/// If the attribute is JSON-valued, parse + re-emit as compact JSON.
+/// Otherwise the value is passed through unchanged. Invalid JSON is also
+/// passed through; downstream validators reject it with proper errors.
+fn canonicalize_json_attr(name: &str, value: String) -> String {
+    if !JSON_VALUED_ATTRS.contains(&name) {
+        return value;
+    }
+    match serde_json::from_str::<Value>(&value) {
+        Ok(parsed) => serde_json::to_string(&parsed).unwrap_or(value),
+        Err(_) => value,
+    }
+}
+
 /// Parse the JSON stored under the `RedrivePolicy` queue attribute into
 /// a typed `RedrivePolicy`. AWS accepts both string and integer encodings
 /// of `maxReceiveCount`, so we tolerate both. Returns `None` for any
@@ -815,9 +834,16 @@ impl SqsService {
 
         validate_create_queue_attributes(&new_attributes)?;
 
-        // Override with provided attributes (trim keys to handle trailing whitespace)
+        // Override with provided attributes (trim keys to handle trailing whitespace).
+        // For JSON-valued attributes, canonicalize to compact form so the
+        // round-trip through GetQueueAttributes matches what Terraform's
+        // `jsonencode` produces. Real AWS SQS does the same canonicalization
+        // server-side, and skipping it surfaces as `whitespace changes` drift
+        // in the upstream `aws_sqs_queue` acceptance suite.
         for (k, v) in new_attributes {
-            attributes.insert(k.trim().to_string(), v);
+            let key = k.trim().to_string();
+            let value = canonicalize_json_attr(&key, v);
+            attributes.insert(key, value);
         }
 
         let redrive_policy = attributes
@@ -828,17 +854,10 @@ impl SqsService {
             validate_redrive_policy_target(&state, rp, is_fifo)?;
         }
 
-        // Normalize RedrivePolicy JSON (convert maxReceiveCount to integer)
-        if let Some(ref rp) = redrive_policy {
-            // Format like Python json.dumps: {"key": value, "key": value}
-            attributes.insert(
-                "RedrivePolicy".to_string(),
-                format!(
-                    "{{\"deadLetterTargetArn\": \"{}\", \"maxReceiveCount\": {}}}",
-                    rp.dead_letter_target_arn, rp.max_receive_count
-                ),
-            );
-        }
+        // RedrivePolicy is already canonicalized to compact JSON above by
+        // `canonicalize_json_attr`. We only need the typed `RedrivePolicy`
+        // value for runtime DLQ routing decisions; the stored attribute
+        // string is what GetQueueAttributes returns and round-trips clean.
 
         // Parse tags
         let mut tags = HashMap::new();
@@ -1866,37 +1885,19 @@ impl SqsService {
                             queue.redrive_policy = None;
                         }
                     } else {
-                        queue.attributes.insert(k.clone(), s.to_string());
+                        queue
+                            .attributes
+                            .insert(k.clone(), canonicalize_json_attr(k, s.to_string()));
                     }
                 }
             }
 
-            // Update redrive_policy if set
+            // Update typed redrive_policy used for runtime DLQ routing.
+            // The stored attribute string is already canonicalized above.
             if let Some(rp_str) = attrs.get("RedrivePolicy").and_then(|v| v.as_str()) {
                 if !rp_str.is_empty() {
-                    if let Ok(rp) = serde_json::from_str::<Value>(rp_str) {
-                        let dead_letter_target_arn = rp["deadLetterTargetArn"]
-                            .as_str()
-                            .unwrap_or_default()
-                            .to_string();
-                        let max_receive_count = rp["maxReceiveCount"]
-                            .as_u64()
-                            .or_else(|| rp["maxReceiveCount"].as_str()?.parse().ok())
-                            .unwrap_or(0) as u32;
-                        if !dead_letter_target_arn.is_empty() && max_receive_count > 0 {
-                            queue.redrive_policy = Some(RedrivePolicy {
-                                dead_letter_target_arn: dead_letter_target_arn.clone(),
-                                max_receive_count,
-                            });
-                            // Normalize the stored JSON (Python json.dumps format)
-                            queue.attributes.insert(
-                                "RedrivePolicy".to_string(),
-                                format!(
-                                    "{{\"deadLetterTargetArn\": \"{}\", \"maxReceiveCount\": {}}}",
-                                    dead_letter_target_arn, max_receive_count
-                                ),
-                            );
-                        }
+                    if let Some(rp) = parse_redrive_policy(rp_str) {
+                        queue.redrive_policy = Some(rp);
                     }
                 }
             }
