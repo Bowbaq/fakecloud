@@ -37,6 +37,23 @@ pub struct Service {
 
 pub const SERVICES: &[Service] = &[
     Service {
+        name: "ssm",
+        // Batch 4: core `aws_ssm_parameter` smoke. The fix here is making
+        // `lookup_param` tolerate the `name:version` selector that real
+        // AWS accepts on GetParameter / ListTagsForResource — without it
+        // the upstream import-with-version step fails with
+        // InvalidResourceId.
+        run_regex: "^TestAccSSMParameter_basic$",
+        deny: &[],
+    },
+    Service {
+        name: "secretsmanager",
+        // Batch 4: core `aws_secretsmanager_secret` smoke. Passes against
+        // fakecloud out of the box — no fakecloud-side changes needed.
+        run_regex: "^TestAccSecretsManagerSecret_basic$",
+        deny: &[],
+    },
+    Service {
         name: "sqs",
         // SQS tests are curated via a positive regex rather than
         // `^TestAcc` + deny-list because CI runners (2-core Linux) are

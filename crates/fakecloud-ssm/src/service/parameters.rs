@@ -1003,20 +1003,29 @@ impl SsmService {
     // ===== Document operations =====
 }
 
-/// Normalize a parameter name - try looking up with and without leading slash
+/// Strip an optional `:<version>` or `:<label>` suffix from a parameter
+/// name. Real AWS SSM lets callers reference a specific version via the
+/// `name:version` syntax, e.g. `MyParam:1`. The version selector is
+/// orthogonal to the parameter's identity — the parameter is stored
+/// once and the version selects which value/history entry to return.
+fn strip_version_suffix(name: &str) -> &str {
+    name.split_once(':').map(|(n, _)| n).unwrap_or(name)
+}
+
+/// Normalize a parameter name and resolve it. Tolerates leading slash
+/// variants and the `name:version` selector that real AWS accepts.
 pub(super) fn lookup_param<'a>(
     parameters: &'a std::collections::BTreeMap<String, SsmParameter>,
     name: &str,
 ) -> Option<&'a SsmParameter> {
-    // Direct lookup
-    if let Some(p) = parameters.get(name) {
+    let bare = strip_version_suffix(name);
+    if let Some(p) = parameters.get(bare) {
         return Some(p);
     }
-    // Try with leading slash added/removed
-    if let Some(stripped) = name.strip_prefix('/') {
+    if let Some(stripped) = bare.strip_prefix('/') {
         parameters.get(stripped)
     } else {
-        parameters.get(&format!("/{name}"))
+        parameters.get(&format!("/{bare}"))
     }
 }
 
@@ -1024,15 +1033,14 @@ pub(super) fn lookup_param_mut<'a>(
     parameters: &'a mut std::collections::BTreeMap<String, SsmParameter>,
     name: &str,
 ) -> Option<&'a mut SsmParameter> {
-    // Direct lookup first
-    if parameters.contains_key(name) {
-        return parameters.get_mut(name);
+    let bare = strip_version_suffix(name);
+    if parameters.contains_key(bare) {
+        return parameters.get_mut(bare);
     }
-    // Try alternate form
-    let alt = if let Some(stripped) = name.strip_prefix('/') {
+    let alt = if let Some(stripped) = bare.strip_prefix('/') {
         stripped.to_string()
     } else {
-        format!("/{name}")
+        format!("/{bare}")
     };
     parameters.get_mut(&alt)
 }

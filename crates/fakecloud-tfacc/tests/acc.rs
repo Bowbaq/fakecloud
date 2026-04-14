@@ -28,6 +28,16 @@ async fn run_service(name: &str) {
 }
 
 #[tokio::test]
+async fn ssm_acceptance() {
+    run_service("ssm").await;
+}
+
+#[tokio::test]
+async fn secretsmanager_acceptance() {
+    run_service("secretsmanager").await;
+}
+
+#[tokio::test]
 async fn sqs_acceptance() {
     run_service("sqs").await;
 }
