@@ -64,7 +64,7 @@ def fakecloud_url() -> str:  # type: ignore[misc]
     port = _free_port()
     binary = os.path.abspath(FAKECLOUD_BIN)
     if not os.path.isfile(binary):
-        pytest.skip(
+        raise RuntimeError(
             f"fakecloud binary not found at {binary} — run cargo build --release first"
         )
 

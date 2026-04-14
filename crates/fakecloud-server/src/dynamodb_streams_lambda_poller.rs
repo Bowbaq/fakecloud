@@ -77,7 +77,7 @@ impl DynamoDbStreamsLambdaPoller {
         for (mapping_id, stream_arn, function_arn, batch_size) in mappings {
             // Extract table name from stream ARN
             // Format: arn:aws:dynamodb:region:account:table/TableName/stream/timestamp
-            let table_name = if let Some(table_part) = stream_arn.split("/table/").nth(1) {
+            let table_name = if let Some(table_part) = stream_arn.split(":table/").nth(1) {
                 table_part.split('/').next().unwrap_or("")
             } else {
                 continue;
