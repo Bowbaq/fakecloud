@@ -284,4 +284,38 @@ pub trait AwsService: Send + Sync {
 
     /// List of actions this service supports (for introspection).
     fn supported_actions(&self) -> &[&str];
+
+    /// Whether this service participates in opt-in IAM enforcement
+    /// (`FAKECLOUD_IAM=soft|strict`).
+    ///
+    /// Defaults to `false`: unless a service has a full
+    /// `iam_action_for` implementation covering every operation it
+    /// supports plus resource-ARN extractors, it's silently skipped when
+    /// IAM enforcement is on. The startup log enumerates which services
+    /// are enforced and which are not so users always know the current
+    /// enforcement surface.
+    ///
+    /// Phase 1 contract: a service that returns `true` here MUST also
+    /// provide a fully populated [`AwsService::iam_action_for`]
+    /// implementation covering every action it advertises. Returning
+    /// `true` without the action mapping is a programming bug.
+    fn iam_enforceable(&self) -> bool {
+        false
+    }
+
+    /// Derive the IAM action + resource ARN for an incoming request.
+    ///
+    /// Only called when [`AwsService::iam_enforceable`] returns `true`
+    /// and IAM enforcement is enabled. Services must map every action
+    /// they implement; returning `None` for a covered action causes the
+    /// evaluator to skip the request and flag it via the
+    /// `fakecloud::iam::audit` tracing target so gaps are visible in
+    /// soft mode.
+    ///
+    /// The `IamAction.resource` is built from `request.principal`'s
+    /// account id (not global config) so multi-account isolation
+    /// (#381) works once per-account state partitioning lands.
+    fn iam_action_for(&self, _request: &AwsRequest) -> Option<crate::auth::IamAction> {
+        None
+    }
 }

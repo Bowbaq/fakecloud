@@ -668,6 +668,14 @@ async fn main() {
             "opt-in security features enabled: access keys with the `test` prefix bypass SigV4 verification and IAM enforcement — see /docs/reference/security"
         );
     }
+    if iam_mode.is_enabled() {
+        let (enforced, skipped) = registry.iam_enforcement_split();
+        tracing::info!(
+            enforced = ?enforced,
+            skipped = ?skipped,
+            "IAM enforcement surface: listed `enforced` services evaluate policies; `skipped` services are not yet wired for enforcement"
+        );
+    }
 
     let config = DispatchConfig {
         region: cli.region,
@@ -676,6 +684,9 @@ async fn main() {
         iam_mode,
         credential_resolver: Some(
             fakecloud_iam::credential_resolver::IamCredentialResolver::shared(iam_state.clone()),
+        ),
+        policy_evaluator: Some(
+            fakecloud_iam::policy_evaluator::IamPolicyEvaluatorImpl::shared(iam_state.clone()),
         ),
     };
 
