@@ -217,15 +217,66 @@ async fn sts_assume_role_unique_credentials() {
 }
 
 #[tokio::test]
+async fn sts_assume_role_temp_credentials_resolve_via_get_caller_identity() {
+    // End-to-end regression guard for STS temp credential persistence:
+    // AssumeRole -> take the returned creds -> call GetCallerIdentity
+    // signed with the temporary access key -> expect the assumed-role ARN.
+    use aws_credential_types::Credentials;
+
+    let server = TestServer::start().await;
+    let sts = server.sts_client().await;
+
+    let resp = sts
+        .assume_role()
+        .role_arn("arn:aws:iam::123456789012:role/ops")
+        .role_session_name("ci-e2e")
+        .send()
+        .await
+        .unwrap();
+    let creds = resp.credentials().unwrap();
+
+    let temp_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+        .endpoint_url(server.endpoint())
+        .region(aws_config::Region::new("us-east-1"))
+        .credentials_provider(Credentials::new(
+            creds.access_key_id(),
+            creds.secret_access_key(),
+            Some(creds.session_token().to_string()),
+            None,
+            "fakecloud-temp",
+        ))
+        .load()
+        .await;
+    let temp_sts = aws_sdk_sts::Client::new(&temp_config);
+
+    let identity = temp_sts.get_caller_identity().send().await.unwrap();
+    assert!(
+        identity.arn().unwrap().contains("assumed-role/ops/ci-e2e"),
+        "expected assumed-role ARN, got {:?}",
+        identity.arn()
+    );
+    assert_eq!(identity.account().unwrap(), "123456789012");
+}
+
+#[tokio::test]
 async fn sts_get_session_token() {
     let server = TestServer::start().await;
     let client = server.sts_client().await;
 
-    let resp = client.get_session_token().send().await.unwrap();
-    let creds = resp.credentials().unwrap();
-    assert!(creds.access_key_id().starts_with("FSIA"));
-    assert!(!creds.secret_access_key().is_empty());
-    assert!(creds.session_token().starts_with("AQoEXAMPLEH4"));
+    let resp1 = client.get_session_token().send().await.unwrap();
+    let creds1 = resp1.credentials().unwrap();
+    assert!(creds1.access_key_id().starts_with("FSIA"));
+    assert_eq!(creds1.secret_access_key().len(), 40);
+    assert!(creds1.session_token().starts_with("FQoGZXIvYXdzE"));
+
+    // Two successive calls must return distinct credentials so later
+    // batches can match signatures against per-request state rather than
+    // a shared constant.
+    let resp2 = client.get_session_token().send().await.unwrap();
+    let creds2 = resp2.credentials().unwrap();
+    assert_ne!(creds1.access_key_id(), creds2.access_key_id());
+    assert_ne!(creds1.secret_access_key(), creds2.secret_access_key());
+    assert_ne!(creds1.session_token(), creds2.session_token());
 }
 
 #[tokio::test]
@@ -241,9 +292,21 @@ async fn sts_get_federation_token() {
         .unwrap();
     let creds = resp.credentials().unwrap();
     assert!(creds.access_key_id().starts_with("FSIA"));
+    assert_eq!(creds.secret_access_key().len(), 40);
+    assert!(creds.session_token().starts_with("FQoGZXIvYXdzE"));
     let fed_user = resp.federated_user().unwrap();
     assert!(fed_user.arn().contains("federated-user/Bob"));
     assert!(fed_user.federated_user_id().contains("Bob"));
+
+    // Per-request generation: a second call must return different creds.
+    let resp2 = client
+        .get_federation_token()
+        .name("Bob")
+        .send()
+        .await
+        .unwrap();
+    let creds2 = resp2.credentials().unwrap();
+    assert_ne!(creds.access_key_id(), creds2.access_key_id());
 }
 
 #[tokio::test]

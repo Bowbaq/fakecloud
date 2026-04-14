@@ -1,11 +1,11 @@
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use http::StatusCode;
 
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
 use fakecloud_core::validation::*;
 
-use crate::state::{CredentialIdentity, SharedIamState};
+use crate::state::{CredentialIdentity, SharedIamState, StsTempCredential};
 use crate::xml_responses::{self, StsCredentials};
 
 /// Default duration for AssumeRole and similar operations (1 hour).
@@ -17,8 +17,11 @@ const DEFAULT_SESSION_TOKEN_DURATION: i64 = 43200;
 /// Default duration for GetFederationToken (12 hours).
 const DEFAULT_FEDERATION_TOKEN_DURATION: i64 = 43200;
 
-/// Compute an ISO 8601 expiration timestamp from an optional DurationSeconds parameter.
-fn compute_expiration(req: &AwsRequest, default_duration: i64) -> Result<String, AwsServiceError> {
+/// Compute an absolute expiration timestamp from an optional DurationSeconds parameter.
+fn compute_expiration_at(
+    req: &AwsRequest,
+    default_duration: i64,
+) -> Result<DateTime<Utc>, AwsServiceError> {
     let duration = if let Some(ds) = req.query_params.get("DurationSeconds") {
         ds.parse::<i64>().map_err(|_| {
             AwsServiceError::aws_error(
@@ -34,8 +37,22 @@ fn compute_expiration(req: &AwsRequest, default_duration: i64) -> Result<String,
     } else {
         default_duration
     };
-    let expiration = Utc::now() + chrono::Duration::seconds(duration);
-    Ok(expiration.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+    Ok(Utc::now() + chrono::Duration::seconds(duration))
+}
+
+/// Format an expiration timestamp as the ISO 8601 string AWS returns.
+fn format_expiration(ts: DateTime<Utc>) -> String {
+    ts.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
+
+/// Test-only wrapper around [`compute_expiration_at`] used by the existing
+/// duration unit tests.
+#[cfg(test)]
+fn compute_expiration(req: &AwsRequest, default_duration: i64) -> Result<String, AwsServiceError> {
+    Ok(format_expiration(compute_expiration_at(
+        req,
+        default_duration,
+    )?))
 }
 
 pub struct StsService {
@@ -232,7 +249,8 @@ impl StsService {
         let token_code = req.query_params.get("TokenCode").cloned();
 
         // Compute expiration from DurationSeconds (default 3600s)
-        let expiration = compute_expiration(req, DEFAULT_ASSUME_ROLE_DURATION)?;
+        let expiration_at = compute_expiration_at(req, DEFAULT_ASSUME_ROLE_DURATION)?;
+        let expiration = format_expiration(expiration_at);
 
         // Accept MFA parameters without verification (emulator behavior)
         let _mfa_serial = serial_number;
@@ -265,9 +283,23 @@ impl StsService {
         state.credential_identities.insert(
             creds.access_key_id.clone(),
             CredentialIdentity {
-                arn: assumed_role_arn,
+                arn: assumed_role_arn.clone(),
+                user_id: assumed_role_id.clone(),
+                account_id: account_id.clone(),
+            },
+        );
+        // Store full temp credential so SigV4 verification (batch 3) and IAM
+        // enforcement (batch 4+) can look up the secret by access key ID.
+        state.sts_temp_credentials.insert(
+            creds.access_key_id.clone(),
+            StsTempCredential {
+                access_key_id: creds.access_key_id.clone(),
+                secret_access_key: creds.secret_access_key.clone(),
+                session_token: creds.session_token.clone(),
+                principal_arn: assumed_role_arn,
                 user_id: assumed_role_id,
                 account_id: account_id.clone(),
+                expiration: expiration_at,
             },
         );
 
@@ -350,7 +382,8 @@ impl StsService {
         }
 
         // Compute expiration from DurationSeconds (default 3600s)
-        let expiration = compute_expiration(req, DEFAULT_ASSUME_ROLE_DURATION)?;
+        let expiration_at = compute_expiration_at(req, DEFAULT_ASSUME_ROLE_DURATION)?;
+        let expiration = format_expiration(expiration_at);
 
         let partition = partition_for_region(&req.region);
         let creds = StsCredentials::generate();
@@ -370,9 +403,21 @@ impl StsService {
         state.credential_identities.insert(
             creds.access_key_id.clone(),
             CredentialIdentity {
-                arn: assumed_role_arn,
+                arn: assumed_role_arn.clone(),
+                user_id: assumed_role_id_str.clone(),
+                account_id: account_id.clone(),
+            },
+        );
+        state.sts_temp_credentials.insert(
+            creds.access_key_id.clone(),
+            StsTempCredential {
+                access_key_id: creds.access_key_id.clone(),
+                secret_access_key: creds.secret_access_key.clone(),
+                session_token: creds.session_token.clone(),
+                principal_arn: assumed_role_arn,
                 user_id: assumed_role_id_str,
                 account_id: account_id.clone(),
+                expiration: expiration_at,
             },
         );
 
@@ -447,7 +492,8 @@ impl StsService {
         }
 
         // Compute expiration from DurationSeconds (default 3600s)
-        let expiration = compute_expiration(req, DEFAULT_ASSUME_ROLE_DURATION)?;
+        let expiration_at = compute_expiration_at(req, DEFAULT_ASSUME_ROLE_DURATION)?;
+        let expiration = format_expiration(expiration_at);
 
         // Decode the SAML assertion to extract the RoleSessionName
         let role_session_name =
@@ -471,9 +517,21 @@ impl StsService {
         state.credential_identities.insert(
             creds.access_key_id.clone(),
             CredentialIdentity {
-                arn: assumed_role_arn,
+                arn: assumed_role_arn.clone(),
+                user_id: assumed_role_id_str.clone(),
+                account_id: account_id.clone(),
+            },
+        );
+        state.sts_temp_credentials.insert(
+            creds.access_key_id.clone(),
+            StsTempCredential {
+                access_key_id: creds.access_key_id.clone(),
+                secret_access_key: creds.secret_access_key.clone(),
+                session_token: creds.session_token.clone(),
+                principal_arn: assumed_role_arn,
                 user_id: assumed_role_id_str,
                 account_id: account_id.clone(),
+                expiration: expiration_at,
             },
         );
 
@@ -526,9 +584,58 @@ impl StsService {
         let _token_code = req.query_params.get("TokenCode").cloned();
 
         // Compute expiration from DurationSeconds (default 43200s / 12 hours)
-        let expiration = compute_expiration(req, DEFAULT_SESSION_TOKEN_DURATION)?;
+        let expiration_at = compute_expiration_at(req, DEFAULT_SESSION_TOKEN_DURATION)?;
+        let expiration = format_expiration(expiration_at);
 
-        let xml = xml_responses::get_session_token_response(&expiration, &req.request_id);
+        // Resolve the calling principal so the temporary credential is tied
+        // to a real identity that SigV4 verification and IAM enforcement can
+        // look up later. Falls back to the account root when the caller
+        // isn't a known IAM user — matches how `GetSessionToken` behaves
+        // against AWS with root credentials.
+        let partition = partition_for_region(&req.region);
+        let mut state = self.state.write();
+        let (principal_arn, user_id, account_id) =
+            if let Some(akid) = extract_access_key(req).as_deref() {
+                if let Some(lookup) = state.credential_secret(akid) {
+                    (lookup.principal_arn, lookup.user_id, lookup.account_id)
+                } else {
+                    (
+                        format!("arn:{}:iam::{}:root", partition, state.account_id),
+                        state.account_id.clone(),
+                        state.account_id.clone(),
+                    )
+                }
+            } else {
+                (
+                    format!("arn:{}:iam::{}:root", partition, state.account_id),
+                    state.account_id.clone(),
+                    state.account_id.clone(),
+                )
+            };
+
+        let creds = StsCredentials::generate();
+        state.credential_identities.insert(
+            creds.access_key_id.clone(),
+            CredentialIdentity {
+                arn: principal_arn.clone(),
+                user_id: user_id.clone(),
+                account_id: account_id.clone(),
+            },
+        );
+        state.sts_temp_credentials.insert(
+            creds.access_key_id.clone(),
+            StsTempCredential {
+                access_key_id: creds.access_key_id.clone(),
+                secret_access_key: creds.secret_access_key.clone(),
+                session_token: creds.session_token.clone(),
+                principal_arn,
+                user_id,
+                account_id,
+                expiration: expiration_at,
+            },
+        );
+
+        let xml = xml_responses::get_session_token_response(&creds, &expiration, &req.request_id);
         Ok(AwsResponse::xml(StatusCode::OK, xml))
     }
 
@@ -568,13 +675,45 @@ impl StsService {
         let policy = req.query_params.get("Policy").cloned();
 
         // Compute expiration from DurationSeconds (default 43200s / 12 hours)
-        let expiration = compute_expiration(req, DEFAULT_FEDERATION_TOKEN_DURATION)?;
+        let expiration_at = compute_expiration_at(req, DEFAULT_FEDERATION_TOKEN_DURATION)?;
+        let expiration = format_expiration(expiration_at);
 
         let partition = partition_for_region(&req.region);
-        let state = self.state.read();
+        let creds = StsCredentials::generate();
+
+        let mut state = self.state.write();
+        let account_id = state.account_id.clone();
+        let federated_user_arn = format!(
+            "arn:{}:sts::{}:federated-user/{}",
+            partition, account_id, name
+        );
+        let federated_user_id = format!("{}:{}", account_id, name);
+
+        state.credential_identities.insert(
+            creds.access_key_id.clone(),
+            CredentialIdentity {
+                arn: federated_user_arn.clone(),
+                user_id: federated_user_id.clone(),
+                account_id: account_id.clone(),
+            },
+        );
+        state.sts_temp_credentials.insert(
+            creds.access_key_id.clone(),
+            StsTempCredential {
+                access_key_id: creds.access_key_id.clone(),
+                secret_access_key: creds.secret_access_key.clone(),
+                session_token: creds.session_token.clone(),
+                principal_arn: federated_user_arn,
+                user_id: federated_user_id,
+                account_id: account_id.clone(),
+                expiration: expiration_at,
+            },
+        );
+
         let xml = xml_responses::get_federation_token_response(
+            &creds,
             name,
-            &state.account_id,
+            &account_id,
             partition,
             &expiration,
             policy.as_deref(),
