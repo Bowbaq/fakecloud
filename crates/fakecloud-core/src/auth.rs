@@ -28,8 +28,14 @@ pub enum PrincipalType {
     AssumedRole,
     /// Credentials issued by `GetFederationToken` — i.e. a federated user.
     FederatedUser,
-    /// `GetSessionToken` or the default account-root session.
+    /// The account root identity. Reserved for explicit `...:root` ARNs
+    /// only; do not return this from a generic fallback because root
+    /// principals bypass IAM enforcement (see `Principal::is_root`).
     Root,
+    /// The ARN didn't match any known shape. Treated as a non-root,
+    /// non-bypassable principal so a malformed or unexpected ARN can never
+    /// silently grant elevated permissions during IAM evaluation.
+    Unknown,
 }
 
 impl PrincipalType {
@@ -39,21 +45,27 @@ impl PrincipalType {
             PrincipalType::AssumedRole => "assumed-role",
             PrincipalType::FederatedUser => "federated-user",
             PrincipalType::Root => "root",
+            PrincipalType::Unknown => "unknown",
         }
     }
 
-    /// Best-effort classification from an ARN. Falls back to
-    /// [`PrincipalType::Root`] when the ARN can't be classified (e.g. the
-    /// caller didn't present credentials at all).
+    /// Classify a principal from its ARN. Returns [`PrincipalType::Unknown`]
+    /// for ARNs that don't match any of the well-known principal shapes —
+    /// **never** [`PrincipalType::Root`] as a fallback, because root
+    /// bypasses IAM enforcement and silently treating malformed ARNs as
+    /// root would let unexpected inputs grant elevated permissions
+    /// (identified by cubic in PR #391 review).
     pub fn from_arn(arn: &str) -> Self {
-        if arn.contains(":user/") {
+        if arn.ends_with(":root") {
+            PrincipalType::Root
+        } else if arn.contains(":user/") {
             PrincipalType::User
         } else if arn.contains(":assumed-role/") {
             PrincipalType::AssumedRole
         } else if arn.contains(":federated-user/") {
             PrincipalType::FederatedUser
         } else {
-            PrincipalType::Root
+            PrincipalType::Unknown
         }
     }
 }
@@ -310,7 +322,31 @@ mod tests {
             PrincipalType::from_arn("arn:aws:iam::123456789012:root"),
             PrincipalType::Root
         );
-        assert_eq!(PrincipalType::from_arn("not-an-arn"), PrincipalType::Root);
+    }
+
+    #[test]
+    fn principal_type_unparseable_is_unknown_not_root() {
+        // Identified by cubic on PR #391: falling back to Root would let
+        // malformed or unexpected ARNs bypass IAM enforcement, since
+        // Principal::is_root short-circuits evaluation. The fallback must
+        // be the non-bypassable Unknown variant.
+        assert_eq!(PrincipalType::from_arn("not-an-arn"), PrincipalType::Unknown);
+        assert_eq!(PrincipalType::from_arn(""), PrincipalType::Unknown);
+        assert_eq!(
+            PrincipalType::from_arn("arn:aws:iam::123456789012:something-weird"),
+            PrincipalType::Unknown
+        );
+
+        // And a Principal built from an Unknown ARN must not be treated
+        // as root for enforcement decisions.
+        let p = Principal {
+            arn: "garbage".to_string(),
+            user_id: "x".to_string(),
+            account_id: "123456789012".to_string(),
+            principal_type: PrincipalType::Unknown,
+            source_identity: None,
+        };
+        assert!(!p.is_root());
     }
 
     #[test]
