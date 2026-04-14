@@ -37,6 +37,22 @@ pub struct Service {
 
 pub const SERVICES: &[Service] = &[
     Service {
+        name: "kms",
+        // Batch 6: core `aws_kms_key` smoke. Passes against fakecloud
+        // out of the box.
+        run_regex: "^TestAccKMSKey_basic$",
+        deny: &[],
+    },
+    Service {
+        name: "logs",
+        // Batch 6: core `aws_cloudwatch_log_group` smoke. The fix here
+        // is making DescribeLogGroups always return `logGroupClass`
+        // (defaulting to STANDARD), which Terraform's provider asserts
+        // on every refresh.
+        run_regex: "^TestAccLogsGroup_basic$",
+        deny: &[],
+    },
+    Service {
         name: "iam",
         // Batch 5: core CRUD smoke for the four most-used IAM resource
         // types. Passes against fakecloud out of the box — no

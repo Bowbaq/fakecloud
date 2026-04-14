@@ -58,6 +58,10 @@ impl LogsService {
             .unwrap_or_default();
 
         let kms_key_id = body["kmsKeyId"].as_str().map(|s| s.to_string());
+        let log_group_class = body["logGroupClass"]
+            .as_str()
+            .map(|s| s.to_string())
+            .or_else(|| Some("STANDARD".to_string()));
 
         state.log_groups.insert(
             name.clone(),
@@ -75,6 +79,7 @@ impl LogsService {
                 index_policies: Vec::new(),
                 transformer: None,
                 deletion_protection: false,
+                log_group_class,
             },
         );
 
@@ -184,6 +189,15 @@ impl LogsService {
                     "creationTime": g.creation_time,
                     "storedBytes": g.stored_bytes,
                     "metricFilterCount": 0,
+                    // Real AWS DescribeLogGroups always returns logGroupClass.
+                    // Terraform's `aws_cloudwatch_log_group` provider asserts
+                    // `log_group_class == "STANDARD"` on every refresh, so
+                    // omitting the field surfaces as drift / `expected
+                    // STANDARD got ""` failures.
+                    "logGroupClass": g
+                        .log_group_class
+                        .as_deref()
+                        .unwrap_or("STANDARD"),
                 });
                 if let Some(days) = g.retention_in_days {
                     obj["retentionInDays"] = json!(days);

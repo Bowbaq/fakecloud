@@ -28,6 +28,16 @@ async fn run_service(name: &str) {
 }
 
 #[tokio::test]
+async fn kms_acceptance() {
+    run_service("kms").await;
+}
+
+#[tokio::test]
+async fn logs_acceptance() {
+    run_service("logs").await;
+}
+
+#[tokio::test]
 async fn iam_acceptance() {
     run_service("iam").await;
 }

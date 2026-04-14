@@ -103,6 +103,10 @@ pub struct LogGroup {
     pub index_policies: Vec<IndexPolicy>,
     pub transformer: Option<Transformer>,
     pub deletion_protection: bool,
+    /// `STANDARD` (default), `INFREQUENT_ACCESS`, or `DELIVERY`. Set at
+    /// creation time via `CreateLogGroup`'s `logGroupClass` parameter.
+    /// Tracked here so `DescribeLogGroups` round-trips it correctly.
+    pub log_group_class: Option<String>,
 }
 
 pub struct LogStream {
