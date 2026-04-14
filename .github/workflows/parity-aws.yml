@@ -30,8 +30,9 @@ name: Parity (real AWS)
 
 on:
   schedule:
-    # 07:00 UTC daily. Low-traffic hour, lets us notice drift within 24h.
-    - cron: '0 7 * * *'
+    # 07:00 UTC every Monday. Weekly is enough to catch drift between
+    # fakecloud and real AWS; daily would be noise for these services.
+    - cron: '0 7 * * 1'
   workflow_dispatch:
   # Deliberately no `pull_request` trigger. See SECURITY NOTES above.
 
