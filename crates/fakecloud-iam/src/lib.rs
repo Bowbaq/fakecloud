@@ -1,4 +1,5 @@
 pub mod credential_resolver;
+pub mod evaluator;
 pub mod iam_service;
 pub mod policy_validation;
 pub mod state;
