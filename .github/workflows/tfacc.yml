@@ -64,3 +64,12 @@ jobs:
 
       - name: Run ${{ matrix.service }} acceptance tests
         run: cargo test -p fakecloud-tfacc --test acc ${{ matrix.service }}_acceptance -- --nocapture
+
+      - name: Upload failing go test output
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfacc-${{ matrix.service }}-failure-log
+          path: target/tfacc/logs/${{ matrix.service }}-failure.log
+          if-no-files-found: ignore
+          retention-days: 7
