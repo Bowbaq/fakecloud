@@ -10,8 +10,11 @@ use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 use fakecloud_core::validation::*;
 
 use crate::state::{
-    BackupDescription, DynamoTable, ExportDescription, ImportDescription, ProvisionedThroughput,
+    BackupDescription, DynamoTable, ExportDescription, GlobalSecondaryIndex, ImportDescription,
+    ProvisionedThroughput,
 };
+
+use super::parse_projection;
 
 use super::{
     build_table_description, build_table_description_json, find_table_by_arn,
@@ -344,6 +347,52 @@ impl DynamoDbService {
 
         if let Some(bm) = body["BillingMode"].as_str() {
             table.billing_mode = bm.to_string();
+        }
+
+        // Handle GlobalSecondaryIndexUpdates: a list of {Create, Update, Delete}
+        // operations. Real AWS supports all three; fakecloud now mirrors the
+        // semantics so Terraform's `aws_dynamodb_table` GSI lifecycle works.
+        if let Some(updates) = body
+            .get("GlobalSecondaryIndexUpdates")
+            .and_then(|v| v.as_array())
+        {
+            for op in updates {
+                if let Some(create) = op.get("Create") {
+                    let name = match create.get("IndexName").and_then(|v| v.as_str()) {
+                        Some(n) => n.to_string(),
+                        None => continue,
+                    };
+                    let key_schema = parse_key_schema(&create["KeySchema"]).unwrap_or_default();
+                    let projection = parse_projection(&create["Projection"]);
+                    let provisioned_throughput =
+                        parse_provisioned_throughput(&create["ProvisionedThroughput"]).ok();
+                    table.gsi.retain(|g| g.index_name != name);
+                    table.gsi.push(GlobalSecondaryIndex {
+                        index_name: name,
+                        key_schema,
+                        projection,
+                        provisioned_throughput,
+                    });
+                }
+                if let Some(update) = op.get("Update") {
+                    let name = match update.get("IndexName").and_then(|v| v.as_str()) {
+                        Some(n) => n,
+                        None => continue,
+                    };
+                    if let Some(gsi) = table.gsi.iter_mut().find(|g| g.index_name == name) {
+                        if let Ok(throughput) =
+                            parse_provisioned_throughput(&update["ProvisionedThroughput"])
+                        {
+                            gsi.provisioned_throughput = Some(throughput);
+                        }
+                    }
+                }
+                if let Some(delete) = op.get("Delete") {
+                    if let Some(name) = delete.get("IndexName").and_then(|v| v.as_str()) {
+                        table.gsi.retain(|g| g.index_name != name);
+                    }
+                }
+            }
         }
 
         if let Some(dpe) = body
