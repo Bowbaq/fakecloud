@@ -31,7 +31,7 @@ Thanks for your interest in contributing. This document covers the conventions a
 
 - **Rust edition 2021.** See `Cargo.toml` for the MSRV.
 - **Per-operation error enums** with `thiserror`. No service-wide "god enums" that collect every possible error.
-- **No god functions.** If a function is over ~150 lines, split it. If a match arm is over ~50 lines, extract it to a helper.
+- **Prefer focused functions, but not dogmatically.** Long is not the same as bad. A linear operation handler that parses a request, validates it, mutates state, and builds a response is fine even if it's 200 lines — splitting it into six tiny helpers just scatters one flow across the file and hurts readability. What to actually avoid: deep nesting, repeated blocks that should be one helper, and match arms where the body has meaningful independent logic worth naming. If a split makes the code easier to follow, do it. If it just chops a linear flow into pieces for line-count reasons, don't.
 - **Don't `.clone()` or `.to_string()` defensively.** Borrow when you can; clone when ownership is genuinely required.
 
 ## Adding a service
