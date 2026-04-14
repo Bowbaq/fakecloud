@@ -28,7 +28,7 @@ JSON protocol. `X-Amz-Target` header, JSON body, JSON responses.
 
 ## Cross-service delivery
 
-- **EventBridge → SNS / SQS / Lambda / Logs / Kinesis / Step Functions / HTTP** — Rules deliver to targets on schedule or event match
+- **EventBridge -> SNS / SQS / Lambda / Logs / Kinesis / Step Functions / HTTP** — Rules deliver to targets on schedule or event match
 - **EventBridge Scheduler** — Cron and rate-based rules fire on schedule
 
 ## Source

@@ -27,7 +27,7 @@ REST for management, path-based routing for the executed API.
 
 ## Cross-service delivery
 
-- **API Gateway v2 → Lambda** — HTTP API routes invoke Lambda functions with proxy integration v2.0 event format
+- **API Gateway v2 -> Lambda** — HTTP API routes invoke Lambda functions with proxy integration v2.0 event format
 
 ## Why this matters
 

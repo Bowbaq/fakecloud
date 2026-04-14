@@ -31,8 +31,8 @@ JSON protocol. `X-Amz-Target` header, JSON body, JSON responses.
 
 ## Cross-service delivery
 
-- **DynamoDB Streams → Lambda** — Event source mapping polls and invokes
-- **DynamoDB → Kinesis** — Table changes stream to Kinesis Data Streams
+- **DynamoDB Streams -> Lambda** — Event source mapping polls and invokes
+- **DynamoDB -> Kinesis** — Table changes stream to Kinesis Data Streams
 
 ## Source
 

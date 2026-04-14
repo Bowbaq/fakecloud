@@ -29,7 +29,7 @@ Query protocol. Form-encoded body, `Action` parameter, XML responses.
 
 ## Cross-service delivery
 
-- **SQS → Lambda** — Event source mapping polls and invokes
+- **SQS -> Lambda** — Event source mapping polls and invokes
 
 ## Source
 

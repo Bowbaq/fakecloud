@@ -41,8 +41,8 @@ SES v2 uses REST. SES v1 inbound uses Query protocol.
 
 ## Cross-service delivery
 
-- **SES → SNS / EventBridge** — Send/delivery/bounce/complaint events fan out via configured event destinations
-- **SES Inbound → S3 / SNS / Lambda** — Receipt rules evaluate and execute actions on inbound mail
+- **SES -> SNS / EventBridge** — Send/delivery/bounce/complaint events fan out via configured event destinations
+- **SES Inbound -> S3 / SNS / Lambda** — Receipt rules evaluate and execute actions on inbound mail
 
 ## Why this matters
 

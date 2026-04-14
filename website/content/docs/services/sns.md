@@ -28,7 +28,7 @@ Query protocol. Form-encoded body, `Action` parameter, XML responses.
 
 ## Cross-service delivery
 
-- **SNS → SQS / Lambda / HTTP** — Fan-out delivery to all subscription types
+- **SNS -> SQS / Lambda / HTTP** — Fan-out delivery to all subscription types
 
 ## Gotchas
 

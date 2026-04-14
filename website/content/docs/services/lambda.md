@@ -32,19 +32,19 @@ REST. Path-based routing for invoke operations, JSON for control plane.
 
 Lambda is a target for most event-producing services:
 
-- **SQS → Lambda** — Event source mapping polls the queue
-- **Kinesis → Lambda** — Event source mapping polls shards
-- **DynamoDB Streams → Lambda** — Event source mapping polls stream records
-- **S3 → Lambda** — Bucket notifications
-- **SNS → Lambda** — Topic subscriptions
-- **EventBridge → Lambda** — Rule targets
-- **API Gateway v2 → Lambda** — HTTP API proxy integration
-- **Cognito → Lambda** — Triggers (pre-signup, post-confirmation, pre/post-auth, custom message, token generation, migration, custom auth challenge)
-- **Secrets Manager → Lambda** — Rotation (all 4 steps)
-- **CloudFormation → Lambda** — Custom resources via `ServiceToken`
-- **SES Inbound → Lambda** — Receipt rule actions
-- **Step Functions → Lambda** — Task state integrations
-- **CloudWatch Logs → Lambda** — Subscription filters
+- **SQS -> Lambda** — Event source mapping polls the queue
+- **Kinesis -> Lambda** — Event source mapping polls shards
+- **DynamoDB Streams -> Lambda** — Event source mapping polls stream records
+- **S3 -> Lambda** — Bucket notifications
+- **SNS -> Lambda** — Topic subscriptions
+- **EventBridge -> Lambda** — Rule targets
+- **API Gateway v2 -> Lambda** — HTTP API proxy integration
+- **Cognito -> Lambda** — Triggers (pre-signup, post-confirmation, pre/post-auth, custom message, token generation, migration, custom auth challenge)
+- **Secrets Manager -> Lambda** — Rotation (all 4 steps)
+- **CloudFormation -> Lambda** — Custom resources via `ServiceToken`
+- **SES Inbound -> Lambda** — Receipt rule actions
+- **Step Functions -> Lambda** — Task state integrations
+- **CloudWatch Logs -> Lambda** — Subscription filters
 
 ## Gotchas
 

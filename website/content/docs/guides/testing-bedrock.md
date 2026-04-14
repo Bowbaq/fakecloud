@@ -349,7 +349,7 @@ For all five, the "prompt" that `promptContains` matches against is the user-vis
 
 `InvokeModelWithResponseStream` and `ConverseStream` work with the same response configuration and fault injection as the non-streaming versions. If you configure a single response, fakecloud delivers it as a single chunk. If you inject a streaming-only error (`ModelStreamErrorException`), it surfaces as a top-level HTTP error rather than mid-stream — a reasonable approximation for testing retry logic.
 
-## Cross-service: Lambda → Bedrock
+## Cross-service: Lambda -> Bedrock
 
 fakecloud's Bedrock implementation runs in the same process as every other service, so cross-service flows involving Bedrock are testable end-to-end. Example — a Lambda that classifies incoming S3 uploads via Claude and writes results to DynamoDB:
 

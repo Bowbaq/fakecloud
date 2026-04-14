@@ -30,7 +30,7 @@ JSON protocol. `X-Amz-Target` header, JSON body, JSON responses.
 
 ## Cross-service delivery
 
-- **Step Functions → Lambda / SQS / SNS / EventBridge / DynamoDB** — Task states invoke functions, send messages, publish events, and read/write items
+- **Step Functions -> Lambda / SQS / SNS / EventBridge / DynamoDB** — Task states invoke functions, send messages, publish events, and read/write items
 
 ## Why this matters
 

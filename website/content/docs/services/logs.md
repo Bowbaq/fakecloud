@@ -27,7 +27,7 @@ JSON protocol. `X-Amz-Target` header, JSON body, JSON responses.
 
 ## Cross-service delivery
 
-- **CloudWatch Logs → Lambda / Kinesis / SQS** — Subscription filters deliver log events
+- **CloudWatch Logs -> Lambda / Kinesis / SQS** — Subscription filters deliver log events
 
 ## Gotchas
 

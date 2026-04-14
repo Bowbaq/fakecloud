@@ -38,7 +38,7 @@ JSON protocol. `X-Amz-Target` header, JSON body, JSON responses.
 
 ## Cross-service delivery
 
-- **Cognito → Lambda** — Triggers: pre-signup, post-confirmation, pre-auth, post-auth, custom message, token generation, migration, custom auth challenge
+- **Cognito -> Lambda** — Triggers: pre-signup, post-confirmation, pre-auth, post-auth, custom message, token generation, migration, custom auth challenge
 
 ## Why this matters
 

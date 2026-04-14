@@ -26,7 +26,7 @@ JSON protocol. `X-Amz-Target` header, JSON body, JSON responses.
 
 ## Cross-service delivery
 
-- **Secrets Manager → Lambda** — Rotation invokes the configured Lambda for all 4 rotation steps
+- **Secrets Manager -> Lambda** — Rotation invokes the configured Lambda for all 4 rotation steps
 
 ## Source
 

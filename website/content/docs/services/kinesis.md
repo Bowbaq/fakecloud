@@ -25,8 +25,8 @@ JSON protocol. `X-Amz-Target` header, JSON body, JSON responses.
 
 ## Cross-service delivery
 
-- **Kinesis → Lambda** — Event source mapping polls shards and invokes functions
-- **DynamoDB → Kinesis** — Table changes stream to Kinesis Data Streams
+- **Kinesis -> Lambda** — Event source mapping polls shards and invokes functions
+- **DynamoDB -> Kinesis** — Table changes stream to Kinesis Data Streams
 
 ## Source
 

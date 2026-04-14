@@ -26,8 +26,8 @@ Query protocol. Form-encoded body, `Action` parameter, XML responses.
 
 ## Cross-service delivery
 
-- **CloudFormation → Lambda** — Custom resources invoke via `ServiceToken`
-- **CloudFormation → SNS** — Stack events notify configured topics via `NotificationARNs`
+- **CloudFormation -> Lambda** — Custom resources invoke via `ServiceToken`
+- **CloudFormation -> SNS** — Stack events notify configured topics via `NotificationARNs`
 
 ## Gotchas
 

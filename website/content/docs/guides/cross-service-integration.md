@@ -14,33 +14,33 @@ fakecloud actually executes the cross-service wiring. When an EventBridge rule m
 
 **Messaging and eventing:**
 
-- **SNS → SQS / Lambda / HTTP** — Fan-out delivery to all subscription types.
-- **S3 → SNS / SQS / Lambda / EventBridge** — Bucket notifications on object create/delete.
-- **EventBridge → SNS / SQS / Lambda / Logs / Kinesis / Step Functions / HTTP** — Rules deliver to targets on schedule or event match, including API Destinations.
-- **SQS → Lambda** — Event source mapping polls queues and invokes functions.
-- **Kinesis → Lambda** — Event source mapping polls shards and invokes functions.
-- **DynamoDB Streams → Lambda** — Event source mapping polls stream records and invokes.
-- **DynamoDB → Kinesis** — Table changes stream to Kinesis Data Streams.
-- **CloudWatch Logs → Lambda / Kinesis / SQS** — Subscription filters deliver log events.
+- **SNS -> SQS / Lambda / HTTP** — Fan-out delivery to all subscription types.
+- **S3 -> SNS / SQS / Lambda / EventBridge** — Bucket notifications on object create/delete.
+- **EventBridge -> SNS / SQS / Lambda / Logs / Kinesis / Step Functions / HTTP** — Rules deliver to targets on schedule or event match, including API Destinations.
+- **SQS -> Lambda** — Event source mapping polls queues and invokes functions.
+- **Kinesis -> Lambda** — Event source mapping polls shards and invokes functions.
+- **DynamoDB Streams -> Lambda** — Event source mapping polls stream records and invokes.
+- **DynamoDB -> Kinesis** — Table changes stream to Kinesis Data Streams.
+- **CloudWatch Logs -> Lambda / Kinesis / SQS** — Subscription filters deliver log events.
 
 **Identity and auth:**
 
-- **Cognito → Lambda** — Pre-signup, post-confirmation, pre/post-auth, custom message, token generation, migration, and custom auth challenge triggers.
+- **Cognito -> Lambda** — Pre-signup, post-confirmation, pre/post-auth, custom message, token generation, migration, and custom auth challenge triggers.
 
 **Email:**
 
-- **SES → SNS / EventBridge** — Email event fanout (send, delivery, bounce, complaint) via configured event destinations.
-- **SES Inbound → S3 / SNS / Lambda** — Receipt rules evaluate inbound email and execute S3, SNS, and Lambda actions for real.
+- **SES -> SNS / EventBridge** — Email event fanout (send, delivery, bounce, complaint) via configured event destinations.
+- **SES Inbound -> S3 / SNS / Lambda** — Receipt rules evaluate inbound email and execute S3, SNS, and Lambda actions for real.
 
 **Orchestration and APIs:**
 
-- **Step Functions → Lambda / SQS / SNS / EventBridge / DynamoDB** — Task states invoke Lambda, send SQS messages, publish to SNS topics, put EventBridge events, and read/write DynamoDB items.
-- **API Gateway v2 → Lambda** — HTTP API routes invoke Lambda functions with proxy integration v2.0 format.
+- **Step Functions -> Lambda / SQS / SNS / EventBridge / DynamoDB** — Task states invoke Lambda, send SQS messages, publish to SNS topics, put EventBridge events, and read/write DynamoDB items.
+- **API Gateway v2 -> Lambda** — HTTP API routes invoke Lambda functions with proxy integration v2.0 format.
 
 **Infrastructure:**
 
-- **CloudFormation → Lambda / SNS** — Custom resources invoke via `ServiceToken`, stack events notify via `NotificationARNs`.
-- **Secrets Manager → Lambda** — Rotation invokes Lambda for all 4 steps.
+- **CloudFormation -> Lambda / SNS** — Custom resources invoke via `ServiceToken`, stack events notify via `NotificationARNs`.
+- **Secrets Manager -> Lambda** — Rotation invokes Lambda for all 4 steps.
 - **S3 Lifecycle** — Background expiration and storage class transitions.
 - **EventBridge Scheduler** — Cron and rate-based rules fire on schedule.
 
