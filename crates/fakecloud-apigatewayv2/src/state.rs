@@ -48,6 +48,19 @@ pub struct HttpApi {
     pub tags: Option<HashMap<String, String>>,
     pub created_date: DateTime<Utc>,
     pub api_endpoint: String,
+    /// Real AWS API Gateway v2 always returns this on GetApi, defaulting
+    /// to `$request.header.x-api-key` for HTTP APIs. The Terraform
+    /// `aws_apigatewayv2_api` provider asserts on the value.
+    pub api_key_selection_expression: String,
+    /// Real AWS always returns this on GetApi, defaulting to
+    /// `$request.method $request.path` for HTTP APIs. Same Terraform
+    /// assertion pattern as the api_key_selection_expression above.
+    pub route_selection_expression: String,
+    /// Disabled by default; honoured at create time if the caller sets it.
+    pub disable_execute_api_endpoint: bool,
+    /// `ipv4` (default) or `dualstack`. Real AWS always returns this on
+    /// GetApi and Terraform's provider asserts on it.
+    pub ip_address_type: String,
 }
 
 impl HttpApi {
@@ -70,6 +83,10 @@ impl HttpApi {
             tags,
             created_date,
             api_endpoint,
+            api_key_selection_expression: "$request.header.x-api-key".to_string(),
+            route_selection_expression: "$request.method $request.path".to_string(),
+            disable_execute_api_endpoint: false,
+            ip_address_type: "ipv4".to_string(),
         }
     }
 }

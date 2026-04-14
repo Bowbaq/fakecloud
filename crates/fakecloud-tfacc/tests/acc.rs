@@ -28,6 +28,11 @@ async fn run_service(name: &str) {
 }
 
 #[tokio::test]
+async fn apigatewayv2_acceptance() {
+    run_service("apigatewayv2").await;
+}
+
+#[tokio::test]
 async fn kinesis_acceptance() {
     run_service("kinesis").await;
 }

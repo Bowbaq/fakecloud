@@ -1341,3 +1341,35 @@ async fn test_simulation_endpoint() {
     );
     assert_eq!(requests[0]["statusCode"].as_u64().unwrap(), 200);
 }
+
+#[tokio::test]
+async fn apigatewayv2_create_api_returns_default_metadata_fields() {
+    // Regression guard for `TestAccAPIGatewayV2API_basicHTTP`. Real AWS
+    // GetApi always returns `apiKeySelectionExpression`,
+    // `routeSelectionExpression`, `disableExecuteApiEndpoint`, and
+    // `ipAddressType` — Terraform's `aws_apigatewayv2_api` provider
+    // asserts on each of them on every refresh.
+    let server = TestServer::start().await;
+    let client = server.apigatewayv2_client().await;
+
+    let api = client
+        .create_api()
+        .name("metadata-defaults")
+        .protocol_type(aws_sdk_apigatewayv2::types::ProtocolType::Http)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        api.api_key_selection_expression().unwrap(),
+        "$request.header.x-api-key"
+    );
+    assert_eq!(
+        api.route_selection_expression().unwrap(),
+        "$request.method $request.path"
+    );
+    assert_eq!(api.disable_execute_api_endpoint(), Some(false));
+    assert_eq!(
+        api.ip_address_type(),
+        Some(&aws_sdk_apigatewayv2::types::IpAddressType::Ipv4)
+    );
+}
