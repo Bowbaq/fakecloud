@@ -1,7 +1,7 @@
 +++
 title = "People are not reviewing AI-generated code"
 date = 2026-04-15
-description = "I'd bet most developers are already shipping AI-generated code without properly reviewing it. Not because they have guardrails—because they're busy and the code looks fine. Here's what I think we should do about it."
+description = "I'd bet most developers are already shipping AI-generated code without properly reviewing it. Not because they have guardrails, but because they're busy and the code looks fine. Here's what I think we should do about it."
 
 [extra]
 author = "Lucas Vieira"
