@@ -16,7 +16,7 @@ It's worth being precise about what each layer does, because they look similar o
 
 **Parity tests** ask *"does fakecloud behave the same as real AWS on the things they both do?"* They're a separate suite that runs the *same test body* against both fakecloud and a real AWS sandbox account, and the parity signal comes from comparing pass/fail across the two runs. This is what catches subtle behavioral drift — the cases where fakecloud returns the shape AWS documents but fakes the semantics in a way real AWS wouldn't.
 
-**Terraform acceptance tests (tfacc)** ask *"does fakecloud pass HashiCorp's own Terraform provider acceptance tests?"* These are the upstream `TestAcc*` functions from [`hashicorp/terraform-provider-aws`](https://github.com/hashicorp/terraform-provider-aws), pinned to a specific tag, run against fakecloud. Each test does a full `terraform apply` / `plan` / `destroy` cycle and asserts on the returned resource state — covering waiters, drift detection, and field-presence semantics that SDK-only tests miss. Unlike the other three layers on this page, the assertions in tfacc aren't written by us — they come from an external repository at a pinned version, and we just pull them and point them at fakecloud.
+**Terraform acceptance tests (tfacc)** ask *"does fakecloud pass HashiCorp's own Terraform provider acceptance tests?"* These are the upstream `TestAcc*` functions from [`hashicorp/terraform-provider-aws`](https://github.com/hashicorp/terraform-provider-aws) run against fakecloud. Each test does a full `terraform apply` / `plan` / `destroy` cycle and asserts on the returned resource state — covering waiters, drift detection, and field-presence semantics that SDK-only tests miss. Unlike the other layers on this page, the test bodies come from a third party: they were written by the Terraform team against real AWS, and we just run them.
 
 These four layers complement each other. Conformance catches schema drift. E2E catches functional regressions in fakecloud. Parity catches drift between fakecloud and the real thing. tfacc catches drift from what real-world infrastructure-as-code users expect fakecloud to do.
 
@@ -108,15 +108,15 @@ This is semantic coverage that SDK-based tests don't give us: **waiters** (does 
 
 ### What makes tfacc different
 
-Every other test layer on this page was written by us. Conformance is generated from AWS's Smithy models, but the harness and the pass/fail assertions are ours. E2E tests are ours. Parity tests are ours.
+Conformance checks that fakecloud matches AWS's published schema — every request, response, type, and constraint in the Smithy model. It's exhaustive but it's about *shape*.
 
-tfacc isn't. The tests live in an external repository at a pinned version. We pull them, point them at fakecloud, and they either pass or fail. There's no opportunity for us to write assertions that match what fakecloud happens to do — the assertions already exist, and they describe how real AWS behaves as seen by the largest real-world consumer of the AWS API.
+tfacc is different in kind. It runs real `terraform apply` / `plan` / `destroy` cycles against each service, using resource-lifecycle tests written by the Terraform team. Those tests weren't written to check schemas — they were written to check that the provider's day-to-day workflow works against real AWS. When fakecloud runs them, the question isn't "are the shapes right?" but "does fakecloud behave well enough for a real Terraform user?".
+
+That's why tfacc sits alongside conformance rather than replacing it. Conformance keeps fakecloud honest about what it claims to return. tfacc keeps fakecloud honest about whether that's actually enough to be useful.
 
 ### Current coverage
 
 12 services today: `bedrock`, `apigatewayv2`, `dynamodb`, `events` (EventBridge), `iam`, `kinesis`, `kms`, `logs`, `secretsmanager`, `sns`, `sqs`, `ssm`.
-
-The provider is pinned to `v5.97.0` of [`terraform-provider-aws`](https://github.com/hashicorp/terraform-provider-aws). Bumping the tag is a deliberate edit — newer tags sometimes add acceptance tests that assume fields fakecloud doesn't yet return, so upgrades are scheduled alongside the matching service changes rather than auto-bumped.
 
 ### Allow-list, not deny-list
 
