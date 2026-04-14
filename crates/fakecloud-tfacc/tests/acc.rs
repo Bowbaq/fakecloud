@@ -1,19 +1,18 @@
 //! One `#[tokio::test]` per allow-listed service. Each runs every
 //! `TestAcc*` test matching the service's `run_regex` minus its deny-list.
 //!
-//! Skips cleanly (doesn't fail) if the `go` or `terraform` binaries are
-//! missing.
+//! Hard-fails if the `go` or `terraform` binaries are missing. Running
+//! this crate is an opt-in signal that the caller wants the upstream
+//! Terraform suite exercised — silently passing on a machine that can't
+//! run it would just hide regressions.
 
 use fakecloud_tfacc::{
     allowlist::{Service, SERVICES},
-    setup_provider_source, toolchain_available, GoTestRunner, TestServer,
+    require_toolchain, setup_provider_source, GoTestRunner, TestServer,
 };
 
 async fn run_service(name: &str) {
-    if !toolchain_available() {
-        eprintln!("[tfacc] go or terraform not installed, skipping service `{name}`");
-        return;
-    }
+    require_toolchain();
     let service: &Service = SERVICES
         .iter()
         .find(|s| s.name == name)

@@ -25,24 +25,33 @@ pub use allowlist::{Service, SERVICES};
 pub const PROVIDER_TAG: &str = "v5.97.0";
 pub const PROVIDER_REPO: &str = "https://github.com/hashicorp/terraform-provider-aws.git";
 
-/// Returns true if both `go` and `terraform` are on PATH. If either is
-/// missing, acc tests skip (they don't fail) — matching the
-/// `FAKECLOUD_CONTAINER_CLI=false` skip pattern in fakecloud-e2e.
-pub fn toolchain_available() -> bool {
-    Command::new("go")
-        .arg("version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-        && Command::new("terraform")
-            .arg("version")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+/// Panics with an actionable message if `go` or `terraform` are missing.
+/// Called at the top of every tfacc test so the failure mode is loud:
+/// running this crate is an opt-in signal that the caller wants the
+/// upstream Terraform suite exercised, and silently skipping would just
+/// hide regressions.
+pub fn require_toolchain() {
+    let missing: Vec<&str> = [("go", "go"), ("terraform", "terraform")]
+        .into_iter()
+        .filter(|(_, bin)| {
+            Command::new(bin)
+                .arg("version")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map(|s| !s.success())
+                .unwrap_or(true)
+        })
+        .map(|(name, _)| name)
+        .collect();
+    if !missing.is_empty() {
+        panic!(
+            "fakecloud-tfacc requires {} on PATH. Install them (or run a \
+             different test crate) before exercising the upstream Terraform \
+             acceptance suite.",
+            missing.join(" and "),
+        );
+    }
 }
 
 /// Idempotently clone + patch the upstream provider into `target/tfacc/`.
