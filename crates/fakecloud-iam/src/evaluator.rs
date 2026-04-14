@@ -451,8 +451,20 @@ fn managed_policy_default_document(state: &IamState, arn: &str) -> Option<String
         .map(|v| v.document.clone())
 }
 
+/// Extract the bare `user_name` component from an IAM user ARN.
+///
+/// IAM users can be created with a non-default path (e.g. `/engineering/`),
+/// which produces ARNs of the form
+/// `arn:aws:iam::123456789012:user/engineering/alice`. `IamState` indexes
+/// users by the bare name (`alice`), so returning the full
+/// `engineering/alice` would silently miss the user and make
+/// `collect_user_policies` return an empty set — the evaluator would then
+/// issue an incorrect implicit deny for every pathed user.
+/// (Identified by cubic on PR #392.)
 fn user_name_from_arn(arn: &str) -> Option<&str> {
-    arn.rsplit_once(":user/").map(|(_, name)| name)
+    let after = arn.rsplit_once(":user/").map(|(_, name)| name)?;
+    // Bare name is the last segment; the rest is the path.
+    Some(after.rsplit('/').next().unwrap_or(after))
 }
 
 fn role_name_from_assumed_role_arn(arn: &str) -> Option<&str> {
@@ -877,16 +889,73 @@ mod tests {
     }
 
     #[test]
-    fn user_name_from_arn_extracts_trailing_segment() {
+    fn user_name_from_arn_strips_iam_path() {
+        // Default path — bare user name.
         assert_eq!(
             user_name_from_arn("arn:aws:iam::123456789012:user/alice"),
             Some("alice")
         );
+        // Non-default path — must return the bare name, not
+        // `engineering/alice`. IamState indexes users by the bare name,
+        // so returning the path would silently drop pathed users from
+        // policy evaluation (identified by cubic on PR #392).
+        assert_eq!(
+            user_name_from_arn("arn:aws:iam::123456789012:user/engineering/alice"),
+            Some("alice")
+        );
         assert_eq!(
             user_name_from_arn("arn:aws:iam::123456789012:user/path/to/alice"),
-            Some("path/to/alice")
+            Some("alice")
         );
         assert_eq!(user_name_from_arn("arn:aws:iam::123456789012:role/r"), None);
+    }
+
+    #[test]
+    fn collect_identity_policies_resolves_pathed_user() {
+        // Regression guard for the pathed-user bug: a user created under
+        // `/engineering/` must still have their inline policies picked up
+        // by the evaluator.
+        use crate::state::IamUser;
+        use chrono::Utc;
+        let mut state = IamState::new("123456789012");
+        state.users.insert(
+            "alice".to_string(),
+            IamUser {
+                user_name: "alice".into(),
+                user_id: "AIDAALICE".into(),
+                arn: "arn:aws:iam::123456789012:user/engineering/alice".into(),
+                path: "/engineering/".into(),
+                created_at: Utc::now(),
+                tags: Vec::new(),
+                permissions_boundary: None,
+            },
+        );
+        let mut inline = std::collections::HashMap::new();
+        inline.insert(
+            "AllowGet".to_string(),
+            r#"{"Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"*"}]}"#
+                .to_string(),
+        );
+        state
+            .user_inline_policies
+            .insert("alice".to_string(), inline);
+
+        let principal = Principal {
+            arn: "arn:aws:iam::123456789012:user/engineering/alice".to_string(),
+            user_id: "AIDAALICE".to_string(),
+            account_id: "123456789012".to_string(),
+            principal_type: PrincipalType::User,
+            source_identity: None,
+        };
+        let docs = collect_identity_policies(&state, &principal);
+        assert_eq!(docs.len(), 1, "pathed user's inline policy was missed");
+        assert_eq!(
+            evaluate(
+                &docs,
+                &req(&principal, "s3:GetObject", "arn:aws:s3:::bucket/key")
+            ),
+            Decision::Allow
+        );
     }
 
     #[test]
