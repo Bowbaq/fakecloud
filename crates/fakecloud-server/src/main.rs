@@ -660,9 +660,20 @@ async fn main() {
     let services: Vec<&str> = registry.service_names();
     tracing::info!(services = ?services, "registered services");
 
+    let iam_mode = cli.iam_mode();
+    if iam_mode.is_enabled() || cli.verify_sigv4 {
+        tracing::warn!(
+            verify_sigv4 = cli.verify_sigv4,
+            iam_mode = %iam_mode,
+            "opt-in security features enabled: access keys with the `test` prefix bypass SigV4 verification and IAM enforcement — see /docs/reference/security"
+        );
+    }
+
     let config = DispatchConfig {
         region: cli.region,
         account_id: cli.account_id,
+        verify_sigv4: cli.verify_sigv4,
+        iam_mode,
     };
 
     let service_names: Vec<String> = registry

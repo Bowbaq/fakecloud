@@ -5,6 +5,7 @@ use axum::response::Response;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::auth::IamMode;
 use crate::protocol::{self, AwsProtocol};
 use crate::registry::ServiceRegistry;
 use crate::service::{AwsRequest, ResponseBody};
@@ -225,6 +226,29 @@ pub async fn dispatch(
 pub struct DispatchConfig {
     pub region: String,
     pub account_id: String,
+    /// Whether to cryptographically verify SigV4 signatures on incoming
+    /// requests. Wired through from `--verify-sigv4` /
+    /// `FAKECLOUD_VERIFY_SIGV4`. Off by default. Actual enforcement is added
+    /// in a later batch; today this field is plumbed but never consulted.
+    pub verify_sigv4: bool,
+    /// IAM policy evaluation mode. Wired through from `--iam` /
+    /// `FAKECLOUD_IAM`. Defaults to [`IamMode::Off`]. Actual evaluation is
+    /// added in a later batch; today this field is plumbed but never
+    /// consulted.
+    pub iam_mode: IamMode,
+}
+
+impl DispatchConfig {
+    /// Minimal constructor for tests and call sites that don't care about the
+    /// opt-in security features.
+    pub fn new(region: impl Into<String>, account_id: impl Into<String>) -> Self {
+        Self {
+            region: region.into(),
+            account_id: account_id.into(),
+            verify_sigv4: false,
+            iam_mode: IamMode::Off,
+        }
+    }
 }
 
 /// Extract region from User-Agent header suffix `region/<region>`.
@@ -290,5 +314,31 @@ trait ProtocolExt {
 impl ProtocolExt for AwsProtocol {
     fn error_status(&self) -> StatusCode {
         StatusCode::BAD_REQUEST
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dispatch_config_new_defaults_to_off() {
+        let cfg = DispatchConfig::new("us-east-1", "123456789012");
+        assert_eq!(cfg.region, "us-east-1");
+        assert_eq!(cfg.account_id, "123456789012");
+        assert!(!cfg.verify_sigv4);
+        assert_eq!(cfg.iam_mode, IamMode::Off);
+    }
+
+    #[test]
+    fn dispatch_config_carries_opt_in_flags() {
+        let cfg = DispatchConfig {
+            region: "eu-west-1".to_string(),
+            account_id: "000000000000".to_string(),
+            verify_sigv4: true,
+            iam_mode: IamMode::Strict,
+        };
+        assert!(cfg.verify_sigv4);
+        assert!(cfg.iam_mode.is_strict());
     }
 }
