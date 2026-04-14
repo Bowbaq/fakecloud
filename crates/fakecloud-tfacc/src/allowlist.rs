@@ -37,6 +37,17 @@ pub struct Service {
 
 pub const SERVICES: &[Service] = &[
     Service {
+        name: "bedrock",
+        // Batch 10: `data.aws_bedrock_foundation_models` data source
+        // smoke. fakecloud's Bedrock implementation already returns the
+        // expected ListFoundationModels shape, so this passes out of
+        // the box. Resource tests (model invocation, guardrails) need
+        // the Bedrock runtime container path to be plumbed through TF
+        // and are deferred to a later batch.
+        run_regex: "^TestAccBedrockFoundationModelsDataSource_basic$",
+        deny: &[],
+    },
+    Service {
         name: "apigatewayv2",
         // Batch 9: core `aws_apigatewayv2_api` (HTTP) smoke. The fix
         // here is making CreateApi return four metadata fields that

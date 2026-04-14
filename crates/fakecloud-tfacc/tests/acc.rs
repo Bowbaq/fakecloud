@@ -28,6 +28,11 @@ async fn run_service(name: &str) {
 }
 
 #[tokio::test]
+async fn bedrock_acceptance() {
+    run_service("bedrock").await;
+}
+
+#[tokio::test]
 async fn apigatewayv2_acceptance() {
     run_service("apigatewayv2").await;
 }
