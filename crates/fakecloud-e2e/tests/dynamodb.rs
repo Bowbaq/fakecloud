@@ -2660,3 +2660,110 @@ async fn dynamodb_deletion_protection_blocks_delete_table() {
         .await
         .unwrap();
 }
+
+#[tokio::test]
+async fn dynamodb_update_table_processes_global_secondary_index_updates() {
+    // Regression guard for `TestAccDynamoDBTable_gsiUpdateCapacity`:
+    // UpdateTable must process `GlobalSecondaryIndexUpdates` to add new
+    // GSIs (Create), change capacity (Update), and drop GSIs (Delete).
+    // Real AWS supports all three op types; previously fakecloud silently
+    // ignored every entry in the list.
+    let server = TestServer::start().await;
+    let client = server.dynamodb_client().await;
+
+    client
+        .create_table()
+        .table_name("GsiUpdates")
+        .key_schema(
+            KeySchemaElement::builder()
+                .attribute_name("id")
+                .key_type(KeyType::Hash)
+                .build()
+                .unwrap(),
+        )
+        .attribute_definitions(
+            AttributeDefinition::builder()
+                .attribute_name("id")
+                .attribute_type(ScalarAttributeType::S)
+                .build()
+                .unwrap(),
+        )
+        .attribute_definitions(
+            AttributeDefinition::builder()
+                .attribute_name("att1")
+                .attribute_type(ScalarAttributeType::S)
+                .build()
+                .unwrap(),
+        )
+        .billing_mode(BillingMode::Provisioned)
+        .provisioned_throughput(
+            ProvisionedThroughput::builder()
+                .read_capacity_units(1)
+                .write_capacity_units(1)
+                .build()
+                .unwrap(),
+        )
+        .global_secondary_indexes(
+            GlobalSecondaryIndex::builder()
+                .index_name("att1-index")
+                .key_schema(
+                    KeySchemaElement::builder()
+                        .attribute_name("att1")
+                        .key_type(KeyType::Hash)
+                        .build()
+                        .unwrap(),
+                )
+                .projection(
+                    Projection::builder()
+                        .projection_type(ProjectionType::All)
+                        .build(),
+                )
+                .provisioned_throughput(
+                    ProvisionedThroughput::builder()
+                        .read_capacity_units(1)
+                        .write_capacity_units(1)
+                        .build()
+                        .unwrap(),
+                )
+                .build()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    client
+        .update_table()
+        .table_name("GsiUpdates")
+        .global_secondary_index_updates(
+            aws_sdk_dynamodb::types::GlobalSecondaryIndexUpdate::builder()
+                .update(
+                    aws_sdk_dynamodb::types::UpdateGlobalSecondaryIndexAction::builder()
+                        .index_name("att1-index")
+                        .provisioned_throughput(
+                            ProvisionedThroughput::builder()
+                                .read_capacity_units(5)
+                                .write_capacity_units(7)
+                                .build()
+                                .unwrap(),
+                        )
+                        .build()
+                        .unwrap(),
+                )
+                .build(),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    let desc = client
+        .describe_table()
+        .table_name("GsiUpdates")
+        .send()
+        .await
+        .unwrap();
+    let gsi = &desc.table().unwrap().global_secondary_indexes()[0];
+    let pt = gsi.provisioned_throughput().unwrap();
+    assert_eq!(pt.read_capacity_units(), Some(5));
+    assert_eq!(pt.write_capacity_units(), Some(7));
+}

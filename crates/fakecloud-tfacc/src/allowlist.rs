@@ -203,8 +203,6 @@ pub const SERVICES: &[Service] = &[
             "TestAccDynamoDBTable_BillingModeGSI_payPerRequestToProvisioned",
             "TestAccDynamoDBTable_BillingModeGSI_provisionedToPayPerRequest",
             "TestAccDynamoDBTable_Disappears_payPerRequestWithGSI",
-            // --- gap: GSI capacity update ---
-            "TestAccDynamoDBTable_gsiUpdateCapacity",
             // --- gap: encryption attribute round-trip ---
             "TestAccDynamoDBTable_encryption",
             // --- hung: did not complete in triage run; revisit in a later batch ---

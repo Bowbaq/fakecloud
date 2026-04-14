@@ -457,7 +457,7 @@ fn parse_lsi(val: &Value) -> Vec<LocalSecondaryIndex> {
         .collect()
 }
 
-fn parse_projection(val: &Value) -> Projection {
+pub(super) fn parse_projection(val: &Value) -> Projection {
     Projection {
         projection_type: val["ProjectionType"].as_str().unwrap_or("ALL").to_string(),
         non_key_attributes: val["NonKeyAttributes"]
