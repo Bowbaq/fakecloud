@@ -2171,7 +2171,6 @@ async fn logs_get_log_record() {
 // ---- Cross-service integrations: CloudWatch Logs → Lambda ----
 
 #[tokio::test]
-#[ignore = "requires Docker/Podman for Lambda execution"]
 async fn logs_subscription_filter_invokes_lambda() {
     use std::io::Write;
     use tokio::time::{sleep, Duration};
@@ -2224,8 +2223,10 @@ def lambda_handler(event, context):
 
     return {{'statusCode': 200}}
 "#,
-        queue_url,
-        server.endpoint()
+        queue_url.replace("127.0.0.1", "host.docker.internal"),
+        server
+            .endpoint()
+            .replace("127.0.0.1", "host.docker.internal"),
     );
 
     // Create ZIP with Lambda code
@@ -2313,19 +2314,24 @@ def lambda_handler(event, context):
         .await
         .unwrap();
 
-    // Wait for async Lambda invocation via subscription filter
-    sleep(Duration::from_secs(3)).await;
+    // Wait for async Lambda invocation via subscription filter (cold start can be slow)
+    let mut msgs: Vec<aws_sdk_sqs::types::Message> = Vec::new();
+    for _ in 0..30 {
+        let messages = sqs_client
+            .receive_message()
+            .queue_url(queue_url)
+            .max_number_of_messages(10)
+            .wait_time_seconds(1)
+            .send()
+            .await
+            .unwrap();
+        if !messages.messages().is_empty() {
+            msgs = messages.messages().to_vec();
+            break;
+        }
+        sleep(Duration::from_secs(1)).await;
+    }
 
-    // Verify Lambda was invoked with filtered log events
-    let messages = sqs_client
-        .receive_message()
-        .queue_url(queue_url)
-        .max_number_of_messages(10)
-        .send()
-        .await
-        .unwrap();
-
-    let msgs = messages.messages();
     assert_eq!(msgs.len(), 1, "Lambda should have echoed one message");
 
     let body: Value = serde_json::from_str(msgs[0].body().unwrap()).unwrap();

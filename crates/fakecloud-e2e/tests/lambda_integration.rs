@@ -365,7 +365,6 @@ async fn s3_to_lambda_notification_executes_code() {
 }
 
 #[tokio::test]
-#[ignore] // Requires Docker with host.docker.internal networking
 async fn dynamodb_streams_to_lambda_executes_code() {
     let server = TestServer::start().await;
     let dynamodb = server.dynamodb_client().await;
@@ -468,7 +467,6 @@ async fn dynamodb_streams_to_lambda_executes_code() {
 // version, and promote it from AWSPENDING to AWSCURRENT. Currently
 // RotateSecret does not invoke the Lambda runtime.
 #[tokio::test]
-#[ignore] // Requires Docker with host.docker.internal networking
 async fn secretsmanager_rotation_lambda_executes() {
     let server = TestServer::start().await;
     let sm = server.secretsmanager_client().await;
@@ -522,13 +520,34 @@ def lambda_handler(event, context):
         ))
         urllib.request.urlopen(req)
 
-    # For finishSecret, promote AWSPENDING to AWSCURRENT
+    # For finishSecret, promote AWSPENDING to AWSCURRENT.
+    # AWS requires RemoveFromVersionId when the target stage is currently
+    # attached, so first DescribeSecret to find the current AWSCURRENT version.
     if step == "finishSecret":
-        body = json.dumps({
+        desc_body = json.dumps({"SecretId": secret_id}).encode()
+        desc_req = urllib.request.Request(endpoint, data=desc_body, method="POST")
+        desc_req.add_header("Content-Type", "application/x-amz-json-1.1")
+        desc_req.add_header("X-Amz-Target", "secretsmanager.DescribeSecret")
+        desc_req.add_header("Authorization", (
+            "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20200101/us-east-1/secretsmanager/aws4_request, "
+            "SignedHeaders=host, Signature=fake"
+        ))
+        with urllib.request.urlopen(desc_req) as resp:
+            desc = json.loads(resp.read())
+        current_vid = None
+        for vid, stages in desc.get("VersionIdsToStages", {}).items():
+            if "AWSCURRENT" in stages:
+                current_vid = vid
+                break
+
+        body_dict = {
             "SecretId": secret_id,
             "VersionStage": "AWSCURRENT",
             "MoveToVersionId": token,
-        }).encode()
+        }
+        if current_vid:
+            body_dict["RemoveFromVersionId"] = current_vid
+        body = json.dumps(body_dict).encode()
         req = urllib.request.Request(
             endpoint,
             data=body,
@@ -606,16 +625,28 @@ def lambda_handler(event, context):
          SecretsManager RotateSecret does not invoke the Docker runtime."
     );
 
-    // Additionally verify the secret value was actually rotated
-    let secret = sm
-        .get_secret_value()
-        .secret_id("rotation-test-secret")
-        .send()
-        .await
-        .unwrap();
+    // Wait for the rotation Lambda to complete all 4 steps and flip the
+    // secret value. Each step is a separate container invocation (cold
+    // start), so this can take 15-30s on first run.
+    let mut final_value: Option<String> = None;
+    for _ in 0..40 {
+        let secret = sm
+            .get_secret_value()
+            .secret_id("rotation-test-secret")
+            .send()
+            .await
+            .unwrap();
+        let val = secret.secret_string().unwrap().to_string();
+        if val == "rotated-secret-value" {
+            final_value = Some(val);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+
     assert_eq!(
-        secret.secret_string().unwrap(),
-        "rotated-secret-value",
+        final_value.as_deref(),
+        Some("rotated-secret-value"),
         "Secret value was not rotated. The rotation Lambda did not execute the \
          createSecret/finishSecret steps via the Docker runtime."
     );

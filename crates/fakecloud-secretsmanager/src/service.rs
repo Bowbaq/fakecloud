@@ -1163,15 +1163,10 @@ impl SecretsManagerService {
 
             if let Some(cv) = current_value {
                 if has_lambda {
-                    // With Lambda: create AWSPENDING version for Lambda to process
-                    let version = SecretVersion {
-                        version_id: version_id.clone(),
-                        secret_string: cv.secret_string.clone(),
-                        secret_binary: cv.secret_binary.clone(),
-                        stages: vec!["AWSPENDING".to_string()],
-                        created_at: now,
-                    };
-                    secret.versions.insert(version_id.clone(), version);
+                    // With Lambda: do NOT pre-create the AWSPENDING version. The
+                    // rotation Lambda is responsible for putting the new value via
+                    // PutSecretValue with VersionStages=[AWSPENDING] during the
+                    // createSecret step (matching real AWS Secrets Manager behavior).
 
                     // Schedule Lambda invocation
                     if let Some(ref arn) = lambda_arn {
@@ -2484,12 +2479,15 @@ mod tests {
         let resp_body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(resp_body["VersionId"], token);
 
-        // Verify AWSPENDING version exists
+        // Real AWS leaves the AWSPENDING version creation to the rotation
+        // Lambda's createSecret step, so we should NOT pre-create it. Verify
+        // that no version with the rotation token exists yet.
         let s = state.read();
         let secret = s.secrets.get("rotate-me").unwrap();
-        let pending = secret.versions.get(token).unwrap();
-        assert!(pending.stages.contains(&"AWSPENDING".to_string()));
-        assert_eq!(pending.secret_string.as_deref(), Some("old-password"));
+        assert!(
+            !secret.versions.contains_key(token),
+            "AWSPENDING version must not be pre-created; the rotation Lambda creates it"
+        );
 
         // Verify rotation config was set
         assert_eq!(
@@ -2561,9 +2559,10 @@ mod tests {
         let rules = secret.rotation_rules.as_ref().unwrap();
         assert_eq!(rules.automatically_after_days, Some(30));
 
-        // Verify AWSPENDING version was created (Lambda ARN present)
-        let pending = secret.versions.get(token).unwrap();
-        assert!(pending.stages.contains(&"AWSPENDING".to_string()));
+        // The AWSPENDING version is created by the rotation Lambda's
+        // createSecret step, not by RotateSecret itself, so verify that no
+        // version with this token exists yet.
+        assert!(!secret.versions.contains_key(token));
     }
 
     #[tokio::test]
