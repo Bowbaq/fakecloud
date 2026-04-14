@@ -256,6 +256,302 @@ impl AwsService for IamService {
     fn supported_actions(&self) -> &[&str] {
         SUPPORTED_ACTIONS
     }
+
+    /// IAM opts into Phase 1 enforcement. Every action in
+    /// [`SUPPORTED_ACTIONS`] maps to a concrete `IamAction` — see
+    /// [`iam_action_resource`] for the resource-ARN extraction logic.
+    fn iam_enforceable(&self) -> bool {
+        true
+    }
+
+    fn iam_action_for(&self, request: &AwsRequest) -> Option<fakecloud_core::auth::IamAction> {
+        // The action list is small enough to reuse SUPPORTED_ACTIONS as
+        // the whitelist: anything we didn't declare support for isn't
+        // enforced (and would be handled as action_not_implemented by
+        // the match in `handle()`).
+        let static_action = SUPPORTED_ACTIONS
+            .iter()
+            .copied()
+            .find(|a| *a == request.action)?;
+        let account = request
+            .principal
+            .as_ref()
+            .map(|p| p.account_id.as_str())
+            .unwrap_or(request.account_id.as_str());
+        let partition = partition_for_region(&request.region);
+        Some(fakecloud_core::auth::IamAction {
+            service: "iam",
+            action: static_action,
+            resource: iam_action_resource(static_action, partition, account, request),
+        })
+    }
+}
+
+/// Derive the fully-qualified IAM resource ARN for a given action +
+/// request. Reads the relevant parameter (UserName, RoleName, PolicyArn,
+/// etc.) from the request's query params or body. Falls back to `*` when
+/// the action targets no specific resource (e.g. `ListUsers`,
+/// `GetAccountSummary`) or the parameter is missing.
+///
+/// IAM resources follow a small set of shapes
+/// (`user/`, `role/`, `group/`, `policy/`, `instance-profile/`,
+/// `mfa/`, `server-certificate/`, `saml-provider/`, `oidc-provider/`).
+/// Each action is classified by which shape it targets.
+fn iam_action_resource(
+    action: &str,
+    partition: &str,
+    account: &str,
+    request: &AwsRequest,
+) -> String {
+    let params = &request.query_params;
+    let wildcard = || "*".to_string();
+    let user_arn = |name: &str| format!("arn:{}:iam::{}:user/{}", partition, account, name);
+    let role_arn = |name: &str| format!("arn:{}:iam::{}:role/{}", partition, account, name);
+    let group_arn = |name: &str| format!("arn:{}:iam::{}:group/{}", partition, account, name);
+    let policy_arn = |name: &str| format!("arn:{}:iam::{}:policy/{}", partition, account, name);
+    let profile_arn = |name: &str| {
+        format!(
+            "arn:{}:iam::{}:instance-profile/{}",
+            partition, account, name
+        )
+    };
+    let mfa_arn = |name: &str| format!("arn:{}:iam::{}:mfa/{}", partition, account, name);
+    let server_cert_arn = |name: &str| {
+        format!(
+            "arn:{}:iam::{}:server-certificate/{}",
+            partition, account, name
+        )
+    };
+
+    // User-scoped actions: read `UserName` from params. Missing -> wildcard.
+    let user_scoped: &[&str] = &[
+        "CreateUser",
+        "GetUser",
+        "DeleteUser",
+        "UpdateUser",
+        "TagUser",
+        "UntagUser",
+        "ListUserTags",
+        "CreateAccessKey",
+        "DeleteAccessKey",
+        "ListAccessKeys",
+        "UpdateAccessKey",
+        "GetAccessKeyLastUsed",
+        "CreateLoginProfile",
+        "GetLoginProfile",
+        "DeleteLoginProfile",
+        "UpdateLoginProfile",
+        "AttachUserPolicy",
+        "DetachUserPolicy",
+        "ListAttachedUserPolicies",
+        "PutUserPolicy",
+        "GetUserPolicy",
+        "DeleteUserPolicy",
+        "ListUserPolicies",
+        "AddUserToGroup",
+        "RemoveUserFromGroup",
+        "ListGroupsForUser",
+        "EnableMFADevice",
+        "DeactivateMFADevice",
+        "ListMFADevices",
+        "UploadSSHPublicKey",
+        "GetSSHPublicKey",
+        "UpdateSSHPublicKey",
+        "DeleteSSHPublicKey",
+        "ListSSHPublicKeys",
+        "UploadSigningCertificate",
+        "UpdateSigningCertificate",
+        "DeleteSigningCertificate",
+        "ListSigningCertificates",
+    ];
+
+    // Role-scoped actions: read `RoleName` from params.
+    let role_scoped: &[&str] = &[
+        "CreateRole",
+        "GetRole",
+        "DeleteRole",
+        "UpdateRole",
+        "UpdateRoleDescription",
+        "UpdateAssumeRolePolicy",
+        "TagRole",
+        "UntagRole",
+        "ListRoleTags",
+        "PutRolePermissionsBoundary",
+        "DeleteRolePermissionsBoundary",
+        "AttachRolePolicy",
+        "DetachRolePolicy",
+        "ListAttachedRolePolicies",
+        "PutRolePolicy",
+        "GetRolePolicy",
+        "DeleteRolePolicy",
+        "ListRolePolicies",
+        // NOTE: CreateServiceLinkedRole excluded — its target resource is
+        // built from `AWSServiceName`, not `RoleName`, and is handled in
+        // the match block below (identified by cubic on PR #395).
+        // GetServiceLinkedRoleDeletionStatus is also excluded — it
+        // operates on a deletion-task id rather than a role name; it
+        // falls through to the wildcard branch below.
+        "DeleteServiceLinkedRole",
+        "ListInstanceProfilesForRole",
+    ];
+
+    // Group-scoped actions: read `GroupName` from params.
+    let group_scoped: &[&str] = &[
+        "CreateGroup",
+        "GetGroup",
+        "DeleteGroup",
+        "UpdateGroup",
+        "PutGroupPolicy",
+        "GetGroupPolicy",
+        "DeleteGroupPolicy",
+        "ListGroupPolicies",
+        "AttachGroupPolicy",
+        "DetachGroupPolicy",
+        "ListAttachedGroupPolicies",
+    ];
+
+    // Policy-scoped actions: read `PolicyArn` from params (ARN in place).
+    let policy_scoped_arn: &[&str] = &[
+        "GetPolicy",
+        "DeletePolicy",
+        "TagPolicy",
+        "UntagPolicy",
+        "ListPolicyTags",
+        "CreatePolicyVersion",
+        "GetPolicyVersion",
+        "ListPolicyVersions",
+        "DeletePolicyVersion",
+        "SetDefaultPolicyVersion",
+        "ListEntitiesForPolicy",
+    ];
+
+    // Instance-profile-scoped actions: read `InstanceProfileName`.
+    let profile_scoped: &[&str] = &[
+        "CreateInstanceProfile",
+        "GetInstanceProfile",
+        "DeleteInstanceProfile",
+        "TagInstanceProfile",
+        "UntagInstanceProfile",
+        "ListInstanceProfileTags",
+        "AddRoleToInstanceProfile",
+        "RemoveRoleFromInstanceProfile",
+    ];
+
+    if user_scoped.contains(&action) {
+        return params
+            .get("UserName")
+            .map(|n| user_arn(n))
+            .unwrap_or_else(wildcard);
+    }
+    if role_scoped.contains(&action) {
+        return params
+            .get("RoleName")
+            .map(|n| role_arn(n))
+            .unwrap_or_else(wildcard);
+    }
+    if group_scoped.contains(&action) {
+        return params
+            .get("GroupName")
+            .map(|n| group_arn(n))
+            .unwrap_or_else(wildcard);
+    }
+    if policy_scoped_arn.contains(&action) {
+        return params.get("PolicyArn").cloned().unwrap_or_else(wildcard);
+    }
+    if profile_scoped.contains(&action) {
+        return params
+            .get("InstanceProfileName")
+            .map(|n| profile_arn(n))
+            .unwrap_or_else(wildcard);
+    }
+
+    match action {
+        // CreatePolicy: target ARN is the to-be-created policy.
+        "CreatePolicy" => params
+            .get("PolicyName")
+            .map(|n| policy_arn(n))
+            .unwrap_or_else(wildcard),
+        // Service-linked roles are created by AWS service name, not
+        // role name. Their ARNs follow the `role/aws-service-role/<svc>`
+        // convention (identified by cubic on PR #395).
+        "CreateServiceLinkedRole" => params
+            .get("AWSServiceName")
+            .map(|svc| {
+                format!(
+                    "arn:{}:iam::{}:role/aws-service-role/{}",
+                    partition, account, svc
+                )
+            })
+            .unwrap_or_else(wildcard),
+        // MFA actions keyed by SerialNumber (which is the mfa ARN itself
+        // for virtual devices, a plain string for hardware devices).
+        "CreateVirtualMFADevice" => params
+            .get("VirtualMFADeviceName")
+            .map(|n| mfa_arn(n))
+            .unwrap_or_else(wildcard),
+        "DeleteVirtualMFADevice" => params.get("SerialNumber").cloned().unwrap_or_else(wildcard),
+        // Note: ResyncMFADevice is not in SUPPORTED_ACTIONS and so
+        // never reaches this match — if it's added later, handle
+        // `SerialNumber` here.
+        // Server certificates keyed by ServerCertificateName.
+        "UploadServerCertificate" | "GetServerCertificate" | "DeleteServerCertificate" => params
+            .get("ServerCertificateName")
+            .map(|n| server_cert_arn(n))
+            .unwrap_or_else(wildcard),
+        // SAML / OIDC providers reference their ARN directly.
+        "CreateSAMLProvider" => params
+            .get("Name")
+            .map(|n| format!("arn:{}:iam::{}:saml-provider/{}", partition, account, n))
+            .unwrap_or_else(wildcard),
+        "UpdateSAMLProvider" | "DeleteSAMLProvider" | "GetSAMLProvider" => params
+            .get("SAMLProviderArn")
+            .cloned()
+            .unwrap_or_else(wildcard),
+        "CreateOpenIDConnectProvider" => params
+            .get("Url")
+            .map(|u| {
+                format!(
+                    "arn:{}:iam::{}:oidc-provider/{}",
+                    partition,
+                    account,
+                    u.trim_start_matches("https://")
+                )
+            })
+            .unwrap_or_else(wildcard),
+        "GetOpenIDConnectProvider"
+        | "DeleteOpenIDConnectProvider"
+        | "AddClientIDToOpenIDConnectProvider"
+        | "RemoveClientIDFromOpenIDConnectProvider"
+        | "UpdateOpenIDConnectProviderThumbprint"
+        | "TagOpenIDConnectProvider"
+        | "UntagOpenIDConnectProvider"
+        | "ListOpenIDConnectProviderTags" => params
+            .get("OpenIDConnectProviderArn")
+            .cloned()
+            .unwrap_or_else(wildcard),
+        // Account-scoped / listing actions have no per-resource target.
+        "ListUsers"
+        | "ListRoles"
+        | "ListGroups"
+        | "ListPolicies"
+        | "ListInstanceProfiles"
+        | "ListVirtualMFADevices"
+        | "ListServerCertificates"
+        | "ListSAMLProviders"
+        | "ListOpenIDConnectProviders"
+        | "ListAccountAliases"
+        | "CreateAccountAlias"
+        | "DeleteAccountAlias"
+        | "GetAccountSummary"
+        | "GetAccountAuthorizationDetails"
+        | "GenerateCredentialReport"
+        | "GetCredentialReport"
+        | "GetAccountPasswordPolicy"
+        | "UpdateAccountPasswordPolicy"
+        | "DeleteAccountPasswordPolicy" => wildcard(),
+        // Anything we didn't classify above — be conservative.
+        _ => wildcard(),
+    }
 }
 
 /// All IAM actions fakecloud handles. Promoted to a file-level const so
