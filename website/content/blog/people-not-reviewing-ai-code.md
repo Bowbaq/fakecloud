@@ -72,6 +72,8 @@ The difference isn't whether someone reviewed the code. It's whether you have au
 
 When those systems pass, the code is right regardless of whether anyone read it. When they fail, the AI fixes it until they pass.
 
+Here's a concrete example. If you're writing code that calls Bedrock — the Claude API on AWS — the hard parts are retry logic, fallback models, and circuit breakers. Testing that code against real Bedrock is expensive, non-deterministic, and rate-limited. Mocking it is meaningless because the mocks don't catch the bugs. So you either ship untested error handling or you write unrunnable tests. That's exactly the kind of gap where AI-generated code goes wrong silently. I wrote a whole [guide on how to test Bedrock code locally against fakecloud](/docs/guides/testing-bedrock/) — deterministic responses, injectable faults, call history assertions. That's what "guardrails the AI can't game" looks like in practice.
+
 ## The test suite is the guardrail
 
 fakecloud works because the tests verify everything. Not me. Not code review. The tests.
