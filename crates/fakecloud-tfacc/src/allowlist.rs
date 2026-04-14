@@ -37,6 +37,15 @@ pub struct Service {
 
 pub const SERVICES: &[Service] = &[
     Service {
+        name: "iam",
+        // Batch 5: core CRUD smoke for the four most-used IAM resource
+        // types. Passes against fakecloud out of the box — no
+        // fakecloud-side changes needed. Later batches widen to
+        // attached-policy, group-membership, and instance-profile tests.
+        run_regex: "^TestAccIAM(Role|User|Policy|Group)_basic$",
+        deny: &[],
+    },
+    Service {
         name: "ssm",
         // Batch 4: core `aws_ssm_parameter` smoke. The fix here is making
         // `lookup_param` tolerate the `name:version` selector that real
