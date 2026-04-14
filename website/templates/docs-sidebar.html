@@ -1,0 +1,19 @@
+{% set docs_root = get_section(path="docs/_index.md") %}
+<aside class="docs-sidebar">
+  <nav>
+    <a href="{{ docs_root.permalink }}" class="docs-sidebar-home">Docs home</a>
+    {% for subpath in docs_root.subsections %}
+    {% set sub = get_section(path=subpath) %}
+    <div class="docs-sidebar-section">
+      <h4><a href="{{ sub.permalink }}">{{ sub.title }}</a></h4>
+      {% if sub.pages %}
+      <ul>
+        {% for p in sub.pages %}
+        <li><a href="{{ p.permalink }}">{{ p.title }}</a></li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </nav>
+</aside>
