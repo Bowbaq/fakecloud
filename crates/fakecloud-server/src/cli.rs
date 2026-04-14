@@ -1,7 +1,26 @@
 use std::path::PathBuf;
 
 use clap::{Parser, ValueEnum};
+use fakecloud_core::auth::IamMode;
 use fakecloud_persistence::{PersistenceConfig, StorageMode};
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+#[clap(rename_all = "lowercase")]
+pub(crate) enum IamModeArg {
+    Off,
+    Soft,
+    Strict,
+}
+
+impl From<IamModeArg> for IamMode {
+    fn from(value: IamModeArg) -> Self {
+        match value {
+            IamModeArg::Off => IamMode::Off,
+            IamModeArg::Soft => IamMode::Soft,
+            IamModeArg::Strict => IamMode::Strict,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 #[clap(rename_all = "lowercase")]
@@ -60,6 +79,35 @@ pub(crate) struct Cli {
     /// no SI/IEC suffix parsing. Default 256 MiB.
     #[arg(long, default_value_t = DEFAULT_S3_CACHE_BYTES, env = "FAKECLOUD_S3_CACHE_SIZE")]
     pub s3_cache_size: u64,
+
+    /// Cryptographically verify SigV4 signatures on incoming requests.
+    /// Off by default — fakecloud parses SigV4 for routing regardless. When
+    /// enabled, requests with invalid signatures are rejected with
+    /// `SignatureDoesNotMatch`. The reserved `test`/`test` root identity
+    /// always bypasses verification. See `/docs/reference/security`.
+    #[arg(long, default_value_t = false, env = "FAKECLOUD_VERIFY_SIGV4")]
+    pub verify_sigv4: bool,
+
+    /// IAM identity-policy evaluation mode.
+    ///
+    /// - `off` (default): policies are stored but never consulted.
+    /// - `soft`: evaluate and audit-log denied decisions via the
+    ///   `fakecloud::iam::audit` tracing target, but allow the request.
+    /// - `strict`: evaluate and return `AccessDeniedException` on denied
+    ///   decisions.
+    ///
+    /// Phase 1 scope: identity policies, Allow/Deny with Deny precedence,
+    /// Action/Resource wildcards. Condition blocks, resource-based policies,
+    /// permission boundaries, SCPs, and ABAC are explicitly not evaluated
+    /// yet. The reserved `test`/`test` root identity always bypasses
+    /// enforcement. See `/docs/reference/security`.
+    #[arg(
+        long = "iam",
+        value_enum,
+        default_value_t = IamModeArg::Off,
+        env = "FAKECLOUD_IAM",
+    )]
+    pub iam_mode: IamModeArg,
 }
 
 impl Cli {
@@ -78,6 +126,11 @@ impl Cli {
         format!("http://{host}:{port}")
     }
 
+    /// Resolve the IAM mode as the cross-crate [`IamMode`] type.
+    pub fn iam_mode(&self) -> IamMode {
+        self.iam_mode.into()
+    }
+
     pub fn persistence_config(&self) -> Result<PersistenceConfig, String> {
         let mode: StorageMode = self.storage_mode.into();
         let config = PersistenceConfig {
@@ -87,5 +140,39 @@ impl Cli {
         };
         config.validate()?;
         Ok(config)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn defaults_leave_security_features_off() {
+        let cli = Cli::try_parse_from(["fakecloud"]).unwrap();
+        assert!(!cli.verify_sigv4);
+        assert_eq!(cli.iam_mode(), IamMode::Off);
+    }
+
+    #[test]
+    fn verify_sigv4_flag_parses() {
+        let cli = Cli::try_parse_from(["fakecloud", "--verify-sigv4"]).unwrap();
+        assert!(cli.verify_sigv4);
+    }
+
+    #[test]
+    fn iam_flag_parses_all_variants() {
+        let cli = Cli::try_parse_from(["fakecloud", "--iam", "off"]).unwrap();
+        assert_eq!(cli.iam_mode(), IamMode::Off);
+        let cli = Cli::try_parse_from(["fakecloud", "--iam", "soft"]).unwrap();
+        assert_eq!(cli.iam_mode(), IamMode::Soft);
+        let cli = Cli::try_parse_from(["fakecloud", "--iam", "strict"]).unwrap();
+        assert_eq!(cli.iam_mode(), IamMode::Strict);
+    }
+
+    #[test]
+    fn iam_flag_rejects_garbage() {
+        assert!(Cli::try_parse_from(["fakecloud", "--iam", "allow"]).is_err());
     }
 }
