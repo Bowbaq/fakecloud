@@ -54,3 +54,27 @@ async fn secretsmanager_create_get_put_delete() {
         .await
         .expect("delete_secret");
 }
+
+#[tokio::test]
+async fn secretsmanager_get_nonexistent_returns_expected_error() {
+    let backend = Backend::from_env().await;
+    let sm = backend.secretsmanager().await;
+    let name = unique_name("sec-missing");
+
+    let err = sm
+        .get_secret_value()
+        .secret_id(&name)
+        .send()
+        .await
+        .expect_err("get on missing secret should fail");
+    let code = err
+        .into_service_error()
+        .meta()
+        .code()
+        .unwrap_or_default()
+        .to_string();
+    assert_eq!(
+        code, "ResourceNotFoundException",
+        "expected ResourceNotFoundException, got {code:?}"
+    );
+}

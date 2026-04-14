@@ -58,3 +58,64 @@ async fn kms_encrypt_decrypt_roundtrip() {
         .send()
         .await;
 }
+
+#[tokio::test]
+async fn kms_generate_data_key_roundtrip() {
+    let backend = Backend::from_env().await;
+    let kms = backend.kms().await;
+
+    let key = kms
+        .create_key()
+        .description("fcparity data-key test")
+        .send()
+        .await
+        .expect("create_key");
+    let key_id = key
+        .key_metadata()
+        .expect("key_metadata")
+        .key_id()
+        .to_string();
+
+    // Ask KMS for a 256-bit data key. We get back both the plaintext and
+    // an opaque ciphertext blob. Decrypting the blob should return the
+    // same plaintext bytes.
+    let dk = kms
+        .generate_data_key()
+        .key_id(&key_id)
+        .key_spec(aws_sdk_kms::types::DataKeySpec::Aes256)
+        .send()
+        .await
+        .expect("generate_data_key");
+    let plaintext = dk.plaintext().expect("plaintext").clone();
+    let ciphertext = dk.ciphertext_blob().expect("ciphertext_blob").clone();
+    assert_eq!(
+        plaintext.as_ref().len(),
+        32,
+        "AES-256 data key should be 32 bytes"
+    );
+    assert_ne!(
+        plaintext.as_ref(),
+        ciphertext.as_ref(),
+        "plaintext and ciphertext should differ"
+    );
+
+    let dec = kms
+        .decrypt()
+        .ciphertext_blob(ciphertext)
+        .key_id(&key_id)
+        .send()
+        .await
+        .expect("decrypt");
+    assert_eq!(
+        dec.plaintext().expect("decrypted plaintext").as_ref(),
+        plaintext.as_ref(),
+        "decrypted data key should match the original plaintext"
+    );
+
+    let _ = kms
+        .schedule_key_deletion()
+        .key_id(key_id)
+        .pending_window_in_days(7)
+        .send()
+        .await;
+}
