@@ -99,11 +99,10 @@ impl FromStr for IamMode {
 /// enforcement is turned on so users understand that unsigned `test` clients
 /// will silently receive positive results.
 pub fn is_root_bypass(access_key_id: &str) -> bool {
-    let trimmed = access_key_id.trim();
-    if trimmed.is_empty() {
-        return false;
-    }
-    trimmed.len() >= 4 && trimmed[..4].eq_ignore_ascii_case("test")
+    access_key_id
+        .trim()
+        .get(..4)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("test"))
 }
 
 #[cfg(test)]
@@ -168,6 +167,14 @@ mod tests {
         assert!(is_root_bypass("Test"));
         assert!(is_root_bypass("testAccessKey"));
         assert!(is_root_bypass("TESTAKIAIOSFODNN7EXAMPLE"));
+    }
+
+    #[test]
+    fn root_bypass_does_not_panic_on_multibyte_input() {
+        // Byte index 4 falls inside a multi-byte UTF-8 character; must not panic.
+        assert!(!is_root_bypass("té"));
+        assert!(!is_root_bypass("日本語キー"));
+        assert!(!is_root_bypass("🔑🔑"));
     }
 
     #[test]
