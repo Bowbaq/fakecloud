@@ -385,9 +385,13 @@ fn iam_action_resource(
         "GetRolePolicy",
         "DeleteRolePolicy",
         "ListRolePolicies",
-        "CreateServiceLinkedRole",
+        // NOTE: CreateServiceLinkedRole excluded — its target resource is
+        // built from `AWSServiceName`, not `RoleName`, and is handled in
+        // the match block below (identified by cubic on PR #395).
+        // GetServiceLinkedRoleDeletionStatus is also excluded — it
+        // operates on a deletion-task id rather than a role name; it
+        // falls through to the wildcard branch below.
         "DeleteServiceLinkedRole",
-        "GetServiceLinkedRoleDeletionStatus",
         "ListInstanceProfilesForRole",
     ];
 
@@ -467,6 +471,18 @@ fn iam_action_resource(
             .get("PolicyName")
             .map(|n| policy_arn(n))
             .unwrap_or_else(wildcard),
+        // Service-linked roles are created by AWS service name, not
+        // role name. Their ARNs follow the `role/aws-service-role/<svc>`
+        // convention (identified by cubic on PR #395).
+        "CreateServiceLinkedRole" => params
+            .get("AWSServiceName")
+            .map(|svc| {
+                format!(
+                    "arn:{}:iam::{}:role/aws-service-role/{}",
+                    partition, account, svc
+                )
+            })
+            .unwrap_or_else(wildcard),
         // MFA actions keyed by SerialNumber (which is the mfa ARN itself
         // for virtual devices, a plain string for hardware devices).
         "CreateVirtualMFADevice" => params
@@ -474,7 +490,9 @@ fn iam_action_resource(
             .map(|n| mfa_arn(n))
             .unwrap_or_else(wildcard),
         "DeleteVirtualMFADevice" => params.get("SerialNumber").cloned().unwrap_or_else(wildcard),
-        "ResyncMFADevice" => params.get("SerialNumber").cloned().unwrap_or_else(wildcard),
+        // Note: ResyncMFADevice is not in SUPPORTED_ACTIONS and so
+        // never reaches this match — if it's added later, handle
+        // `SerialNumber` here.
         // Server certificates keyed by ServerCertificateName.
         "UploadServerCertificate" | "GetServerCertificate" | "DeleteServerCertificate" => params
             .get("ServerCertificateName")
