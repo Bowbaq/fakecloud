@@ -2601,8 +2601,7 @@ mod tests {
         // list_append assignment followed by a plain SET — the comma between
         // the two assignments must still split them, while the comma inside
         // the list_append call must not.
-        let clauses =
-            parse_update_clauses("SET #0 = list_append(#0, :new), #1 = :other");
+        let clauses = parse_update_clauses("SET #0 = list_append(#0, :new), #1 = :other");
         assert_eq!(clauses.len(), 1);
         assert_eq!(clauses[0].0, UpdateAction::Set);
         assert_eq!(
@@ -4697,13 +4696,8 @@ mod tests {
             json!({"L": [{"M": {"field": {"S": "value"}}}]}),
         );
 
-        apply_update_expression(
-            &mut item,
-            "SET #0 = list_append(#0, :0)",
-            &names,
-            &values,
-        )
-        .unwrap();
+        apply_update_expression(&mut item, "SET #0 = list_append(#0, :0)", &names, &values)
+            .unwrap();
 
         let list = item
             .get("files")
@@ -4729,13 +4723,8 @@ mod tests {
             json!({"L": [{"M": {"field": {"S": "new"}}}]}),
         );
 
-        apply_update_expression(
-            &mut item,
-            "SET #0 = list_append(#0, :0)",
-            &names,
-            &values,
-        )
-        .unwrap();
+        apply_update_expression(&mut item, "SET #0 = list_append(#0, :0)", &names, &values)
+            .unwrap();
 
         let list = item
             .get("files")
@@ -4756,10 +4745,7 @@ mod tests {
 
         let names = cond_names(&[("#a", "logs"), ("#b", "count")]);
         let mut values = HashMap::new();
-        values.insert(
-            ":v".to_string(),
-            json!({"L": [{"S": "entry"}]}),
-        );
+        values.insert(":v".to_string(), json!({"L": [{"S": "entry"}]}));
         values.insert(":other".to_string(), json!({"N": "1"}));
 
         apply_update_expression(
