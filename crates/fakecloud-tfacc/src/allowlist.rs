@@ -37,6 +37,17 @@ pub struct Service {
 
 pub const SERVICES: &[Service] = &[
     Service {
+        name: "apigatewayv2",
+        // Batch 9: core `aws_apigatewayv2_api` (HTTP) smoke. The fix
+        // here is making CreateApi return four metadata fields that
+        // real AWS always populates (api_key_selection_expression,
+        // route_selection_expression, disable_execute_api_endpoint,
+        // ip_address_type) — Terraform's provider asserts on each of
+        // them on every refresh.
+        run_regex: "^TestAccAPIGatewayV2API_basicHTTP$",
+        deny: &[],
+    },
+    Service {
         name: "kinesis",
         // Batch 8: core `aws_kinesis_stream` smoke. The fix here is
         // making `IncreaseStreamRetentionPeriod` accept same-value as a
