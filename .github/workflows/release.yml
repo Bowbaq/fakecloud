@@ -156,6 +156,7 @@ jobs:
           # Layer 1: no internal deps
           publish fakecloud-aws
           publish fakecloud-sdk
+          publish fakecloud-persistence
 
           # Layer 2: depends on fakecloud-aws
           publish fakecloud-core
