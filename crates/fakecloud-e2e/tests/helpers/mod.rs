@@ -1,276 +1,99 @@
-use std::net::TcpListener;
+//! Thin newtype wrapper over `fakecloud_testkit::TestServer` that adds the
+//! per-service SDK client factories e2e tests rely on. Keeps testkit itself
+//! free of the `aws-sdk-*` dependency sprawl while preserving the
+//! `helpers::TestServer` API existing e2e tests already use.
+
+#![allow(dead_code, unused_imports)]
+
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
-use std::time::Duration;
+use std::process::Command;
 
-use aws_config::BehaviorVersion;
-use aws_credential_types::Credentials;
-use aws_types::region::Region;
+pub use fakecloud_testkit::{data_path_for, run_until_exit, CliOutput};
 
-/// A test server that spawns fakecloud on a random port.
-#[allow(dead_code)]
-pub struct TestServer {
-    child: Option<Child>,
-    port: u16,
-    endpoint: String,
-    container_cli: String,
-    extra_args: Vec<String>,
-    env_vars: Vec<(String, String)>,
-    log_level: String,
-}
+/// Newtype wrapper around `fakecloud_testkit::TestServer`. Delegates all
+/// lifecycle methods and layers on per-service AWS SDK client factories.
+pub struct TestServer(fakecloud_testkit::TestServer);
 
-#[allow(dead_code)]
 impl TestServer {
-    /// Start a new FakeCloud server on a random available port.
     pub async fn start() -> Self {
-        Self::start_with_env(&[]).await
+        Self(fakecloud_testkit::TestServer::start().await)
     }
 
-    /// Start with extra environment variables passed to the server process.
     pub async fn start_with_env(env: &[(&str, &str)]) -> Self {
-        Self::start_full(env, &[]).await
+        Self(fakecloud_testkit::TestServer::start_with_env(env).await)
     }
 
-    /// Start fakecloud in persistent mode with the given data directory.
+    pub async fn start_full(env: &[(&str, &str)], extra_args: &[&str]) -> Self {
+        Self(fakecloud_testkit::TestServer::start_full(env, extra_args).await)
+    }
+
     pub async fn start_persistent(data_path: &Path) -> Self {
-        Self::start_persistent_with_cache(data_path, None).await
+        Self(fakecloud_testkit::TestServer::start_persistent(data_path).await)
     }
 
     pub async fn start_persistent_with_cache(data_path: &Path, s3_cache_size: Option<u64>) -> Self {
-        let data_path_str = data_path.display().to_string();
-        let mut args: Vec<String> = vec![
-            "--storage-mode".to_string(),
-            "persistent".to_string(),
-            "--data-path".to_string(),
-            data_path_str,
-        ];
-        if let Some(size) = s3_cache_size {
-            args.push("--s3-cache-size".to_string());
-            args.push(size.to_string());
-        }
-        let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        Self::start_full(&[("FAKECLOUD_CONTAINER_CLI", "false")], &arg_refs).await
+        Self(
+            fakecloud_testkit::TestServer::start_persistent_with_cache(data_path, s3_cache_size)
+                .await,
+        )
     }
 
-    /// Full form — extra env vars + extra CLI args. Used internally by
-    /// the specialised `start_*` helpers.
-    pub async fn start_full(env: &[(&str, &str)], extra_args: &[&str]) -> Self {
-        let bin = find_binary();
-
-        let container_cli = env
-            .iter()
-            .find(|(k, _)| *k == "FAKECLOUD_CONTAINER_CLI")
-            .map(|(_, v)| v.to_string())
-            .unwrap_or_else(detect_container_cli);
-
-        let log_level = env
-            .iter()
-            .find(|(k, _)| *k == "FAKECLOUD_TEST_LOG_LEVEL")
-            .map(|(_, v)| v.to_string())
-            .or_else(|| std::env::var("FAKECLOUD_TEST_LOG_LEVEL").ok())
-            .unwrap_or_else(|| "warn".to_string());
-
-        let env_vars: Vec<(String, String)> = env
-            .iter()
-            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
-            .collect();
-        let extra_args_owned: Vec<String> = extra_args.iter().map(|s| (*s).to_string()).collect();
-
-        for _ in 0..3 {
-            let port = find_available_port();
-            let endpoint = format!("http://127.0.0.1:{port}");
-
-            let mut cmd = Command::new(&bin);
-            cmd.arg("--addr")
-                .arg(format!("0.0.0.0:{port}"))
-                .arg("--log-level")
-                .arg(&log_level)
-                .args(&extra_args_owned)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
-
-            for (key, value) in &env_vars {
-                cmd.env(key, value);
-            }
-
-            let mut child = cmd.spawn().expect("failed to start fakecloud");
-
-            if wait_for_port(&mut child, port).await {
-                return Self {
-                    child: Some(child),
-                    port,
-                    endpoint,
-                    container_cli,
-                    extra_args: extra_args_owned,
-                    env_vars,
-                    log_level,
-                };
-            }
-
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-
-        panic!("fakecloud failed to start after 3 attempts");
-    }
-
-    /// Kill the current child and respawn with the same extra args/env.
-    /// Allocates a new port because the previous one may still be in TIME_WAIT.
     pub async fn restart(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        let bin = find_binary();
-        for _ in 0..5 {
-            let port = find_available_port();
-            let endpoint = format!("http://127.0.0.1:{port}");
-            let mut cmd = Command::new(&bin);
-            cmd.arg("--addr")
-                .arg(format!("0.0.0.0:{port}"))
-                .arg("--log-level")
-                .arg(&self.log_level)
-                .args(&self.extra_args)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
-            for (key, value) in &self.env_vars {
-                cmd.env(key, value);
-            }
-            let mut child = cmd.spawn().expect("failed to respawn fakecloud");
-            if wait_for_port(&mut child, port).await {
-                self.child = Some(child);
-                self.port = port;
-                self.endpoint = endpoint;
-                return;
-            }
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        panic!("fakecloud failed to restart");
+        self.0.restart().await
     }
-}
 
-/// Run fakecloud once and collect its exit status + stderr output.
-/// For tests that deliberately cause the server to fail at boot.
-#[allow(dead_code)]
-pub fn run_until_exit(
-    extra_args: &[&str],
-    env: &[(&str, &str)],
-    timeout: Duration,
-) -> (std::process::ExitStatus, String) {
-    let bin = find_binary();
-    let port = find_available_port();
-    let mut cmd = Command::new(&bin);
-    cmd.arg("--addr")
-        .arg(format!("127.0.0.1:{port}"))
-        .arg("--log-level")
-        .arg("warn")
-        .args(extra_args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    for (k, v) in env {
-        cmd.env(k, v);
-    }
-    let mut child = cmd.spawn().expect("failed to spawn fakecloud");
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        if let Some(status) = child.try_wait().expect("try_wait") {
-            let output = child.wait_with_output().expect("wait_with_output");
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            return (status, stderr);
-        }
-        if std::time::Instant::now() >= deadline {
-            let _ = child.kill();
-            let output = child.wait_with_output().expect("wait_with_output");
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            return (output.status, stderr);
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
-
-#[allow(dead_code)]
-pub fn data_path_for(dir: &tempfile::TempDir) -> PathBuf {
-    dir.path().to_path_buf()
-}
-
-#[allow(dead_code)]
-impl TestServer {
     pub fn endpoint(&self) -> &str {
-        &self.endpoint
+        self.0.endpoint()
     }
 
     pub fn port(&self) -> u16 {
-        self.port
+        self.0.port()
     }
 
-    /// Create a shared AWS SDK config pointing at this test server.
     pub async fn aws_config(&self) -> aws_config::SdkConfig {
-        aws_config::defaults(BehaviorVersion::latest())
-            .endpoint_url(self.endpoint())
-            .region(Region::new("us-east-1"))
-            .credentials_provider(Credentials::new(
-                "AKIAIOSFODNN7EXAMPLE",
-                "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-                None,
-                None,
-                "test",
-            ))
-            .load()
-            .await
+        self.0.aws_config().await
     }
 
-    /// Create an SQS client.
     pub async fn sqs_client(&self) -> aws_sdk_sqs::Client {
         aws_sdk_sqs::Client::new(&self.aws_config().await)
     }
 
-    /// Create an SNS client.
     pub async fn sns_client(&self) -> aws_sdk_sns::Client {
         aws_sdk_sns::Client::new(&self.aws_config().await)
     }
 
-    /// Create an EventBridge client.
     pub async fn eventbridge_client(&self) -> aws_sdk_eventbridge::Client {
         aws_sdk_eventbridge::Client::new(&self.aws_config().await)
     }
 
-    /// Create an IAM client.
     pub async fn iam_client(&self) -> aws_sdk_iam::Client {
         aws_sdk_iam::Client::new(&self.aws_config().await)
     }
 
-    /// Create an STS client.
     pub async fn sts_client(&self) -> aws_sdk_sts::Client {
         aws_sdk_sts::Client::new(&self.aws_config().await)
     }
 
-    /// Create an SSM client.
     pub async fn ssm_client(&self) -> aws_sdk_ssm::Client {
         aws_sdk_ssm::Client::new(&self.aws_config().await)
     }
 
-    /// Create a DynamoDB client.
     pub async fn dynamodb_client(&self) -> aws_sdk_dynamodb::Client {
         aws_sdk_dynamodb::Client::new(&self.aws_config().await)
     }
 
-    /// Create a Lambda client.
     pub async fn lambda_client(&self) -> aws_sdk_lambda::Client {
         aws_sdk_lambda::Client::new(&self.aws_config().await)
     }
 
-    /// Create a Secrets Manager client.
     pub async fn secretsmanager_client(&self) -> aws_sdk_secretsmanager::Client {
         aws_sdk_secretsmanager::Client::new(&self.aws_config().await)
     }
 
-    /// Create a CloudWatch Logs client.
     pub async fn logs_client(&self) -> aws_sdk_cloudwatchlogs::Client {
         aws_sdk_cloudwatchlogs::Client::new(&self.aws_config().await)
     }
 
-    /// Create a KMS client.
     pub async fn kms_client(&self) -> aws_sdk_kms::Client {
         aws_sdk_kms::Client::new(&self.aws_config().await)
     }
@@ -287,47 +110,38 @@ impl TestServer {
         aws_sdk_elasticache::Client::new(&self.aws_config().await)
     }
 
-    /// Create a CloudFormation client.
     pub async fn cloudformation_client(&self) -> aws_sdk_cloudformation::Client {
         aws_sdk_cloudformation::Client::new(&self.aws_config().await)
     }
 
-    /// Create an SES v1 client.
     pub async fn ses_client(&self) -> aws_sdk_ses::Client {
         aws_sdk_ses::Client::new(&self.aws_config().await)
     }
 
-    /// Create an SES v2 client.
     pub async fn sesv2_client(&self) -> aws_sdk_sesv2::Client {
         aws_sdk_sesv2::Client::new(&self.aws_config().await)
     }
 
-    /// Create a Cognito Identity Provider client.
     pub async fn cognito_client(&self) -> aws_sdk_cognitoidentityprovider::Client {
         aws_sdk_cognitoidentityprovider::Client::new(&self.aws_config().await)
     }
 
-    /// Create a Step Functions client.
     pub async fn sfn_client(&self) -> aws_sdk_sfn::Client {
         aws_sdk_sfn::Client::new(&self.aws_config().await)
     }
 
-    /// Create an API Gateway v2 client.
     pub async fn apigatewayv2_client(&self) -> aws_sdk_apigatewayv2::Client {
         aws_sdk_apigatewayv2::Client::new(&self.aws_config().await)
     }
 
-    /// Create a Bedrock client.
     pub async fn bedrock_client(&self) -> aws_sdk_bedrock::Client {
         aws_sdk_bedrock::Client::new(&self.aws_config().await)
     }
 
-    /// Create a Bedrock Runtime client.
     pub async fn bedrock_runtime_client(&self) -> aws_sdk_bedrockruntime::Client {
         aws_sdk_bedrockruntime::Client::new(&self.aws_config().await)
     }
 
-    /// Create an S3 client (path-style addressing for single-endpoint emulator).
     pub async fn s3_client(&self) -> aws_sdk_s3::Client {
         let config = self.aws_config().await;
         let s3_config = aws_sdk_s3::config::Builder::from(&config)
@@ -336,7 +150,6 @@ impl TestServer {
         aws_sdk_s3::Client::from_conf(s3_config)
     }
 
-    /// Run an AWS CLI command against this test server.
     pub async fn aws_cli(&self, args: &[&str]) -> CliOutput {
         let output = Command::new("aws")
             .args(args)
@@ -349,140 +162,22 @@ impl TestServer {
             .env("AWS_DEFAULT_REGION", "us-east-1")
             .output()
             .expect("failed to run aws cli");
-
         CliOutput(output)
     }
 }
 
-impl Drop for TestServer {
-    fn drop(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            let pid = child.id();
-            let _ = child.kill();
-            let _ = child.wait();
-
-            // Clean up any Lambda containers spawned by this server instance
-            let label = format!("fakecloud-instance=fakecloud-{}", pid);
-            let cli = &self.container_cli;
-            let output = Command::new(cli)
-                .args(["ps", "-aq", "--filter", &format!("label={}", label)])
-                .output();
-            if let Ok(output) = output {
-                let ids = String::from_utf8_lossy(&output.stdout);
-                for id in ids.split_whitespace() {
-                    let _ = Command::new(cli)
-                        .args(["rm", "-f", id])
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .status();
-                }
-            }
-        }
-    }
-}
-
-/// Output from an AWS CLI invocation.
-pub struct CliOutput(Output);
-
-#[allow(dead_code)]
-impl CliOutput {
-    pub fn success(&self) -> bool {
-        self.0.status.success()
-    }
-
-    pub fn stdout_text(&self) -> String {
-        String::from_utf8_lossy(&self.0.stdout).to_string()
-    }
-
-    pub fn stderr_text(&self) -> String {
-        String::from_utf8_lossy(&self.0.stderr).to_string()
-    }
-
-    pub fn stdout_json(&self) -> serde_json::Value {
-        serde_json::from_slice(&self.0.stdout).unwrap_or(serde_json::Value::Null)
-    }
-}
-
-fn find_available_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind to random port");
-    listener.local_addr().unwrap().port()
-}
-
-fn find_binary() -> String {
-    let debug_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/debug/fakecloud");
-    let release_path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../target/release/fakecloud"
-    );
-
-    if std::path::Path::new(debug_path).exists() {
-        return debug_path.to_string();
-    }
-    if std::path::Path::new(release_path).exists() {
-        return release_path.to_string();
-    }
-
-    panic!(
-        "fakecloud binary not found. Run `cargo build` first.\n\
-         Looked in:\n  {debug_path}\n  {release_path}"
-    );
-}
-
-fn detect_container_cli() -> String {
-    if cli_available("docker") {
-        "docker".to_string()
-    } else if cli_available("podman") {
-        "podman".to_string()
-    } else {
-        "docker".to_string()
-    }
-}
-
-fn cli_available(cli: &str) -> bool {
-    Command::new(cli)
-        .arg("info")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
-}
-
-async fn wait_for_port(child: &mut Child, port: u16) -> bool {
-    // Two-stage readiness: (1) TCP connect succeeds, (2) an HTTP request
-    // actually reaches an axum handler. A bare TCP connect only proves
-    // the kernel accepted SYNs into fakecloud's listen queue — it does
-    // not prove axum has reached `serve().await` and installed request
-    // handlers. Tests that hit the server immediately after a bare TCP
-    // connect occasionally saw ConnectionRefused / EOF mid-flight.
-    let loopback = format!("127.0.0.1:{port}");
-    let wildcard = format!("0.0.0.0:{port}");
-    let health_url = format!("http://127.0.0.1:{port}/");
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_millis(500))
-        .build()
-        .expect("build reqwest client");
-
-    for _ in 0..300 {
-        if child.try_wait().ok().flatten().is_some() {
-            return false;
-        }
-        let tcp_ok = std::net::TcpStream::connect(&loopback).is_ok()
-            || std::net::TcpStream::connect(&wildcard).is_ok();
-        if tcp_ok && client.get(&health_url).send().await.is_ok() {
-            return true;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    false
-}
-
-/// Decompress gzipped data
-#[allow(dead_code)]
+/// Decompress gzipped data.
 pub fn gunzip(data: &[u8]) -> Vec<u8> {
     use std::io::Read;
     let mut decoder = flate2::read::GzDecoder::new(data);
     let mut result = Vec::new();
     decoder.read_to_end(&mut result).unwrap();
     result
+}
+
+/// Re-exported for historical reasons. Some test helpers construct a
+/// `PathBuf` from a `tempfile::TempDir` through this shim.
+#[allow(dead_code)]
+pub fn _path_buf_shim(p: PathBuf) -> PathBuf {
+    p
 }

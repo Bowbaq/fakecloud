@@ -1,0 +1,16 @@
+# CODEOWNERS for fakecloud.
+#
+# This file pins ownership on every path that can cause the parity workflow
+# to execute against real AWS credentials. Combined with branch protection
+# ("Require review from Code Owners" on `main`), a contributor physically
+# cannot merge a PR that modifies these paths without an explicit review
+# from the repo owner.
+#
+# The CODEOWNERS file itself is owned so a malicious PR can't remove the
+# other rules in the same commit.
+
+.github/CODEOWNERS                        @vieiralucas
+.github/workflows/parity-aws.yml          @vieiralucas
+.github/workflows/parity-fakecloud.yml    @vieiralucas
+crates/fakecloud-parity/**                @vieiralucas
+crates/fakecloud-testkit/**               @vieiralucas

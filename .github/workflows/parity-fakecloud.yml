@@ -1,0 +1,41 @@
+name: Parity (fakecloud)
+
+# Runs the fakecloud-parity test suite against a local fakecloud process.
+# No AWS credentials are used here; this job is safe to run on every PR.
+# The companion workflow `parity-aws.yml` runs the same crate against real
+# AWS on a schedule.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/fakecloud-parity/**'
+      - 'crates/fakecloud-testkit/**'
+      - '.github/workflows/parity-fakecloud.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'crates/fakecloud-parity/**'
+      - 'crates/fakecloud-testkit/**'
+      - '.github/workflows/parity-fakecloud.yml'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fakecloud:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build fakecloud binary
+        run: cargo build --bin fakecloud
+
+      - name: Run parity tests against local fakecloud
+        env:
+          FAKECLOUD_PARITY_BACKEND: fakecloud
+        run: cargo test -p fakecloud-parity

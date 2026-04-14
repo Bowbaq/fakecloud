@@ -2195,6 +2195,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "fakecloud-sdk",
+ "fakecloud-testkit",
  "flate2",
  "reqwest",
  "serde_json",
@@ -2339,6 +2340,25 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "fakecloud-parity"
+version = "0.9.1"
+dependencies = [
+ "aws-config",
+ "aws-credential-types",
+ "aws-sdk-dynamodb",
+ "aws-sdk-kms",
+ "aws-sdk-s3",
+ "aws-sdk-secretsmanager",
+ "aws-sdk-sns",
+ "aws-sdk-sqs",
+ "aws-sdk-sts",
+ "aws-types",
+ "fakecloud-testkit",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -2531,6 +2551,19 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "fakecloud-testkit"
+version = "0.9.1"
+dependencies = [
+ "aws-config",
+ "aws-credential-types",
+ "aws-types",
+ "reqwest",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

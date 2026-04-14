@@ -1,0 +1,16 @@
+[package]
+name = "fakecloud-testkit"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+tokio = { workspace = true }
+reqwest = { workspace = true }
+tempfile = { workspace = true }
+serde_json = { workspace = true }
+aws-config = "1"
+aws-credential-types = "1"
+aws-types = "1"
