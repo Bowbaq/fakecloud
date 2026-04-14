@@ -404,3 +404,41 @@ async fn kinesis_reports_millis_behind_latest_when_limit_truncates() {
     assert_eq!(records.records().len(), 1);
     assert!(records.millis_behind_latest().unwrap_or_default() > 0);
 }
+
+#[tokio::test]
+async fn kinesis_increase_retention_to_current_value_is_noop() {
+    // Regression guard for `TestAccKinesisStream_basic`: the upstream
+    // `aws_kinesis_stream` provider unconditionally calls
+    // `IncreaseStreamRetentionPeriod(24)` on every create — even when
+    // the configured value matches the default 24h. Real AWS treats
+    // same-value as a no-op despite the docs, and fakecloud must too,
+    // otherwise every basic apply fails with "must be greater".
+    let server = TestServer::start().await;
+    let client = server.kinesis_client().await;
+
+    client
+        .create_stream()
+        .stream_name("retention-noop")
+        .shard_count(1)
+        .send()
+        .await
+        .unwrap();
+
+    // Same value as the default — must succeed.
+    client
+        .increase_stream_retention_period()
+        .stream_name("retention-noop")
+        .retention_period_hours(24)
+        .send()
+        .await
+        .unwrap();
+
+    // Strictly less is still a hard error.
+    let err = client
+        .increase_stream_retention_period()
+        .stream_name("retention-noop")
+        .retention_period_hours(23)
+        .send()
+        .await;
+    assert!(err.is_err());
+}
