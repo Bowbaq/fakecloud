@@ -647,6 +647,11 @@ impl ResourceProvisioner {
                 (false, None)
             };
 
+        let deletion_protection_enabled = props
+            .get("DeletionProtectionEnabled")
+            .and_then(|v| v.as_bool().or_else(|| v.as_str().map(|s| s == "true")))
+            .unwrap_or(false);
+
         let mut state = self.dynamodb_state.write();
         let arn = format!(
             "arn:aws:dynamodb:{}:{}:table/{}",
@@ -692,6 +697,7 @@ impl ResourceProvisioner {
             stream_records: Arc::new(RwLock::new(Vec::new())),
             sse_type: None,
             sse_kms_key_arn: None,
+            deletion_protection_enabled,
         };
 
         state.tables.insert(table_name.to_string(), table);

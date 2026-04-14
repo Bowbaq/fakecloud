@@ -120,6 +120,8 @@ mod tests {
             stream_records: Arc::new(RwLock::new(Vec::new())),
             sse_type: None,
             sse_kms_key_arn: None,
+
+            deletion_protection_enabled: false,
         }
     }
 

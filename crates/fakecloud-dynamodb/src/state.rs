@@ -96,6 +96,10 @@ pub struct DynamoTable {
     pub sse_type: Option<String>,
     /// KMS key ARN for SSE (only when sse_type is KMS)
     pub sse_kms_key_arn: Option<String>,
+    /// Deletion protection: when true, DeleteTable is rejected with
+    /// `ResourceInUseException`. Defaults to false. Returned on every
+    /// `DescribeTable` and toggleable via `UpdateTable`.
+    pub deletion_protection_enabled: bool,
 }
 
 #[derive(Debug, Clone)]
