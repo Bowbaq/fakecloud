@@ -184,11 +184,13 @@ impl<'a> GoTestRunner<'a> {
             format!("^({})$", service.deny.join("|"))
         };
 
-        // `-parallel 8` lets Go's test runner execute up to 8 `t.Parallel()`
-        // subtests concurrently within a single `go test` invocation. Most
-        // upstream TestAcc* functions opt into parallelism, so this is the
-        // main lever for wall-time inside a single service. CI fan-out
-        // across services is handled by the GitHub Actions matrix.
+        // `-parallel 4` lets Go's test runner execute up to 4 `t.Parallel()`
+        // subtests concurrently within a single `go test` invocation. We use 4
+        // (rather than 8 or runner core count) because some upstream tests
+        // poll fakecloud aggressively under parallel load and can starve the
+        // request loop, surfacing as suite-wide hangs. CI fan-out across
+        // services is handled by the GitHub Actions matrix, so wall time
+        // scales with the slowest single service, not their sum.
         let mut cmd = Command::new("go");
         let mut args: Vec<String> = vec![
             "test".into(),
@@ -197,10 +199,10 @@ impl<'a> GoTestRunner<'a> {
             run_re.into(),
             "-v".into(),
             "-timeout".into(),
-            "60m".into(),
+            "90m".into(),
             "-count=1".into(),
             "-parallel".into(),
-            "8".into(),
+            "4".into(),
         ];
         if !skip_re.is_empty() {
             args.push("-skip".into());
@@ -237,23 +239,38 @@ pub struct GoTestResult {
 }
 
 impl GoTestResult {
-    /// Panics with the last few lines of `go test` output when the service
-    /// run had any failing upstream test. Keeps passing runs silent.
+    /// On failure, dump the full `go test` output to a stable path under
+    /// `target/tfacc/logs/` and panic with the failing-test list plus the
+    /// path. The full log matters more than a tail because acc-test
+    /// failures usually cite a single line buried thousands of lines up.
     pub fn assert_pass(self, service: &str) {
         if self.success {
             return;
         }
         let stdout = String::from_utf8_lossy(&self.output.stdout);
         let stderr = String::from_utf8_lossy(&self.output.stderr);
-        let fails: Vec<&str> = stdout.lines().filter(|l| l.contains("--- FAIL:")).collect();
+        let fails: Vec<String> = stdout
+            .lines()
+            .filter(|l| l.contains("--- FAIL:"))
+            .map(|l| l.to_string())
+            .collect();
         let combined = format!("--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}");
-        let lines: Vec<&str> = combined.lines().collect();
-        let start = lines.len().saturating_sub(200);
-        let tail = lines[start..].join("\n");
+
+        let log_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("target")
+            .join("tfacc")
+            .join("logs");
+        let _ = std::fs::create_dir_all(&log_dir);
+        let log_path = log_dir.join(format!("{service}-failure.log"));
+        let _ = std::fs::write(&log_path, &combined);
+
         panic!(
-            "upstream TestAcc failures in service `{service}` ({} failed):\n{}\n\n{tail}",
+            "upstream TestAcc failures in service `{service}` ({} failed):\n{}\n\nFull go test output: {}",
             fails.len(),
-            fails.join("\n")
+            fails.join("\n"),
+            log_path.display(),
         );
     }
 }

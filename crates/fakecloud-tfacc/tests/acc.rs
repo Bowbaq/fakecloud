@@ -28,6 +28,11 @@ async fn run_service(name: &str) {
 }
 
 #[tokio::test]
+async fn sqs_acceptance() {
+    run_service("sqs").await;
+}
+
+#[tokio::test]
 async fn dynamodb_acceptance() {
     run_service("dynamodb").await;
 }
