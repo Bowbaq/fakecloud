@@ -5,7 +5,7 @@ use axum::response::Response;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::auth::IamMode;
+use crate::auth::{is_root_bypass, CredentialResolver, IamMode};
 use crate::protocol::{self, AwsProtocol};
 use crate::registry::ServiceRegistry;
 use crate::service::{AwsRequest, ResponseBody};
@@ -90,19 +90,120 @@ pub async fn dispatch(
         }
     };
 
-    // Extract region and access key from auth header
-    let sigv4_info = fakecloud_aws::sigv4::parse_sigv4(
-        parts
-            .headers
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or(""),
-    );
+    // Extract region and access key from auth header (or presigned query).
+    let auth_header = parts
+        .headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let header_info = fakecloud_aws::sigv4::parse_sigv4(auth_header);
+    let presigned_info = if header_info.is_none() {
+        // Presigned URL: credentials live in the query string.
+        fakecloud_aws::sigv4::parse_sigv4_presigned(&query_params).map(|p| p.as_info())
+    } else {
+        None
+    };
+    let sigv4_info = header_info.or(presigned_info);
     let access_key_id = sigv4_info.as_ref().map(|info| info.access_key.clone());
     let region = sigv4_info
         .map(|info| info.region)
         .or_else(|| extract_region_from_user_agent(&parts.headers))
         .unwrap_or_else(|| config.region.clone());
+
+    // Opt-in SigV4 cryptographic verification. Runs before the service
+    // handler so a failing signature never reaches business logic. The
+    // reserved `test*` root identity short-circuits verification to keep
+    // local-dev workflows frictionless.
+    if config.verify_sigv4 {
+        let caller_akid = access_key_id.as_deref().unwrap_or("");
+        if !is_root_bypass(caller_akid) {
+            if let Some(resolver) = config.credential_resolver.as_ref() {
+                let amz_date = parts
+                    .headers
+                    .get("x-amz-date")
+                    .and_then(|v| v.to_str().ok());
+                let parsed = fakecloud_aws::sigv4::parse_sigv4_header(auth_header, amz_date)
+                    .or_else(|| fakecloud_aws::sigv4::parse_sigv4_presigned(&query_params));
+                let parsed = match parsed {
+                    Some(p) => p,
+                    None => {
+                        return build_error_response(
+                            StatusCode::FORBIDDEN,
+                            "IncompleteSignature",
+                            "Request is missing or has a malformed AWS Signature",
+                            &request_id,
+                            detected.protocol,
+                        );
+                    }
+                };
+                let resolved = match resolver.resolve(&parsed.access_key) {
+                    Some(r) => r,
+                    None => {
+                        return build_error_response(
+                            StatusCode::FORBIDDEN,
+                            "InvalidClientTokenId",
+                            "The security token included in the request is invalid",
+                            &request_id,
+                            detected.protocol,
+                        );
+                    }
+                };
+                let headers_vec = fakecloud_aws::sigv4::headers_from_http(&parts.headers);
+                let raw_query_for_verify = parts.uri.query().unwrap_or("").to_string();
+                let verify_req = fakecloud_aws::sigv4::VerifyRequest {
+                    method: parts.method.as_str(),
+                    path: parts.uri.path(),
+                    query: &raw_query_for_verify,
+                    headers: &headers_vec,
+                    body: &body_bytes,
+                };
+                match fakecloud_aws::sigv4::verify(
+                    &parsed,
+                    &verify_req,
+                    &resolved.secret_access_key,
+                    chrono::Utc::now(),
+                ) {
+                    Ok(()) => {}
+                    Err(fakecloud_aws::sigv4::SigV4Error::RequestTimeTooSkewed { .. }) => {
+                        return build_error_response(
+                            StatusCode::FORBIDDEN,
+                            "RequestTimeTooSkewed",
+                            "The difference between the request time and the current time is too large",
+                            &request_id,
+                            detected.protocol,
+                        );
+                    }
+                    Err(fakecloud_aws::sigv4::SigV4Error::InvalidDate(msg)) => {
+                        return build_error_response(
+                            StatusCode::FORBIDDEN,
+                            "IncompleteSignature",
+                            &format!("Invalid x-amz-date: {msg}"),
+                            &request_id,
+                            detected.protocol,
+                        );
+                    }
+                    Err(fakecloud_aws::sigv4::SigV4Error::Malformed(msg)) => {
+                        return build_error_response(
+                            StatusCode::FORBIDDEN,
+                            "IncompleteSignature",
+                            &format!("Malformed SigV4 signature: {msg}"),
+                            &request_id,
+                            detected.protocol,
+                        );
+                    }
+                    Err(fakecloud_aws::sigv4::SigV4Error::SignatureMismatch) => {
+                        return build_error_response(
+                            StatusCode::FORBIDDEN,
+                            "SignatureDoesNotMatch",
+                            "The request signature we calculated does not match the signature you provided",
+                            &request_id,
+                            detected.protocol,
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     // Build path segments
     let path = parts.uri.path().to_string();
@@ -222,20 +323,41 @@ pub async fn dispatch(
 }
 
 /// Configuration passed to the dispatch handler.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DispatchConfig {
     pub region: String,
     pub account_id: String,
     /// Whether to cryptographically verify SigV4 signatures on incoming
     /// requests. Wired through from `--verify-sigv4` /
-    /// `FAKECLOUD_VERIFY_SIGV4`. Off by default. Actual enforcement is added
-    /// in a later batch; today this field is plumbed but never consulted.
+    /// `FAKECLOUD_VERIFY_SIGV4`. Off by default.
     pub verify_sigv4: bool,
     /// IAM policy evaluation mode. Wired through from `--iam` /
     /// `FAKECLOUD_IAM`. Defaults to [`IamMode::Off`]. Actual evaluation is
     /// added in a later batch; today this field is plumbed but never
     /// consulted.
     pub iam_mode: IamMode,
+    /// Resolves access key IDs to their secrets and owning principals.
+    /// Required when `verify_sigv4` or `iam_mode != Off`. When `None`, both
+    /// features gracefully degrade to off-by-default behavior.
+    pub credential_resolver: Option<Arc<dyn CredentialResolver>>,
+}
+
+impl std::fmt::Debug for DispatchConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DispatchConfig")
+            .field("region", &self.region)
+            .field("account_id", &self.account_id)
+            .field("verify_sigv4", &self.verify_sigv4)
+            .field("iam_mode", &self.iam_mode)
+            .field(
+                "credential_resolver",
+                &self
+                    .credential_resolver
+                    .as_ref()
+                    .map(|_| "<CredentialResolver>"),
+            )
+            .finish()
+    }
 }
 
 impl DispatchConfig {
@@ -247,6 +369,7 @@ impl DispatchConfig {
             account_id: account_id.into(),
             verify_sigv4: false,
             iam_mode: IamMode::Off,
+            credential_resolver: None,
         }
     }
 }
@@ -337,6 +460,7 @@ mod tests {
             account_id: "000000000000".to_string(),
             verify_sigv4: true,
             iam_mode: IamMode::Strict,
+            credential_resolver: None,
         };
         assert!(cfg.verify_sigv4);
         assert!(cfg.iam_mode.is_strict());

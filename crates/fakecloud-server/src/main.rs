@@ -440,7 +440,7 @@ async fn main() {
     }
     tokio::spawn(scheduler.run());
     registry.register(Arc::new(IamService::new(iam_state.clone())));
-    registry.register(Arc::new(StsService::new(iam_state)));
+    registry.register(Arc::new(StsService::new(iam_state.clone())));
     registry.register(Arc::new(
         SsmService::new(ssm_state).with_secretsmanager(secretsmanager_state.clone()),
     ));
@@ -674,6 +674,9 @@ async fn main() {
         account_id: cli.account_id,
         verify_sigv4: cli.verify_sigv4,
         iam_mode,
+        credential_resolver: Some(
+            fakecloud_iam::credential_resolver::IamCredentialResolver::shared(iam_state.clone()),
+        ),
     };
 
     let service_names: Vec<String> = registry
