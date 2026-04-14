@@ -549,12 +549,20 @@ impl KinesisService {
             .get_mut(&stream_name)
             .ok_or_else(|| stream_not_found(&account_id, &stream_name))?;
 
-        if increasing && hours <= stream.retention_period_hours as i64 {
+        // Real AWS Kinesis treats `IncreaseStreamRetentionPeriod` with the
+        // current value as a no-op (despite what the API docs say) — the
+        // upstream `aws_kinesis_stream` provider unconditionally calls
+        // `IncreaseStreamRetentionPeriod(24)` on every create regardless
+        // of whether the user changed retention_period, and the test
+        // suite passes against real AWS. Strictly less-than is still an
+        // error for `IncreaseStreamRetentionPeriod`, and strictly
+        // greater-than is still an error for `DecreaseStreamRetentionPeriod`.
+        if increasing && hours < stream.retention_period_hours as i64 {
             return Err(invalid_argument(
                 "RetentionPeriodHours must be greater than the current retention period",
             ));
         }
-        if !increasing && hours >= stream.retention_period_hours as i64 {
+        if !increasing && hours > stream.retention_period_hours as i64 {
             return Err(invalid_argument(
                 "RetentionPeriodHours must be less than the current retention period",
             ));

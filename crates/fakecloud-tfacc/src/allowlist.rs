@@ -37,6 +37,16 @@ pub struct Service {
 
 pub const SERVICES: &[Service] = &[
     Service {
+        name: "kinesis",
+        // Batch 8: core `aws_kinesis_stream` smoke. The fix here is
+        // making `IncreaseStreamRetentionPeriod` accept same-value as a
+        // no-op — real AWS does this despite what the API docs say,
+        // and the upstream provider unconditionally calls it with the
+        // default 24h on every create.
+        run_regex: "^TestAccKinesisStream_basic$",
+        deny: &[],
+    },
+    Service {
         name: "sns",
         // Batch 7: core `aws_sns_topic` smoke. Passes against fakecloud
         // out of the box.
