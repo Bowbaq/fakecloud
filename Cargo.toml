@@ -28,6 +28,7 @@ members = [
     "crates/fakecloud-e2e",
     "crates/fakecloud-conformance",
     "crates/fakecloud-conformance-macros",
+    "crates/fakecloud-tfacc",
 ]
 resolver = "2"
 

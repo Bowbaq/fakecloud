@@ -2136,7 +2136,10 @@ fn build_table_description(table: &DynamoTable) -> Value {
         }
     }
 
-    // Add SSE description
+    // SSEDescription is only returned when the customer explicitly enabled
+    // a KMS-backed SSE. Real AWS tables using the default AWS-owned key omit
+    // this field entirely, and the Terraform provider's Read asserts
+    // `server_side_encryption.#` == 0 in that case.
     if let Some(ref sse_type) = table.sse_type {
         let mut sse_desc = json!({
             "Status": "ENABLED",
@@ -2146,12 +2149,6 @@ fn build_table_description(table: &DynamoTable) -> Value {
             sse_desc["KMSMasterKeyArn"] = json!(key_arn);
         }
         desc["SSEDescription"] = sse_desc;
-    } else {
-        // Default: AWS owned key encryption (always enabled in real AWS)
-        desc["SSEDescription"] = json!({
-            "Status": "ENABLED",
-            "SSEType": "AES256",
-        });
     }
 
     desc
