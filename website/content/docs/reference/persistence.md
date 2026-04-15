@@ -23,6 +23,7 @@ FAKECLOUD_STORAGE_MODE=persistent FAKECLOUD_DATA_PATH=/var/lib/fakecloud fakeclo
 ## What's persisted
 
 - **S3** — buckets, objects, versions, delete markers, multipart uploads (resumable across restarts), and every bucket subresource: tags, lifecycle, CORS, policy, notification, logging, website, public access block, object lock, replication, ownership, inventory, encryption, ACL, accelerate. Written to disk on every mutation and reloaded on startup.
+- **API Gateway v2** — HTTP APIs, routes, integrations, stages, deployments, authorizers.
 - **Every other service** emits `persistence not yet supported, running in-memory` at startup and continues to operate exactly as in memory mode. Your tests don't break — you just don't get cross-restart durability for those services yet.
 
 ## Version compatibility

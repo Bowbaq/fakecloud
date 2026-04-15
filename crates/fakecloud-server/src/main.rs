@@ -390,7 +390,6 @@ async fn main() {
             "rds",
             "elasticache",
             "states",
-            "apigatewayv2",
             "bedrock",
         ] {
             fakecloud_persistence::warn_unsupported(service);
@@ -1118,10 +1117,61 @@ async fn main() {
         .with_dynamodb(dynamodb_state.clone());
     registry.register(Arc::new(sfn_service));
 
+    let apigw_snapshot_store: Option<Arc<dyn fakecloud_persistence::SnapshotStore>> =
+        if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
+            let data_path = persistence_config
+                .data_path
+                .as_ref()
+                .expect("validated above")
+                .clone();
+            let path = data_path.join("apigatewayv2").join("snapshot.json");
+            let store = fakecloud_persistence::DiskSnapshotStore::new(path);
+            match fakecloud_persistence::SnapshotStore::load(&store) {
+                Ok(Some(bytes)) => {
+                    match serde_json::from_slice::<
+                        fakecloud_apigatewayv2::state::ApiGatewayV2Snapshot,
+                    >(&bytes)
+                    {
+                        Ok(snapshot) => {
+                            if snapshot.schema_version
+                                != fakecloud_apigatewayv2::state::APIGATEWAYV2_SNAPSHOT_SCHEMA_VERSION
+                            {
+                                fatal_exit(format_args!(
+                                    "apigatewayv2 persistence schema mismatch: on-disk={}, expected={}",
+                                    snapshot.schema_version,
+                                    fakecloud_apigatewayv2::state::APIGATEWAYV2_SNAPSHOT_SCHEMA_VERSION,
+                                ));
+                            }
+                            let api_count = snapshot.state.apis.len();
+                            *apigatewayv2_state.write() = snapshot.state;
+                            tracing::info!(
+                                apis = api_count,
+                                "loaded apigatewayv2 persistence snapshot",
+                            );
+                        }
+                        Err(err) => fatal_exit(format_args!(
+                            "failed to parse apigatewayv2 persistence snapshot: {err}"
+                        )),
+                    }
+                }
+                Ok(None) => {
+                    tracing::info!("no apigatewayv2 persistence snapshot found; starting empty");
+                }
+                Err(err) => fatal_exit(format_args!(
+                    "failed to read apigatewayv2 persistence snapshot: {err}"
+                )),
+            }
+            Some(Arc::new(store) as Arc<dyn fakecloud_persistence::SnapshotStore>)
+        } else {
+            None
+        };
     let mut apigw_service = ApiGatewayV2Service::new(apigatewayv2_state.clone());
     if let Some(ref ld) = lambda_delivery {
         let delivery_for_apigw = Arc::new(DeliveryBus::new().with_lambda(ld.clone()));
         apigw_service = apigw_service.with_delivery(delivery_for_apigw);
+    }
+    if let Some(store) = apigw_snapshot_store {
+        apigw_service = apigw_service.with_snapshot_store(store);
     }
     registry.register(Arc::new(apigw_service));
     registry.register(Arc::new(BedrockService::new(bedrock_state.clone())));

@@ -2,13 +2,16 @@ use async_trait::async_trait;
 use http::{Method, StatusCode};
 use serde_json::json;
 use std::sync::Arc;
+use tokio::sync::Mutex as AsyncMutex;
 
 use fakecloud_core::delivery::DeliveryBus;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
 use fakecloud_core::validation::*;
+use fakecloud_persistence::SnapshotStore;
 
 use crate::state::{
-    ApiRequest, Authorizer, Deployment, HttpApi, Integration, Route, SharedApiGatewayV2State, Stage,
+    ApiGatewayV2Snapshot, ApiRequest, Authorizer, Deployment, HttpApi, Integration, Route,
+    SharedApiGatewayV2State, Stage, APIGATEWAYV2_SNAPSHOT_SCHEMA_VERSION,
 };
 use crate::{cors, http_proxy, lambda_proxy, mock, router::Router};
 
@@ -46,6 +49,8 @@ const SUPPORTED: &[&str] = &[
 pub struct ApiGatewayV2Service {
     state: SharedApiGatewayV2State,
     delivery: Option<Arc<DeliveryBus>>,
+    snapshot_store: Option<Arc<dyn SnapshotStore>>,
+    snapshot_lock: Arc<AsyncMutex<()>>,
 }
 
 impl ApiGatewayV2Service {
@@ -53,12 +58,41 @@ impl ApiGatewayV2Service {
         Self {
             state,
             delivery: None,
+            snapshot_store: None,
+            snapshot_lock: Arc::new(AsyncMutex::new(())),
         }
     }
 
     pub fn with_delivery(mut self, delivery: Arc<DeliveryBus>) -> Self {
         self.delivery = Some(delivery);
         self
+    }
+
+    pub fn with_snapshot_store(mut self, store: Arc<dyn SnapshotStore>) -> Self {
+        self.snapshot_store = Some(store);
+        self
+    }
+
+    async fn save_snapshot(&self) {
+        let Some(store) = self.snapshot_store.clone() else {
+            return;
+        };
+        let _guard = self.snapshot_lock.lock().await;
+        let snapshot = ApiGatewayV2Snapshot {
+            schema_version: APIGATEWAYV2_SNAPSHOT_SCHEMA_VERSION,
+            state: self.state.read().clone(),
+        };
+        let join = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            let bytes = serde_json::to_vec(&snapshot)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+            store.save(&bytes)
+        })
+        .await;
+        match join {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => tracing::error!(%err, "failed to write apigatewayv2 snapshot"),
+            Err(err) => tracing::error!(%err, "apigatewayv2 snapshot task panicked"),
+        }
     }
 
     /// Determine the action from the HTTP method and path segments.
@@ -203,8 +237,11 @@ impl ApiGatewayV2Service {
                 format!("Unknown path: {}", req.raw_path),
             )
         })?;
+        let mutates = action.starts_with("Create")
+            || action.starts_with("Update")
+            || action.starts_with("Delete");
 
-        match action {
+        let result = match action {
             "CreateApi" => self.create_api(&req),
             "GetApi" => self.get_api(&req, api_id.as_deref()),
             "GetApis" => self.get_apis(&req),
@@ -247,7 +284,11 @@ impl ApiGatewayV2Service {
                 "apigateway",
                 action,
             )),
+        };
+        if mutates && matches!(result.as_ref(), Ok(resp) if resp.status.is_success()) {
+            self.save_snapshot().await;
         }
+        result
     }
 
     // ─── API CRUD ───────────────────────────────────────────────────────
