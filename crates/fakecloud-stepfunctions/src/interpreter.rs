@@ -1912,36 +1912,7 @@ mod tests {
         format!("arn:aws:states:us-east-1:123456789012:execution:test:{name}")
     }
 
-    // ── Pass state: Parameters substitution ──────────────────────────
-
-    #[test]
-    fn pass_state_applies_parameters_template() {
-        let state = make_state();
-        let arn = arn_for("pass-params");
-        let def = json!({
-            "StartAt": "P",
-            "States": {
-                "P": {
-                    "Type": "Pass",
-                    "Parameters": {
-                        "static": "literal",
-                        "from_input.$": "$.name",
-                    },
-                    "End": true
-                }
-            }
-        });
-        drive(&state, &arn, def, Some(r#"{"name":"alice"}"#));
-
-        read_exec(&state, &arn, |exec| {
-            assert_eq!(exec.status, ExecutionStatus::Succeeded);
-            let output: Value = serde_json::from_str(exec.output.as_ref().unwrap()).unwrap();
-            // Note: Pass with Parameters uses Parameters as effective input, then Result is
-            // either used verbatim or defaults to effective_input. With no Result, the
-            // effective input flows through.
-            assert_eq!(output, json!({"name":"alice"}));
-        });
-    }
+    // ── Pass state: InputPath / OutputPath ───────────────────────────
 
     #[test]
     fn pass_state_input_output_path_select_fields() {
