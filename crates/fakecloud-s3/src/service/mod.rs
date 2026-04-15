@@ -2674,4 +2674,705 @@ mod tests {
             .unwrap_or_else(|_| http::HeaderValue::from_static(""));
         assert_eq!(fallback, "");
     }
+
+    // ────────────────────────────────────────────────────────────────
+    // Service-level tests for tags / multipart / config submodules.
+    //
+    // Each helper below builds an isolated S3Service with the in-memory
+    // store so the submodule handlers can be driven directly without a
+    // running Axum router.
+    // ────────────────────────────────────────────────────────────────
+
+    use crate::state::{S3Bucket, S3Object, S3State};
+    use bytes::Bytes;
+    use fakecloud_core::delivery::DeliveryBus;
+    use fakecloud_core::service::{AwsRequest, AwsServiceError};
+    use http::{HeaderMap, Method, StatusCode};
+    use parking_lot::RwLock;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    fn make_service() -> S3Service {
+        let state: SharedS3State = Arc::new(RwLock::new(S3State::new("123456789012", "us-east-1")));
+        S3Service::new(state, Arc::new(DeliveryBus::new()))
+    }
+
+    fn seed_bucket(svc: &S3Service, name: &str) {
+        let mut state = svc.state.write();
+        state
+            .buckets
+            .insert(name.to_string(), S3Bucket::new(name, "us-east-1", "owner"));
+    }
+
+    fn seed_object(svc: &S3Service, bucket: &str, key: &str, body: &[u8]) {
+        let mut state = svc.state.write();
+        let b = state.buckets.get_mut(bucket).expect("bucket seeded");
+        let mut obj = S3Object {
+            key: key.to_string(),
+            body: fakecloud_persistence::BodyRef::Memory(Bytes::copy_from_slice(body)),
+            content_type: "application/octet-stream".to_string(),
+            etag: format!("\"{}\"", compute_md5(body)),
+            size: body.len() as u64,
+            last_modified: chrono::Utc::now(),
+            ..Default::default()
+        };
+        obj.metadata.insert("version".to_string(), "1".to_string());
+        b.objects.insert(key.to_string(), obj);
+    }
+
+    fn make_request(method: Method, path: &str, query: &[(&str, &str)], body: &[u8]) -> AwsRequest {
+        let segments: Vec<String> = path
+            .trim_start_matches('/')
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect();
+        let query_params: HashMap<String, String> = query
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect();
+        let raw_query = query
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join("&");
+        AwsRequest {
+            service: "s3".to_string(),
+            action: String::new(),
+            region: "us-east-1".to_string(),
+            account_id: "123456789012".to_string(),
+            request_id: "test-req".to_string(),
+            headers: HeaderMap::new(),
+            query_params,
+            body: Bytes::copy_from_slice(body),
+            path_segments: segments,
+            raw_path: path.to_string(),
+            raw_query,
+            method,
+            is_query_protocol: false,
+            access_key_id: None,
+            principal: None,
+        }
+    }
+
+    fn assert_aws_err(
+        result: Result<AwsResponse, AwsServiceError>,
+        expect_code: &str,
+    ) -> AwsServiceError {
+        let err = match result {
+            Ok(_) => panic!("expected error, got Ok response"),
+            Err(e) => e,
+        };
+        match &err {
+            AwsServiceError::AwsError { code, .. } => {
+                assert_eq!(code, expect_code, "wrong error code");
+            }
+            other => panic!("expected AwsError, got {other:?}"),
+        }
+        err
+    }
+
+    // ── Tags (service/tags.rs) ───────────────────────────────────────
+
+    #[test]
+    fn get_object_tagging_on_object_returns_xml_tagset() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+        seed_object(&svc, "b", "k", b"hello");
+        {
+            let mut state = svc.state.write();
+            let obj = state
+                .buckets
+                .get_mut("b")
+                .unwrap()
+                .objects
+                .get_mut("k")
+                .unwrap();
+            obj.tags.insert("env".to_string(), "prod".to_string());
+            obj.tags.insert("team".to_string(), "plat".to_string());
+        }
+
+        let req = make_request(Method::GET, "/b/k", &[("tagging", "")], b"");
+        let resp = svc.get_object_tagging(&req, "b", "k").unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("<Tag><Key>env</Key><Value>prod</Value></Tag>"));
+        assert!(body.contains("<Tag><Key>team</Key><Value>plat</Value></Tag>"));
+    }
+
+    #[test]
+    fn get_object_tagging_missing_bucket_errors() {
+        let svc = make_service();
+        let req = make_request(Method::GET, "/nope/k", &[("tagging", "")], b"");
+        assert_aws_err(svc.get_object_tagging(&req, "nope", "k"), "NoSuchBucket");
+    }
+
+    #[test]
+    fn put_object_tagging_rejects_aws_prefixed_key() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+        seed_object(&svc, "b", "k", b"x");
+
+        let xml = r#"<Tagging><TagSet><Tag><Key>aws:internal</Key><Value>v</Value></Tag></TagSet></Tagging>"#;
+        let req = make_request(Method::PUT, "/b/k", &[("tagging", "")], xml.as_bytes());
+        assert_aws_err(svc.put_object_tagging(&req, "b", "k"), "InvalidTag");
+    }
+
+    #[test]
+    fn put_object_tagging_rejects_too_many_tags() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+        seed_object(&svc, "b", "k", b"x");
+
+        let mut xml = String::from("<Tagging><TagSet>");
+        for i in 0..11 {
+            xml.push_str(&format!("<Tag><Key>k{i}</Key><Value>v</Value></Tag>"));
+        }
+        xml.push_str("</TagSet></Tagging>");
+        let req = make_request(Method::PUT, "/b/k", &[("tagging", "")], xml.as_bytes());
+        assert_aws_err(svc.put_object_tagging(&req, "b", "k"), "BadRequest");
+    }
+
+    #[test]
+    fn put_object_tagging_on_missing_object_errors() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+        let xml =
+            r#"<Tagging><TagSet><Tag><Key>env</Key><Value>prod</Value></Tag></TagSet></Tagging>"#;
+        let req = make_request(
+            Method::PUT,
+            "/b/missing",
+            &[("tagging", "")],
+            xml.as_bytes(),
+        );
+        assert_aws_err(svc.put_object_tagging(&req, "b", "missing"), "NoSuchKey");
+    }
+
+    #[test]
+    fn put_object_tagging_replaces_existing_tags() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+        seed_object(&svc, "b", "k", b"x");
+        {
+            let mut state = svc.state.write();
+            let obj = state
+                .buckets
+                .get_mut("b")
+                .unwrap()
+                .objects
+                .get_mut("k")
+                .unwrap();
+            obj.tags.insert("old".to_string(), "gone".to_string());
+        }
+
+        let xml =
+            r#"<Tagging><TagSet><Tag><Key>new</Key><Value>here</Value></Tag></TagSet></Tagging>"#;
+        let req = make_request(Method::PUT, "/b/k", &[("tagging", "")], xml.as_bytes());
+        let resp = svc.put_object_tagging(&req, "b", "k").unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+
+        let state = svc.state.read();
+        let tags = &state
+            .buckets
+            .get("b")
+            .unwrap()
+            .objects
+            .get("k")
+            .unwrap()
+            .tags;
+        assert_eq!(tags.get("new").map(String::as_str), Some("here"));
+        assert!(!tags.contains_key("old"));
+    }
+
+    #[test]
+    fn delete_object_tagging_clears_tags() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+        seed_object(&svc, "b", "k", b"x");
+        {
+            let mut state = svc.state.write();
+            let obj = state
+                .buckets
+                .get_mut("b")
+                .unwrap()
+                .objects
+                .get_mut("k")
+                .unwrap();
+            obj.tags.insert("env".to_string(), "prod".to_string());
+        }
+
+        let resp = svc.delete_object_tagging("b", "k").unwrap();
+        assert_eq!(resp.status, StatusCode::NO_CONTENT);
+        let state = svc.state.read();
+        assert!(state
+            .buckets
+            .get("b")
+            .unwrap()
+            .objects
+            .get("k")
+            .unwrap()
+            .tags
+            .is_empty());
+    }
+
+    #[test]
+    fn delete_object_tagging_missing_key_errors() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+        assert_aws_err(svc.delete_object_tagging("b", "gone"), "NoSuchKey");
+    }
+
+    // ── Multipart (service/multipart.rs) ─────────────────────────────
+
+    fn initiate_mpu(svc: &S3Service, bucket: &str, key: &str) -> String {
+        let req = make_request(
+            Method::POST,
+            &format!("/{bucket}/{key}"),
+            &[("uploads", "")],
+            b"",
+        );
+        let resp = svc.create_multipart_upload(&req, bucket, key).unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        let start = body.find("<UploadId>").unwrap() + "<UploadId>".len();
+        let end = body.find("</UploadId>").unwrap();
+        body[start..end].to_string()
+    }
+
+    #[test]
+    fn create_multipart_upload_records_upload_in_state() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+        let upload_id = initiate_mpu(&svc, "b", "big.bin");
+        let state = svc.state.read();
+        assert!(state
+            .buckets
+            .get("b")
+            .unwrap()
+            .multipart_uploads
+            .contains_key(&upload_id));
+    }
+
+    #[test]
+    fn create_multipart_upload_rejects_acl_and_grants_combo() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+        let mut req = make_request(Method::POST, "/b/k", &[("uploads", "")], b"");
+        req.headers.insert("x-amz-acl", "private".parse().unwrap());
+        req.headers
+            .insert("x-amz-grant-read", "id=owner".parse().unwrap());
+        assert_aws_err(
+            svc.create_multipart_upload(&req, "b", "k"),
+            "InvalidRequest",
+        );
+    }
+
+    #[test]
+    fn create_multipart_upload_missing_bucket_errors() {
+        let svc = make_service();
+        let req = make_request(Method::POST, "/ghost/k", &[("uploads", "")], b"");
+        assert_aws_err(
+            svc.create_multipart_upload(&req, "ghost", "k"),
+            "NoSuchBucket",
+        );
+    }
+
+    #[test]
+    fn upload_part_rejects_invalid_part_number() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+        let upload_id = initiate_mpu(&svc, "b", "k");
+
+        // part_number < 1 is masked as NoSuchUpload (matching AWS behavior).
+        let req = make_request(Method::PUT, "/b/k", &[("partNumber", "0")], b"body");
+        assert_aws_err(
+            svc.upload_part(&req, "b", "k", &upload_id, 0),
+            "NoSuchUpload",
+        );
+
+        // part_number > 10000 returns InvalidArgument.
+        let req2 = make_request(Method::PUT, "/b/k", &[("partNumber", "10001")], b"body");
+        assert_aws_err(
+            svc.upload_part(&req2, "b", "k", &upload_id, 10_001),
+            "InvalidArgument",
+        );
+    }
+
+    #[test]
+    fn upload_part_missing_upload_errors() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+        let req = make_request(Method::PUT, "/b/k", &[("partNumber", "1")], b"body");
+        assert_aws_err(
+            svc.upload_part(&req, "b", "k", "not-an-upload", 1),
+            "NoSuchUpload",
+        );
+    }
+
+    #[test]
+    fn mpu_full_lifecycle_creates_object() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+        let upload_id = initiate_mpu(&svc, "b", "k");
+
+        // Single-part upload — CompleteMultipartUpload's MIN_PART_SIZE check
+        // only applies to non-last parts, so a single part of any size works.
+        let part_body = b"hello";
+        let req = make_request(Method::PUT, "/b/k", &[("partNumber", "1")], part_body);
+        let resp = svc.upload_part(&req, "b", "k", &upload_id, 1).unwrap();
+        let etag = resp
+            .headers
+            .get("etag")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        let complete_xml = format!(
+            r#"<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{etag}</ETag></Part></CompleteMultipartUpload>"#,
+        );
+        let complete_req = make_request(
+            Method::POST,
+            "/b/k",
+            &[("uploadId", &upload_id)],
+            complete_xml.as_bytes(),
+        );
+        let resp = svc
+            .complete_multipart_upload(&complete_req, "b", "k", &upload_id)
+            .unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+
+        let state = svc.state.read();
+        let bucket = state.buckets.get("b").unwrap();
+        let obj = bucket.objects.get("k").expect("object materialized");
+        assert_eq!(obj.size, part_body.len() as u64);
+        assert!(!bucket.multipart_uploads.contains_key(&upload_id));
+    }
+
+    #[test]
+    fn mpu_complete_rejects_small_non_last_part() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+        let upload_id = initiate_mpu(&svc, "b", "k");
+
+        for n in 1..=2 {
+            let body = format!("part{n}");
+            let req = make_request(
+                Method::PUT,
+                "/b/k",
+                &[("partNumber", &n.to_string())],
+                body.as_bytes(),
+            );
+            svc.upload_part(&req, "b", "k", &upload_id, n).unwrap();
+        }
+
+        // Grab the etags from state.
+        let (etag1, etag2) = {
+            let state = svc.state.read();
+            let parts = &state
+                .buckets
+                .get("b")
+                .unwrap()
+                .multipart_uploads
+                .get(&upload_id)
+                .unwrap()
+                .parts;
+            (
+                parts.get(&1).unwrap().etag.clone(),
+                parts.get(&2).unwrap().etag.clone(),
+            )
+        };
+
+        let complete_xml = format!(
+            r#"<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{etag1}</ETag></Part><Part><PartNumber>2</PartNumber><ETag>{etag2}</ETag></Part></CompleteMultipartUpload>"#,
+        );
+        let complete_req = make_request(
+            Method::POST,
+            "/b/k",
+            &[("uploadId", &upload_id)],
+            complete_xml.as_bytes(),
+        );
+        assert_aws_err(
+            svc.complete_multipart_upload(&complete_req, "b", "k", &upload_id),
+            "EntityTooSmall",
+        );
+    }
+
+    #[test]
+    fn abort_multipart_upload_removes_upload() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+        let upload_id = initiate_mpu(&svc, "b", "k");
+        let resp = svc.abort_multipart_upload("b", "k", &upload_id).unwrap();
+        assert_eq!(resp.status, StatusCode::NO_CONTENT);
+        let state = svc.state.read();
+        assert!(!state
+            .buckets
+            .get("b")
+            .unwrap()
+            .multipart_uploads
+            .contains_key(&upload_id));
+    }
+
+    #[test]
+    fn abort_multipart_upload_unknown_id_errors() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+        assert_aws_err(
+            svc.abort_multipart_upload("b", "k", "no-such"),
+            "NoSuchUpload",
+        );
+    }
+
+    #[test]
+    fn list_multipart_uploads_includes_all_in_flight() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+        let u1 = initiate_mpu(&svc, "b", "a");
+        let u2 = initiate_mpu(&svc, "b", "b");
+        let resp = svc.list_multipart_uploads("b").unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains(&u1));
+        assert!(body.contains(&u2));
+    }
+
+    #[test]
+    fn list_parts_after_upload_returns_parts() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+        let upload_id = initiate_mpu(&svc, "b", "k");
+        let req = make_request(Method::PUT, "/b/k", &[("partNumber", "1")], b"data");
+        svc.upload_part(&req, "b", "k", &upload_id, 1).unwrap();
+
+        let list_req = make_request(Method::GET, "/b/k", &[("uploadId", &upload_id)], b"");
+        let resp = svc.list_parts(&list_req, "b", "k", &upload_id).unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("<PartNumber>1</PartNumber>"));
+    }
+
+    // ── Config (service/config.rs) ───────────────────────────────────
+
+    #[test]
+    fn bucket_encryption_put_get_delete_round_trip() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+
+        let xml = r#"<ServerSideEncryptionConfiguration><Rule><ApplyServerSideEncryptionByDefault><SSEAlgorithm>AES256</SSEAlgorithm></ApplyServerSideEncryptionByDefault></Rule></ServerSideEncryptionConfiguration>"#;
+        let req = make_request(Method::PUT, "/b", &[("encryption", "")], xml.as_bytes());
+        let resp = svc.put_bucket_encryption(&req, "b").unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+
+        // Normalized body should include BucketKeyEnabled=false.
+        let get = svc.get_bucket_encryption("b").unwrap();
+        let body = std::str::from_utf8(get.body.expect_bytes()).unwrap();
+        assert!(body.contains("AES256"));
+        assert!(body.contains("<BucketKeyEnabled>false</BucketKeyEnabled>"));
+
+        let del = svc.delete_bucket_encryption("b").unwrap();
+        assert_eq!(del.status, StatusCode::NO_CONTENT);
+        assert_aws_err(
+            svc.get_bucket_encryption("b"),
+            "ServerSideEncryptionConfigurationNotFoundError",
+        );
+    }
+
+    #[test]
+    fn bucket_policy_rejects_malformed_json() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+        let req = make_request(Method::PUT, "/b", &[("policy", "")], b"not-json");
+        assert_aws_err(svc.put_bucket_policy(&req, "b"), "MalformedPolicy");
+    }
+
+    #[test]
+    fn bucket_policy_put_get_delete_round_trip() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+
+        let body = br#"{"Version":"2012-10-17","Statement":[]}"#;
+        let put_req = make_request(Method::PUT, "/b", &[("policy", "")], body);
+        let resp = svc.put_bucket_policy(&put_req, "b").unwrap();
+        assert_eq!(resp.status, StatusCode::NO_CONTENT);
+
+        let get = svc.get_bucket_policy("b").unwrap();
+        assert_eq!(get.body.expect_bytes(), body);
+
+        let del = svc.delete_bucket_policy("b").unwrap();
+        assert_eq!(del.status, StatusCode::NO_CONTENT);
+        assert_aws_err(svc.get_bucket_policy("b"), "NoSuchBucketPolicy");
+    }
+
+    #[test]
+    fn bucket_lifecycle_empty_rules_clears_config() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+        {
+            let mut state = svc.state.write();
+            state.buckets.get_mut("b").unwrap().lifecycle_config = Some("placeholder".to_string());
+        }
+        let req = make_request(
+            Method::PUT,
+            "/b",
+            &[("lifecycle", "")],
+            b"<LifecycleConfiguration></LifecycleConfiguration>",
+        );
+        svc.put_bucket_lifecycle(&req, "b").unwrap();
+        let state = svc.state.read();
+        assert!(state.buckets.get("b").unwrap().lifecycle_config.is_none());
+    }
+
+    #[test]
+    fn bucket_cors_put_get_delete_round_trip() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+        let xml = br#"<CORSConfiguration><CORSRule><AllowedMethod>GET</AllowedMethod><AllowedOrigin>*</AllowedOrigin></CORSRule></CORSConfiguration>"#;
+        let req = make_request(Method::PUT, "/b", &[("cors", "")], xml);
+        svc.put_bucket_cors(&req, "b").unwrap();
+        let got = svc.get_bucket_cors("b").unwrap();
+        assert!(std::str::from_utf8(got.body.expect_bytes())
+            .unwrap()
+            .contains("CORSConfiguration"));
+        svc.delete_bucket_cors("b").unwrap();
+        assert_aws_err(svc.get_bucket_cors("b"), "NoSuchCORSConfiguration");
+    }
+
+    #[test]
+    fn bucket_versioning_put_and_get() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+        let req = make_request(
+            Method::PUT,
+            "/b",
+            &[("versioning", "")],
+            b"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>",
+        );
+        svc.put_bucket_versioning(&req, "b").unwrap();
+
+        let state = svc.state.read();
+        assert_eq!(
+            state.buckets.get("b").unwrap().versioning.as_deref(),
+            Some("Enabled")
+        );
+        drop(state);
+
+        let resp = svc.get_bucket_versioning("b").unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("<Status>Enabled</Status>"));
+    }
+
+    #[test]
+    fn bucket_tagging_put_get_delete_round_trip() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+        let req = make_request(
+            Method::PUT,
+            "/b",
+            &[("tagging", "")],
+            br#"<Tagging><TagSet><Tag><Key>env</Key><Value>prod</Value></Tag></TagSet></Tagging>"#,
+        );
+        svc.put_bucket_tagging(&req, "b").unwrap();
+        let get_req = make_request(Method::GET, "/b", &[("tagging", "")], b"");
+        let got = svc.get_bucket_tagging(&get_req, "b").unwrap();
+        assert!(std::str::from_utf8(got.body.expect_bytes())
+            .unwrap()
+            .contains("<Key>env</Key>"));
+        let del_req = make_request(Method::DELETE, "/b", &[("tagging", "")], b"");
+        svc.delete_bucket_tagging(&del_req, "b").unwrap();
+        assert_aws_err(svc.get_bucket_tagging(&get_req, "b"), "NoSuchTagSet");
+    }
+
+    #[test]
+    fn bucket_accelerate_rejects_invalid_status() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+        let req = make_request(
+            Method::PUT,
+            "/b",
+            &[("accelerate", "")],
+            b"<AccelerateConfiguration><Status>Bogus</Status></AccelerateConfiguration>",
+        );
+        assert_aws_err(svc.put_bucket_accelerate(&req, "b"), "MalformedXML");
+    }
+
+    #[test]
+    fn bucket_accelerate_enabled_is_persisted() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+        let req = make_request(
+            Method::PUT,
+            "/b",
+            &[("accelerate", "")],
+            b"<AccelerateConfiguration><Status>Enabled</Status></AccelerateConfiguration>",
+        );
+        svc.put_bucket_accelerate(&req, "b").unwrap();
+        let got = svc.get_bucket_accelerate("b").unwrap();
+        assert!(std::str::from_utf8(got.body.expect_bytes())
+            .unwrap()
+            .contains("<Status>Enabled</Status>"));
+    }
+
+    #[test]
+    fn public_access_block_put_get_delete_round_trip() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+        let body = br#"<PublicAccessBlockConfiguration><BlockPublicAcls>true</BlockPublicAcls><IgnorePublicAcls>true</IgnorePublicAcls><BlockPublicPolicy>true</BlockPublicPolicy><RestrictPublicBuckets>true</RestrictPublicBuckets></PublicAccessBlockConfiguration>"#;
+        let req = make_request(Method::PUT, "/b", &[("publicAccessBlock", "")], body);
+        svc.put_public_access_block(&req, "b").unwrap();
+        let got = svc.get_public_access_block("b").unwrap();
+        assert!(std::str::from_utf8(got.body.expect_bytes())
+            .unwrap()
+            .contains("<BlockPublicAcls>true</BlockPublicAcls>"));
+        svc.delete_public_access_block("b").unwrap();
+        assert_aws_err(
+            svc.get_public_access_block("b"),
+            "NoSuchPublicAccessBlockConfiguration",
+        );
+    }
+
+    #[test]
+    fn bucket_website_put_get_delete_round_trip() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+        let req = make_request(
+            Method::PUT,
+            "/b",
+            &[("website", "")],
+            b"<WebsiteConfiguration><IndexDocument><Suffix>index.html</Suffix></IndexDocument></WebsiteConfiguration>",
+        );
+        svc.put_bucket_website(&req, "b").unwrap();
+        let got = svc.get_bucket_website("b").unwrap();
+        assert!(std::str::from_utf8(got.body.expect_bytes())
+            .unwrap()
+            .contains("<Suffix>index.html</Suffix>"));
+        svc.delete_bucket_website("b").unwrap();
+        assert_aws_err(svc.get_bucket_website("b"), "NoSuchWebsiteConfiguration");
+    }
+
+    #[test]
+    fn bucket_replication_requires_existing_bucket() {
+        let svc = make_service();
+        let req = make_request(Method::PUT, "/nope", &[("replication", "")], b"<x/>");
+        assert_aws_err(svc.put_bucket_replication(&req, "nope"), "NoSuchBucket");
+    }
+
+    #[test]
+    fn bucket_ownership_controls_put_get_delete_round_trip() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+        let req = make_request(
+            Method::PUT,
+            "/b",
+            &[("ownershipControls", "")],
+            b"<OwnershipControls><Rule><ObjectOwnership>BucketOwnerEnforced</ObjectOwnership></Rule></OwnershipControls>",
+        );
+        svc.put_bucket_ownership_controls(&req, "b").unwrap();
+        let got = svc.get_bucket_ownership_controls("b").unwrap();
+        assert!(std::str::from_utf8(got.body.expect_bytes())
+            .unwrap()
+            .contains("BucketOwnerEnforced"));
+        svc.delete_bucket_ownership_controls("b").unwrap();
+        assert_aws_err(
+            svc.get_bucket_ownership_controls("b"),
+            "OwnershipControlsNotFoundError",
+        );
+    }
 }
