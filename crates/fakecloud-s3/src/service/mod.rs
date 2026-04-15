@@ -797,10 +797,14 @@ fn s3_detect_action(
                 _ => return None,
             });
         }
-        if has("attributes") {
+        // Identified by cubic on PR #399: both ?attributes and ?restore
+        // need method guards — otherwise e.g. GET /bucket/key?restore
+        // would be classified as RestoreObject (POST-only in AWS) and
+        // IAM-evaluated against s3:RestoreObject instead of s3:GetObject.
+        if has("attributes") && is_get {
             return Some("GetObjectAttributes");
         }
-        if has("restore") {
+        if has("restore") && is_post {
             return Some("RestoreObject");
         }
     }

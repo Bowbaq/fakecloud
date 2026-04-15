@@ -147,13 +147,13 @@ impl AwsService for SnsService {
             .find(|a| *a == request.action)?;
         let resource = match action {
             "CreateTopic" => {
-                // The soon-to-be-created topic ARN is derivable from the
-                // principal's account and the `Name` parameter.
-                let account = request
-                    .principal
-                    .as_ref()
-                    .map(|p| p.account_id.as_str())
-                    .unwrap_or(request.account_id.as_str());
+                // The to-be-created topic ARN is built from the same
+                // account id the handler uses (state.account_id via
+                // `Arn::new`), not `principal.account_id`, so policy
+                // evaluation and the actual ARN can't diverge even if
+                // the two sources ever drift (identified by cubic on
+                // PR #399).
+                let state = self.state.read();
                 let partition = if request.region.starts_with("cn-") {
                     "aws-cn"
                 } else if request.region.starts_with("us-gov-") {
@@ -162,7 +162,12 @@ impl AwsService for SnsService {
                     "aws"
                 };
                 param(request, "Name")
-                    .map(|n| format!("arn:{}:sns:{}:{}:{}", partition, request.region, account, n))
+                    .map(|n| {
+                        format!(
+                            "arn:{}:sns:{}:{}:{}",
+                            partition, request.region, state.account_id, n
+                        )
+                    })
                     .unwrap_or_else(|| "*".to_string())
             }
             "DeleteTopic"
@@ -173,11 +178,15 @@ impl AwsService for SnsService {
             | "PublishBatch"
             | "ListSubscriptionsByTopic"
             | "AddPermission"
-            | "RemovePermission" => param(request, "TopicArn").unwrap_or_else(|| "*".to_string()),
-            "Unsubscribe"
-            | "GetSubscriptionAttributes"
-            | "SetSubscriptionAttributes"
+            | "RemovePermission"
+            // ConfirmSubscription is keyed by TopicArn (identified by
+            // cubic on PR #399) — the Token in the request confirms a
+            // subscription to that topic; SubscriptionArn only exists
+            // after confirmation.
             | "ConfirmSubscription" => {
+                param(request, "TopicArn").unwrap_or_else(|| "*".to_string())
+            }
+            "Unsubscribe" | "GetSubscriptionAttributes" | "SetSubscriptionAttributes" => {
                 param(request, "SubscriptionArn").unwrap_or_else(|| "*".to_string())
             }
             "TagResource" | "UntagResource" | "ListTagsForResource" => {
