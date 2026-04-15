@@ -499,6 +499,66 @@ async fn s3_list_objects_v2_prefix_condition_key() {
     );
 }
 
+#[tokio::test]
+async fn sns_subscribe_protocol_condition_key() {
+    // Policy allows sns:Subscribe only when sns:Protocol == "https".
+    // HTTPS subscribe succeeds; email subscribe is denied.
+    let server = start_strict().await;
+    let boot = sdk_config_with(&server, "test", "test").await;
+    let sns_boot = aws_sdk_sns::Client::new(&boot);
+    let topic_arn = sns_boot
+        .create_topic()
+        .name("cond-topic")
+        .send()
+        .await
+        .unwrap()
+        .topic_arn()
+        .unwrap()
+        .to_string();
+
+    let (akid, secret) = bootstrap_user(&server, "snsproto").await;
+    attach_inline_policy(
+        &server,
+        "snsproto",
+        "AllowHttpsOnly",
+        &format!(
+            r#"{{"Version":"2012-10-17","Statement":[{{
+                "Effect":"Allow",
+                "Action":"sns:Subscribe",
+                "Resource":"{topic_arn}",
+                "Condition":{{"StringEquals":{{"sns:Protocol":"https"}}}}
+            }}]}}"#
+        ),
+    )
+    .await;
+
+    let cfg = sdk_config_with(&server, &akid, &secret).await;
+    let sns = aws_sdk_sns::Client::new(&cfg);
+
+    // Allowed: Protocol=https.
+    sns.subscribe()
+        .topic_arn(&topic_arn)
+        .protocol("https")
+        .endpoint("https://example.com/hook")
+        .send()
+        .await
+        .unwrap();
+
+    // Denied: Protocol=email fails the condition.
+    let err = sns
+        .subscribe()
+        .topic_arn(&topic_arn)
+        .protocol("email")
+        .endpoint("user@example.com")
+        .send()
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{err:?}").contains("AccessDenied"),
+        "expected AccessDenied for email protocol, got {err:?}"
+    );
+}
+
 // ======================================================================
 // Phase 2: Condition block evaluation
 //

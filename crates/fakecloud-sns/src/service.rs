@@ -281,6 +281,23 @@ impl AwsService for SnsService {
             resource,
         })
     }
+
+    fn iam_condition_keys_for(
+        &self,
+        request: &AwsRequest,
+        action: &fakecloud_core::auth::IamAction,
+    ) -> std::collections::BTreeMap<String, Vec<String>> {
+        let mut out = std::collections::BTreeMap::new();
+        if action.action == "Subscribe" {
+            if let Some(protocol) = param(request, "Protocol") {
+                out.insert("sns:protocol".to_string(), vec![protocol]);
+            }
+            if let Some(endpoint) = param(request, "Endpoint") {
+                out.insert("sns:endpoint".to_string(), vec![endpoint]);
+            }
+        }
+        out
+    }
 }
 
 const SNS_SUPPORTED_ACTIONS: &[&str] = &[
@@ -4060,6 +4077,63 @@ mod tests {
     }
 
     // --- Subscribe / Unsubscribe / ListSubscriptions / ListSubscriptionsByTopic ---
+
+    #[test]
+    fn iam_condition_keys_for_subscribe_populates_protocol_and_endpoint() {
+        let (svc, _state) = make_sns();
+        let req = sns_request(
+            "Subscribe",
+            vec![
+                ("TopicArn", "arn:aws:sns:us-east-1:123456789012:t"),
+                ("Protocol", "https"),
+                ("Endpoint", "https://example.com/hook"),
+            ],
+        );
+        let action = fakecloud_core::auth::IamAction {
+            service: "sns",
+            action: "Subscribe",
+            resource: "arn:aws:sns:us-east-1:123456789012:t".to_string(),
+        };
+        let keys = svc.iam_condition_keys_for(&req, &action);
+        assert_eq!(keys.get("sns:protocol"), Some(&vec!["https".to_string()]));
+        assert_eq!(
+            keys.get("sns:endpoint"),
+            Some(&vec!["https://example.com/hook".to_string()])
+        );
+    }
+
+    #[test]
+    fn iam_condition_keys_for_subscribe_omits_missing_fields() {
+        let (svc, _state) = make_sns();
+        let req = sns_request(
+            "Subscribe",
+            vec![("TopicArn", "arn:aws:sns:us-east-1:123456789012:t")],
+        );
+        let action = fakecloud_core::auth::IamAction {
+            service: "sns",
+            action: "Subscribe",
+            resource: "arn:aws:sns:us-east-1:123456789012:t".to_string(),
+        };
+        assert!(svc.iam_condition_keys_for(&req, &action).is_empty());
+    }
+
+    #[test]
+    fn iam_condition_keys_for_non_subscribe_is_empty() {
+        let (svc, _state) = make_sns();
+        let req = sns_request(
+            "Publish",
+            vec![
+                ("TopicArn", "arn:aws:sns:us-east-1:123456789012:t"),
+                ("Protocol", "https"),
+            ],
+        );
+        let action = fakecloud_core::auth::IamAction {
+            service: "sns",
+            action: "Publish",
+            resource: "arn:aws:sns:us-east-1:123456789012:t".to_string(),
+        };
+        assert!(svc.iam_condition_keys_for(&req, &action).is_empty());
+    }
 
     #[test]
     fn subscribe_creates_subscription() {
