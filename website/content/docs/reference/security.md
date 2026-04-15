@@ -122,7 +122,7 @@ Every operator supports the `...IfExists` suffix (missing key evaluates to `true
 
 ### Resource-based policies
 
-S3 bucket policies are fully wired into the evaluator. When enforcement is on and a bucket has a policy attached, dispatch fetches it and hands it to the evaluator alongside the caller's identity policies; the evaluator combines the two using AWS's cross-account semantics:
+S3 bucket policies, SNS topic policies, and Lambda function policies are fully wired into the evaluator. When enforcement is on and a resource has a policy attached, dispatch fetches it and hands it to the evaluator alongside the caller's identity policies; the evaluator combines the two using AWS's cross-account semantics:
 
 - **Explicit Deny** from either the identity policy or the resource policy wins immediately.
 - **Same-account** callers (principal account ID equals the resource's owning account): the request is allowed if the identity policy **or** the resource policy grants it.
@@ -130,7 +130,13 @@ S3 bucket policies are fully wired into the evaluator. When enforcement is on an
 
 The resource's owning account is parsed from the ARN; S3 ARNs have an empty account segment, so fakecloud falls back to the server's configured account ID (#381 multi-account alignment — the decision is per-ARN, not a global config knob).
 
-**Principal matching.** S3 bucket policies use `Principal` / `NotPrincipal` keys that identity policies don't. The evaluator supports the shapes S3 bucket policies actually use in practice:
+**Where policies come from.**
+
+- **S3 bucket policies** are stored by `PutBucketPolicy` and updated by `DeleteBucketPolicy`. `GetBucketPolicy` returns the raw JSON.
+- **SNS topic policies** are stored in the topic's `Policy` attribute by `SetTopicAttributes` (full document) or by `AddPermission` / `RemovePermission` (incremental statements). `GetTopicAttributes` returns them.
+- **Lambda function policies** are built incrementally by `AddPermission`: fakecloud composes a canonical `{"Version":"2012-10-17","Statement":[...]}` document from `(StatementId, Action, Principal, SourceArn?, SourceAccount?)` so the existing evaluator reads it without a Lambda-specific fork. `SourceArn` becomes an `ArnLike` `Condition` on `aws:SourceArn`, and `SourceAccount` becomes a `StringEquals` `Condition` on `aws:SourceAccount` — both are already in the Phase 2 operator set. `GetPolicy` returns the composed document; `RemovePermission` strips the matching `Sid` and leaves an empty `Statement` array behind, matching AWS.
+
+**Principal matching.** Resource policies use `Principal` / `NotPrincipal` keys that identity policies don't. The evaluator supports the shapes resource policies actually use in practice:
 
 | Shape | Meaning |
 | --- | --- |
@@ -140,7 +146,7 @@ The resource's owning account is parsed from the ARN; S3 ARNs have an empty acco
 | `"Principal": {"AWS": "ACCOUNT"}` | 12-digit account ID shorthand, equivalent to `...:root` |
 | `"Principal": {"AWS": "arn:aws:iam::ACCOUNT:user/alice"}` | Exact principal ARN match |
 | `"Principal": {"AWS": [...]}` | List form — any entry matches |
-| `"Principal": {"Service": "lambda.amazonaws.com"}` | Matches an assumed-role principal whose ARN contains the service host |
+| `"Principal": {"Service": "events.amazonaws.com"}` | Matches an assumed-role principal whose ARN contains the service host (covers EventBridge -> SNS and similar service-linked role scenarios) |
 
 `NotPrincipal` is **not** evaluated — statements carrying it are skipped entirely with a `fakecloud::iam::audit` debug log and never silently grant. `Principal` types other than `AWS` / `Service` (`Federated`, `CanonicalUser`) fall through to "doesn't match" for the same reason.
 
@@ -149,12 +155,12 @@ The resource's owning account is parsed from the ARN; S3 ARNs have an empty acco
 ### Not implemented
 
 - Service-specific condition keys (`s3:prefix`, `s3:delimiter`, `sqs:MessageAttribute.*`, …). The `service_keys` plumbing is already in place; per-service population lands in a follow-up batch.
-- Resource-based policies on services other than S3: **SNS topic policies**, **KMS key policies**, **Lambda resource policies**. Each has a distinct storage model and deserves its own wiring — separate future rollouts.
+- **KMS key policies.** KMS has a deny-by-default semantic (no policy means nothing is allowed, including the account root) that is materially different from S3 / SNS / Lambda's allow-on-match-or-fall-through and deserves its own migration story.
 - Permission boundaries.
 - Service control policies (SCPs).
 - Session policies passed to `AssumeRole`.
 - ABAC / tag conditions (`aws:ResourceTag`, `aws:RequestTag`, `aws:TagKeys`).
-- `NotPrincipal` (S3 bucket policies carrying it are skipped, not evaluated).
+- `NotPrincipal` (carrying it on a statement causes the statement to be skipped, never silently granted).
 
 If you need any of these for your test scenarios, **use real AWS**. fakecloud is a test tool, not a full IAM simulator.
 
