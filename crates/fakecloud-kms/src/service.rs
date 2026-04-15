@@ -1,18 +1,22 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use base64::Engine;
 use chrono::Utc;
 use http::StatusCode;
 use serde_json::{json, Value};
+use tokio::sync::Mutex as AsyncMutex;
 use uuid::Uuid;
 
 use fakecloud_aws::arn::Arn;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
 use fakecloud_core::validation::*;
+use fakecloud_persistence::SnapshotStore;
 
 use crate::state::{
-    CustomKeyStore, KeyRotation, KmsAlias, KmsGrant, KmsKey, KmsState, SharedKmsState,
+    CustomKeyStore, KeyRotation, KmsAlias, KmsGrant, KmsKey, KmsSnapshot, KmsState, SharedKmsState,
+    KMS_SNAPSHOT_SCHEMA_VERSION,
 };
 
 const FAKE_ENVELOPE_PREFIX: &str = "fakecloud-kms:";
@@ -136,13 +140,83 @@ const VALID_SIGNING_ALGORITHMS: &[&str] = &[
     "ECDSA_SHA_512",
 ];
 
+/// Actions that mutate KMS state.
+fn is_mutating_action(action: &str) -> bool {
+    matches!(
+        action,
+        "CreateKey"
+            | "EnableKey"
+            | "DisableKey"
+            | "ScheduleKeyDeletion"
+            | "CancelKeyDeletion"
+            | "CreateAlias"
+            | "DeleteAlias"
+            | "UpdateAlias"
+            | "TagResource"
+            | "UntagResource"
+            | "UpdateKeyDescription"
+            | "PutKeyPolicy"
+            | "EnableKeyRotation"
+            | "DisableKeyRotation"
+            | "RotateKeyOnDemand"
+            | "CreateGrant"
+            | "RevokeGrant"
+            | "RetireGrant"
+            | "ReplicateKey"
+            | "ImportKeyMaterial"
+            | "DeleteImportedKeyMaterial"
+            | "UpdatePrimaryRegion"
+            | "CreateCustomKeyStore"
+            | "DeleteCustomKeyStore"
+            | "ConnectCustomKeyStore"
+            | "DisconnectCustomKeyStore"
+            | "UpdateCustomKeyStore"
+    )
+}
+
 pub struct KmsService {
     state: SharedKmsState,
+    snapshot_store: Option<Arc<dyn SnapshotStore>>,
+    snapshot_lock: Arc<AsyncMutex<()>>,
 }
 
 impl KmsService {
     pub fn new(state: SharedKmsState) -> Self {
-        Self { state }
+        Self {
+            state,
+            snapshot_store: None,
+            snapshot_lock: Arc::new(AsyncMutex::new(())),
+        }
+    }
+
+    pub fn with_snapshot_store(mut self, store: Arc<dyn SnapshotStore>) -> Self {
+        self.snapshot_store = Some(store);
+        self
+    }
+
+    /// Persist current state as a snapshot. Held across the
+    /// clone-serialize-write sequence to prevent stale-last writes,
+    /// with serde + file I/O offloaded to the blocking pool.
+    async fn save_snapshot(&self) {
+        let Some(store) = self.snapshot_store.clone() else {
+            return;
+        };
+        let _guard = self.snapshot_lock.lock().await;
+        let snapshot = KmsSnapshot {
+            schema_version: KMS_SNAPSHOT_SCHEMA_VERSION,
+            state: self.state.read().clone(),
+        };
+        let join = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            let bytes = serde_json::to_vec(&snapshot)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+            store.save(&bytes)
+        })
+        .await;
+        match join {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => tracing::error!(%err, "failed to write kms snapshot"),
+            Err(err) => tracing::error!(%err, "kms snapshot task panicked"),
+        }
     }
 }
 
@@ -153,7 +227,8 @@ impl AwsService for KmsService {
     }
 
     async fn handle(&self, req: AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        match req.action.as_str() {
+        let mutates = is_mutating_action(req.action.as_str());
+        let result = match req.action.as_str() {
             "CreateKey" => self.create_key(&req),
             "DescribeKey" => self.describe_key(&req),
             "ListKeys" => self.list_keys(&req),
@@ -210,7 +285,11 @@ impl AwsService for KmsService {
             "DisconnectCustomKeyStore" => self.disconnect_custom_key_store(&req),
             "UpdateCustomKeyStore" => self.update_custom_key_store(&req),
             _ => Err(AwsServiceError::action_not_implemented("kms", &req.action)),
+        };
+        if mutates && matches!(result.as_ref(), Ok(resp) if resp.status.is_success()) {
+            self.save_snapshot().await;
         }
+        result
     }
 
     fn supported_actions(&self) -> &[&str] {

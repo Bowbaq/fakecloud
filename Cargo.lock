@@ -2302,12 +2302,15 @@ dependencies = [
  "chrono",
  "fakecloud-aws",
  "fakecloud-core",
+ "fakecloud-persistence",
  "http 1.4.0",
  "parking_lot",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.18",
+ "tokio",
+ "tracing",
  "uuid",
 ]
 
