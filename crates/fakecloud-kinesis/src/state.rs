@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub type SharedKinesisState = Arc<RwLock<KinesisState>>;
 
+#[derive(Clone, Serialize, Deserialize)]
 pub struct KinesisState {
     pub account_id: String,
     pub region: String,
@@ -158,3 +159,13 @@ impl KinesisState {
             .insert(format!("{mapping_uuid}:{shard_id}"), offset);
     }
 }
+
+/// On-disk snapshot envelope for Kinesis state. Versioned so format
+/// changes fail loudly on upgrade.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct KinesisSnapshot {
+    pub schema_version: u32,
+    pub state: KinesisState,
+}
+
+pub const KINESIS_SNAPSHOT_SCHEMA_VERSION: u32 = 1;

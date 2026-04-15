@@ -2283,11 +2283,13 @@ dependencies = [
  "bytes",
  "chrono",
  "fakecloud-core",
+ "fakecloud-persistence",
  "http 1.4.0",
  "md-5 0.10.6",
  "parking_lot",
  "serde",
  "serde_json",
+ "tokio",
  "tracing",
 ]
 

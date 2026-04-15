@@ -392,7 +392,6 @@ async fn main() {
             "kms",
             "ses",
             "cognito-idp",
-            "kinesis",
             "rds",
             "elasticache",
             "states",
@@ -776,7 +775,58 @@ async fn main() {
     registry.register(Arc::new(
         CognitoService::new(cognito_state.clone()).with_delivery(cognito_delivery_ctx),
     ));
-    registry.register(Arc::new(KinesisService::new(kinesis_state.clone())));
+    let kinesis_snapshot_store: Option<Arc<dyn fakecloud_persistence::SnapshotStore>> =
+        if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
+            let data_path = persistence_config
+                .data_path
+                .as_ref()
+                .expect("validated above")
+                .clone();
+            let path = data_path.join("kinesis").join("snapshot.json");
+            let store = fakecloud_persistence::DiskSnapshotStore::new(path);
+            match fakecloud_persistence::SnapshotStore::load(&store) {
+                Ok(Some(bytes)) => {
+                    match serde_json::from_slice::<fakecloud_kinesis::state::KinesisSnapshot>(
+                        &bytes,
+                    ) {
+                        Ok(snapshot) => {
+                            if snapshot.schema_version
+                                != fakecloud_kinesis::state::KINESIS_SNAPSHOT_SCHEMA_VERSION
+                            {
+                                fatal_exit(format_args!(
+                                    "kinesis persistence schema mismatch: on-disk={}, expected={}",
+                                    snapshot.schema_version,
+                                    fakecloud_kinesis::state::KINESIS_SNAPSHOT_SCHEMA_VERSION,
+                                ));
+                            }
+                            let stream_count = snapshot.state.streams.len();
+                            *kinesis_state.write() = snapshot.state;
+                            tracing::info!(
+                                streams = stream_count,
+                                "loaded kinesis persistence snapshot",
+                            );
+                        }
+                        Err(err) => fatal_exit(format_args!(
+                            "failed to parse kinesis persistence snapshot: {err}"
+                        )),
+                    }
+                }
+                Ok(None) => {
+                    tracing::info!("no kinesis persistence snapshot found; starting empty");
+                }
+                Err(err) => fatal_exit(format_args!(
+                    "failed to read kinesis persistence snapshot: {err}"
+                )),
+            }
+            Some(Arc::new(store) as Arc<dyn fakecloud_persistence::SnapshotStore>)
+        } else {
+            None
+        };
+    let mut kinesis_service = KinesisService::new(kinesis_state.clone());
+    if let Some(store) = kinesis_snapshot_store {
+        kinesis_service = kinesis_service.with_snapshot_store(store);
+    }
+    registry.register(Arc::new(kinesis_service));
     let mut rds_service = RdsService::new(rds_state);
     if let Some(ref rt) = rds_runtime {
         rds_service = rds_service.with_runtime(rt.clone());

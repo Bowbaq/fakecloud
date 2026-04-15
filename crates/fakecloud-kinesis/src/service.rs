@@ -1,17 +1,22 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use base64::Engine;
 use chrono::Utc;
 use http::StatusCode;
 use md5::{Digest, Md5};
 use serde_json::{json, Value};
+use tokio::sync::Mutex as AsyncMutex;
 
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
 use fakecloud_core::validation::{
     validate_optional_json_range, validate_optional_string_length, validate_string_length,
 };
+use fakecloud_persistence::SnapshotStore;
 
 use crate::state::{
-    KinesisConsumer, KinesisRecord, KinesisShard, KinesisStream, SharedKinesisState,
+    KinesisConsumer, KinesisRecord, KinesisShard, KinesisSnapshot, KinesisStream,
+    SharedKinesisState, KINESIS_SNAPSHOT_SCHEMA_VERSION,
 };
 
 /// Locate the index of an open shard by id, returning the caller-friendly
@@ -83,13 +88,85 @@ const SUPPORTED_ACTIONS: &[&str] = &[
     "UpdateStreamWarmThroughput",
 ];
 
+/// Actions that mutate Kinesis state. Note: GetShardIterator also
+/// writes (it records a lease in `iterators`), and GetRecords advances
+/// that lease, so both are treated as mutating.
+fn is_mutating_action(action: &str) -> bool {
+    matches!(
+        action,
+        "CreateStream"
+            | "DeleteStream"
+            | "PutRecord"
+            | "PutRecords"
+            | "AddTagsToStream"
+            | "RemoveTagsFromStream"
+            | "IncreaseStreamRetentionPeriod"
+            | "DecreaseStreamRetentionPeriod"
+            | "TagResource"
+            | "UntagResource"
+            | "PutResourcePolicy"
+            | "DeleteResourcePolicy"
+            | "StartStreamEncryption"
+            | "StopStreamEncryption"
+            | "EnableEnhancedMonitoring"
+            | "DisableEnhancedMonitoring"
+            | "UpdateAccountSettings"
+            | "UpdateStreamMode"
+            | "UpdateStreamWarmThroughput"
+            | "UpdateMaxRecordSize"
+            | "RegisterStreamConsumer"
+            | "DeregisterStreamConsumer"
+            | "MergeShards"
+            | "SplitShard"
+            | "UpdateShardCount"
+            | "GetShardIterator"
+            | "GetRecords"
+    )
+}
+
 pub struct KinesisService {
     state: SharedKinesisState,
+    snapshot_store: Option<Arc<dyn SnapshotStore>>,
+    snapshot_lock: Arc<AsyncMutex<()>>,
 }
 
 impl KinesisService {
     pub fn new(state: SharedKinesisState) -> Self {
-        Self { state }
+        Self {
+            state,
+            snapshot_store: None,
+            snapshot_lock: Arc::new(AsyncMutex::new(())),
+        }
+    }
+
+    pub fn with_snapshot_store(mut self, store: Arc<dyn SnapshotStore>) -> Self {
+        self.snapshot_store = Some(store);
+        self
+    }
+
+    /// Persist current state as a snapshot. Held across the
+    /// clone-serialize-write sequence to prevent stale-last writes,
+    /// with serde + file I/O offloaded to the blocking pool.
+    async fn save_snapshot(&self) {
+        let Some(store) = self.snapshot_store.clone() else {
+            return;
+        };
+        let _guard = self.snapshot_lock.lock().await;
+        let snapshot = KinesisSnapshot {
+            schema_version: KINESIS_SNAPSHOT_SCHEMA_VERSION,
+            state: self.state.read().clone(),
+        };
+        let join = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            let bytes = serde_json::to_vec(&snapshot)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+            store.save(&bytes)
+        })
+        .await;
+        match join {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => tracing::error!(%err, "failed to write kinesis snapshot"),
+            Err(err) => tracing::error!(%err, "kinesis snapshot task panicked"),
+        }
     }
 }
 
@@ -100,7 +177,8 @@ impl AwsService for KinesisService {
     }
 
     async fn handle(&self, request: AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        match request.action.as_str() {
+        let mutates = is_mutating_action(request.action.as_str());
+        let result = match request.action.as_str() {
             "CreateStream" => self.create_stream(&request),
             "DescribeStream" => self.describe_stream(&request),
             "DescribeStreamSummary" => self.describe_stream_summary(&request),
@@ -144,7 +222,11 @@ impl AwsService for KinesisService {
                 self.service_name(),
                 &request.action,
             )),
+        };
+        if mutates && matches!(result.as_ref(), Ok(resp) if resp.status.is_success()) {
+            self.save_snapshot().await;
         }
+        result
     }
 
     fn supported_actions(&self) -> &[&str] {
