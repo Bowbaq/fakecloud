@@ -4,10 +4,13 @@ use serde_json::{json, Value};
 
 use std::sync::Arc;
 
+use tokio::sync::Mutex as AsyncMutex;
+
 use fakecloud_core::delivery::DeliveryBus;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
+use fakecloud_persistence::SnapshotStore;
 
-use crate::state::SharedLogsState;
+use crate::state::{LogsSnapshot, SharedLogsState, LOGS_SNAPSHOT_SCHEMA_VERSION};
 
 mod anomaly;
 mod deliveries;
@@ -21,9 +24,70 @@ mod queries;
 mod streams;
 mod tags;
 
+/// CloudWatch Logs actions that do NOT mutate state. Everything else
+/// triggers a snapshot save on HTTP 2xx.
+fn is_read_only_action(action: &str) -> bool {
+    matches!(
+        action,
+        "DescribeLogGroups"
+            | "DescribeLogStreams"
+            | "GetLogEvents"
+            | "FilterLogEvents"
+            | "ListTagsLogGroup"
+            | "ListTagsForResource"
+            | "DescribeSubscriptionFilters"
+            | "DescribeMetricFilters"
+            | "DescribeResourcePolicies"
+            | "DescribeDestinations"
+            | "GetQueryResults"
+            | "DescribeQueries"
+            | "DescribeExportTasks"
+            | "GetDeliveryDestination"
+            | "DescribeDeliveryDestinations"
+            | "GetDeliveryDestinationPolicy"
+            | "GetDeliverySource"
+            | "DescribeDeliverySources"
+            | "GetDelivery"
+            | "DescribeDeliveries"
+            | "DescribeQueryDefinitions"
+            | "DescribeAccountPolicies"
+            | "GetDataProtectionPolicy"
+            | "DescribeIndexPolicies"
+            | "DescribeFieldIndexes"
+            | "GetTransformer"
+            | "TestTransformer"
+            | "GetLogAnomalyDetector"
+            | "ListLogAnomalyDetectors"
+            | "GetLogGroupFields"
+            | "TestMetricFilter"
+            | "GetLogRecord"
+            | "ListAnomalies"
+            | "DescribeImportTasks"
+            | "DescribeImportTaskBatches"
+            | "GetIntegration"
+            | "ListIntegrations"
+            | "GetLookupTable"
+            | "DescribeLookupTables"
+            | "GetScheduledQuery"
+            | "GetScheduledQueryHistory"
+            | "ListScheduledQueries"
+            | "StartLiveTail"
+            | "ListLogGroups"
+            | "ListLogGroupsForQuery"
+            | "ListAggregateLogGroupSummaries"
+            | "GetLogObject"
+            | "GetLogFields"
+            | "ListSourcesForS3TableIntegration"
+            | "DescribeConfigurationTemplates"
+            | "GetExportedData"
+    )
+}
+
 pub struct LogsService {
     state: SharedLogsState,
     delivery_bus: Arc<DeliveryBus>,
+    snapshot_store: Option<Arc<dyn SnapshotStore>>,
+    snapshot_lock: Arc<AsyncMutex<()>>,
 }
 
 impl LogsService {
@@ -31,6 +95,38 @@ impl LogsService {
         Self {
             state,
             delivery_bus,
+            snapshot_store: None,
+            snapshot_lock: Arc::new(AsyncMutex::new(())),
+        }
+    }
+
+    pub fn with_snapshot_store(mut self, store: Arc<dyn SnapshotStore>) -> Self {
+        self.snapshot_store = Some(store);
+        self
+    }
+
+    /// Persist current state as a snapshot. Held across the
+    /// clone-serialize-write sequence to prevent stale-last writes,
+    /// with serde + file I/O offloaded to the blocking pool.
+    async fn save_snapshot(&self) {
+        let Some(store) = self.snapshot_store.clone() else {
+            return;
+        };
+        let _guard = self.snapshot_lock.lock().await;
+        let snapshot = LogsSnapshot {
+            schema_version: LOGS_SNAPSHOT_SCHEMA_VERSION,
+            state: self.state.read().clone(),
+        };
+        let join = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            let bytes = serde_json::to_vec(&snapshot)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+            store.save(&bytes)
+        })
+        .await;
+        match join {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => tracing::error!(%err, "failed to write logs snapshot"),
+            Err(err) => tracing::error!(%err, "logs snapshot task panicked"),
         }
     }
 }
@@ -42,7 +138,8 @@ impl AwsService for LogsService {
     }
 
     async fn handle(&self, req: AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        match req.action.as_str() {
+        let mutates = !is_read_only_action(req.action.as_str());
+        let result = match req.action.as_str() {
             "CreateLogGroup" => self.create_log_group(&req),
             "DeleteLogGroup" => self.delete_log_group(&req),
             "DescribeLogGroups" => self.describe_log_groups(&req),
@@ -163,7 +260,11 @@ impl AwsService for LogsService {
             // Internal action for testing export storage
             "GetExportedData" => self.get_exported_data(&req),
             _ => Err(AwsServiceError::action_not_implemented("logs", &req.action)),
+        };
+        if mutates && matches!(result.as_ref(), Ok(resp) if resp.status.is_success()) {
+            self.save_snapshot().await;
         }
+        result
     }
 
     fn supported_actions(&self) -> &[&str] {
