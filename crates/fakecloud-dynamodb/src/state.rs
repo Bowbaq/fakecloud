@@ -1,8 +1,13 @@
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
+
+fn empty_stream_records() -> Arc<RwLock<Vec<StreamRecord>>> {
+    Arc::new(RwLock::new(Vec::new()))
+}
 
 /// A single DynamoDB attribute value (tagged union matching the AWS wire format).
 /// AWS sends attribute values as `{"S": "hello"}`, `{"N": "42"}`, etc.
@@ -19,25 +24,25 @@ pub fn attribute_type_and_value(av: &Value) -> Option<(&str, &Value)> {
     Some((k.as_str(), v))
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeySchemaElement {
     pub attribute_name: String,
     pub key_type: String, // HASH or RANGE
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttributeDefinition {
     pub attribute_name: String,
     pub attribute_type: String, // S, N, B
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProvisionedThroughput {
     pub read_capacity_units: i64,
     pub write_capacity_units: i64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlobalSecondaryIndex {
     pub index_name: String,
     pub key_schema: Vec<KeySchemaElement>,
@@ -45,20 +50,20 @@ pub struct GlobalSecondaryIndex {
     pub provisioned_throughput: Option<ProvisionedThroughput>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalSecondaryIndex {
     pub index_name: String,
     pub key_schema: Vec<KeySchemaElement>,
     pub projection: Projection,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Projection {
     pub projection_type: String, // ALL, KEYS_ONLY, INCLUDE
     pub non_key_attributes: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DynamoTable {
     pub name: String,
     pub arn: String,
@@ -90,7 +95,9 @@ pub struct DynamoTable {
     pub stream_enabled: bool,
     pub stream_view_type: Option<String>, // KEYS_ONLY, NEW_IMAGE, OLD_IMAGE, NEW_AND_OLD_IMAGES
     pub stream_arn: Option<String>,
-    /// Stream records (retained for 24 hours)
+    /// Stream records (retained for 24 hours). Not persisted: stream
+    /// records are ephemeral and would be garbage anyway across restarts.
+    #[serde(skip, default = "empty_stream_records")]
     pub stream_records: Arc<RwLock<Vec<StreamRecord>>>,
     /// Server-side encryption type: AES256 (owned) or KMS
     pub sse_type: Option<String>,
@@ -102,7 +109,7 @@ pub struct DynamoTable {
     pub deletion_protection_enabled: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamRecord {
     pub event_id: String,
     pub event_name: String, // INSERT, MODIFY, REMOVE
@@ -114,7 +121,7 @@ pub struct StreamRecord {
     pub timestamp: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DynamoDbStreamRecord {
     pub keys: HashMap<String, AttributeValue>,
     pub new_image: Option<HashMap<String, AttributeValue>>,
@@ -124,14 +131,14 @@ pub struct DynamoDbStreamRecord {
     pub stream_view_type: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KinesisDestination {
     pub stream_arn: String,
     pub destination_status: String,
     pub approximate_creation_date_time_precision: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackupDescription {
     pub backup_arn: String,
     pub backup_name: String,
@@ -150,7 +157,7 @@ pub struct BackupDescription {
     pub items: Vec<HashMap<String, AttributeValue>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlobalTableDescription {
     pub global_table_name: String,
     pub global_table_arn: String,
@@ -159,13 +166,13 @@ pub struct GlobalTableDescription {
     pub replication_group: Vec<ReplicaDescription>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReplicaDescription {
     pub region_name: String,
     pub replica_status: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportDescription {
     pub export_arn: String,
     pub export_status: String,
@@ -180,7 +187,7 @@ pub struct ExportDescription {
     pub billed_size_bytes: i64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImportDescription {
     pub import_arn: String,
     pub import_status: String,
@@ -333,6 +340,7 @@ impl DynamoTable {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DynamoDbState {
     pub account_id: String,
     pub region: String,
@@ -342,6 +350,17 @@ pub struct DynamoDbState {
     pub exports: HashMap<String, ExportDescription>,
     pub imports: HashMap<String, ImportDescription>,
 }
+
+/// On-disk snapshot envelope. The payload is the full [`DynamoDbState`];
+/// `schema_version` lets us evolve the format without accidentally loading
+/// an incompatible dump on upgrade.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DynamoDbSnapshot {
+    pub schema_version: u32,
+    pub state: DynamoDbState,
+}
+
+pub const DYNAMODB_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
 
 impl DynamoDbState {
     pub fn new(account_id: &str, region: &str) -> Self {

@@ -16,13 +16,13 @@ use serde_json::{json, Value};
 use fakecloud_core::delivery::DeliveryBus;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
 
-use fakecloud_persistence::S3Store;
+use fakecloud_persistence::{S3Store, SnapshotStore};
 use fakecloud_s3::state::SharedS3State;
 
 use crate::state::{
-    attribute_type_and_value, AttributeDefinition, AttributeValue, DynamoTable,
+    attribute_type_and_value, AttributeDefinition, AttributeValue, DynamoDbSnapshot, DynamoTable,
     GlobalSecondaryIndex, KeySchemaElement, KinesisDestination, LocalSecondaryIndex, Projection,
-    ProvisionedThroughput, SharedDynamoDbState,
+    ProvisionedThroughput, SharedDynamoDbState, DYNAMODB_SNAPSHOT_SCHEMA_VERSION,
 };
 
 /// Minimal subset of a ``DynamoTable`` that Kinesis streaming delivery needs.
@@ -42,6 +42,7 @@ pub struct DynamoDbService {
     pub(crate) s3_state: Option<SharedS3State>,
     pub(crate) s3_store: Option<Arc<dyn S3Store>>,
     delivery: Option<Arc<DeliveryBus>>,
+    snapshot_store: Option<Arc<dyn SnapshotStore>>,
 }
 
 impl DynamoDbService {
@@ -51,6 +52,7 @@ impl DynamoDbService {
             s3_state: None,
             s3_store: None,
             delivery: None,
+            snapshot_store: None,
         }
     }
 
@@ -67,6 +69,34 @@ impl DynamoDbService {
     pub fn with_delivery(mut self, delivery: Arc<DeliveryBus>) -> Self {
         self.delivery = Some(delivery);
         self
+    }
+
+    pub fn with_snapshot_store(mut self, store: Arc<dyn SnapshotStore>) -> Self {
+        self.snapshot_store = Some(store);
+        self
+    }
+
+    /// Persist the current in-memory state as a snapshot. Called after
+    /// every state-mutating action. A noop when no snapshot store is
+    /// configured (i.e. `StorageMode::Memory`).
+    fn save_snapshot(&self) {
+        let Some(store) = self.snapshot_store.as_ref() else {
+            return;
+        };
+        let snapshot = DynamoDbSnapshot {
+            schema_version: DYNAMODB_SNAPSHOT_SCHEMA_VERSION,
+            state: self.state.read().clone(),
+        };
+        let bytes = match serde_json::to_vec(&snapshot) {
+            Ok(b) => b,
+            Err(err) => {
+                tracing::error!(%err, "failed to serialize dynamodb snapshot");
+                return;
+            }
+        };
+        if let Err(err) = store.save(&bytes) {
+            tracing::error!(%err, "failed to write dynamodb snapshot");
+        }
     }
 
     fn kinesis_target(table: &DynamoTable) -> Option<KinesisDeliveryTarget> {
@@ -163,7 +193,8 @@ impl AwsService for DynamoDbService {
     }
 
     async fn handle(&self, req: AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        match req.action.as_str() {
+        let mutates = is_mutating_action(req.action.as_str());
+        let result = match req.action.as_str() {
             "CreateTable" => self.create_table(&req),
             "DeleteTable" => self.delete_table(&req),
             "DescribeTable" => self.describe_table(&req),
@@ -235,7 +266,11 @@ impl AwsService for DynamoDbService {
                 "dynamodb",
                 &req.action,
             )),
+        };
+        if mutates && matches!(result.as_ref(), Ok(resp) if resp.status.is_success()) {
+            self.save_snapshot();
         }
+        result
     }
 
     fn supported_actions(&self) -> &[&str] {
@@ -300,6 +335,45 @@ impl AwsService for DynamoDbService {
         ]
     }
 }
+/// Actions that mutate DynamoDB state and therefore require a snapshot
+/// write after success. Kept in sync with the dispatch table above.
+fn is_mutating_action(action: &str) -> bool {
+    matches!(
+        action,
+        "CreateTable"
+            | "DeleteTable"
+            | "UpdateTable"
+            | "PutItem"
+            | "DeleteItem"
+            | "UpdateItem"
+            | "BatchWriteItem"
+            | "TagResource"
+            | "UntagResource"
+            | "TransactWriteItems"
+            | "ExecuteStatement"
+            | "BatchExecuteStatement"
+            | "ExecuteTransaction"
+            | "UpdateTimeToLive"
+            | "PutResourcePolicy"
+            | "DeleteResourcePolicy"
+            | "CreateBackup"
+            | "DeleteBackup"
+            | "RestoreTableFromBackup"
+            | "RestoreTableToPointInTime"
+            | "UpdateContinuousBackups"
+            | "CreateGlobalTable"
+            | "UpdateGlobalTable"
+            | "UpdateGlobalTableSettings"
+            | "UpdateTableReplicaAutoScaling"
+            | "EnableKinesisStreamingDestination"
+            | "DisableKinesisStreamingDestination"
+            | "UpdateKinesisStreamingDestination"
+            | "UpdateContributorInsights"
+            | "ExportTableToPointInTime"
+            | "ImportTable"
+    )
+}
+
 // ── Helper functions ────────────────────────────────────────────────────
 
 fn require_str<'a>(body: &'a Value, field: &str) -> Result<&'a str, AwsServiceError> {
