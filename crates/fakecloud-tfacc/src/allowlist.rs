@@ -198,11 +198,6 @@ pub const SERVICES: &[Service] = &[
             // --- gap: on-demand throughput attribute ---
             "TestAccDynamoDBTable_onDemandThroughput",
             "TestAccDynamoDBTable_gsiOnDemandThroughput",
-            // --- gap: billing-mode transitions with GSI ---
-            "TestAccDynamoDBTable_BillingMode_payPerRequestBasic",
-            "TestAccDynamoDBTable_BillingModeGSI_payPerRequestToProvisioned",
-            "TestAccDynamoDBTable_BillingModeGSI_provisionedToPayPerRequest",
-            "TestAccDynamoDBTable_Disappears_payPerRequestWithGSI",
             // --- gap: encryption attribute round-trip ---
             "TestAccDynamoDBTable_encryption",
             // --- hung: did not complete in triage run; revisit in a later batch ---

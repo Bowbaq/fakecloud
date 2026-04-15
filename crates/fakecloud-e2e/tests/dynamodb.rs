@@ -2767,3 +2767,257 @@ async fn dynamodb_update_table_processes_global_secondary_index_updates() {
     assert_eq!(pt.read_capacity_units(), Some(5));
     assert_eq!(pt.write_capacity_units(), Some(7));
 }
+
+// Regression guard for the "billing-mode transitions with GSI" gap that
+// used to deny four `TestAccDynamoDBTable_BillingMode*` upstream tests.
+// Real DynamoDB returns `{read: 0, write: 0}` for every GSI on a
+// PAY_PER_REQUEST table, and the Terraform provider's flatten code keys
+// `name`/`read_capacity`/`write_capacity` off the presence of that field.
+#[tokio::test]
+async fn dynamodb_create_pay_per_request_with_gsi_zeroes_throughput() {
+    let server = TestServer::start().await;
+    let client = server.dynamodb_client().await;
+
+    client
+        .create_table()
+        .table_name("PprGsi")
+        .key_schema(
+            KeySchemaElement::builder()
+                .attribute_name("pk")
+                .key_type(KeyType::Hash)
+                .build()
+                .unwrap(),
+        )
+        .attribute_definitions(
+            AttributeDefinition::builder()
+                .attribute_name("pk")
+                .attribute_type(ScalarAttributeType::S)
+                .build()
+                .unwrap(),
+        )
+        .attribute_definitions(
+            AttributeDefinition::builder()
+                .attribute_name("gsipk")
+                .attribute_type(ScalarAttributeType::S)
+                .build()
+                .unwrap(),
+        )
+        .billing_mode(BillingMode::PayPerRequest)
+        .global_secondary_indexes(
+            GlobalSecondaryIndex::builder()
+                .index_name("gsi1")
+                .key_schema(
+                    KeySchemaElement::builder()
+                        .attribute_name("gsipk")
+                        .key_type(KeyType::Hash)
+                        .build()
+                        .unwrap(),
+                )
+                .projection(
+                    Projection::builder()
+                        .projection_type(ProjectionType::KeysOnly)
+                        .build(),
+                )
+                .build()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    let desc = client
+        .describe_table()
+        .table_name("PprGsi")
+        .send()
+        .await
+        .unwrap();
+    let table = desc.table().unwrap();
+    let table_pt = table.provisioned_throughput().unwrap();
+    assert_eq!(table_pt.read_capacity_units(), Some(0));
+    assert_eq!(table_pt.write_capacity_units(), Some(0));
+    let gsi = &table.global_secondary_indexes()[0];
+    let pt = gsi.provisioned_throughput().unwrap();
+    assert_eq!(pt.read_capacity_units(), Some(0));
+    assert_eq!(pt.write_capacity_units(), Some(0));
+}
+
+#[tokio::test]
+async fn dynamodb_update_table_provisioned_to_pay_per_request_zeroes_gsi() {
+    let server = TestServer::start().await;
+    let client = server.dynamodb_client().await;
+
+    client
+        .create_table()
+        .table_name("ProvToPpr")
+        .key_schema(
+            KeySchemaElement::builder()
+                .attribute_name("pk")
+                .key_type(KeyType::Hash)
+                .build()
+                .unwrap(),
+        )
+        .attribute_definitions(
+            AttributeDefinition::builder()
+                .attribute_name("pk")
+                .attribute_type(ScalarAttributeType::S)
+                .build()
+                .unwrap(),
+        )
+        .attribute_definitions(
+            AttributeDefinition::builder()
+                .attribute_name("gsipk")
+                .attribute_type(ScalarAttributeType::S)
+                .build()
+                .unwrap(),
+        )
+        .billing_mode(BillingMode::Provisioned)
+        .provisioned_throughput(
+            ProvisionedThroughput::builder()
+                .read_capacity_units(3)
+                .write_capacity_units(4)
+                .build()
+                .unwrap(),
+        )
+        .global_secondary_indexes(
+            GlobalSecondaryIndex::builder()
+                .index_name("gsi1")
+                .key_schema(
+                    KeySchemaElement::builder()
+                        .attribute_name("gsipk")
+                        .key_type(KeyType::Hash)
+                        .build()
+                        .unwrap(),
+                )
+                .projection(
+                    Projection::builder()
+                        .projection_type(ProjectionType::KeysOnly)
+                        .build(),
+                )
+                .provisioned_throughput(
+                    ProvisionedThroughput::builder()
+                        .read_capacity_units(2)
+                        .write_capacity_units(2)
+                        .build()
+                        .unwrap(),
+                )
+                .build()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    client
+        .update_table()
+        .table_name("ProvToPpr")
+        .billing_mode(BillingMode::PayPerRequest)
+        .send()
+        .await
+        .unwrap();
+
+    let desc = client
+        .describe_table()
+        .table_name("ProvToPpr")
+        .send()
+        .await
+        .unwrap();
+    let table = desc.table().unwrap();
+    assert_eq!(
+        table
+            .billing_mode_summary()
+            .unwrap()
+            .billing_mode()
+            .unwrap(),
+        &BillingMode::PayPerRequest
+    );
+    let table_pt = table.provisioned_throughput().unwrap();
+    assert_eq!(table_pt.read_capacity_units(), Some(0));
+    assert_eq!(table_pt.write_capacity_units(), Some(0));
+    let gsi = &table.global_secondary_indexes()[0];
+    let pt = gsi.provisioned_throughput().unwrap();
+    assert_eq!(pt.read_capacity_units(), Some(0));
+    assert_eq!(pt.write_capacity_units(), Some(0));
+}
+
+#[tokio::test]
+async fn dynamodb_update_table_gsi_create_on_pay_per_request_zeroes_throughput() {
+    let server = TestServer::start().await;
+    let client = server.dynamodb_client().await;
+
+    client
+        .create_table()
+        .table_name("PprAddGsi")
+        .key_schema(
+            KeySchemaElement::builder()
+                .attribute_name("pk")
+                .key_type(KeyType::Hash)
+                .build()
+                .unwrap(),
+        )
+        .attribute_definitions(
+            AttributeDefinition::builder()
+                .attribute_name("pk")
+                .attribute_type(ScalarAttributeType::S)
+                .build()
+                .unwrap(),
+        )
+        .billing_mode(BillingMode::PayPerRequest)
+        .send()
+        .await
+        .unwrap();
+
+    client
+        .update_table()
+        .table_name("PprAddGsi")
+        .attribute_definitions(
+            AttributeDefinition::builder()
+                .attribute_name("gsipk")
+                .attribute_type(ScalarAttributeType::S)
+                .build()
+                .unwrap(),
+        )
+        .global_secondary_index_updates(
+            aws_sdk_dynamodb::types::GlobalSecondaryIndexUpdate::builder()
+                .create(
+                    aws_sdk_dynamodb::types::CreateGlobalSecondaryIndexAction::builder()
+                        .index_name("gsi1")
+                        .key_schema(
+                            KeySchemaElement::builder()
+                                .attribute_name("gsipk")
+                                .key_type(KeyType::Hash)
+                                .build()
+                                .unwrap(),
+                        )
+                        .projection(
+                            Projection::builder()
+                                .projection_type(ProjectionType::KeysOnly)
+                                .build(),
+                        )
+                        .build()
+                        .unwrap(),
+                )
+                .build(),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    let desc = client
+        .describe_table()
+        .table_name("PprAddGsi")
+        .send()
+        .await
+        .unwrap();
+    let table = desc.table().unwrap();
+    let gsi = &table.global_secondary_indexes()[0];
+    let pt = gsi.provisioned_throughput().unwrap();
+    assert_eq!(pt.read_capacity_units(), Some(0));
+    assert_eq!(pt.write_capacity_units(), Some(0));
+    // AttributeDefinitions provided on UpdateTable must be merged into the
+    // table schema, otherwise a follow-up DescribeTable would omit the new
+    // GSI hash key and Terraform would replan the same update.
+    assert!(table
+        .attribute_definitions()
+        .iter()
+        .any(|a| a.attribute_name() == "gsipk"));
+}

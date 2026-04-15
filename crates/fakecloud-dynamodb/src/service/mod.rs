@@ -425,7 +425,7 @@ fn parse_provisioned_throughput(val: &Value) -> Result<ProvisionedThroughput, Aw
     })
 }
 
-fn parse_gsi(val: &Value) -> Vec<GlobalSecondaryIndex> {
+fn parse_gsi(val: &Value, billing_mode: &str) -> Vec<GlobalSecondaryIndex> {
     let Some(arr) = val.as_array() else {
         return Vec::new();
     };
@@ -435,11 +435,32 @@ fn parse_gsi(val: &Value) -> Vec<GlobalSecondaryIndex> {
                 index_name: g["IndexName"].as_str()?.to_string(),
                 key_schema: parse_key_schema(&g["KeySchema"]).ok()?,
                 projection: parse_projection(&g["Projection"]),
-                provisioned_throughput: parse_provisioned_throughput(&g["ProvisionedThroughput"])
-                    .ok(),
+                provisioned_throughput: Some(parse_gsi_throughput(
+                    &g["ProvisionedThroughput"],
+                    billing_mode,
+                )),
             })
         })
         .collect()
+}
+
+/// Resolve the provisioned-throughput slot for a GSI on a CreateTable or
+/// UpdateTable Create action. Real DynamoDB returns `{0, 0}` for GSIs on
+/// PAY_PER_REQUEST tables regardless of whether the caller sent a
+/// `ProvisionedThroughput` block, and the Terraform provider's `flatten`
+/// code keys `name`/`read_capacity`/`write_capacity` off the presence of
+/// that field — returning `None` would desynchronise state.
+fn parse_gsi_throughput(val: &Value, billing_mode: &str) -> ProvisionedThroughput {
+    if billing_mode == "PAY_PER_REQUEST" {
+        return ProvisionedThroughput {
+            read_capacity_units: 0,
+            write_capacity_units: 0,
+        };
+    }
+    ProvisionedThroughput {
+        read_capacity_units: val["ReadCapacityUnits"].as_i64().unwrap_or(5),
+        write_capacity_units: val["WriteCapacityUnits"].as_i64().unwrap_or(5),
+    }
 }
 
 fn parse_lsi(val: &Value) -> Vec<LocalSecondaryIndex> {

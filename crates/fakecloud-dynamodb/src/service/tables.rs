@@ -19,8 +19,8 @@ use super::parse_projection;
 use super::{
     build_table_description, build_table_description_json, find_table_by_arn,
     find_table_by_arn_mut, get_table, get_table_mut, parse_attribute_definitions, parse_gsi,
-    parse_key_schema, parse_lsi, parse_provisioned_throughput, parse_tags, require_str,
-    DynamoDbService,
+    parse_gsi_throughput, parse_key_schema, parse_lsi, parse_provisioned_throughput, parse_tags,
+    require_str, DynamoDbService,
 };
 
 impl DynamoDbService {
@@ -87,7 +87,7 @@ impl DynamoDbService {
             parse_provisioned_throughput(&body["ProvisionedThroughput"])?
         };
 
-        let gsi = parse_gsi(&body["GlobalSecondaryIndexes"]);
+        let gsi = parse_gsi(&body["GlobalSecondaryIndexes"], &billing_mode);
         let lsi = parse_lsi(&body["LocalSecondaryIndexes"]);
         let tags = parse_tags(&body["Tags"]);
 
@@ -345,8 +345,49 @@ impl DynamoDbService {
             }
         }
 
+        // A billing-mode transition has ripple effects on provisioned
+        // capacity. Real AWS zeros out the table and every GSI's throughput
+        // when the table flips to PAY_PER_REQUEST, and expects the caller to
+        // provide new capacities (via ProvisionedThroughput and per-GSI
+        // Update actions) when flipping back to PROVISIONED — the Terraform
+        // provider's `updateDiffGSI` emits exactly that shape. fakecloud
+        // previously only flipped the scalar billing_mode field, leaving
+        // stale capacity numbers on the GSIs that then surfaced as drift in
+        // the provider's post-apply plan.
         if let Some(bm) = body["BillingMode"].as_str() {
-            table.billing_mode = bm.to_string();
+            let new_mode = bm.to_string();
+            if new_mode == "PAY_PER_REQUEST" && table.billing_mode != "PAY_PER_REQUEST" {
+                table.provisioned_throughput = crate::state::ProvisionedThroughput {
+                    read_capacity_units: 0,
+                    write_capacity_units: 0,
+                };
+                for gsi in table.gsi.iter_mut() {
+                    gsi.provisioned_throughput = Some(crate::state::ProvisionedThroughput {
+                        read_capacity_units: 0,
+                        write_capacity_units: 0,
+                    });
+                }
+            }
+            table.billing_mode = new_mode;
+        }
+
+        // AttributeDefinitions sent alongside a GSI Create must be merged
+        // into the table schema — real AWS accepts new scalar attributes on
+        // UpdateTable when they're referenced by a new index's KeySchema,
+        // and Terraform's `aws_dynamodb_table` relies on that to add a GSI
+        // whose hash/range key wasn't previously defined. Previously
+        // fakecloud dropped these, so a follow-up Read surfaced the old
+        // attribute list and Terraform planned a redundant update.
+        if let Ok(new_attrs) = parse_attribute_definitions(&body["AttributeDefinitions"]) {
+            for attr in new_attrs {
+                if !table
+                    .attribute_definitions
+                    .iter()
+                    .any(|a| a.attribute_name == attr.attribute_name)
+                {
+                    table.attribute_definitions.push(attr);
+                }
+            }
         }
 
         // Handle GlobalSecondaryIndexUpdates: a list of {Create, Update, Delete}
@@ -356,6 +397,7 @@ impl DynamoDbService {
             .get("GlobalSecondaryIndexUpdates")
             .and_then(|v| v.as_array())
         {
+            let current_billing = table.billing_mode.clone();
             for op in updates {
                 if let Some(create) = op.get("Create") {
                     let name = match create.get("IndexName").and_then(|v| v.as_str()) {
@@ -364,8 +406,10 @@ impl DynamoDbService {
                     };
                     let key_schema = parse_key_schema(&create["KeySchema"]).unwrap_or_default();
                     let projection = parse_projection(&create["Projection"]);
-                    let provisioned_throughput =
-                        parse_provisioned_throughput(&create["ProvisionedThroughput"]).ok();
+                    let provisioned_throughput = Some(parse_gsi_throughput(
+                        &create["ProvisionedThroughput"],
+                        &current_billing,
+                    ));
                     table.gsi.retain(|g| g.index_name != name);
                     table.gsi.push(GlobalSecondaryIndex {
                         index_name: name,
