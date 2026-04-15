@@ -266,3 +266,75 @@ async fn lambda_list_event_source_mappings() {
     let resp = client.list_event_source_mappings().send().await.unwrap();
     assert!(!resp.event_source_mappings().is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// Resource-based policies
+// ---------------------------------------------------------------------------
+
+#[test_action("lambda", "AddPermission", checksum = "ad24af73")]
+#[test_action("lambda", "GetPolicy", checksum = "150a22ab")]
+#[test_action("lambda", "RemovePermission", checksum = "5a09e35b")]
+#[tokio::test]
+async fn lambda_resource_policy_roundtrip() {
+    let server = TestServer::start().await;
+    let client = server.lambda_client().await;
+
+    client
+        .create_function()
+        .function_name("perm-fn")
+        .runtime(aws_sdk_lambda::types::Runtime::Python312)
+        .role("arn:aws:iam::123456789012:role/test-role")
+        .handler("index.handler")
+        .code(
+            aws_sdk_lambda::types::FunctionCode::builder()
+                .zip_file(Blob::new(make_python_zip()))
+                .build(),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    // AddPermission seeds a canonical policy document and returns
+    // the newly-appended statement as JSON.
+    let added = client
+        .add_permission()
+        .function_name("perm-fn")
+        .statement_id("events-invoke")
+        .action("InvokeFunction")
+        .principal("events.amazonaws.com")
+        .source_arn("arn:aws:events:us-east-1:123456789012:rule/my-rule")
+        .send()
+        .await
+        .unwrap();
+    let statement: serde_json::Value = serde_json::from_str(added.statement().unwrap()).unwrap();
+    assert_eq!(statement["Sid"], "events-invoke");
+
+    // GetPolicy returns the stored doc containing the new statement.
+    let got = client
+        .get_policy()
+        .function_name("perm-fn")
+        .send()
+        .await
+        .unwrap();
+    let doc: serde_json::Value = serde_json::from_str(got.policy().unwrap()).unwrap();
+    assert_eq!(doc["Statement"].as_array().unwrap().len(), 1);
+    assert_eq!(doc["Statement"][0]["Sid"], "events-invoke");
+
+    // RemovePermission strips the matching statement; the doc stays.
+    client
+        .remove_permission()
+        .function_name("perm-fn")
+        .statement_id("events-invoke")
+        .send()
+        .await
+        .unwrap();
+
+    let got_after = client
+        .get_policy()
+        .function_name("perm-fn")
+        .send()
+        .await
+        .unwrap();
+    let doc_after: serde_json::Value = serde_json::from_str(got_after.policy().unwrap()).unwrap();
+    assert_eq!(doc_after["Statement"].as_array().unwrap().len(), 0);
+}

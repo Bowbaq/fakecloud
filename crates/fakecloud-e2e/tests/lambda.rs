@@ -213,13 +213,12 @@ async fn lambda_add_get_remove_permission_roundtrip() {
         .await
         .unwrap();
 
-    // GetPolicy on a function with no resource policy → ResourceNotFoundException.
-    let missing = client
-        .get_policy()
-        .function_name("perm-fn")
-        .send()
-        .await;
-    assert!(missing.is_err(), "GetPolicy on unpolicied function should 404");
+    // GetPolicy on a function with no resource policy -> ResourceNotFoundException.
+    let missing = client.get_policy().function_name("perm-fn").send().await;
+    assert!(
+        missing.is_err(),
+        "GetPolicy on unpolicied function should 404"
+    );
 
     // AddPermission for EventBridge with SourceArn + SourceAccount.
     let add_resp = client
