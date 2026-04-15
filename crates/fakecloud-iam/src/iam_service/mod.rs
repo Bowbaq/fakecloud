@@ -6,6 +6,8 @@ mod policies;
 mod roles;
 mod users;
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use chrono::Utc;
 use http::StatusCode;
@@ -15,7 +17,9 @@ use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceErr
 // typically returns InvalidInput or ValidationError for input validation failures. This is
 // a known simplification — the validators are reused across services for consistency.
 use fakecloud_core::validation::*;
+use fakecloud_persistence::SnapshotStore;
 
+use crate::persistence::{save_iam_snapshot, IamSnapshotLock};
 use crate::state::{AccessKeyLastUsed, SharedIamState, Tag};
 
 /// Get the AWS partition from a region string.
@@ -37,12 +41,127 @@ fn partition_for_region(region: &str) -> &str {
 
 pub struct IamService {
     state: SharedIamState,
+    snapshot_store: Option<Arc<dyn SnapshotStore>>,
+    snapshot_lock: IamSnapshotLock,
 }
 
 impl IamService {
     pub fn new(state: SharedIamState) -> Self {
-        Self { state }
+        Self {
+            state,
+            snapshot_store: None,
+            snapshot_lock: crate::persistence::new_snapshot_lock(),
+        }
     }
+
+    pub fn with_snapshot_store(mut self, store: Arc<dyn SnapshotStore>) -> Self {
+        self.snapshot_store = Some(store);
+        self
+    }
+
+    /// Share the snapshot lock with another service (e.g. `StsService`)
+    /// so writes from both services are mutually serialized. Without
+    /// this, STS-issued credentials and IAM mutations could race and
+    /// leave stale bytes on disk.
+    pub fn with_snapshot_lock(mut self, lock: IamSnapshotLock) -> Self {
+        self.snapshot_lock = lock;
+        self
+    }
+
+    pub fn snapshot_lock(&self) -> IamSnapshotLock {
+        self.snapshot_lock.clone()
+    }
+
+    pub fn snapshot_store(&self) -> Option<Arc<dyn SnapshotStore>> {
+        self.snapshot_store.clone()
+    }
+}
+
+/// Actions on the IAM service that mutate state. Kept in sync with the
+/// dispatch table in `handle`.
+fn is_mutating_action(action: &str) -> bool {
+    matches!(
+        action,
+        "CreateUser"
+            | "DeleteUser"
+            | "UpdateUser"
+            | "TagUser"
+            | "UntagUser"
+            | "CreateAccessKey"
+            | "DeleteAccessKey"
+            | "UpdateAccessKey"
+            | "CreateRole"
+            | "DeleteRole"
+            | "UpdateRole"
+            | "UpdateRoleDescription"
+            | "UpdateAssumeRolePolicy"
+            | "TagRole"
+            | "UntagRole"
+            | "PutRolePermissionsBoundary"
+            | "DeleteRolePermissionsBoundary"
+            | "CreatePolicy"
+            | "DeletePolicy"
+            | "TagPolicy"
+            | "UntagPolicy"
+            | "CreatePolicyVersion"
+            | "DeletePolicyVersion"
+            | "SetDefaultPolicyVersion"
+            | "AttachRolePolicy"
+            | "DetachRolePolicy"
+            | "PutRolePolicy"
+            | "DeleteRolePolicy"
+            | "AttachUserPolicy"
+            | "DetachUserPolicy"
+            | "PutUserPolicy"
+            | "DeleteUserPolicy"
+            | "CreateGroup"
+            | "DeleteGroup"
+            | "UpdateGroup"
+            | "AddUserToGroup"
+            | "RemoveUserFromGroup"
+            | "PutGroupPolicy"
+            | "DeleteGroupPolicy"
+            | "AttachGroupPolicy"
+            | "DetachGroupPolicy"
+            | "CreateInstanceProfile"
+            | "DeleteInstanceProfile"
+            | "AddRoleToInstanceProfile"
+            | "RemoveRoleFromInstanceProfile"
+            | "TagInstanceProfile"
+            | "UntagInstanceProfile"
+            | "CreateLoginProfile"
+            | "UpdateLoginProfile"
+            | "DeleteLoginProfile"
+            | "CreateSAMLProvider"
+            | "DeleteSAMLProvider"
+            | "UpdateSAMLProvider"
+            | "CreateOpenIDConnectProvider"
+            | "DeleteOpenIDConnectProvider"
+            | "UpdateOpenIDConnectProviderThumbprint"
+            | "AddClientIDToOpenIDConnectProvider"
+            | "RemoveClientIDFromOpenIDConnectProvider"
+            | "TagOpenIDConnectProvider"
+            | "UntagOpenIDConnectProvider"
+            | "UploadServerCertificate"
+            | "DeleteServerCertificate"
+            | "UploadSigningCertificate"
+            | "UpdateSigningCertificate"
+            | "DeleteSigningCertificate"
+            | "UploadSSHPublicKey"
+            | "UpdateSSHPublicKey"
+            | "DeleteSSHPublicKey"
+            | "CreateServiceLinkedRole"
+            | "DeleteServiceLinkedRole"
+            | "CreateAccountAlias"
+            | "DeleteAccountAlias"
+            | "UpdateAccountPasswordPolicy"
+            | "DeleteAccountPasswordPolicy"
+            | "GenerateCredentialReport"
+            | "CreateVirtualMFADevice"
+            | "DeleteVirtualMFADevice"
+            | "EnableMFADevice"
+            | "DeactivateMFADevice"
+    )
 }
 
 #[async_trait]
@@ -52,7 +171,12 @@ impl AwsService for IamService {
     }
 
     async fn handle(&self, req: AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        // Track access key usage for GetAccessKeyLastUsed
+        // Track access key usage for GetAccessKeyLastUsed. This is itself
+        // a state mutation, so we have to flag it for snapshot persistence
+        // even though the action itself may be read-only (e.g. `ListUsers`).
+        // Without this, `access_key_last_used` drifts between in-memory
+        // and on-disk state and reads after a restart lose the timestamp.
+        let mut last_used_updated = false;
         if let Some(ref key_id) = req.access_key_id {
             let mut state = self.state.write();
             let is_known = state
@@ -68,11 +192,13 @@ impl AwsService for IamService {
                         region: req.region.clone(),
                     },
                 );
+                last_used_updated = true;
             }
             drop(state);
         }
 
-        match req.action.as_str() {
+        let mutates = is_mutating_action(req.action.as_str()) || last_used_updated;
+        let result = match req.action.as_str() {
             // Users
             "CreateUser" => self.create_user(&req),
             "GetUser" => self.get_user(&req),
@@ -250,7 +376,16 @@ impl AwsService for IamService {
             "ListEntitiesForPolicy" => self.list_entities_for_policy(&req),
 
             _ => Err(AwsServiceError::action_not_implemented("iam", &req.action)),
+        };
+        if mutates && matches!(result.as_ref(), Ok(resp) if resp.status.is_success()) {
+            save_iam_snapshot(
+                &self.state,
+                self.snapshot_store.clone(),
+                &self.snapshot_lock,
+            )
+            .await;
         }
+        result
     }
 
     fn supported_actions(&self) -> &[&str] {

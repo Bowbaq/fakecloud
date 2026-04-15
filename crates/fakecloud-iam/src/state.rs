@@ -1,8 +1,9 @@
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IamUser {
     pub user_name: String,
     pub user_id: String,
@@ -13,7 +14,7 @@ pub struct IamUser {
     pub permissions_boundary: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IamAccessKey {
     pub access_key_id: String,
     pub secret_access_key: String,
@@ -22,7 +23,7 @@ pub struct IamAccessKey {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IamRole {
     pub role_name: String,
     pub role_id: String,
@@ -36,7 +37,7 @@ pub struct IamRole {
     pub permissions_boundary: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IamPolicy {
     pub policy_name: String,
     pub policy_id: String,
@@ -51,7 +52,7 @@ pub struct IamPolicy {
     pub attachment_count: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolicyVersion {
     pub version_id: String,
     pub document: String,
@@ -59,7 +60,7 @@ pub struct PolicyVersion {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IamGroup {
     pub group_name: String,
     pub group_id: String,
@@ -71,7 +72,7 @@ pub struct IamGroup {
     pub attached_policies: Vec<String>,           // policy ARNs
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IamInstanceProfile {
     pub instance_profile_name: String,
     pub instance_profile_id: String,
@@ -82,20 +83,20 @@ pub struct IamInstanceProfile {
     pub tags: Vec<Tag>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tag {
     pub key: String,
     pub value: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoginProfile {
     pub user_name: String,
     pub created_at: DateTime<Utc>,
     pub password_reset_required: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SamlProvider {
     pub arn: String,
     pub name: String,
@@ -105,7 +106,7 @@ pub struct SamlProvider {
     pub tags: Vec<Tag>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OidcProvider {
     pub arn: String,
     pub url: String,
@@ -115,7 +116,7 @@ pub struct OidcProvider {
     pub tags: Vec<Tag>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerCertificate {
     pub server_certificate_name: String,
     pub server_certificate_id: String,
@@ -128,7 +129,7 @@ pub struct ServerCertificate {
     pub tags: Vec<Tag>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SigningCertificate {
     pub certificate_id: String,
     pub user_name: String,
@@ -137,7 +138,7 @@ pub struct SigningCertificate {
     pub upload_date: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountPasswordPolicy {
     pub minimum_password_length: u32,
     pub require_symbols: bool,
@@ -166,7 +167,7 @@ impl Default for AccountPasswordPolicy {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VirtualMfaDevice {
     pub serial_number: String,
     pub base32_string_seed: String,
@@ -176,14 +177,14 @@ pub struct VirtualMfaDevice {
     pub tags: Vec<Tag>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceLinkedRoleDeletion {
     pub deletion_task_id: String,
     pub status: String,
 }
 
 /// Identity associated with a set of credentials, for GetCallerIdentity resolution.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CredentialIdentity {
     pub arn: String,
     pub user_id: String,
@@ -199,7 +200,7 @@ pub struct CredentialIdentity {
 /// later batches) can look them up when a client signs a request with
 /// temporary credentials. `expiration` is the absolute wall-clock time at
 /// which the credential becomes invalid.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StsTempCredential {
     pub access_key_id: String,
     pub secret_access_key: String,
@@ -225,7 +226,7 @@ pub struct SecretLookup {
     pub account_id: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SshPublicKey {
     pub ssh_public_key_id: String,
     pub user_name: String,
@@ -236,13 +237,14 @@ pub struct SshPublicKey {
 }
 
 /// Tracks when an access key was last used.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccessKeyLastUsed {
     pub last_used_date: DateTime<Utc>,
     pub service_name: String,
     pub region: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IamState {
     pub account_id: String,
     pub users: HashMap<String, IamUser>,
@@ -398,6 +400,16 @@ impl IamState {
 }
 
 pub type SharedIamState = std::sync::Arc<RwLock<IamState>>;
+
+/// On-disk snapshot envelope for IAM state. Versioned so future schema
+/// changes fail loudly instead of silently corrupting state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IamSnapshot {
+    pub schema_version: u32,
+    pub state: IamState,
+}
+
+pub const IAM_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
 
 #[cfg(test)]
 mod tests {

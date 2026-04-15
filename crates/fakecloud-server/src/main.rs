@@ -386,8 +386,6 @@ async fn main() {
             "cloudformation",
             "sns",
             "events",
-            "iam",
-            "sts",
             "ssm",
             "lambda",
             "secretsmanager",
@@ -488,8 +486,66 @@ async fn main() {
         scheduler = scheduler.with_runtime(rt.clone());
     }
     tokio::spawn(scheduler.run());
-    registry.register(Arc::new(IamService::new(iam_state.clone())));
-    registry.register(Arc::new(StsService::new(iam_state.clone())));
+    let iam_snapshot_store: Option<Arc<dyn fakecloud_persistence::SnapshotStore>> =
+        if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
+            let data_path = persistence_config
+                .data_path
+                .as_ref()
+                .expect("validated above")
+                .clone();
+            let path = data_path.join("iam").join("snapshot.json");
+            let store = fakecloud_persistence::DiskSnapshotStore::new(path);
+            match fakecloud_persistence::SnapshotStore::load(&store) {
+                Ok(Some(bytes)) => {
+                    match serde_json::from_slice::<fakecloud_iam::state::IamSnapshot>(&bytes) {
+                        Ok(snapshot) => {
+                            if snapshot.schema_version
+                                != fakecloud_iam::state::IAM_SNAPSHOT_SCHEMA_VERSION
+                            {
+                                fatal_exit(format_args!(
+                                    "iam persistence schema mismatch: on-disk={}, expected={}",
+                                    snapshot.schema_version,
+                                    fakecloud_iam::state::IAM_SNAPSHOT_SCHEMA_VERSION,
+                                ));
+                            }
+                            let user_count = snapshot.state.users.len();
+                            let role_count = snapshot.state.roles.len();
+                            *iam_state.write() = snapshot.state;
+                            tracing::info!(
+                                users = user_count,
+                                roles = role_count,
+                                "loaded iam persistence snapshot",
+                            );
+                        }
+                        Err(err) => fatal_exit(format_args!(
+                            "failed to parse iam persistence snapshot: {err}"
+                        )),
+                    }
+                }
+                Ok(None) => {
+                    tracing::info!("no iam persistence snapshot found; starting empty");
+                }
+                Err(err) => fatal_exit(format_args!(
+                    "failed to read iam persistence snapshot: {err}"
+                )),
+            }
+            Some(Arc::new(store) as Arc<dyn fakecloud_persistence::SnapshotStore>)
+        } else {
+            None
+        };
+    let mut iam_service = IamService::new(iam_state.clone());
+    if let Some(ref store) = iam_snapshot_store {
+        iam_service = iam_service.with_snapshot_store(store.clone());
+    }
+    // Share the snapshot lock between IamService and StsService so
+    // writes from both services mutually serialize through one lock.
+    let iam_snapshot_lock = iam_service.snapshot_lock();
+    let mut sts_service = StsService::new(iam_state.clone()).with_snapshot_lock(iam_snapshot_lock);
+    if let Some(store) = iam_snapshot_store {
+        sts_service = sts_service.with_snapshot_store(store);
+    }
+    registry.register(Arc::new(iam_service));
+    registry.register(Arc::new(sts_service));
     registry.register(Arc::new(
         SsmService::new(ssm_state).with_secretsmanager(secretsmanager_state.clone()),
     ));
