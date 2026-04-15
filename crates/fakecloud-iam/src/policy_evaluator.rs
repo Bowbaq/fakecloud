@@ -45,11 +45,40 @@ impl IamPolicyEvaluator for IamPolicyEvaluatorImpl {
             resource: action.resource.clone(),
             context: context.clone(),
         };
-        match evaluator::evaluate(&policies, &request) {
-            Decision::Allow => IamDecision::Allow,
-            Decision::ImplicitDeny => IamDecision::ImplicitDeny,
-            Decision::ExplicitDeny => IamDecision::ExplicitDeny,
-        }
+        decision_to_core(evaluator::evaluate(&policies, &request))
+    }
+
+    fn evaluate_with_resource_policy(
+        &self,
+        principal: &Principal,
+        action: &IamAction,
+        context: &ConditionContext,
+        resource_policy_json: Option<&str>,
+        resource_account_id: &str,
+    ) -> IamDecision {
+        let state = self.state.read();
+        let identity_policies = evaluator::collect_identity_policies(&state, principal);
+        let request = EvalRequest {
+            principal,
+            action: action.action_string(),
+            resource: action.resource.clone(),
+            context: context.clone(),
+        };
+        let resource_policy = resource_policy_json.map(evaluator::PolicyDocument::parse);
+        decision_to_core(evaluator::evaluate_with_resource_policy(
+            &identity_policies,
+            resource_policy.as_ref(),
+            &request,
+            resource_account_id,
+        ))
+    }
+}
+
+fn decision_to_core(decision: Decision) -> IamDecision {
+    match decision {
+        Decision::Allow => IamDecision::Allow,
+        Decision::ImplicitDeny => IamDecision::ImplicitDeny,
+        Decision::ExplicitDeny => IamDecision::ExplicitDeny,
     }
 }
 

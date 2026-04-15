@@ -285,6 +285,34 @@ pub trait IamPolicyEvaluator: Send + Sync {
         action: &IamAction,
         context: &ConditionContext,
     ) -> IamDecision;
+
+    /// Evaluate `action` against the identity policies attached to
+    /// `principal` **and** an optional resource-based policy attached
+    /// to the target resource. Implements AWS's cross-account
+    /// evaluation semantics:
+    ///
+    /// - Either side returning an explicit `Deny` wins.
+    /// - Same-account (`principal.account_id == resource_account_id`):
+    ///   the request is allowed if the identity policy **or** the
+    ///   resource policy grants it.
+    /// - Cross-account: the request is allowed only if the identity
+    ///   policy **and** the resource policy both grant it.
+    ///
+    /// The default implementation delegates to [`Self::evaluate`] and
+    /// ignores `resource_policy_json` so implementations that don't
+    /// yet understand resource policies keep behaving as they did in
+    /// Phase 1. The real implementation in `fakecloud-iam` overrides
+    /// this.
+    fn evaluate_with_resource_policy(
+        &self,
+        principal: &Principal,
+        action: &IamAction,
+        context: &ConditionContext,
+        _resource_policy_json: Option<&str>,
+        _resource_account_id: &str,
+    ) -> IamDecision {
+        self.evaluate(principal, action, context)
+    }
 }
 
 /// Abstraction over "given a service + a fully-qualified resource ARN,

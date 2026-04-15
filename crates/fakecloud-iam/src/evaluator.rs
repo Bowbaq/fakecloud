@@ -99,6 +99,61 @@ pub(crate) struct ParsedStatement {
     /// statement with `Some(_)` only applies when the compiled block
     /// evaluates to `true` against the request's [`RequestContext`].
     pub condition: Option<CompiledCondition>,
+    /// How this statement restricts which principals it applies to.
+    /// Identity policies always parse as [`PrincipalPattern::None`];
+    /// resource policies may carry a `Principal` or `NotPrincipal` key.
+    pub principal: PrincipalPattern,
+}
+
+/// `Principal` / `NotPrincipal` pattern on a parsed statement.
+///
+/// Identity policies never carry `Principal` — they inherit the
+/// principal from the attaching identity. Resource policies (S3 bucket
+/// policies in the initial Phase 2 rollout) use `Principal` to name
+/// which users, accounts, or services the statement grants to.
+#[derive(Debug, Clone)]
+pub(crate) enum PrincipalPattern {
+    /// Statement carried neither `Principal` nor `NotPrincipal`.
+    /// Used by all identity-policy statements and by any resource-policy
+    /// statement that forgets to name a principal (AWS rejects the
+    /// latter at validation time, but the evaluator should not grant
+    /// silently if it somehow makes it in).
+    None,
+    /// Statement carried `Principal` naming the accepted principals.
+    /// A request is accepted iff it matches at least one entry.
+    Principal(Vec<PrincipalRef>),
+    /// Statement carried `NotPrincipal`. Full evaluation semantics for
+    /// `NotPrincipal` are intentionally **not** implemented in this
+    /// batch — they are subtle (cross-account root implications, deny
+    /// interactions) and deserve their own rollout. Statements with
+    /// this variant are skipped entirely at evaluation time with a
+    /// `fakecloud::iam::audit` debug log. Critically we do not fall
+    /// through to "matches everyone" — that would silently grant.
+    NotPrincipalSkipped,
+}
+
+/// A single principal reference parsed from a statement's `Principal`
+/// key. AWS accepts several shapes; we implement the subset S3 bucket
+/// policies actually use in practice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PrincipalRef {
+    /// `"Principal": "*"` or `"Principal": {"AWS": "*"}`. Matches any
+    /// authenticated principal (including cross-account). The
+    /// public-bucket idiom.
+    AnyAws,
+    /// `"Principal": {"AWS": "arn:aws:iam::ACCOUNT:root"}`. Matches any
+    /// principal whose `account_id` equals `ACCOUNT`.
+    AwsAccountRoot(String),
+    /// `"Principal": {"AWS": "arn:aws:iam::ACCOUNT:user/name"}` (or
+    /// `role/name`, `assumed-role/...`, etc). Matches a principal
+    /// whose ARN equals this string exactly.
+    AwsArn(String),
+    /// `"Principal": {"Service": "lambda.amazonaws.com"}`. Matches a
+    /// principal whose ARN was produced by the named service
+    /// assuming a service-linked role (approximated by the role name
+    /// including the service host, matching how AWS builds
+    /// service-linked role ARNs).
+    Service(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -201,12 +256,99 @@ fn parse_statement(value: &Value) -> Option<ParsedStatement> {
         ResourceMatch::Implicit
     };
     let condition = obj.get("Condition").map(CompiledCondition::parse);
+    let principal = if obj.contains_key("NotPrincipal") {
+        tracing::debug!(
+            target: "fakecloud::iam::audit",
+            "statement has NotPrincipal; skipping (NotPrincipal evaluation is not implemented)"
+        );
+        PrincipalPattern::NotPrincipalSkipped
+    } else if let Some(p) = obj.get("Principal") {
+        PrincipalPattern::Principal(parse_principal(p))
+    } else {
+        PrincipalPattern::None
+    };
     Some(ParsedStatement {
         effect,
         action,
         resource,
         condition,
+        principal,
     })
+}
+
+/// Parse a `Principal` JSON value into the list of refs the evaluator
+/// can match against a request principal.
+///
+/// AWS accepts any of:
+/// - `"Principal": "*"`
+/// - `"Principal": {"AWS": "*"}` or `{"AWS": ["..."]}`
+/// - `"Principal": {"Service": "lambda.amazonaws.com"}` (string or array)
+/// - `"Principal": {"Federated": "..."}` (unhandled — debug log, drop)
+/// - `"Principal": {"CanonicalUser": "..."}` (unhandled — debug log, drop)
+///
+/// Unknown shapes fall through to an empty ref list, which the matcher
+/// treats as "doesn't match" — never silently grant.
+fn parse_principal(value: &Value) -> Vec<PrincipalRef> {
+    let mut out = Vec::new();
+    match value {
+        Value::String(s) if s == "*" => out.push(PrincipalRef::AnyAws),
+        Value::String(other) => {
+            tracing::debug!(
+                target: "fakecloud::iam::audit",
+                principal = %other,
+                "Principal string other than \"*\" is not a recognized shape; skipping"
+            );
+        }
+        Value::Object(map) => {
+            for (key, v) in map {
+                match key.as_str() {
+                    "AWS" => {
+                        for s in coerce_string_list(v) {
+                            out.push(classify_aws_principal(&s));
+                        }
+                    }
+                    "Service" => {
+                        for s in coerce_string_list(v) {
+                            out.push(PrincipalRef::Service(s));
+                        }
+                    }
+                    other => {
+                        tracing::debug!(
+                            target: "fakecloud::iam::audit",
+                            principal_type = %other,
+                            "Principal type not implemented in this rollout; skipping entry"
+                        );
+                    }
+                }
+            }
+        }
+        _ => {
+            tracing::debug!(
+                target: "fakecloud::iam::audit",
+                "Principal has an unexpected JSON shape; skipping"
+            );
+        }
+    }
+    out
+}
+
+fn classify_aws_principal(s: &str) -> PrincipalRef {
+    if s == "*" {
+        return PrincipalRef::AnyAws;
+    }
+    // `arn:aws:iam::<account>:root` → account root
+    if let Some(rest) = s.strip_prefix("arn:aws:iam::") {
+        if let Some((account, tail)) = rest.split_once(':') {
+            if tail == "root" && !account.is_empty() {
+                return PrincipalRef::AwsAccountRoot(account.to_string());
+            }
+        }
+    }
+    // A bare 12-digit account ID is shorthand for `<account>:root`.
+    if s.len() == 12 && s.chars().all(|c| c.is_ascii_digit()) {
+        return PrincipalRef::AwsAccountRoot(s.to_string());
+    }
+    PrincipalRef::AwsArn(s.to_string())
 }
 
 /// Coerce a JSON value into a list of strings. AWS policy schema accepts
@@ -241,9 +383,105 @@ fn coerce_string_list(value: &Value) -> Vec<String> {
 /// 3. After all statements are scanned: return [`Decision::Allow`] if any
 ///    allow matched, otherwise [`Decision::ImplicitDeny`].
 pub fn evaluate(policies: &[PolicyDocument], request: &EvalRequest<'_>) -> Decision {
+    evaluate_inner(policies, request, /* is_resource_policy */ false)
+}
+
+/// Evaluate `request` against the principal's identity policies and an
+/// optional resource-based policy, combining the two with AWS's
+/// cross-account semantics.
+///
+/// - Either side returning an explicit `Deny` wins immediately.
+/// - Same-account (`principal.account_id == resource_account_id`):
+///   the request is allowed if identity OR resource grants it.
+/// - Cross-account: the request is allowed only if identity AND
+///   resource both grant it.
+///
+/// `resource_account_id` is the 12-digit account that owns the target
+/// resource. For S3 bucket policies, dispatch parses this from the
+/// resource ARN; S3 ARNs have an empty account field, so the caller
+/// is expected to fall back to the server's configured account ID in
+/// that case (#381 multi-account alignment).
+pub fn evaluate_with_resource_policy(
+    identity_policies: &[PolicyDocument],
+    resource_policy: Option<&PolicyDocument>,
+    request: &EvalRequest<'_>,
+    resource_account_id: &str,
+) -> Decision {
+    let identity = evaluate_inner(identity_policies, request, false);
+    if matches!(identity, Decision::ExplicitDeny) {
+        return Decision::ExplicitDeny;
+    }
+    let same_account = request.principal.account_id == resource_account_id;
+    // Same-account with no resource policy: preserve the Phase 1
+    // identity-only path exactly so rollouts that haven't attached any
+    // bucket policy behave as they did before.
+    if resource_policy.is_none() && same_account {
+        return identity;
+    }
+    let resource = match resource_policy {
+        Some(policy) => evaluate_inner(std::slice::from_ref(policy), request, true),
+        // No resource policy attached → resource side is silent.
+        // Cross-account callers fall through to ImplicitDeny because
+        // the AND below requires both sides to grant.
+        None => Decision::ImplicitDeny,
+    };
+    if matches!(resource, Decision::ExplicitDeny) {
+        return Decision::ExplicitDeny;
+    }
+    let identity_allows = matches!(identity, Decision::Allow);
+    let resource_allows = matches!(resource, Decision::Allow);
+    let allowed = if same_account {
+        identity_allows || resource_allows
+    } else {
+        identity_allows && resource_allows
+    };
+    if allowed {
+        Decision::Allow
+    } else {
+        Decision::ImplicitDeny
+    }
+}
+
+fn evaluate_inner(
+    policies: &[PolicyDocument],
+    request: &EvalRequest<'_>,
+    is_resource_policy: bool,
+) -> Decision {
     let mut allowed = false;
     for policy in policies {
         for statement in &policy.statements {
+            // Principal / NotPrincipal gate. Identity policies never
+            // carry these keys; resource policies must, and a
+            // statement without a matching Principal does not apply.
+            match &statement.principal {
+                PrincipalPattern::None => {
+                    if is_resource_policy {
+                        // Resource-policy statement with no Principal
+                        // does not apply — AWS treats this as a
+                        // validation error and we will not silently
+                        // grant.
+                        tracing::debug!(
+                            target: "fakecloud::iam::audit",
+                            action = %request.action,
+                            "resource policy statement has no Principal; skipping"
+                        );
+                        continue;
+                    }
+                }
+                PrincipalPattern::Principal(refs) => {
+                    if !principal_matches(refs, request.principal) {
+                        continue;
+                    }
+                }
+                PrincipalPattern::NotPrincipalSkipped => {
+                    tracing::debug!(
+                        target: "fakecloud::iam::audit",
+                        action = %request.action,
+                        "NotPrincipal is not implemented; statement does not apply"
+                    );
+                    continue;
+                }
+            }
             if !action_matches(&statement.action, &request.action) {
                 continue;
             }
@@ -271,6 +509,32 @@ pub fn evaluate(policies: &[PolicyDocument], request: &EvalRequest<'_>) -> Decis
     } else {
         Decision::ImplicitDeny
     }
+}
+
+/// Check whether any entry in a parsed `Principal` list matches the
+/// calling principal. An empty list never matches — that's how we
+/// keep unimplemented principal types (`Federated`, `CanonicalUser`)
+/// from silently granting.
+fn principal_matches(refs: &[PrincipalRef], principal: &Principal) -> bool {
+    refs.iter().any(|r| match r {
+        PrincipalRef::AnyAws => true,
+        PrincipalRef::AwsAccountRoot(account) => &principal.account_id == account,
+        PrincipalRef::AwsArn(arn) => &principal.arn == arn,
+        PrincipalRef::Service(service) => principal_is_service(principal, service),
+    })
+}
+
+/// Approximate match for a `"Service"` principal. AWS represents a
+/// request made by a service (e.g. Lambda invoking something via a
+/// service-linked role) as an assumed-role principal whose role ARN
+/// contains the service host. We match conservatively: the principal
+/// must be an `AssumedRole` whose ARN contains the literal service
+/// host string. False matches are avoided because unrelated role
+/// names would have to happen to contain `lambda.amazonaws.com` —
+/// unlikely in practice and never silently grant to user principals.
+fn principal_is_service(principal: &Principal, service: &str) -> bool {
+    matches!(principal.principal_type, PrincipalType::AssumedRole)
+        && principal.arn.contains(service)
 }
 
 fn action_matches(action: &ActionMatch, request_action: &str) -> bool {
@@ -1305,5 +1569,390 @@ mod tests {
         // just assert collect_identity_policies doesn't synthesize a
         // wildcard allow on its behalf.
         assert!(collect_identity_policies(&state, &principal).is_empty());
+    }
+
+    // --- resource-policy cross-account evaluation -----------------------
+
+    const ACCT_A: &str = "111111111111";
+    const ACCT_B: &str = "222222222222";
+
+    fn principal_in(account: &str, user: &str) -> Principal {
+        Principal {
+            arn: format!("arn:aws:iam::{account}:user/{user}"),
+            user_id: format!("AIDA{user}"),
+            account_id: account.into(),
+            principal_type: PrincipalType::User,
+            source_identity: None,
+        }
+    }
+
+    fn assumed_role_principal(account: &str, role_arn_tail: &str) -> Principal {
+        Principal {
+            arn: format!("arn:aws:sts::{account}:assumed-role/{role_arn_tail}"),
+            user_id: "AROAEXAMPLE".into(),
+            account_id: account.into(),
+            principal_type: PrincipalType::AssumedRole,
+            source_identity: None,
+        }
+    }
+
+    fn eval_cross(
+        identity: Option<serde_json::Value>,
+        resource: Option<serde_json::Value>,
+        principal: &Principal,
+        resource_account_id: &str,
+    ) -> Decision {
+        let identity_docs: Vec<PolicyDocument> = identity.into_iter().map(doc).collect();
+        let resource_doc = resource.map(doc);
+        let request = req(principal, "s3:GetObject", "arn:aws:s3:::bucket/key");
+        evaluate_with_resource_policy(
+            &identity_docs,
+            resource_doc.as_ref(),
+            &request,
+            resource_account_id,
+        )
+    }
+
+    fn allow_get_wildcard() -> serde_json::Value {
+        json!({"Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"*"}]})
+    }
+
+    fn deny_get_wildcard() -> serde_json::Value {
+        json!({"Statement":[{"Effect":"Deny","Action":"s3:GetObject","Resource":"*"}]})
+    }
+
+    fn resource_allow_for(principal_arn: &str) -> serde_json::Value {
+        json!({
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": {"AWS": principal_arn},
+                "Action": "s3:GetObject",
+                "Resource": "arn:aws:s3:::bucket/key"
+            }]
+        })
+    }
+
+    #[test]
+    fn same_account_identity_only_allow() {
+        let p = principal_in(ACCT_A, "alice");
+        assert_eq!(
+            eval_cross(Some(allow_get_wildcard()), None, &p, ACCT_A),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn same_account_resource_only_allow_via_user_arn() {
+        let p = principal_in(ACCT_A, "alice");
+        let resource = resource_allow_for(&p.arn);
+        assert_eq!(
+            eval_cross(None, Some(resource), &p, ACCT_A),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn same_account_both_allow() {
+        let p = principal_in(ACCT_A, "alice");
+        assert_eq!(
+            eval_cross(
+                Some(allow_get_wildcard()),
+                Some(resource_allow_for(&p.arn)),
+                &p,
+                ACCT_A,
+            ),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn same_account_neither_allows_is_implicit_deny() {
+        let p = principal_in(ACCT_A, "alice");
+        assert_eq!(eval_cross(None, None, &p, ACCT_A), Decision::ImplicitDeny);
+    }
+
+    #[test]
+    fn identity_deny_blocks_resource_allow() {
+        let p = principal_in(ACCT_A, "alice");
+        let resource = resource_allow_for(&p.arn);
+        assert_eq!(
+            eval_cross(Some(deny_get_wildcard()), Some(resource), &p, ACCT_A),
+            Decision::ExplicitDeny
+        );
+    }
+
+    #[test]
+    fn resource_deny_blocks_identity_allow() {
+        let p = principal_in(ACCT_A, "alice");
+        let resource_deny = json!({
+            "Statement": [{
+                "Effect": "Deny",
+                "Principal": "*",
+                "Action": "s3:GetObject",
+                "Resource": "*"
+            }]
+        });
+        assert_eq!(
+            eval_cross(Some(allow_get_wildcard()), Some(resource_deny), &p, ACCT_A,),
+            Decision::ExplicitDeny
+        );
+    }
+
+    #[test]
+    fn cross_account_identity_only_is_implicit_deny() {
+        // Resource lives in B, principal in A. Identity grants, resource
+        // policy silent → cross-account semantics require both.
+        let p = principal_in(ACCT_A, "alice");
+        assert_eq!(
+            eval_cross(Some(allow_get_wildcard()), None, &p, ACCT_B),
+            Decision::ImplicitDeny
+        );
+    }
+
+    #[test]
+    fn cross_account_resource_only_is_implicit_deny() {
+        // Resource lives in B and grants via its policy; principal in A
+        // has no identity policy → cross-account requires identity too.
+        let p = principal_in(ACCT_A, "alice");
+        let resource = resource_allow_for(&p.arn);
+        assert_eq!(
+            eval_cross(None, Some(resource), &p, ACCT_B),
+            Decision::ImplicitDeny
+        );
+    }
+
+    #[test]
+    fn cross_account_both_allow_succeeds() {
+        let p = principal_in(ACCT_A, "alice");
+        let resource = resource_allow_for(&p.arn);
+        assert_eq!(
+            eval_cross(Some(allow_get_wildcard()), Some(resource), &p, ACCT_B),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn principal_wildcard_star_matches_any_principal() {
+        let p = principal_in(ACCT_A, "alice");
+        let resource = json!({
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": "*",
+                "Action": "s3:GetObject",
+                "Resource": "*"
+            }]
+        });
+        assert_eq!(
+            eval_cross(None, Some(resource), &p, ACCT_A),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn principal_aws_star_matches_any_principal() {
+        let p = principal_in(ACCT_A, "alice");
+        let resource = json!({
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": {"AWS": "*"},
+                "Action": "s3:GetObject",
+                "Resource": "*"
+            }]
+        });
+        assert_eq!(
+            eval_cross(None, Some(resource), &p, ACCT_A),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn principal_account_root_matches_any_user_in_account() {
+        let p = principal_in(ACCT_A, "alice");
+        let resource = resource_allow_for("arn:aws:iam::111111111111:root");
+        assert_eq!(
+            eval_cross(None, Some(resource), &p, ACCT_A),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn principal_account_root_does_not_match_other_account() {
+        let p = principal_in(ACCT_A, "alice");
+        let resource = resource_allow_for("arn:aws:iam::222222222222:root");
+        assert_eq!(
+            eval_cross(None, Some(resource), &p, ACCT_A),
+            Decision::ImplicitDeny
+        );
+    }
+
+    #[test]
+    fn principal_user_arn_exact_match() {
+        let p = principal_in(ACCT_A, "alice");
+        let resource = resource_allow_for("arn:aws:iam::111111111111:user/alice");
+        assert_eq!(
+            eval_cross(None, Some(resource), &p, ACCT_A),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn principal_user_arn_mismatch_is_deny() {
+        let p = principal_in(ACCT_A, "alice");
+        let resource = resource_allow_for("arn:aws:iam::111111111111:user/bob");
+        assert_eq!(
+            eval_cross(None, Some(resource), &p, ACCT_A),
+            Decision::ImplicitDeny
+        );
+    }
+
+    #[test]
+    fn principal_service_matches_assumed_role_containing_service_host() {
+        let p = assumed_role_principal(
+            ACCT_A,
+            "AWSServiceRoleForLambda.lambda.amazonaws.com/session",
+        );
+        let resource = json!({
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": {"Service": "lambda.amazonaws.com"},
+                "Action": "s3:GetObject",
+                "Resource": "*"
+            }]
+        });
+        assert_eq!(
+            eval_cross(None, Some(resource), &p, ACCT_A),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn principal_service_does_not_match_unrelated_user() {
+        let p = principal_in(ACCT_A, "alice");
+        let resource = json!({
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": {"Service": "lambda.amazonaws.com"},
+                "Action": "s3:GetObject",
+                "Resource": "*"
+            }]
+        });
+        assert_eq!(
+            eval_cross(None, Some(resource), &p, ACCT_A),
+            Decision::ImplicitDeny
+        );
+    }
+
+    #[test]
+    fn not_principal_statement_is_skipped_never_grants() {
+        // AWS's NotPrincipal semantics are not implemented in this
+        // batch. A statement carrying NotPrincipal must never silently
+        // grant — it's treated as "doesn't apply".
+        let p = principal_in(ACCT_A, "alice");
+        let resource = json!({
+            "Statement": [{
+                "Effect": "Allow",
+                "NotPrincipal": {"AWS": "arn:aws:iam::111111111111:user/bob"},
+                "Action": "s3:GetObject",
+                "Resource": "*"
+            }]
+        });
+        assert_eq!(
+            eval_cross(None, Some(resource), &p, ACCT_A),
+            Decision::ImplicitDeny
+        );
+    }
+
+    #[test]
+    fn resource_policy_statement_without_principal_is_skipped() {
+        // Malformed resource policy (missing Principal entirely) must
+        // not silently grant to everyone.
+        let p = principal_in(ACCT_A, "alice");
+        let resource = json!({
+            "Statement": [{
+                "Effect": "Allow",
+                "Action": "s3:GetObject",
+                "Resource": "*"
+            }]
+        });
+        assert_eq!(
+            eval_cross(None, Some(resource), &p, ACCT_A),
+            Decision::ImplicitDeny
+        );
+    }
+
+    #[test]
+    fn resource_policy_condition_block_gates_access() {
+        // Regression guard: Phase 2 condition evaluation still applies
+        // to resource-policy statements.
+        use crate::condition::ConditionContext;
+        use std::net::IpAddr;
+
+        let p = principal_in(ACCT_A, "alice");
+        let resource = json!({
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": "*",
+                "Action": "s3:GetObject",
+                "Resource": "*",
+                "Condition": {
+                    "IpAddress": {"aws:SourceIp": "10.0.0.0/8"}
+                }
+            }]
+        });
+        let resource_doc = doc(resource);
+
+        let ctx_ok = ConditionContext {
+            aws_source_ip: Some("10.1.2.3".parse::<IpAddr>().unwrap()),
+            ..ConditionContext::default()
+        };
+        let req_ok = EvalRequest {
+            principal: &p,
+            action: "s3:GetObject".to_string(),
+            resource: "arn:aws:s3:::bucket/key".to_string(),
+            context: ctx_ok,
+        };
+        assert_eq!(
+            evaluate_with_resource_policy(&[], Some(&resource_doc), &req_ok, ACCT_A),
+            Decision::Allow
+        );
+
+        let ctx_bad = ConditionContext {
+            aws_source_ip: Some("8.8.8.8".parse::<IpAddr>().unwrap()),
+            ..ConditionContext::default()
+        };
+        let req_bad = EvalRequest {
+            principal: &p,
+            action: "s3:GetObject".to_string(),
+            resource: "arn:aws:s3:::bucket/key".to_string(),
+            context: ctx_bad,
+        };
+        assert_eq!(
+            evaluate_with_resource_policy(&[], Some(&resource_doc), &req_bad, ACCT_A),
+            Decision::ImplicitDeny
+        );
+    }
+
+    #[test]
+    fn classify_aws_principal_recognizes_bare_account_id() {
+        assert_eq!(
+            classify_aws_principal("111111111111"),
+            PrincipalRef::AwsAccountRoot("111111111111".to_string())
+        );
+    }
+
+    #[test]
+    fn classify_aws_principal_recognizes_root_arn() {
+        assert_eq!(
+            classify_aws_principal("arn:aws:iam::111111111111:root"),
+            PrincipalRef::AwsAccountRoot("111111111111".to_string())
+        );
+    }
+
+    #[test]
+    fn classify_aws_principal_keeps_user_arn_as_arn() {
+        assert_eq!(
+            classify_aws_principal("arn:aws:iam::111111111111:user/alice"),
+            PrincipalRef::AwsArn("arn:aws:iam::111111111111:user/alice".to_string())
+        );
     }
 }
