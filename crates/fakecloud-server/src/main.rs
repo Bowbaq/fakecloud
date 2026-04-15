@@ -387,7 +387,6 @@ async fn main() {
             "events",
             "ssm",
             "lambda",
-            "secretsmanager",
             "logs",
             "kms",
             "ses",
@@ -617,9 +616,60 @@ async fn main() {
         Arc::new(bus)
     };
     let delivery_for_rotation_scheduler = delivery_for_secretsmanager.clone();
-    registry.register(Arc::new(
-        SecretsManagerService::new(secretsmanager_state).with_delivery(delivery_for_secretsmanager),
-    ));
+    let secretsmanager_snapshot_store: Option<Arc<dyn fakecloud_persistence::SnapshotStore>> =
+        if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
+            let data_path = persistence_config
+                .data_path
+                .as_ref()
+                .expect("validated above")
+                .clone();
+            let path = data_path.join("secretsmanager").join("snapshot.json");
+            let store = fakecloud_persistence::DiskSnapshotStore::new(path);
+            match fakecloud_persistence::SnapshotStore::load(&store) {
+                Ok(Some(bytes)) => {
+                    match serde_json::from_slice::<
+                        fakecloud_secretsmanager::state::SecretsManagerSnapshot,
+                    >(&bytes)
+                    {
+                        Ok(snapshot) => {
+                            if snapshot.schema_version
+                                != fakecloud_secretsmanager::state::SECRETSMANAGER_SNAPSHOT_SCHEMA_VERSION
+                            {
+                                fatal_exit(format_args!(
+                                    "secretsmanager persistence schema mismatch: on-disk={}, expected={}",
+                                    snapshot.schema_version,
+                                    fakecloud_secretsmanager::state::SECRETSMANAGER_SNAPSHOT_SCHEMA_VERSION,
+                                ));
+                            }
+                            let secret_count = snapshot.state.secrets.len();
+                            *secretsmanager_state.write() = snapshot.state;
+                            tracing::info!(
+                                secrets = secret_count,
+                                "loaded secretsmanager persistence snapshot",
+                            );
+                        }
+                        Err(err) => fatal_exit(format_args!(
+                            "failed to parse secretsmanager persistence snapshot: {err}"
+                        )),
+                    }
+                }
+                Ok(None) => {
+                    tracing::info!("no secretsmanager persistence snapshot found; starting empty");
+                }
+                Err(err) => fatal_exit(format_args!(
+                    "failed to read secretsmanager persistence snapshot: {err}"
+                )),
+            }
+            Some(Arc::new(store) as Arc<dyn fakecloud_persistence::SnapshotStore>)
+        } else {
+            None
+        };
+    let mut secretsmanager_service =
+        SecretsManagerService::new(secretsmanager_state).with_delivery(delivery_for_secretsmanager);
+    if let Some(store) = secretsmanager_snapshot_store {
+        secretsmanager_service = secretsmanager_service.with_snapshot_store(store);
+    }
+    registry.register(Arc::new(secretsmanager_service));
     registry.register(Arc::new(LogsService::new(logs_state, delivery_for_logs)));
     registry.register(Arc::new(KmsService::new(kms_state.clone())));
     let mut shared_body_cache: Option<Arc<fakecloud_persistence::cache::BodyCache>> = None;

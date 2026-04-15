@@ -3,7 +3,7 @@ use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Secret {
     pub name: String,
     pub arn: String,
@@ -25,12 +25,12 @@ pub struct Secret {
     pub resource_policy: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RotationRules {
     pub automatically_after_days: Option<i64>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SecretVersion {
     pub version_id: String,
     pub secret_string: Option<String>,
@@ -39,6 +39,7 @@ pub struct SecretVersion {
     pub created_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SecretsManagerState {
     pub account_id: String,
     pub region: String,
@@ -60,3 +61,13 @@ impl SecretsManagerState {
 }
 
 pub type SharedSecretsManagerState = Arc<RwLock<SecretsManagerState>>;
+
+/// On-disk snapshot envelope for Secrets Manager state. Versioned so
+/// format changes fail loudly on upgrade.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SecretsManagerSnapshot {
+    pub schema_version: u32,
+    pub state: SecretsManagerState,
+}
+
+pub const SECRETSMANAGER_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
