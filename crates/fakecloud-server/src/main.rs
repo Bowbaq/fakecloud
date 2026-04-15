@@ -698,9 +698,7 @@ async fn main() {
                     }
                 }
                 Ok(None) => {
-                    tracing::info!(
-                        "no secretsmanager persistence snapshot found; starting empty"
-                    );
+                    tracing::info!("no secretsmanager persistence snapshot found; starting empty");
                 }
                 Err(err) => fatal_exit(format_args!(
                     "failed to read secretsmanager persistence snapshot: {err}"
@@ -710,8 +708,8 @@ async fn main() {
         } else {
             None
         };
-    let mut secretsmanager_service = SecretsManagerService::new(secretsmanager_state)
-        .with_delivery(delivery_for_secretsmanager);
+    let mut secretsmanager_service =
+        SecretsManagerService::new(secretsmanager_state).with_delivery(delivery_for_secretsmanager);
     if let Some(store) = secretsmanager_snapshot_store {
         secretsmanager_service = secretsmanager_service.with_snapshot_store(store);
     }
