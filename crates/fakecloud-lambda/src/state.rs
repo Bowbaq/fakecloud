@@ -22,6 +22,15 @@ pub struct LambdaFunction {
     pub architectures: Vec<String>,
     pub package_type: String,
     pub code_zip: Option<Vec<u8>>,
+    /// Resource-based policy attached to this function via
+    /// `AddPermission`, serialized as a full JSON policy document
+    /// (`{"Version":"2012-10-17","Statement":[...]}`). `None` means
+    /// the function has no resource policy attached, matching the
+    /// `ResourceNotFoundException` AWS returns from `GetPolicy` in
+    /// that state. `AddPermission` lazily initializes this; every
+    /// `RemovePermission` leaves at least `{"Statement":[]}` behind,
+    /// matching AWS behavior.
+    pub policy: Option<String>,
 }
 
 #[derive(Debug, Clone)]

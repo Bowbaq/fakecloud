@@ -168,6 +168,11 @@ impl LambdaService {
             (&Method::POST, 4, Some("functions"), Some("invocations")) => "Invoke",
             // /2015-03-31/functions/{name}/versions
             (&Method::POST, 4, Some("functions"), Some("versions")) => "PublishVersion",
+            // /2015-03-31/functions/{name}/policy
+            (&Method::POST, 4, Some("functions"), Some("policy")) => "AddPermission",
+            (&Method::GET, 4, Some("functions"), Some("policy")) => "GetPolicy",
+            // /2015-03-31/functions/{name}/policy/{statement-id}
+            (&Method::DELETE, 5, Some("functions"), Some("policy")) => "RemovePermission",
             // /2015-03-31/event-source-mappings
             (&Method::POST, 2, Some("event-source-mappings"), _) => "CreateEventSourceMapping",
             (&Method::GET, 2, Some("event-source-mappings"), _) => "ListEventSourceMappings",
@@ -227,6 +232,7 @@ impl LambdaService {
             architectures: input.architectures,
             package_type: input.package_type,
             code_zip: input.code_zip,
+            policy: None,
         };
 
         let response = self.function_config_json(&func);
@@ -540,6 +546,234 @@ impl LambdaService {
             "LastModified": mapping.last_modified.timestamp_millis() as f64 / 1000.0,
         })
     }
+
+    /// Grant a permission on a Lambda function by appending a
+    /// statement to its resource-based policy.
+    ///
+    /// Mirrors AWS: the caller passes `(StatementId, Action,
+    /// Principal, SourceArn?, SourceAccount?)` and the service
+    /// composes a canonical policy document so that the existing
+    /// evaluator can read it without a Lambda-specific fork. Per the
+    /// S3 rollout's #427 evaluator, `SourceArn` becomes an `ArnLike`
+    /// Condition and `SourceAccount` becomes a `StringEquals`
+    /// Condition — both are already supported by the Phase 2 operator
+    /// set, so the permission gate behaves end-to-end without any new
+    /// evaluator code.
+    fn add_permission(
+        &self,
+        function_name: &str,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
+        let statement_id = body
+            .get("StatementId")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "InvalidParameterValueException",
+                    "StatementId is required",
+                )
+            })?
+            .to_string();
+        let action = body
+            .get("Action")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "InvalidParameterValueException",
+                    "Action is required",
+                )
+            })?
+            .to_string();
+        let principal_raw = body
+            .get("Principal")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "InvalidParameterValueException",
+                    "Principal is required",
+                )
+            })?
+            .to_string();
+        let source_arn = body
+            .get("SourceArn")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let source_account = body
+            .get("SourceAccount")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+
+        let mut state = self.state.write();
+        let func = state.functions.get_mut(function_name).ok_or_else(|| {
+            AwsServiceError::aws_error(
+                StatusCode::NOT_FOUND,
+                "ResourceNotFoundException",
+                format!("Function not found: {function_name}"),
+            )
+        })?;
+
+        // Load current policy or seed a fresh canonical doc. Any
+        // stored blob that doesn't parse as a JSON object is treated
+        // as corrupt and replaced — `AddPermission` is the only
+        // mutation path for this field and it always writes valid
+        // JSON, so seeing a non-object here means something else
+        // wrote garbage, and silently propagating it would make
+        // later reads harder to debug.
+        let mut doc: Value = func
+            .policy
+            .as_deref()
+            .and_then(|s| serde_json::from_str::<Value>(s).ok())
+            .filter(|v| v.is_object())
+            .unwrap_or_else(|| json!({"Version": "2012-10-17", "Statement": []}));
+
+        // Ensure Statement is an array so we can push into it.
+        if !doc.get("Statement").map(|s| s.is_array()).unwrap_or(false) {
+            doc["Statement"] = json!([]);
+        }
+        let statements = doc["Statement"].as_array_mut().unwrap();
+
+        // Reject duplicate StatementId — matches AWS's
+        // ResourceConflictException.
+        if statements
+            .iter()
+            .any(|s| s.get("Sid").and_then(|v| v.as_str()) == Some(statement_id.as_str()))
+        {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::CONFLICT,
+                "ResourceConflictException",
+                format!("The statement id ({statement_id}) provided already exists"),
+            ));
+        }
+
+        // Canonicalize Principal: a service host string becomes
+        // `{"Service": "<host>"}`, an account-id or ARN becomes
+        // `{"AWS": "<raw>"}`. AWS accepts both shapes on the wire;
+        // storing the object form uniformly means the existing
+        // evaluator path handles everything without reading back the
+        // raw input.
+        let principal_value =
+            if principal_raw.ends_with(".amazonaws.com") || principal_raw.contains(".amazon") {
+                json!({ "Service": principal_raw })
+            } else {
+                json!({ "AWS": principal_raw })
+            };
+
+        // Emit SourceArn / SourceAccount as Condition keys so the
+        // existing Phase 2 ArnLike / StringEquals operators gate the
+        // grant without new evaluator code.
+        let mut condition = serde_json::Map::new();
+        if let Some(arn) = source_arn.as_ref() {
+            condition.insert("ArnLike".to_string(), json!({ "aws:SourceArn": arn }));
+        }
+        if let Some(acct) = source_account.as_ref() {
+            condition.insert(
+                "StringEquals".to_string(),
+                json!({ "aws:SourceAccount": acct }),
+            );
+        }
+
+        let mut new_statement = serde_json::Map::new();
+        new_statement.insert("Sid".to_string(), json!(statement_id));
+        new_statement.insert("Effect".to_string(), json!("Allow"));
+        new_statement.insert("Principal".to_string(), principal_value);
+        new_statement.insert("Action".to_string(), json!(format!("lambda:{action}")));
+        new_statement.insert("Resource".to_string(), json!(func.function_arn));
+        if !condition.is_empty() {
+            new_statement.insert("Condition".to_string(), Value::Object(condition));
+        }
+        let statement_json = Value::Object(new_statement);
+        statements.push(statement_json.clone());
+
+        func.policy = Some(serde_json::to_string(&doc).unwrap());
+
+        Ok(AwsResponse::json(
+            StatusCode::CREATED,
+            json!({ "Statement": serde_json::to_string(&statement_json).unwrap() }).to_string(),
+        ))
+    }
+
+    fn remove_permission(
+        &self,
+        function_name: &str,
+        statement_id: &str,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let mut state = self.state.write();
+        let func = state.functions.get_mut(function_name).ok_or_else(|| {
+            AwsServiceError::aws_error(
+                StatusCode::NOT_FOUND,
+                "ResourceNotFoundException",
+                format!("Function not found: {function_name}"),
+            )
+        })?;
+        let policy_str = func.policy.as_deref().ok_or_else(|| {
+            AwsServiceError::aws_error(
+                StatusCode::NOT_FOUND,
+                "ResourceNotFoundException",
+                format!("No policy is associated with function {function_name}"),
+            )
+        })?;
+        let mut doc: Value = serde_json::from_str(policy_str).map_err(|_| {
+            AwsServiceError::aws_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "InternalError",
+                "stored resource policy is not valid JSON",
+            )
+        })?;
+        let statements = doc
+            .get_mut("Statement")
+            .and_then(|s| s.as_array_mut())
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "InternalError",
+                    "stored resource policy has no Statement array",
+                )
+            })?;
+        let before = statements.len();
+        statements.retain(|s| s.get("Sid").and_then(|v| v.as_str()) != Some(statement_id));
+        if statements.len() == before {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::NOT_FOUND,
+                "ResourceNotFoundException",
+                format!("Statement {statement_id} is not found in resource policy"),
+            ));
+        }
+        // Leave an empty {"Statement":[]} behind rather than clearing
+        // the field to None — AWS's GetPolicy keeps returning the
+        // (empty) doc until the function itself is deleted.
+        func.policy = Some(serde_json::to_string(&doc).unwrap());
+        Ok(AwsResponse::json(StatusCode::NO_CONTENT, String::new()))
+    }
+
+    fn get_policy(&self, function_name: &str) -> Result<AwsResponse, AwsServiceError> {
+        let state = self.state.read();
+        let func = state.functions.get(function_name).ok_or_else(|| {
+            AwsServiceError::aws_error(
+                StatusCode::NOT_FOUND,
+                "ResourceNotFoundException",
+                format!("Function not found: {function_name}"),
+            )
+        })?;
+        let policy = func.policy.as_deref().ok_or_else(|| {
+            AwsServiceError::aws_error(
+                StatusCode::NOT_FOUND,
+                "ResourceNotFoundException",
+                format!("No policy is associated with function {function_name}"),
+            )
+        })?;
+        Ok(AwsResponse::json(
+            StatusCode::OK,
+            json!({
+                "Policy": policy,
+                "RevisionId": uuid::Uuid::new_v4().to_string(),
+            })
+            .to_string(),
+        ))
+    }
 }
 
 #[async_trait]
@@ -567,6 +801,13 @@ impl AwsService for LambdaService {
                     .await
             }
             "PublishVersion" => self.publish_version(resource_name.as_deref().unwrap_or("")),
+            "AddPermission" => self.add_permission(resource_name.as_deref().unwrap_or(""), &req),
+            "GetPolicy" => self.get_policy(resource_name.as_deref().unwrap_or("")),
+            "RemovePermission" => {
+                // Path: /2015-03-31/functions/{name}/policy/{sid}
+                let sid = req.path_segments.get(4).cloned().unwrap_or_default();
+                self.remove_permission(resource_name.as_deref().unwrap_or(""), &sid)
+            }
             "CreateEventSourceMapping" => self.create_event_source_mapping(&req),
             "ListEventSourceMappings" => self.list_event_source_mappings(),
             "GetEventSourceMapping" => {
@@ -587,11 +828,83 @@ impl AwsService for LambdaService {
             "ListFunctions",
             "Invoke",
             "PublishVersion",
+            "AddPermission",
+            "RemovePermission",
+            "GetPolicy",
             "CreateEventSourceMapping",
             "ListEventSourceMappings",
             "GetEventSourceMapping",
             "DeleteEventSourceMapping",
         ]
+    }
+
+    fn iam_enforceable(&self) -> bool {
+        true
+    }
+
+    /// Lambda resources are function ARNs. Function-scoped ops
+    /// resolve the target ARN from the path; list ops target `*`
+    /// (the whole service), matching how AWS models them.
+    fn iam_action_for(&self, request: &AwsRequest) -> Option<fakecloud_core::auth::IamAction> {
+        // REST-JSON services don't have `request.action` populated at
+        // dispatch time — it's derived from method+path inside
+        // `handle()`. Reuse the same resolver so the two can never
+        // drift.
+        let (action_str, resource_name) = Self::resolve_action(request)?;
+        let action: &'static str = match action_str {
+            "CreateFunction" => "CreateFunction",
+            "ListFunctions" => "ListFunctions",
+            "GetFunction" => "GetFunction",
+            "DeleteFunction" => "DeleteFunction",
+            "Invoke" => "InvokeFunction",
+            "PublishVersion" => "PublishVersion",
+            "AddPermission" => "AddPermission",
+            "RemovePermission" => "RemovePermission",
+            "GetPolicy" => "GetPolicy",
+            "CreateEventSourceMapping" => "CreateEventSourceMapping",
+            "ListEventSourceMappings" => "ListEventSourceMappings",
+            "GetEventSourceMapping" => "GetEventSourceMapping",
+            "DeleteEventSourceMapping" => "DeleteEventSourceMapping",
+            _ => return None,
+        };
+        let state = self.state.read();
+        let resource = match action {
+            "GetFunction" | "DeleteFunction" | "InvokeFunction" | "PublishVersion"
+            | "AddPermission" | "RemovePermission" | "GetPolicy" => {
+                let name = resource_name.unwrap_or_default();
+                if name.is_empty() {
+                    "*".to_string()
+                } else {
+                    format!(
+                        "arn:aws:lambda:{}:{}:function:{}",
+                        state.region, state.account_id, name
+                    )
+                }
+            }
+            "CreateFunction" => {
+                // Best-effort: parse the FunctionName from the body so
+                // CreateFunction can be resource-scoped against the
+                // to-be-created ARN. Falls back to `*` when the body
+                // isn't JSON yet (e.g. soft-mode observability).
+                serde_json::from_slice::<Value>(&request.body)
+                    .ok()
+                    .and_then(|v| {
+                        v.get("FunctionName").and_then(|f| f.as_str()).map(|n| {
+                            format!(
+                                "arn:aws:lambda:{}:{}:function:{}",
+                                state.region, state.account_id, n
+                            )
+                        })
+                    })
+                    .unwrap_or_else(|| "*".to_string())
+            }
+            _ => "*".to_string(),
+        };
+        Some(fakecloud_core::auth::IamAction {
+            service: "lambda",
+            action,
+            resource,
+        })
     }
 }
 
@@ -817,5 +1130,260 @@ mod tests {
         );
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::ACCEPTED);
+    }
+
+    async fn seed_function(svc: &LambdaService, name: &str) {
+        let body = json!({
+            "FunctionName": name,
+            "Runtime": "python3.12",
+            "Role": "arn:aws:iam::123456789012:role/r",
+            "Handler": "index.handler",
+            "Code": {}
+        });
+        let req = make_request(Method::POST, "/2015-03-31/functions", &body.to_string());
+        svc.handle(req).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn add_permission_builds_canonical_statement() {
+        let svc = LambdaService::new(make_state());
+        seed_function(&svc, "f").await;
+
+        let body = json!({
+            "StatementId": "s3-invoke",
+            "Action": "InvokeFunction",
+            "Principal": "s3.amazonaws.com",
+            "SourceArn": "arn:aws:s3:::my-bucket",
+            "SourceAccount": "123456789012",
+        });
+        let req = make_request(
+            Method::POST,
+            "/2015-03-31/functions/f/policy",
+            &body.to_string(),
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::CREATED);
+
+        let out: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        let statement: Value = serde_json::from_str(out["Statement"].as_str().unwrap()).unwrap();
+        assert_eq!(statement["Sid"], "s3-invoke");
+        assert_eq!(statement["Effect"], "Allow");
+        assert_eq!(statement["Principal"]["Service"], "s3.amazonaws.com");
+        assert_eq!(statement["Action"], "lambda:InvokeFunction");
+        assert_eq!(
+            statement["Resource"],
+            "arn:aws:lambda:us-east-1:123456789012:function:f"
+        );
+        assert_eq!(
+            statement["Condition"]["ArnLike"]["aws:SourceArn"],
+            "arn:aws:s3:::my-bucket"
+        );
+        assert_eq!(
+            statement["Condition"]["StringEquals"]["aws:SourceAccount"],
+            "123456789012"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_permission_aws_principal_emits_aws_key() {
+        let svc = LambdaService::new(make_state());
+        seed_function(&svc, "f").await;
+
+        let body = json!({
+            "StatementId": "user-invoke",
+            "Action": "InvokeFunction",
+            "Principal": "arn:aws:iam::123456789012:user/alice",
+        });
+        let req = make_request(
+            Method::POST,
+            "/2015-03-31/functions/f/policy",
+            &body.to_string(),
+        );
+        svc.handle(req).await.unwrap();
+
+        // Fetch via GetPolicy and inspect the stored doc.
+        let req = make_request(Method::GET, "/2015-03-31/functions/f/policy", "");
+        let resp = svc.handle(req).await.unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        let doc: Value = serde_json::from_str(body["Policy"].as_str().unwrap()).unwrap();
+        let statements = doc["Statement"].as_array().unwrap();
+        assert_eq!(statements.len(), 1);
+        assert_eq!(
+            statements[0]["Principal"]["AWS"],
+            "arn:aws:iam::123456789012:user/alice"
+        );
+        assert!(statements[0].get("Condition").is_none());
+    }
+
+    #[tokio::test]
+    async fn add_permission_rejects_duplicate_statement_id() {
+        let svc = LambdaService::new(make_state());
+        seed_function(&svc, "f").await;
+
+        let body = json!({
+            "StatementId": "dup",
+            "Action": "InvokeFunction",
+            "Principal": "arn:aws:iam::123456789012:user/a",
+        });
+        let req = make_request(
+            Method::POST,
+            "/2015-03-31/functions/f/policy",
+            &body.to_string(),
+        );
+        svc.handle(req).await.unwrap();
+
+        let req = make_request(
+            Method::POST,
+            "/2015-03-31/functions/f/policy",
+            &body.to_string(),
+        );
+        let err = match svc.handle(req).await {
+            Err(e) => e,
+            Ok(_) => panic!("expected error"),
+        };
+        assert_eq!(err.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn get_policy_returns_404_when_no_policy_attached() {
+        let svc = LambdaService::new(make_state());
+        seed_function(&svc, "f").await;
+
+        let req = make_request(Method::GET, "/2015-03-31/functions/f/policy", "");
+        let err = match svc.handle(req).await {
+            Err(e) => e,
+            Ok(_) => panic!("expected error"),
+        };
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn remove_permission_strips_matching_sid_and_leaves_empty_doc() {
+        let svc = LambdaService::new(make_state());
+        seed_function(&svc, "f").await;
+
+        for sid in ["a", "b"] {
+            let body = json!({
+                "StatementId": sid,
+                "Action": "InvokeFunction",
+                "Principal": "arn:aws:iam::123456789012:user/u",
+            });
+            let req = make_request(
+                Method::POST,
+                "/2015-03-31/functions/f/policy",
+                &body.to_string(),
+            );
+            svc.handle(req).await.unwrap();
+        }
+
+        // Remove "a"
+        let req = make_request(Method::DELETE, "/2015-03-31/functions/f/policy/a", "");
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::NO_CONTENT);
+
+        // GetPolicy still returns the doc with just "b".
+        let req = make_request(Method::GET, "/2015-03-31/functions/f/policy", "");
+        let resp = svc.handle(req).await.unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        let doc: Value = serde_json::from_str(body["Policy"].as_str().unwrap()).unwrap();
+        let stmts = doc["Statement"].as_array().unwrap();
+        assert_eq!(stmts.len(), 1);
+        assert_eq!(stmts[0]["Sid"], "b");
+
+        // Remove the last one — doc stays (empty Statement array).
+        let req = make_request(Method::DELETE, "/2015-03-31/functions/f/policy/b", "");
+        svc.handle(req).await.unwrap();
+
+        let req = make_request(Method::GET, "/2015-03-31/functions/f/policy", "");
+        let resp = svc.handle(req).await.unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        let doc: Value = serde_json::from_str(body["Policy"].as_str().unwrap()).unwrap();
+        assert_eq!(doc["Statement"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn remove_permission_unknown_sid_is_404() {
+        let svc = LambdaService::new(make_state());
+        seed_function(&svc, "f").await;
+
+        let body = json!({
+            "StatementId": "known",
+            "Action": "InvokeFunction",
+            "Principal": "arn:aws:iam::123456789012:user/u",
+        });
+        let req = make_request(
+            Method::POST,
+            "/2015-03-31/functions/f/policy",
+            &body.to_string(),
+        );
+        svc.handle(req).await.unwrap();
+
+        let req = make_request(Method::DELETE, "/2015-03-31/functions/f/policy/other", "");
+        let err = match svc.handle(req).await {
+            Err(e) => e,
+            Ok(_) => panic!("expected error"),
+        };
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn add_permission_on_missing_function_is_404() {
+        let svc = LambdaService::new(make_state());
+        let body = json!({
+            "StatementId": "s",
+            "Action": "InvokeFunction",
+            "Principal": "arn:aws:iam::123456789012:user/u",
+        });
+        let req = make_request(
+            Method::POST,
+            "/2015-03-31/functions/missing/policy",
+            &body.to_string(),
+        );
+        let err = match svc.handle(req).await {
+            Err(e) => e,
+            Ok(_) => panic!("expected error"),
+        };
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn iam_action_for_maps_invoke_to_function_arn() {
+        let svc = LambdaService::new(make_state());
+        let req = make_request(Method::POST, "/2015-03-31/functions/f/invocations", "");
+        let action = svc.iam_action_for(&req).unwrap();
+        assert_eq!(action.service, "lambda");
+        assert_eq!(action.action, "InvokeFunction");
+        assert_eq!(
+            action.resource,
+            "arn:aws:lambda:us-east-1:123456789012:function:f"
+        );
+    }
+
+    #[test]
+    fn iam_action_for_maps_list_to_star() {
+        let svc = LambdaService::new(make_state());
+        let req = make_request(Method::GET, "/2015-03-31/functions", "");
+        let action = svc.iam_action_for(&req).unwrap();
+        assert_eq!(action.action, "ListFunctions");
+        assert_eq!(action.resource, "*");
+    }
+
+    #[test]
+    fn iam_action_for_create_reads_function_name_from_body() {
+        let svc = LambdaService::new(make_state());
+        let body = json!({
+            "FunctionName": "newfn",
+            "Runtime": "python3.12",
+            "Role": "arn:aws:iam::123456789012:role/r",
+            "Handler": "index.handler",
+            "Code": {}
+        });
+        let req = make_request(Method::POST, "/2015-03-31/functions", &body.to_string());
+        let action = svc.iam_action_for(&req).unwrap();
+        assert_eq!(action.action, "CreateFunction");
+        assert_eq!(
+            action.resource,
+            "arn:aws:lambda:us-east-1:123456789012:function:newfn"
+        );
     }
 }
