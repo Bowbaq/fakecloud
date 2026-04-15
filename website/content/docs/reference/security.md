@@ -1,6 +1,6 @@
 +++
 title = "SigV4 verification and IAM enforcement"
-description = "Opt-in security features: real SigV4 signature checking and Phase 1 IAM identity-policy evaluation."
+description = "Opt-in security features: real SigV4 signature checking and IAM identity-policy evaluation with Condition block support."
 weight = 5
 +++
 
@@ -69,33 +69,68 @@ Opt-in enforcement covers the services most commonly subject to real IAM policie
 
 Other services are not enforced even with `FAKECLOUD_IAM=strict`. The startup log enumerates which services are enforced vs. skipped so you always know the current surface. If a service you need is missing, [open an issue](https://github.com/faiscadev/fakecloud/issues) — the wiring is straightforward per-service.
 
-## Phase 1 evaluator scope
+## Evaluator scope
 
-The policy evaluator implements the essentials of AWS's identity-based policy evaluation. It deliberately stops short of Phase 2 features so you don't build false mental models from a half-evaluator.
+The policy evaluator implements the essentials of AWS's identity-based policy evaluation. It deliberately stops short of the features listed below so you don't build false mental models from a half-evaluator.
 
 ### Implemented
 
 - `Effect: "Allow"` / `Effect: "Deny"` with **Deny precedence** (any matching deny wins).
 - `Action` / `NotAction` with `*` and `?` wildcards. Service prefix match is case-insensitive; action names are case-sensitive (matches AWS).
 - `Resource` / `NotResource` with `*` and `?` wildcards.
+- `Condition` blocks: all 28 operators AWS defines, plus the `...IfExists` suffix and the `ForAllValues:` / `ForAnyValue:` qualifiers. See the next section for details.
 - Identity policies attached to:
   - IAM users (inline + managed + via group membership, inline and managed)
   - IAM roles (inline + managed, for assumed-role sessions)
 - Empty effective policy set -> implicit deny.
 
-### Not implemented (Phase 2)
+### Condition block evaluation
 
-Statements that use any of these features are **skipped during evaluation** (with a `debug!` on the audit target). They're tracked for Phase 2 and will be announced when the evaluator can handle them:
+A statement with a `Condition` block only applies when every entry in the block evaluates to `true` against the request-time context. Multiple operators inside a single `Condition` are AND-combined; multiple keys inside one operator are AND-combined; multiple values for one key are OR-combined (modulo the `ForAllValues` qualifier).
 
-- `Condition` blocks (StringEquals, IpAddress, DateLessThan, etc.)
-- Resource-based policies (S3 bucket policies, SNS topic policies, KMS key policies, Lambda resource policies)
-- Permission boundaries
-- Service control policies (SCPs)
-- Session policies passed to `AssumeRole`
-- ABAC / tag conditions
-- `NotPrincipal`
+**Supported operators:**
 
-If you need any of these for your test scenarios, **use real AWS**. fakecloud is a test tool, not an IAM simulator.
+| Category | Operators |
+| --- | --- |
+| String | `StringEquals`, `StringNotEquals`, `StringEqualsIgnoreCase`, `StringNotEqualsIgnoreCase`, `StringLike`, `StringNotLike` |
+| Numeric | `NumericEquals`, `NumericNotEquals`, `NumericLessThan`, `NumericLessThanEquals`, `NumericGreaterThan`, `NumericGreaterThanEquals` |
+| Date | `DateEquals`, `DateNotEquals`, `DateLessThan`, `DateLessThanEquals`, `DateGreaterThan`, `DateGreaterThanEquals` (RFC3339 and epoch seconds both accepted) |
+| Boolean | `Bool` |
+| Binary | `BinaryEquals` |
+| IP address | `IpAddress`, `NotIpAddress` (v4 and v6 CIDR, plus bare addresses) |
+| ARN | `ArnEquals`, `ArnNotEquals`, `ArnLike`, `ArnNotLike` |
+| Existence | `Null` |
+
+Every operator supports the `...IfExists` suffix (missing key evaluates to `true`) and the `ForAllValues:` / `ForAnyValue:` set-qualifier prefixes.
+
+**Supported global condition keys:**
+
+| Key | Source |
+| --- | --- |
+| `aws:username` | Last segment of the IAM user ARN; unset for assumed-role / federated principals, matching AWS |
+| `aws:userid` | `Principal.user_id` (e.g. `AIDA...`, `AROA...:<session>`) |
+| `aws:PrincipalArn` | Full principal ARN |
+| `aws:PrincipalAccount` | 12-digit account ID sourced from the credential (#381 alignment), not global config |
+| `aws:PrincipalType` | PascalCase label: `User` / `AssumedRole` / `FederatedUser` / `Account` |
+| `aws:SourceIp` | Remote address of the incoming HTTP connection |
+| `aws:CurrentTime` | Server-side evaluation timestamp (UTC) |
+| `aws:EpochTime` | Same moment as `aws:CurrentTime`, in seconds since the Unix epoch |
+| `aws:SecureTransport` | `true` iff the request carries `x-forwarded-proto: https` (the fakecloud server itself speaks HTTP; set this header from an upstream TLS terminator to test) |
+| `aws:RequestedRegion` | Region extracted from SigV4 / config |
+
+**Safe-fail semantics.** Any unimplemented operator, unknown key, or parse failure (malformed date, invalid CIDR, non-numeric value where numeric expected) is logged to `fakecloud::iam::audit` at debug level and evaluates to `false` — i.e. the statement *does not apply*. The evaluator will never silently treat an unrecognized condition as a match. If you see unexpected denies, raise the `fakecloud::iam::audit` log level to see which statements were skipped.
+
+### Not implemented
+
+- Service-specific condition keys (`s3:prefix`, `s3:delimiter`, `sqs:MessageAttribute.*`, …). The `service_keys` plumbing is already in place; per-service population lands in a follow-up batch.
+- Resource-based policies (S3 bucket policies, SNS topic policies, KMS key policies, Lambda resource policies).
+- Permission boundaries.
+- Service control policies (SCPs).
+- Session policies passed to `AssumeRole`.
+- ABAC / tag conditions (`aws:ResourceTag`, `aws:RequestTag`, `aws:TagKeys`).
+- `NotPrincipal`.
+
+If you need any of these for your test scenarios, **use real AWS**. fakecloud is a test tool, not a full IAM simulator.
 
 ## Practical example
 
