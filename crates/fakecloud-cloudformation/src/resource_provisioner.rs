@@ -6,7 +6,8 @@ use uuid::Uuid;
 
 use fakecloud_core::delivery::DeliveryBus;
 use fakecloud_dynamodb::state::{
-    AttributeDefinition, DynamoTable, KeySchemaElement, ProvisionedThroughput, SharedDynamoDbState,
+    AttributeDefinition, DynamoTable, KeySchemaElement, OnDemandThroughput, ProvisionedThroughput,
+    SharedDynamoDbState,
 };
 use fakecloud_eventbridge::state::{EventRule, SharedEventBridgeState};
 use fakecloud_iam::state::{IamPolicy, IamRole, PolicyVersion, SharedIamState};
@@ -652,6 +653,19 @@ impl ResourceProvisioner {
             .and_then(|v| v.as_bool().or_else(|| v.as_str().map(|s| s == "true")))
             .unwrap_or(false);
 
+        let on_demand_throughput = props
+            .get("OnDemandThroughput")
+            .map(|odt| OnDemandThroughput {
+                max_read_request_units: odt
+                    .get("MaxReadRequestUnits")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(-1),
+                max_write_request_units: odt
+                    .get("MaxWriteRequestUnits")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(-1),
+            });
+
         let mut state = self.dynamodb_state.write();
         let arn = format!(
             "arn:aws:dynamodb:{}:{}:table/{}",
@@ -698,7 +712,7 @@ impl ResourceProvisioner {
             sse_type: None,
             sse_kms_key_arn: None,
             deletion_protection_enabled,
-            on_demand_throughput: None,
+            on_demand_throughput,
         };
 
         state.tables.insert(table_name.to_string(), table);
