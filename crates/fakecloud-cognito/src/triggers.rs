@@ -540,6 +540,9 @@ mod tests {
                     last_modified_date: chrono::Utc::now(),
                     policies: crate::state::PoolPolicies {
                         password_policy: crate::state::PasswordPolicy::default(),
+                        sign_in_policy: crate::state::SignInPolicy {
+                            allowed_first_auth_factors: vec!["PASSWORD".to_string()],
+                        },
                     },
                     auto_verified_attributes: vec![],
                     username_attributes: None,
@@ -559,6 +562,8 @@ mod tests {
                     estimated_number_of_users: 0,
                     software_token_mfa_configuration: None,
                     sms_mfa_configuration: None,
+                    user_pool_tier: "ESSENTIALS".to_string(),
+                    verification_message_template: None,
                 },
             );
         }

@@ -25,9 +25,9 @@ use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceErr
 use crate::state::{
     AccountRecoverySetting, AdminCreateUserConfig, Device, EmailConfiguration, Group,
     IdentityProvider, InviteMessageTemplate, PasswordPolicy, RecoveryOption, ResourceServer,
-    ResourceServerScope, SchemaAttribute, SharedCognitoState, SmsConfiguration,
+    ResourceServerScope, SchemaAttribute, SharedCognitoState, SignInPolicy, SmsConfiguration,
     StringAttributeConstraints, TokenValidityUnits, User, UserAttribute, UserImportJob, UserPool,
-    UserPoolClient, UserPoolDomain,
+    UserPoolClient, UserPoolDomain, VerificationMessageTemplate,
 };
 use crate::triggers::CognitoDeliveryContext;
 
@@ -542,6 +542,52 @@ fn parse_password_policy(val: &Value) -> PasswordPolicy {
     }
 }
 
+fn default_sign_in_policy() -> SignInPolicy {
+    SignInPolicy {
+        allowed_first_auth_factors: vec!["PASSWORD".to_string()],
+    }
+}
+
+pub(super) fn parse_sign_in_policy(val: &Value) -> SignInPolicy {
+    if !val.is_object() {
+        return default_sign_in_policy();
+    }
+    let factors = val["AllowedFirstAuthFactors"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if factors.is_empty() {
+        default_sign_in_policy()
+    } else {
+        SignInPolicy {
+            allowed_first_auth_factors: factors,
+        }
+    }
+}
+
+pub(super) fn parse_verification_message_template(
+    val: &Value,
+) -> Option<VerificationMessageTemplate> {
+    if !val.is_object() {
+        return None;
+    }
+    Some(VerificationMessageTemplate {
+        default_email_option: val["DefaultEmailOption"]
+            .as_str()
+            .unwrap_or("CONFIRM_WITH_CODE")
+            .to_string(),
+        email_message: val["EmailMessage"].as_str().map(|s| s.to_string()),
+        email_subject: val["EmailSubject"].as_str().map(|s| s.to_string()),
+        email_message_by_link: val["EmailMessageByLink"].as_str().map(|s| s.to_string()),
+        email_subject_by_link: val["EmailSubjectByLink"].as_str().map(|s| s.to_string()),
+        sms_message: val["SmsMessage"].as_str().map(|s| s.to_string()),
+    })
+}
+
 fn parse_string_array(val: &Value) -> Vec<String> {
     val.as_array()
         .map(|arr| {
@@ -900,12 +946,16 @@ fn user_pool_to_json(pool: &UserPool) -> Value {
                 "RequireNumbers": pool.policies.password_policy.require_numbers,
                 "RequireSymbols": pool.policies.password_policy.require_symbols,
                 "TemporaryPasswordValidityDays": pool.policies.password_policy.temporary_password_validity_days,
-            }
+            },
+            "SignInPolicy": {
+                "AllowedFirstAuthFactors": pool.policies.sign_in_policy.allowed_first_auth_factors,
+            },
         },
         "AutoVerifiedAttributes": pool.auto_verified_attributes,
         "MfaConfiguration": pool.mfa_configuration,
         "EstimatedNumberOfUsers": pool.estimated_number_of_users,
         "UserPoolTags": pool.user_pool_tags,
+        "UserPoolTier": pool.user_pool_tier,
         "SchemaAttributes": pool.schema_attributes.iter().map(|a| {
             let mut attr = json!({
                 "Name": a.name,
@@ -945,22 +995,26 @@ fn user_pool_to_json(pool: &UserPool) -> Value {
     if let Some(ref lc) = pool.lambda_config {
         obj["LambdaConfig"] = lc.clone();
     }
-    if let Some(ref ec) = pool.email_configuration {
-        let mut email = json!({});
-        if let Some(ref v) = ec.source_arn {
-            email["SourceArn"] = json!(v);
-        }
-        if let Some(ref v) = ec.reply_to_email_address {
-            email["ReplyToEmailAddress"] = json!(v);
-        }
-        if let Some(ref v) = ec.email_sending_account {
-            email["EmailSendingAccount"] = json!(v);
-        }
-        if let Some(ref v) = ec.from_email_address {
-            email["From"] = json!(v);
-        }
-        if let Some(ref v) = ec.configuration_set {
-            email["ConfigurationSet"] = json!(v);
+    {
+        let mut email = json!({
+            "EmailSendingAccount": "COGNITO_DEFAULT",
+        });
+        if let Some(ref ec) = pool.email_configuration {
+            if let Some(ref v) = ec.source_arn {
+                email["SourceArn"] = json!(v);
+            }
+            if let Some(ref v) = ec.reply_to_email_address {
+                email["ReplyToEmailAddress"] = json!(v);
+            }
+            if let Some(ref v) = ec.email_sending_account {
+                email["EmailSendingAccount"] = json!(v);
+            }
+            if let Some(ref v) = ec.from_email_address {
+                email["From"] = json!(v);
+            }
+            if let Some(ref v) = ec.configuration_set {
+                email["ConfigurationSet"] = json!(v);
+            }
         }
         obj["EmailConfiguration"] = email;
     }
@@ -977,42 +1031,74 @@ fn user_pool_to_json(pool: &UserPool) -> Value {
         }
         obj["SmsConfiguration"] = sms;
     }
-    if let Some(ref ac) = pool.admin_create_user_config {
-        let mut admin = json!({});
-        if let Some(v) = ac.allow_admin_create_user_only {
-            admin["AllowAdminCreateUserOnly"] = json!(v);
-        }
-        if let Some(ref imt) = ac.invite_message_template {
-            let mut tmpl = json!({});
-            if let Some(ref v) = imt.email_message {
-                tmpl["EmailMessage"] = json!(v);
+    {
+        let mut admin = json!({
+            "AllowAdminCreateUserOnly": false,
+        });
+        if let Some(ref ac) = pool.admin_create_user_config {
+            if let Some(v) = ac.allow_admin_create_user_only {
+                admin["AllowAdminCreateUserOnly"] = json!(v);
             }
-            if let Some(ref v) = imt.email_subject {
-                tmpl["EmailSubject"] = json!(v);
+            if let Some(ref imt) = ac.invite_message_template {
+                let mut tmpl = json!({});
+                if let Some(ref v) = imt.email_message {
+                    tmpl["EmailMessage"] = json!(v);
+                }
+                if let Some(ref v) = imt.email_subject {
+                    tmpl["EmailSubject"] = json!(v);
+                }
+                if let Some(ref v) = imt.sms_message {
+                    tmpl["SMSMessage"] = json!(v);
+                }
+                admin["InviteMessageTemplate"] = tmpl;
             }
-            if let Some(ref v) = imt.sms_message {
-                tmpl["SMSMessage"] = json!(v);
+            if let Some(v) = ac.unused_account_validity_days {
+                admin["UnusedAccountValidityDays"] = json!(v);
             }
-            admin["InviteMessageTemplate"] = tmpl;
-        }
-        if let Some(v) = ac.unused_account_validity_days {
-            admin["UnusedAccountValidityDays"] = json!(v);
         }
         obj["AdminCreateUserConfig"] = admin;
     }
-    if let Some(ref ars) = pool.account_recovery_setting {
-        obj["AccountRecoverySetting"] = json!({
-            "RecoveryMechanisms": ars.recovery_mechanisms.iter().map(|r| {
-                json!({
-                    "Name": r.name,
-                    "Priority": r.priority,
+    {
+        let mechanisms: Vec<Value> = match pool.account_recovery_setting {
+            Some(ref ars) if !ars.recovery_mechanisms.is_empty() => ars
+                .recovery_mechanisms
+                .iter()
+                .map(|r| {
+                    json!({
+                        "Name": r.name,
+                        "Priority": r.priority,
+                    })
                 })
-            }).collect::<Vec<Value>>(),
+                .collect(),
+            _ => vec![json!({ "Name": "verified_email", "Priority": 1 })],
+        };
+        obj["AccountRecoverySetting"] = json!({ "RecoveryMechanisms": mechanisms });
+    }
+    {
+        let mut vmt = json!({
+            "DefaultEmailOption": "CONFIRM_WITH_CODE",
         });
+        if let Some(ref t) = pool.verification_message_template {
+            vmt["DefaultEmailOption"] = json!(t.default_email_option);
+            if let Some(ref v) = t.email_message {
+                vmt["EmailMessage"] = json!(v);
+            }
+            if let Some(ref v) = t.email_subject {
+                vmt["EmailSubject"] = json!(v);
+            }
+            if let Some(ref v) = t.email_message_by_link {
+                vmt["EmailMessageByLink"] = json!(v);
+            }
+            if let Some(ref v) = t.email_subject_by_link {
+                vmt["EmailSubjectByLink"] = json!(v);
+            }
+            if let Some(ref v) = t.sms_message {
+                vmt["SmsMessage"] = json!(v);
+            }
+        }
+        obj["VerificationMessageTemplate"] = vmt;
     }
-    if let Some(ref dp) = pool.deletion_protection {
-        obj["DeletionProtection"] = json!(dp);
-    }
+    obj["DeletionProtection"] = json!(pool.deletion_protection.as_deref().unwrap_or("INACTIVE"));
 
     obj
 }

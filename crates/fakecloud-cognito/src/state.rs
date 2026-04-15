@@ -190,6 +190,23 @@ pub struct UserPool {
     pub estimated_number_of_users: i64,
     pub software_token_mfa_configuration: Option<SoftwareTokenMfaConfiguration>,
     pub sms_mfa_configuration: Option<SmsMfaConfiguration>,
+    pub user_pool_tier: String,
+    pub verification_message_template: Option<VerificationMessageTemplate>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct VerificationMessageTemplate {
+    pub default_email_option: String,
+    pub email_message: Option<String>,
+    pub email_subject: Option<String>,
+    pub email_message_by_link: Option<String>,
+    pub email_subject_by_link: Option<String>,
+    pub sms_message: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SignInPolicy {
+    pub allowed_first_auth_factors: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -206,6 +223,7 @@ pub struct SmsMfaConfiguration {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PoolPolicies {
     pub password_policy: PasswordPolicy,
+    pub sign_in_policy: SignInPolicy,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

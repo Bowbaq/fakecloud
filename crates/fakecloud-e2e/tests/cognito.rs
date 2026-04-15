@@ -77,6 +77,85 @@ async fn cognito_create_describe_user_pool() {
 }
 
 #[tokio::test]
+async fn cognito_user_pool_default_shape() {
+    let server = TestServer::start().await;
+    let client = server.cognito_client().await;
+
+    let result = client
+        .create_user_pool()
+        .pool_name("default-shape")
+        .send()
+        .await
+        .expect("create user pool");
+    let id = result.user_pool().unwrap().id().unwrap().to_string();
+
+    let described = client
+        .describe_user_pool()
+        .user_pool_id(&id)
+        .send()
+        .await
+        .expect("describe user pool");
+    let pool = described.user_pool().unwrap();
+
+    // user_pool_tier defaults to ESSENTIALS
+    assert_eq!(
+        pool.user_pool_tier().map(|t| t.as_str()),
+        Some("ESSENTIALS"),
+    );
+
+    // email_configuration default: COGNITO_DEFAULT
+    let ec = pool
+        .email_configuration()
+        .expect("EmailConfiguration must be returned");
+    assert_eq!(
+        ec.email_sending_account().map(|a| a.as_str()),
+        Some("COGNITO_DEFAULT"),
+    );
+
+    // verification_message_template default: CONFIRM_WITH_CODE
+    let vmt = pool
+        .verification_message_template()
+        .expect("VerificationMessageTemplate must be returned");
+    assert_eq!(
+        vmt.default_email_option().map(|o| o.as_str()),
+        Some("CONFIRM_WITH_CODE"),
+    );
+
+    // sign_in_policy.allowed_first_auth_factors defaults to [PASSWORD]
+    let sip = pool
+        .policies()
+        .and_then(|p| p.sign_in_policy())
+        .expect("SignInPolicy must be returned");
+    let factors: Vec<&str> = sip
+        .allowed_first_auth_factors()
+        .iter()
+        .map(|f| f.as_str())
+        .collect();
+    assert_eq!(factors, vec!["PASSWORD"]);
+
+    // account_recovery_setting default: at least one mechanism
+    let ars = pool
+        .account_recovery_setting()
+        .expect("AccountRecoverySetting must be returned");
+    assert!(
+        !ars.recovery_mechanisms().is_empty(),
+        "default account recovery must have at least one mechanism"
+    );
+
+    // admin_create_user_config is always returned
+    let acuc = pool
+        .admin_create_user_config()
+        .expect("AdminCreateUserConfig must be returned");
+    assert!(!acuc.allow_admin_create_user_only());
+
+    // deletion_protection default: INACTIVE
+    assert_eq!(
+        pool.deletion_protection().map(|d| d.as_str()),
+        Some("INACTIVE"),
+    );
+}
+
+#[tokio::test]
 async fn cognito_list_user_pools() {
     let server = TestServer::start().await;
     let client = server.cognito_client().await;
