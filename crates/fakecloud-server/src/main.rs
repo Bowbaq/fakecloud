@@ -1130,7 +1130,7 @@ async fn main() {
     let lifecycle_processor = fakecloud_s3::lifecycle::LifecycleProcessor::new(s3_state.clone());
     tokio::spawn(lifecycle_processor.run());
 
-    let mut sqs_lambda_poller = SqsLambdaPoller::new(sqs_state, lambda_state);
+    let mut sqs_lambda_poller = SqsLambdaPoller::new(sqs_state, lambda_state.clone());
     if let Some(ref ld) = lambda_delivery {
         sqs_lambda_poller = sqs_lambda_poller.with_lambda_delivery(ld.clone());
     }
@@ -1195,6 +1195,9 @@ async fn main() {
                 fakecloud_s3::resource_policy::S3ResourcePolicyProvider::shared(s3_state.clone()),
                 fakecloud_sns::resource_policy::SnsResourcePolicyProvider::shared(
                     sns_state.clone(),
+                ),
+                fakecloud_lambda::resource_policy::LambdaResourcePolicyProvider::shared(
+                    lambda_state.clone(),
                 ),
             ],
         )),

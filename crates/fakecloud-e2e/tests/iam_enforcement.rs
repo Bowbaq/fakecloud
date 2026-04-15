@@ -813,3 +813,414 @@ async fn bucket_policy_condition_block_gates_access() {
         "expected AccessDenied, got {err:?}"
     );
 }
+
+// ======================================================================
+// Phase 2: SNS topic policies
+//
+// Drives the resource-policy evaluator path end-to-end for SNS:
+// dispatch fetches the topic policy via the `SnsResourcePolicyProvider`
+// and hands it to the evaluator alongside the caller's identity
+// policies. All of these are same-account — the cross-account
+// intersection semantics are covered by unit tests in
+// `fakecloud-iam::evaluator`.
+// ======================================================================
+
+async fn seed_topic_with_policy(server: &TestServer, name: &str, policy_json: &str) -> String {
+    let boot = sdk_config_with(server, "test", "test").await;
+    let sns_boot = aws_sdk_sns::Client::new(&boot);
+    let topic_arn = sns_boot
+        .create_topic()
+        .name(name)
+        .send()
+        .await
+        .unwrap()
+        .topic_arn()
+        .unwrap()
+        .to_string();
+    sns_boot
+        .set_topic_attributes()
+        .topic_arn(&topic_arn)
+        .attribute_name("Policy")
+        .attribute_value(policy_json)
+        .send()
+        .await
+        .unwrap();
+    topic_arn
+}
+
+#[tokio::test]
+async fn topic_policy_grants_publish_without_identity_policy() {
+    // Same-account Allow-union: user has no identity policy, but the
+    // topic policy names them and grants sns:Publish. The request
+    // should succeed.
+    let server = start_strict().await;
+    let (akid, secret) = bootstrap_user(&server, "tp_reader").await;
+    let topic_arn = seed_topic_with_policy(
+        &server,
+        "tp-shared",
+        r#"{"Version":"2012-10-17","Statement":[{
+            "Effect":"Allow",
+            "Principal":{"AWS":"arn:aws:iam::123456789012:user/tp_reader"},
+            "Action":"sns:Publish",
+            "Resource":"*"
+        }]}"#,
+    )
+    .await;
+
+    let cfg = sdk_config_with(&server, &akid, &secret).await;
+    let sns = aws_sdk_sns::Client::new(&cfg);
+    sns.publish()
+        .topic_arn(&topic_arn)
+        .message("hello")
+        .send()
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn topic_policy_explicit_deny_beats_identity_allow() {
+    // Identity policy grants sns:Publish on this topic, but the topic
+    // policy denies it explicitly. Explicit Deny wins.
+    let server = start_strict().await;
+    let (akid, secret) = bootstrap_user(&server, "tp_blocked").await;
+    let topic_arn = seed_topic_with_policy(
+        &server,
+        "tp-locked",
+        r#"{"Version":"2012-10-17","Statement":[{
+            "Effect":"Deny",
+            "Principal":{"AWS":"arn:aws:iam::123456789012:user/tp_blocked"},
+            "Action":"sns:Publish",
+            "Resource":"*"
+        }]}"#,
+    )
+    .await;
+    let identity_policy = format!(
+        r#"{{"Version":"2012-10-17","Statement":[{{"Effect":"Allow","Action":"sns:Publish","Resource":"{topic_arn}"}}]}}"#
+    );
+    attach_inline_policy(&server, "tp_blocked", "AllowTp", &identity_policy).await;
+
+    let cfg = sdk_config_with(&server, &akid, &secret).await;
+    let sns = aws_sdk_sns::Client::new(&cfg);
+    let err = sns
+        .publish()
+        .topic_arn(&topic_arn)
+        .message("nope")
+        .send()
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{err:?}").contains("AccessDeniedException"),
+        "expected AccessDeniedException, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn topic_policy_principal_wildcard_grants_any_user() {
+    // `"Principal": "*"` on a topic should let any non-root caller
+    // publish, without any identity-side policy.
+    let server = start_strict().await;
+    let (akid, secret) = bootstrap_user(&server, "tp_anyone").await;
+    let topic_arn = seed_topic_with_policy(
+        &server,
+        "tp-public",
+        r#"{"Version":"2012-10-17","Statement":[{
+            "Effect":"Allow",
+            "Principal":"*",
+            "Action":"sns:Publish",
+            "Resource":"*"
+        }]}"#,
+    )
+    .await;
+
+    let cfg = sdk_config_with(&server, &akid, &secret).await;
+    let sns = aws_sdk_sns::Client::new(&cfg);
+    sns.publish()
+        .topic_arn(&topic_arn)
+        .message("hi")
+        .send()
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn topic_policy_service_principal_does_not_grant_user() {
+    // Regression guard for the Service-principal matcher: a topic
+    // policy granting `{"Service":"events.amazonaws.com"}` must NOT
+    // grant a random IAM user — only a principal whose ARN looks
+    // like a Lambda/Events service-linked role would match.
+    let server = start_strict().await;
+    let (akid, secret) = bootstrap_user(&server, "tp_svc_user").await;
+    let topic_arn = seed_topic_with_policy(
+        &server,
+        "tp-events-only",
+        r#"{"Version":"2012-10-17","Statement":[{
+            "Effect":"Allow",
+            "Principal":{"Service":"events.amazonaws.com"},
+            "Action":"sns:Publish",
+            "Resource":"*"
+        }]}"#,
+    )
+    .await;
+
+    let cfg = sdk_config_with(&server, &akid, &secret).await;
+    let sns = aws_sdk_sns::Client::new(&cfg);
+    let err = sns
+        .publish()
+        .topic_arn(&topic_arn)
+        .message("should deny")
+        .send()
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{err:?}").contains("AccessDeniedException"),
+        "expected AccessDeniedException, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn topic_policy_condition_block_gates_access() {
+    // Regression guard: Phase 2 condition evaluation still applies
+    // to resource-policy statements on SNS. The grant is conditional
+    // on `aws:SecureTransport == true`, and fakecloud's test server
+    // serves plain HTTP, so the condition does not match and the
+    // grant does not apply.
+    let server = start_strict().await;
+    let (akid, secret) = bootstrap_user(&server, "tp_tls_only").await;
+    let topic_arn = seed_topic_with_policy(
+        &server,
+        "tp-tls-only",
+        r#"{"Version":"2012-10-17","Statement":[{
+            "Effect":"Allow",
+            "Principal":"*",
+            "Action":"sns:Publish",
+            "Resource":"*",
+            "Condition":{"Bool":{"aws:SecureTransport":"true"}}
+        }]}"#,
+    )
+    .await;
+
+    let cfg = sdk_config_with(&server, &akid, &secret).await;
+    let sns = aws_sdk_sns::Client::new(&cfg);
+    let err = sns
+        .publish()
+        .topic_arn(&topic_arn)
+        .message("should deny")
+        .send()
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{err:?}").contains("AccessDeniedException"),
+        "expected AccessDeniedException, got {err:?}"
+    );
+}
+
+// ======================================================================
+// Phase 2: Lambda resource policies
+//
+// Drives the resource-policy evaluator path end-to-end for Lambda:
+// AddPermission composes a canonical policy document, dispatch fetches
+// it via LambdaResourcePolicyProvider, and the evaluator combines it
+// with the caller's identity policies. We never actually invoke the
+// function runtime — Invoke requests are denied at the enforcement
+// gate before reaching the container layer when enforcement says no,
+// and we match on AccessDeniedException / ServiceException shapes that
+// the runtime emits when enforcement says yes.
+// ======================================================================
+
+fn make_empty_python_zip() -> Vec<u8> {
+    use std::io::Write;
+    let buf = Vec::new();
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(buf));
+    let options =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    zip.start_file("index.py", options).unwrap();
+    zip.write_all(b"def handler(event, context):\n    return {\"statusCode\": 200}\n")
+        .unwrap();
+    zip.finish().unwrap().into_inner()
+}
+
+async fn seed_function_with_permission(
+    server: &TestServer,
+    name: &str,
+    statement_id: &str,
+    principal_arn: &str,
+) -> String {
+    let boot = sdk_config_with(server, "test", "test").await;
+    let lambda_boot = aws_sdk_lambda::Client::new(&boot);
+    lambda_boot
+        .create_function()
+        .function_name(name)
+        .runtime(aws_sdk_lambda::types::Runtime::Python312)
+        .role("arn:aws:iam::123456789012:role/test-role")
+        .handler("index.handler")
+        .code(
+            aws_sdk_lambda::types::FunctionCode::builder()
+                .zip_file(aws_sdk_lambda::primitives::Blob::new(
+                    make_empty_python_zip(),
+                ))
+                .build(),
+        )
+        .send()
+        .await
+        .unwrap();
+    lambda_boot
+        .add_permission()
+        .function_name(name)
+        .statement_id(statement_id)
+        .action("InvokeFunction")
+        .principal(principal_arn)
+        .send()
+        .await
+        .unwrap();
+    format!("arn:aws:lambda:us-east-1:123456789012:function:{name}")
+}
+
+#[tokio::test]
+async fn lambda_function_policy_grants_invoke_without_identity_policy() {
+    // Same-account Allow-union on Lambda: no identity policy, but
+    // AddPermission installs a resource-policy statement naming the
+    // user. The Invoke enforcement gate must let the request through;
+    // we observe a ServiceException from the container runtime rather
+    // than an AccessDeniedException, which is how we distinguish
+    // "enforcement allowed" from "enforcement denied" without a real
+    // runtime.
+    let server = start_strict().await;
+    let (akid, secret) = bootstrap_user(&server, "lam_invoker").await;
+    seed_function_with_permission(
+        &server,
+        "lam-shared-fn",
+        "invoker-grant",
+        "arn:aws:iam::123456789012:user/lam_invoker",
+    )
+    .await;
+
+    let cfg = sdk_config_with(&server, &akid, &secret).await;
+    let lambda = aws_sdk_lambda::Client::new(&cfg);
+    // Tolerate either a successful invocation (when a local runtime
+    // can actually execute the stub handler) or a non-Access service
+    // error (when it can't) — the only outcome we're guarding against
+    // is an enforcement-layer AccessDeniedException.
+    if let Err(err) = lambda.invoke().function_name("lam-shared-fn").send().await {
+        assert!(
+            !format!("{err:?}").contains("AccessDeniedException"),
+            "enforcement should have allowed this request, got AccessDenied: {err:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn lambda_function_without_policy_denies_non_root_invoke() {
+    // Sanity pair: same function shape but without AddPermission.
+    // Identity policy is empty, resource policy is empty -> implicit
+    // deny under strict mode, observable as AccessDeniedException.
+    let server = start_strict().await;
+    let boot = sdk_config_with(&server, "test", "test").await;
+    let lambda_boot = aws_sdk_lambda::Client::new(&boot);
+    lambda_boot
+        .create_function()
+        .function_name("lam-unpolicied")
+        .runtime(aws_sdk_lambda::types::Runtime::Python312)
+        .role("arn:aws:iam::123456789012:role/test-role")
+        .handler("index.handler")
+        .code(
+            aws_sdk_lambda::types::FunctionCode::builder()
+                .zip_file(aws_sdk_lambda::primitives::Blob::new(
+                    make_empty_python_zip(),
+                ))
+                .build(),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    let (akid, secret) = bootstrap_user(&server, "lam_denied").await;
+    let cfg = sdk_config_with(&server, &akid, &secret).await;
+    let lambda = aws_sdk_lambda::Client::new(&cfg);
+    let err = lambda
+        .invoke()
+        .function_name("lam-unpolicied")
+        .send()
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{err:?}").contains("AccessDeniedException"),
+        "expected AccessDeniedException, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn lambda_function_policy_wildcard_principal_grants_any_user() {
+    // Public-function idiom: AddPermission with Principal="*" lets
+    // any non-root user through the enforcement gate.
+    let server = start_strict().await;
+    let (akid, secret) = bootstrap_user(&server, "lam_anyone").await;
+    seed_function_with_permission(&server, "lam-public-fn", "any", "*").await;
+
+    let cfg = sdk_config_with(&server, &akid, &secret).await;
+    let lambda = aws_sdk_lambda::Client::new(&cfg);
+    if let Err(err) = lambda.invoke().function_name("lam-public-fn").send().await {
+        assert!(
+            !format!("{err:?}").contains("AccessDeniedException"),
+            "enforcement should have allowed this request, got AccessDenied: {err:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn lambda_function_policy_source_arn_condition_gates_grant() {
+    // Regression guard: AddPermission with SourceArn must emit an
+    // ArnLike Condition that the evaluator respects. We populate
+    // `aws:SourceArn` via a non-matching value, which is not
+    // currently plumbed from dispatch — so the condition never
+    // matches and the grant does not apply, leaving the user with
+    // an implicit deny from the empty identity-policy side.
+    //
+    // This is the "grant is conditional and condition does not
+    // apply -> fall through to identity policy" path. The evaluator
+    // treats an unknown condition key as "does not match" rather
+    // than "matches everything", so this test asserts the deny path
+    // exists end-to-end.
+    let server = start_strict().await;
+    let (akid, secret) = bootstrap_user(&server, "lam_src_arn").await;
+    let boot = sdk_config_with(&server, "test", "test").await;
+    let lambda_boot = aws_sdk_lambda::Client::new(&boot);
+    lambda_boot
+        .create_function()
+        .function_name("lam-src-arn-fn")
+        .runtime(aws_sdk_lambda::types::Runtime::Python312)
+        .role("arn:aws:iam::123456789012:role/test-role")
+        .handler("index.handler")
+        .code(
+            aws_sdk_lambda::types::FunctionCode::builder()
+                .zip_file(aws_sdk_lambda::primitives::Blob::new(
+                    make_empty_python_zip(),
+                ))
+                .build(),
+        )
+        .send()
+        .await
+        .unwrap();
+    lambda_boot
+        .add_permission()
+        .function_name("lam-src-arn-fn")
+        .statement_id("gated")
+        .action("InvokeFunction")
+        .principal("arn:aws:iam::123456789012:user/lam_src_arn")
+        .source_arn("arn:aws:events:us-east-1:123456789012:rule/my-rule")
+        .send()
+        .await
+        .unwrap();
+
+    let cfg = sdk_config_with(&server, &akid, &secret).await;
+    let lambda = aws_sdk_lambda::Client::new(&cfg);
+    let err = lambda
+        .invoke()
+        .function_name("lam-src-arn-fn")
+        .send()
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{err:?}").contains("AccessDeniedException"),
+        "condition-gated grant should not apply; expected AccessDenied, got {err:?}"
+    );
+}
