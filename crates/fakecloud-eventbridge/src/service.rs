@@ -6,19 +6,23 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use tokio::sync::Mutex as AsyncMutex;
+
 use fakecloud_aws::arn::Arn;
 use fakecloud_core::delivery::DeliveryBus;
 use fakecloud_core::pagination::paginate;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
 use fakecloud_core::validation::*;
+use fakecloud_persistence::SnapshotStore;
 
 use fakecloud_lambda::runtime::ContainerRuntime;
 use fakecloud_lambda::state::{LambdaInvocation, SharedLambdaState};
 use fakecloud_logs::state::SharedLogsState;
 
 use crate::state::{
-    ApiDestination, Archive, Connection, Endpoint, EventBus, EventRule, EventTarget,
-    PartnerEventSource, PutEvent, Replay, SharedEventBridgeState,
+    ApiDestination, Archive, Connection, Endpoint, EventBridgeSnapshot, EventBus, EventRule,
+    EventTarget, PartnerEventSource, PutEvent, Replay, SharedEventBridgeState,
+    EVENTBRIDGE_SNAPSHOT_SCHEMA_VERSION,
 };
 
 /// Validate a single `PutEvents` entry's required fields (`Source`,
@@ -73,12 +77,55 @@ fn parse_put_events_time(raw: &Value) -> DateTime<Utc> {
     Utc::now()
 }
 
+/// Actions that mutate EventBridge state.
+fn is_mutating_action(action: &str) -> bool {
+    matches!(
+        action,
+        "CreateEventBus"
+            | "DeleteEventBus"
+            | "UpdateEventBus"
+            | "PutRule"
+            | "DeleteRule"
+            | "EnableRule"
+            | "DisableRule"
+            | "PutTargets"
+            | "RemoveTargets"
+            | "PutEvents"
+            | "PutPermission"
+            | "RemovePermission"
+            | "TagResource"
+            | "UntagResource"
+            | "CreateArchive"
+            | "UpdateArchive"
+            | "DeleteArchive"
+            | "CreateConnection"
+            | "UpdateConnection"
+            | "DeleteConnection"
+            | "DeauthorizeConnection"
+            | "CreateApiDestination"
+            | "UpdateApiDestination"
+            | "DeleteApiDestination"
+            | "StartReplay"
+            | "CancelReplay"
+            | "CreatePartnerEventSource"
+            | "DeletePartnerEventSource"
+            | "ActivateEventSource"
+            | "DeactivateEventSource"
+            | "PutPartnerEvents"
+            | "CreateEndpoint"
+            | "DeleteEndpoint"
+            | "UpdateEndpoint"
+    )
+}
+
 pub struct EventBridgeService {
     state: SharedEventBridgeState,
     delivery: Arc<DeliveryBus>,
     lambda_state: Option<SharedLambdaState>,
     logs_state: Option<SharedLogsState>,
     container_runtime: Option<Arc<ContainerRuntime>>,
+    snapshot_store: Option<Arc<dyn SnapshotStore>>,
+    snapshot_lock: Arc<AsyncMutex<()>>,
 }
 
 impl EventBridgeService {
@@ -89,6 +136,8 @@ impl EventBridgeService {
             lambda_state: None,
             logs_state: None,
             container_runtime: None,
+            snapshot_store: None,
+            snapshot_lock: Arc::new(AsyncMutex::new(())),
         }
     }
 
@@ -106,6 +155,36 @@ impl EventBridgeService {
         self.container_runtime = Some(runtime);
         self
     }
+
+    pub fn with_snapshot_store(mut self, store: Arc<dyn SnapshotStore>) -> Self {
+        self.snapshot_store = Some(store);
+        self
+    }
+
+    /// Persist current state as a snapshot. Held across the
+    /// clone-serialize-write sequence to prevent stale-last writes,
+    /// with serde + file I/O offloaded to the blocking pool.
+    async fn save_snapshot(&self) {
+        let Some(store) = self.snapshot_store.clone() else {
+            return;
+        };
+        let _guard = self.snapshot_lock.lock().await;
+        let snapshot = EventBridgeSnapshot {
+            schema_version: EVENTBRIDGE_SNAPSHOT_SCHEMA_VERSION,
+            state: self.state.read().clone(),
+        };
+        let join = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            let bytes = serde_json::to_vec(&snapshot)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+            store.save(&bytes)
+        })
+        .await;
+        match join {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => tracing::error!(%err, "failed to write eventbridge snapshot"),
+            Err(err) => tracing::error!(%err, "eventbridge snapshot task panicked"),
+        }
+    }
 }
 
 #[async_trait]
@@ -115,7 +194,8 @@ impl AwsService for EventBridgeService {
     }
 
     async fn handle(&self, req: AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        match req.action.as_str() {
+        let mutates = is_mutating_action(req.action.as_str());
+        let result = match req.action.as_str() {
             "CreateEventBus" => self.create_event_bus(&req),
             "DeleteEventBus" => self.delete_event_bus(&req),
             "ListEventBuses" => self.list_event_buses(&req),
@@ -177,7 +257,11 @@ impl AwsService for EventBridgeService {
                 "events",
                 &req.action,
             )),
+        };
+        if mutates && matches!(result.as_ref(), Ok(resp) if resp.status.is_success()) {
+            self.save_snapshot().await;
         }
+        result
     }
 
     fn supported_actions(&self) -> &[&str] {

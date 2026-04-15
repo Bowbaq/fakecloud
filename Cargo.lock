@@ -2242,6 +2242,7 @@ dependencies = [
  "fakecloud-core",
  "fakecloud-lambda",
  "fakecloud-logs",
+ "fakecloud-persistence",
  "http 1.4.0",
  "parking_lot",
  "reqwest",
