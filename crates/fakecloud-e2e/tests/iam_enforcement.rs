@@ -1420,3 +1420,90 @@ async fn lambda_add_permission_principal_condition_key() {
         "expected AccessDeniedException for non-s3 principal, got {err:?}"
     );
 }
+
+#[tokio::test]
+async fn sqs_send_message_attribute_condition_key() {
+    // Policy allows sqs:SendMessage only when
+    // `sqs:MessageAttribute.Color == "red"`. Verify a red message is
+    // accepted and a blue one is denied.
+    let server = start_strict().await;
+    let boot = sdk_config_with(&server, "test", "test").await;
+    let sqs_boot = aws_sdk_sqs::Client::new(&boot);
+    let queue_url = sqs_boot
+        .create_queue()
+        .queue_name("cond-attr")
+        .send()
+        .await
+        .unwrap()
+        .queue_url()
+        .unwrap()
+        .to_string();
+
+    let (akid, secret) = bootstrap_user(&server, "sqsattr").await;
+    attach_inline_policy(
+        &server,
+        "sqsattr",
+        "AllowRedOnly",
+        r#"{"Version":"2012-10-17","Statement":[{
+            "Effect":"Allow",
+            "Action":"sqs:SendMessage",
+            "Resource":"arn:aws:sqs:us-east-1:123456789012:cond-attr",
+            "Condition":{"StringEquals":{"sqs:MessageAttribute.Color":"red"}}
+        }]}"#,
+    )
+    .await;
+
+    let cfg = sdk_config_with(&server, &akid, &secret).await;
+    let sqs = aws_sdk_sqs::Client::new(&cfg);
+
+    // Allowed: Color=red matches the condition.
+    sqs.send_message()
+        .queue_url(&queue_url)
+        .message_body("hi")
+        .message_attributes(
+            "Color",
+            aws_sdk_sqs::types::MessageAttributeValue::builder()
+                .data_type("String")
+                .string_value("red")
+                .build()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    // Denied: Color=blue fails the condition.
+    let err = sqs
+        .send_message()
+        .queue_url(&queue_url)
+        .message_body("hi")
+        .message_attributes(
+            "Color",
+            aws_sdk_sqs::types::MessageAttributeValue::builder()
+                .data_type("String")
+                .string_value("blue")
+                .build()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{err:?}").contains("AccessDenied"),
+        "expected AccessDenied for blue color, got {err:?}"
+    );
+
+    // Denied: no attributes at all. The key is not populated so the
+    // condition evaluates to doesn't-apply.
+    let err = sqs
+        .send_message()
+        .queue_url(&queue_url)
+        .message_body("hi")
+        .send()
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{err:?}").contains("AccessDenied"),
+        "expected AccessDenied for no-attr send, got {err:?}"
+    );
+}

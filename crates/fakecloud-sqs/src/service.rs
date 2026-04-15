@@ -545,6 +545,32 @@ impl AwsService for SqsService {
             resource,
         })
     }
+
+    fn iam_condition_keys_for(
+        &self,
+        request: &AwsRequest,
+        action: &fakecloud_core::auth::IamAction,
+    ) -> std::collections::BTreeMap<String, Vec<String>> {
+        let mut out = std::collections::BTreeMap::new();
+        if action.action == "SendMessage" {
+            let body = parse_body(request);
+            let attrs = parse_message_attributes(&body);
+            for (name, attr) in &attrs {
+                let key = format!("sqs:messageattribute.{name}");
+                // String-typed attributes contribute their StringValue.
+                // Binary / Number attributes fall back to the data type
+                // so the key still shows up for existence-style
+                // conditions; evaluators that look for a concrete
+                // StringEquals value simply safe-fail on mismatch.
+                let value = attr
+                    .string_value
+                    .clone()
+                    .unwrap_or_else(|| attr.data_type.clone());
+                out.insert(key, vec![value]);
+            }
+        }
+        out
+    }
 }
 
 /// Build the SQS resource ARN for an incoming action. Returns `*` for
@@ -3188,6 +3214,60 @@ mod tests {
             access_key_id: None,
             principal: None,
         }
+    }
+
+    #[test]
+    fn iam_condition_keys_for_send_message_populates_attributes() {
+        let svc = make_service();
+        let req = make_request(
+            "SendMessage",
+            json!({
+                "QueueUrl": "http://localhost:4566/123456789012/q",
+                "MessageBody": "hi",
+                "MessageAttributes": {
+                    "Color": {"DataType": "String", "StringValue": "red"},
+                    "Priority": {"DataType": "Number", "StringValue": "1"}
+                }
+            }),
+        );
+        let action = fakecloud_core::auth::IamAction {
+            service: "sqs",
+            action: "SendMessage",
+            resource: "arn:aws:sqs:us-east-1:123456789012:q".to_string(),
+        };
+        let keys = svc.iam_condition_keys_for(&req, &action);
+        assert_eq!(
+            keys.get("sqs:messageattribute.Color"),
+            Some(&vec!["red".to_string()])
+        );
+        assert!(keys.contains_key("sqs:messageattribute.Priority"));
+    }
+
+    #[test]
+    fn iam_condition_keys_for_send_message_without_attrs_is_empty() {
+        let svc = make_service();
+        let req = make_request(
+            "SendMessage",
+            json!({"QueueUrl": "http://localhost:4566/123456789012/q", "MessageBody": "hi"}),
+        );
+        let action = fakecloud_core::auth::IamAction {
+            service: "sqs",
+            action: "SendMessage",
+            resource: "arn:aws:sqs:us-east-1:123456789012:q".to_string(),
+        };
+        assert!(svc.iam_condition_keys_for(&req, &action).is_empty());
+    }
+
+    #[test]
+    fn iam_condition_keys_for_non_send_message_is_empty() {
+        let svc = make_service();
+        let req = make_request("ReceiveMessage", json!({"QueueUrl": "http://x/q"}));
+        let action = fakecloud_core::auth::IamAction {
+            service: "sqs",
+            action: "ReceiveMessage",
+            resource: "arn:aws:sqs:us-east-1:123456789012:q".to_string(),
+        };
+        assert!(svc.iam_condition_keys_for(&req, &action).is_empty());
     }
 
     fn create_queue(svc: &SqsService, name: &str) -> String {
