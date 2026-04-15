@@ -37,6 +37,21 @@ pub struct Service {
 
 pub const SERVICES: &[Service] = &[
     Service {
+        name: "cognitoidp",
+        // Batch 11: core `aws_cognito_user_pool` smoke. The fix here is
+        // returning five shape blocks with AWS defaults on every
+        // DescribeUserPool, which Terraform's provider asserts after
+        // create: `email_configuration.email_sending_account =
+        // COGNITO_DEFAULT`, `verification_message_template.
+        // default_email_option = CONFIRM_WITH_CODE`,
+        // `sign_in_policy.allowed_first_auth_factors = ["PASSWORD"]`,
+        // `user_pool_tier = ESSENTIALS`, and a non-empty
+        // `account_recovery_setting`. None of these were emitted
+        // unless the caller set them at create time.
+        run_regex: "^TestAccCognitoIDPUserPool_basic$",
+        deny: &[],
+    },
+    Service {
         name: "bedrock",
         // Batch 10: `data.aws_bedrock_foundation_models` data source
         // smoke. fakecloud's Bedrock implementation already returns the

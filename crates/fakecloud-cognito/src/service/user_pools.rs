@@ -11,9 +11,10 @@ use crate::state::{
 use super::{
     ensure_user_pool_exists, generate_client_id, generate_client_secret, generate_pool_id,
     parse_account_recovery_setting, parse_admin_create_user_config, parse_email_configuration,
-    parse_password_policy, parse_schema_attribute, parse_sms_configuration, parse_string_array,
-    parse_tags, parse_token_validity_units, require_str, user_pool_client_to_json,
-    user_pool_to_json, validate_enum, validate_range, validate_string_length, CognitoService,
+    parse_password_policy, parse_schema_attribute, parse_sign_in_policy, parse_sms_configuration,
+    parse_string_array, parse_tags, parse_token_validity_units,
+    parse_verification_message_template, require_str, user_pool_client_to_json, user_pool_to_json,
+    validate_enum, validate_range, validate_string_length, CognitoService,
 };
 
 impl CognitoService {
@@ -75,6 +76,7 @@ impl CognitoService {
 
         // Parse password policy or use defaults
         let password_policy = parse_password_policy(&body["Policies"]["PasswordPolicy"]);
+        let sign_in_policy = parse_sign_in_policy(&body["Policies"]["SignInPolicy"]);
 
         // Parse auto verified attributes
         let auto_verified_attributes = parse_string_array(&body["AutoVerifiedAttributes"]);
@@ -128,6 +130,14 @@ impl CognitoService {
 
         let deletion_protection = body["DeletionProtection"].as_str().map(|s| s.to_string());
 
+        let user_pool_tier = body["UserPoolTier"]
+            .as_str()
+            .unwrap_or("ESSENTIALS")
+            .to_string();
+
+        let verification_message_template =
+            parse_verification_message_template(&body["VerificationMessageTemplate"]);
+
         let pool = UserPool {
             id: pool_id.clone(),
             name: pool_name.to_string(),
@@ -135,7 +145,10 @@ impl CognitoService {
             status: "ACTIVE".to_string(),
             creation_date: now,
             last_modified_date: now,
-            policies: PoolPolicies { password_policy },
+            policies: PoolPolicies {
+                password_policy,
+                sign_in_policy,
+            },
             auto_verified_attributes,
             username_attributes,
             alias_attributes,
@@ -151,6 +164,8 @@ impl CognitoService {
             estimated_number_of_users: 0,
             software_token_mfa_configuration: None,
             sms_mfa_configuration: None,
+            user_pool_tier,
+            verification_message_template,
         };
 
         let response = user_pool_to_json(&pool);
@@ -220,6 +235,20 @@ impl CognitoService {
         if body["Policies"]["PasswordPolicy"].is_object() {
             pool.policies.password_policy =
                 parse_password_policy(&body["Policies"]["PasswordPolicy"]);
+        }
+
+        if body["Policies"]["SignInPolicy"].is_object() {
+            pool.policies.sign_in_policy = parse_sign_in_policy(&body["Policies"]["SignInPolicy"]);
+        }
+
+        if body["VerificationMessageTemplate"].is_object() {
+            pool.verification_message_template =
+                parse_verification_message_template(&body["VerificationMessageTemplate"]);
+        }
+
+        if let Some(tier) = body["UserPoolTier"].as_str() {
+            validate_enum(tier, "userPoolTier", &["LITE", "ESSENTIALS", "PLUS"])?;
+            pool.user_pool_tier = tier.to_string();
         }
 
         if body["AutoVerifiedAttributes"].is_array() {

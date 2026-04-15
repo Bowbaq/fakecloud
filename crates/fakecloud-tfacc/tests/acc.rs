@@ -28,6 +28,11 @@ async fn run_service(name: &str) {
 }
 
 #[tokio::test]
+async fn cognitoidp_acceptance() {
+    run_service("cognitoidp").await;
+}
+
+#[tokio::test]
 async fn bedrock_acceptance() {
     run_service("bedrock").await;
 }
