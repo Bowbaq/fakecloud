@@ -1,3 +1,4 @@
+pub mod condition;
 pub mod credential_resolver;
 pub mod evaluator;
 pub mod iam_service;
