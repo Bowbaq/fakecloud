@@ -507,7 +507,7 @@ async fn main() {
         } else {
             None
         };
-    let mut sns_service = SnsService::new(sns_state, delivery_for_sns);
+    let mut sns_service = SnsService::new(sns_state.clone(), delivery_for_sns);
     if let Some(store) = sns_snapshot_store {
         sns_service = sns_service.with_snapshot_store(store);
     }
@@ -1191,7 +1191,12 @@ async fn main() {
         // it doesn't own, so additional services can be added by
         // appending to this list without touching the core crate.
         resource_policy_provider: Some(fakecloud_core::auth::MultiResourcePolicyProvider::shared(
-            vec![fakecloud_s3::resource_policy::S3ResourcePolicyProvider::shared(s3_state.clone())],
+            vec![
+                fakecloud_s3::resource_policy::S3ResourcePolicyProvider::shared(s3_state.clone()),
+                fakecloud_sns::resource_policy::SnsResourcePolicyProvider::shared(
+                    sns_state.clone(),
+                ),
+            ],
         )),
     };
 
