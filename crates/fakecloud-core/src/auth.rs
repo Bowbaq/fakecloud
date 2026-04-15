@@ -287,6 +287,35 @@ pub trait IamPolicyEvaluator: Send + Sync {
     ) -> IamDecision;
 }
 
+/// Abstraction over "given a service + a fully-qualified resource ARN,
+/// return the resource-based policy attached to that resource, if any."
+///
+/// Implemented by resource-owning services (S3 for bucket policies in
+/// the initial rollout; SNS topic policies, KMS key policies, and
+/// Lambda resource policies are separate future wirings) and plumbed
+/// through [`crate::dispatch::DispatchConfig`] alongside
+/// [`IamPolicyEvaluator`]. Dispatch fetches the policy for the target
+/// resource and hands it to the evaluator so cross-account Allow/Deny
+/// semantics can be computed.
+///
+/// Implementations must be cheap to clone-share via `Arc` and must be
+/// thread-safe — dispatch calls them on every enforced request.
+///
+/// Returning `None` means "no resource policy attached / resource
+/// doesn't exist / this provider doesn't handle that service." Returning
+/// `Some(json)` yields the raw JSON document as stored by the
+/// resource's CRUD handlers; parsing happens inside the evaluator so a
+/// malformed document logs a debug audit event and falls through to
+/// "no resource policy" rather than silently allowing.
+pub trait ResourcePolicyProvider: Send + Sync {
+    /// Fetch the resource-based policy document attached to
+    /// `resource_arn` on `service`. Both arguments are lowercase-ish
+    /// (`"s3"`, `"arn:aws:s3:::my-bucket"`); implementations should
+    /// match the service prefix they own and return `None` for
+    /// anything else so providers can be composed safely.
+    fn resource_policy(&self, service: &str, resource_arn: &str) -> Option<String>;
+}
+
 /// How IAM identity policies are evaluated for incoming requests.
 ///
 /// Default is [`IamMode::Off`] — existing behavior, policies are stored but

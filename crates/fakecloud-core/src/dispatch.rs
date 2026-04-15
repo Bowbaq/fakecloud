@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crate::auth::{
     is_root_bypass, ConditionContext, CredentialResolver, IamMode, IamPolicyEvaluator, Principal,
-    PrincipalType,
+    PrincipalType, ResourcePolicyProvider,
 };
 use crate::protocol::{self, AwsProtocol};
 use crate::registry::ServiceRegistry;
@@ -430,6 +430,13 @@ pub struct DispatchConfig {
     /// Required when `iam_mode != Off`. When `None`, enforcement silently
     /// degrades to off even if `iam_mode` is set.
     pub policy_evaluator: Option<Arc<dyn IamPolicyEvaluator>>,
+    /// Resolves resource-based policies (S3 bucket policies in the
+    /// initial rollout) to hand to the evaluator alongside the
+    /// principal's identity policies. `None` means the server was
+    /// started without any resource-policy-owning service registered;
+    /// dispatch then behaves as if no resource policy is attached to
+    /// any resource, identical to the Phase 1 behavior.
+    pub resource_policy_provider: Option<Arc<dyn ResourcePolicyProvider>>,
 }
 
 impl std::fmt::Debug for DispatchConfig {
@@ -453,6 +460,13 @@ impl std::fmt::Debug for DispatchConfig {
                     .as_ref()
                     .map(|_| "<IamPolicyEvaluator>"),
             )
+            .field(
+                "resource_policy_provider",
+                &self
+                    .resource_policy_provider
+                    .as_ref()
+                    .map(|_| "<ResourcePolicyProvider>"),
+            )
             .finish()
     }
 }
@@ -468,6 +482,7 @@ impl DispatchConfig {
             iam_mode: IamMode::Off,
             credential_resolver: None,
             policy_evaluator: None,
+            resource_policy_provider: None,
         }
     }
 }
@@ -697,8 +712,10 @@ mod tests {
             iam_mode: IamMode::Strict,
             credential_resolver: None,
             policy_evaluator: None,
+            resource_policy_provider: None,
         };
         assert!(cfg.verify_sigv4);
         assert!(cfg.iam_mode.is_strict());
+        assert!(cfg.resource_policy_provider.is_none());
     }
 }
