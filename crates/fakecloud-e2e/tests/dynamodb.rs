@@ -2,7 +2,7 @@ mod helpers;
 
 use aws_sdk_dynamodb::types::{
     AttributeDefinition, AttributeValue, BillingMode, ContributorInsightsAction, Delete,
-    DeleteRequest, Get, GlobalSecondaryIndex, KeySchemaElement, KeyType,
+    DeleteRequest, Get, GlobalSecondaryIndex, KeySchemaElement, KeyType, OnDemandThroughput,
     PointInTimeRecoverySpecification, Projection, ProjectionType, ProvisionedThroughput, Put,
     PutRequest, Replica, ScalarAttributeType, SseSpecification, SseType, Tag,
     TimeToLiveSpecification, TransactGetItem, TransactWriteItem, WriteRequest,
@@ -3020,4 +3020,205 @@ async fn dynamodb_update_table_gsi_create_on_pay_per_request_zeroes_throughput()
         .attribute_definitions()
         .iter()
         .any(|a| a.attribute_name() == "gsipk"));
+}
+
+// Regression guard for `TestAccDynamoDBTable_onDemandThroughput`: the
+// table-level `OnDemandThroughput` block must round-trip through
+// CreateTable, DescribeTable, and UpdateTable. Real AWS echoes `-1` for
+// an unset axis, and the Terraform provider asserts on the literal
+// numeric values; fakecloud previously dropped the field entirely.
+#[tokio::test]
+async fn dynamodb_create_table_with_on_demand_throughput_round_trip() {
+    let server = TestServer::start().await;
+    let client = server.dynamodb_client().await;
+
+    client
+        .create_table()
+        .table_name("OdtBasic")
+        .key_schema(
+            KeySchemaElement::builder()
+                .attribute_name("pk")
+                .key_type(KeyType::Hash)
+                .build()
+                .unwrap(),
+        )
+        .attribute_definitions(
+            AttributeDefinition::builder()
+                .attribute_name("pk")
+                .attribute_type(ScalarAttributeType::S)
+                .build()
+                .unwrap(),
+        )
+        .billing_mode(BillingMode::PayPerRequest)
+        .on_demand_throughput(
+            OnDemandThroughput::builder()
+                .max_read_request_units(5)
+                .max_write_request_units(5)
+                .build(),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    let desc = client
+        .describe_table()
+        .table_name("OdtBasic")
+        .send()
+        .await
+        .unwrap();
+    let odt = desc.table().unwrap().on_demand_throughput().unwrap();
+    assert_eq!(odt.max_read_request_units(), Some(5));
+    assert_eq!(odt.max_write_request_units(), Some(5));
+
+    // Terraform's provider issues UpdateTable with a new OnDemandThroughput
+    // block to bump the caps — both axes must be writable, and leaving one
+    // axis as the `-1` sentinel must round-trip untouched.
+    client
+        .update_table()
+        .table_name("OdtBasic")
+        .on_demand_throughput(
+            OnDemandThroughput::builder()
+                .max_read_request_units(-1)
+                .max_write_request_units(5)
+                .build(),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    let desc = client
+        .describe_table()
+        .table_name("OdtBasic")
+        .send()
+        .await
+        .unwrap();
+    let odt = desc.table().unwrap().on_demand_throughput().unwrap();
+    assert_eq!(odt.max_read_request_units(), Some(-1));
+    assert_eq!(odt.max_write_request_units(), Some(5));
+}
+
+// Regression guard for `TestAccDynamoDBTable_gsiOnDemandThroughput`:
+// per-GSI `OnDemandThroughput` blocks must round-trip independently from
+// the table-level block, including across an UpdateTable that targets a
+// GSI via `GlobalSecondaryIndexUpdates`.
+#[tokio::test]
+async fn dynamodb_gsi_on_demand_throughput_round_trip() {
+    let server = TestServer::start().await;
+    let client = server.dynamodb_client().await;
+
+    client
+        .create_table()
+        .table_name("OdtGsi")
+        .key_schema(
+            KeySchemaElement::builder()
+                .attribute_name("pk")
+                .key_type(KeyType::Hash)
+                .build()
+                .unwrap(),
+        )
+        .attribute_definitions(
+            AttributeDefinition::builder()
+                .attribute_name("pk")
+                .attribute_type(ScalarAttributeType::S)
+                .build()
+                .unwrap(),
+        )
+        .attribute_definitions(
+            AttributeDefinition::builder()
+                .attribute_name("att1")
+                .attribute_type(ScalarAttributeType::S)
+                .build()
+                .unwrap(),
+        )
+        .billing_mode(BillingMode::PayPerRequest)
+        .on_demand_throughput(
+            OnDemandThroughput::builder()
+                .max_read_request_units(10)
+                .max_write_request_units(10)
+                .build(),
+        )
+        .global_secondary_indexes(
+            GlobalSecondaryIndex::builder()
+                .index_name("att1-index")
+                .key_schema(
+                    KeySchemaElement::builder()
+                        .attribute_name("att1")
+                        .key_type(KeyType::Hash)
+                        .build()
+                        .unwrap(),
+                )
+                .projection(
+                    Projection::builder()
+                        .projection_type(ProjectionType::All)
+                        .build(),
+                )
+                .on_demand_throughput(
+                    OnDemandThroughput::builder()
+                        .max_read_request_units(5)
+                        .max_write_request_units(5)
+                        .build(),
+                )
+                .build()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    let desc = client
+        .describe_table()
+        .table_name("OdtGsi")
+        .send()
+        .await
+        .unwrap();
+    let table = desc.table().unwrap();
+    let table_odt = table.on_demand_throughput().unwrap();
+    assert_eq!(table_odt.max_read_request_units(), Some(10));
+    assert_eq!(table_odt.max_write_request_units(), Some(10));
+    let gsi_odt = table.global_secondary_indexes()[0]
+        .on_demand_throughput()
+        .unwrap();
+    assert_eq!(gsi_odt.max_read_request_units(), Some(5));
+    assert_eq!(gsi_odt.max_write_request_units(), Some(5));
+
+    // UpdateTable -> GlobalSecondaryIndexUpdates -> Update must bump the
+    // per-GSI OnDemandThroughput independently of the table-level caps.
+    client
+        .update_table()
+        .table_name("OdtGsi")
+        .global_secondary_index_updates(
+            aws_sdk_dynamodb::types::GlobalSecondaryIndexUpdate::builder()
+                .update(
+                    aws_sdk_dynamodb::types::UpdateGlobalSecondaryIndexAction::builder()
+                        .index_name("att1-index")
+                        .on_demand_throughput(
+                            OnDemandThroughput::builder()
+                                .max_read_request_units(20)
+                                .max_write_request_units(20)
+                                .build(),
+                        )
+                        .build()
+                        .unwrap(),
+                )
+                .build(),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    let desc = client
+        .describe_table()
+        .table_name("OdtGsi")
+        .send()
+        .await
+        .unwrap();
+    let gsi_odt = desc.table().unwrap().global_secondary_indexes()[0]
+        .on_demand_throughput()
+        .unwrap();
+    assert_eq!(gsi_odt.max_read_request_units(), Some(20));
+    assert_eq!(gsi_odt.max_write_request_units(), Some(20));
+    // Table-level caps are untouched.
+    let table_odt = desc.table().unwrap().on_demand_throughput().unwrap();
+    assert_eq!(table_odt.max_read_request_units(), Some(10));
+    assert_eq!(table_odt.max_write_request_units(), Some(10));
 }

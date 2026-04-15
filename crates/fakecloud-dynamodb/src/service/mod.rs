@@ -439,9 +439,23 @@ fn parse_gsi(val: &Value, billing_mode: &str) -> Vec<GlobalSecondaryIndex> {
                     &g["ProvisionedThroughput"],
                     billing_mode,
                 )),
+                on_demand_throughput: parse_on_demand_throughput(&g["OnDemandThroughput"]),
             })
         })
         .collect()
+}
+
+/// Parse an `OnDemandThroughput` block. Absent fields default to `-1`,
+/// which is AWS's sentinel for "no cap" — and the value real AWS echoes
+/// back on DescribeTable when the caller omitted either axis.
+pub(super) fn parse_on_demand_throughput(val: &Value) -> Option<crate::state::OnDemandThroughput> {
+    if !val.is_object() {
+        return None;
+    }
+    Some(crate::state::OnDemandThroughput {
+        max_read_request_units: val["MaxReadRequestUnits"].as_i64().unwrap_or(-1),
+        max_write_request_units: val["MaxWriteRequestUnits"].as_i64().unwrap_or(-1),
+    })
 }
 
 /// Resolve the provisioned-throughput slot for a GSI on a CreateTable or
@@ -2001,6 +2015,7 @@ pub(super) struct TableDescriptionInput<'a> {
     pub size_bytes: i64,
     pub status: &'a str,
     pub deletion_protection_enabled: bool,
+    pub on_demand_throughput: Option<&'a crate::state::OnDemandThroughput>,
 }
 
 fn build_table_description_json(input: &TableDescriptionInput<'_>) -> Value {
@@ -2018,6 +2033,7 @@ fn build_table_description_json(input: &TableDescriptionInput<'_>) -> Value {
         size_bytes,
         status,
         deletion_protection_enabled,
+        on_demand_throughput,
     } = *input;
     let table_name = arn.rsplit('/').next().unwrap_or("");
     let creation_timestamp =
@@ -2061,6 +2077,13 @@ fn build_table_description_json(input: &TableDescriptionInput<'_>) -> Value {
         });
     }
 
+    if let Some(odt) = on_demand_throughput {
+        desc["OnDemandThroughput"] = json!({
+            "MaxReadRequestUnits": odt.max_read_request_units,
+            "MaxWriteRequestUnits": odt.max_write_request_units,
+        });
+    }
+
     // Terraform's AWS provider now waits on WarmThroughput after CreateTable.
     // Real AWS returns an ACTIVE warm throughput object for active tables,
     // including PAY_PER_REQUEST tables. Returning null keeps the provider in a
@@ -2099,6 +2122,12 @@ fn build_table_description_json(input: &TableDescriptionInput<'_>) -> Value {
                         "ReadCapacityUnits": pt.read_capacity_units,
                         "WriteCapacityUnits": pt.write_capacity_units,
                         "NumberOfDecreasesToday": 0,
+                    });
+                }
+                if let Some(ref odt) = g.on_demand_throughput {
+                    idx["OnDemandThroughput"] = json!({
+                        "MaxReadRequestUnits": odt.max_read_request_units,
+                        "MaxWriteRequestUnits": odt.max_write_request_units,
                     });
                 }
                 idx
@@ -2151,6 +2180,7 @@ fn build_table_description(table: &DynamoTable) -> Value {
         size_bytes: table.size_bytes,
         status: &table.status,
         deletion_protection_enabled: table.deletion_protection_enabled,
+        on_demand_throughput: table.on_demand_throughput.as_ref(),
     });
 
     // Add stream specification if streams are enabled

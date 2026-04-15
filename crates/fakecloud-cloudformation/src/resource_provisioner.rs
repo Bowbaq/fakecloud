@@ -698,6 +698,7 @@ impl ResourceProvisioner {
             sse_type: None,
             sse_kms_key_arn: None,
             deletion_protection_enabled,
+            on_demand_throughput: None,
         };
 
         state.tables.insert(table_name.to_string(), table);
