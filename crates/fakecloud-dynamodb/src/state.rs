@@ -42,12 +42,23 @@ pub struct ProvisionedThroughput {
     pub write_capacity_units: i64,
 }
 
+/// On-demand capacity caps for PAY_PER_REQUEST tables and GSIs. Real AWS
+/// accepts both fields independently; `-1` (the AWS sentinel for "no cap")
+/// is the default and is what `DescribeTable` returns when the caller never
+/// set a value — the Terraform provider asserts on that exact value.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OnDemandThroughput {
+    pub max_read_request_units: i64,
+    pub max_write_request_units: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlobalSecondaryIndex {
     pub index_name: String,
     pub key_schema: Vec<KeySchemaElement>,
     pub projection: Projection,
     pub provisioned_throughput: Option<ProvisionedThroughput>,
+    pub on_demand_throughput: Option<OnDemandThroughput>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,6 +118,10 @@ pub struct DynamoTable {
     /// `ResourceInUseException`. Defaults to false. Returned on every
     /// `DescribeTable` and toggleable via `UpdateTable`.
     pub deletion_protection_enabled: bool,
+    /// Table-level on-demand throughput caps. Only meaningful for
+    /// PAY_PER_REQUEST tables, but real AWS echoes the field on every
+    /// DescribeTable once set.
+    pub on_demand_throughput: Option<OnDemandThroughput>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

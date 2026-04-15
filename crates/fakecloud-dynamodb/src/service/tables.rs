@@ -90,6 +90,7 @@ impl DynamoDbService {
         let gsi = parse_gsi(&body["GlobalSecondaryIndexes"], &billing_mode);
         let lsi = parse_lsi(&body["LocalSecondaryIndexes"]);
         let tags = parse_tags(&body["Tags"]);
+        let on_demand_throughput = super::parse_on_demand_throughput(&body["OnDemandThroughput"]);
 
         // Parse StreamSpecification
         let (stream_enabled, stream_view_type) =
@@ -197,6 +198,7 @@ impl DynamoDbService {
             sse_type,
             sse_kms_key_arn,
             deletion_protection_enabled,
+            on_demand_throughput: on_demand_throughput.clone(),
         };
 
         let table_id = table.table_id.clone();
@@ -216,6 +218,7 @@ impl DynamoDbService {
             size_bytes: 0,
             status: "ACTIVE",
             deletion_protection_enabled,
+            on_demand_throughput: on_demand_throughput.as_ref(),
         });
 
         Self::ok_json(json!({ "TableDescription": table_desc }))
@@ -263,6 +266,7 @@ impl DynamoDbService {
             size_bytes: table.size_bytes,
             status: "DELETING",
             deletion_protection_enabled: table.deletion_protection_enabled,
+            on_demand_throughput: table.on_demand_throughput.as_ref(),
         });
 
         Self::ok_json(json!({ "TableDescription": table_desc }))
@@ -345,6 +349,10 @@ impl DynamoDbService {
             }
         }
 
+        if let Some(odt) = super::parse_on_demand_throughput(&body["OnDemandThroughput"]) {
+            table.on_demand_throughput = Some(odt);
+        }
+
         // A billing-mode transition has ripple effects on provisioned
         // capacity. Real AWS zeros out the table and every GSI's throughput
         // when the table flips to PAY_PER_REQUEST, and expects the caller to
@@ -410,12 +418,15 @@ impl DynamoDbService {
                         &create["ProvisionedThroughput"],
                         &current_billing,
                     ));
+                    let on_demand_throughput =
+                        super::parse_on_demand_throughput(&create["OnDemandThroughput"]);
                     table.gsi.retain(|g| g.index_name != name);
                     table.gsi.push(GlobalSecondaryIndex {
                         index_name: name,
                         key_schema,
                         projection,
                         provisioned_throughput,
+                        on_demand_throughput,
                     });
                 }
                 if let Some(update) = op.get("Update") {
@@ -424,10 +435,24 @@ impl DynamoDbService {
                         None => continue,
                     };
                     if let Some(gsi) = table.gsi.iter_mut().find(|g| g.index_name == name) {
-                        if let Ok(throughput) =
-                            parse_provisioned_throughput(&update["ProvisionedThroughput"])
+                        // Only override ProvisionedThroughput when the caller
+                        // actually sent one. `parse_provisioned_throughput`
+                        // defaults to 5/5 on a missing block, which would
+                        // clobber a PAY_PER_REQUEST GSI's 0/0 capacity when
+                        // the caller only updated the OnDemandThroughput
+                        // field — and Terraform's provider would then see
+                        // drift on the next refresh.
+                        if update.get("ProvisionedThroughput").is_some() {
+                            if let Ok(throughput) =
+                                parse_provisioned_throughput(&update["ProvisionedThroughput"])
+                            {
+                                gsi.provisioned_throughput = Some(throughput);
+                            }
+                        }
+                        if let Some(odt) =
+                            super::parse_on_demand_throughput(&update["OnDemandThroughput"])
                         {
-                            gsi.provisioned_throughput = Some(throughput);
+                            gsi.on_demand_throughput = Some(odt);
                         }
                     }
                 }
@@ -484,6 +509,7 @@ impl DynamoDbService {
             size_bytes: table.size_bytes,
             status: &table.status,
             deletion_protection_enabled: table.deletion_protection_enabled,
+            on_demand_throughput: table.on_demand_throughput.as_ref(),
         });
 
         Self::ok_json(json!({ "TableDescription": table_desc }))
@@ -914,6 +940,7 @@ impl DynamoDbService {
             sse_kms_key_arn: None,
 
             deletion_protection_enabled: false,
+            on_demand_throughput: None,
         };
         table.recalculate_stats();
 
@@ -994,6 +1021,7 @@ impl DynamoDbService {
             sse_kms_key_arn: None,
 
             deletion_protection_enabled: false,
+            on_demand_throughput: None,
         };
         table.recalculate_stats();
 
@@ -1460,6 +1488,7 @@ impl DynamoDbService {
             sse_kms_key_arn: None,
 
             deletion_protection_enabled: false,
+            on_demand_throughput: None,
         };
         table.recalculate_stats();
         state.tables.insert(table_name.to_string(), table);

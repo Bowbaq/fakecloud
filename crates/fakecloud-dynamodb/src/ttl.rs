@@ -111,6 +111,7 @@ mod tests {
             sse_kms_key_arn: None,
 
             deletion_protection_enabled: false,
+            on_demand_throughput: None,
         }
     }
 

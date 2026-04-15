@@ -195,9 +195,6 @@ pub const SERVICES: &[Service] = &[
             // --- gap: DynamoDB Streams shape parity not yet complete ---
             "TestAccDynamoDBTable_streamSpecification",
             "TestAccDynamoDBTable_streamSpecificationDiffs",
-            // --- gap: on-demand throughput attribute ---
-            "TestAccDynamoDBTable_onDemandThroughput",
-            "TestAccDynamoDBTable_gsiOnDemandThroughput",
             // --- gap: encryption attribute round-trip ---
             "TestAccDynamoDBTable_encryption",
             // --- hung: did not complete in triage run; revisit in a later batch ---
