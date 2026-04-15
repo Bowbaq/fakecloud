@@ -906,6 +906,28 @@ impl AwsService for LambdaService {
             resource,
         })
     }
+
+    fn iam_condition_keys_for(
+        &self,
+        request: &AwsRequest,
+        action: &fakecloud_core::auth::IamAction,
+    ) -> std::collections::BTreeMap<String, Vec<String>> {
+        let mut out = std::collections::BTreeMap::new();
+        if action.action == "AddPermission" {
+            if action.resource != "*" {
+                out.insert(
+                    "lambda:functionarn".to_string(),
+                    vec![action.resource.clone()],
+                );
+            }
+            if let Ok(body) = serde_json::from_slice::<Value>(&request.body) {
+                if let Some(principal) = body.get("Principal").and_then(|p| p.as_str()) {
+                    out.insert("lambda:principal".to_string(), vec![principal.to_string()]);
+                }
+            }
+        }
+        out
+    }
 }
 
 #[cfg(test)]
@@ -945,6 +967,61 @@ mod tests {
             access_key_id: None,
             principal: None,
         }
+    }
+
+    #[test]
+    fn iam_condition_keys_for_add_permission_populates_arn_and_principal() {
+        let svc = LambdaService::new(make_state());
+        let body = json!({
+            "StatementId": "stmt",
+            "Action": "lambda:InvokeFunction",
+            "Principal": "s3.amazonaws.com",
+        })
+        .to_string();
+        let req = make_request(Method::POST, "/2015-03-31/functions/my-func/policy", &body);
+        let action = fakecloud_core::auth::IamAction {
+            service: "lambda",
+            action: "AddPermission",
+            resource: "arn:aws:lambda:us-east-1:123456789012:function:my-func".to_string(),
+        };
+        let keys = svc.iam_condition_keys_for(&req, &action);
+        assert_eq!(
+            keys.get("lambda:functionarn"),
+            Some(&vec![
+                "arn:aws:lambda:us-east-1:123456789012:function:my-func".to_string()
+            ])
+        );
+        assert_eq!(
+            keys.get("lambda:principal"),
+            Some(&vec!["s3.amazonaws.com".to_string()])
+        );
+    }
+
+    #[test]
+    fn iam_condition_keys_for_add_permission_omits_missing_principal() {
+        let svc = LambdaService::new(make_state());
+        let body = json!({"StatementId": "stmt", "Action": "lambda:InvokeFunction"}).to_string();
+        let req = make_request(Method::POST, "/2015-03-31/functions/my-func/policy", &body);
+        let action = fakecloud_core::auth::IamAction {
+            service: "lambda",
+            action: "AddPermission",
+            resource: "arn:aws:lambda:us-east-1:123456789012:function:my-func".to_string(),
+        };
+        let keys = svc.iam_condition_keys_for(&req, &action);
+        assert!(!keys.contains_key("lambda:principal"));
+        assert!(keys.contains_key("lambda:functionarn"));
+    }
+
+    #[test]
+    fn iam_condition_keys_for_non_add_permission_is_empty() {
+        let svc = LambdaService::new(make_state());
+        let req = make_request(Method::GET, "/2015-03-31/functions/my-func", "");
+        let action = fakecloud_core::auth::IamAction {
+            service: "lambda",
+            action: "GetFunction",
+            resource: "arn:aws:lambda:us-east-1:123456789012:function:my-func".to_string(),
+        };
+        assert!(svc.iam_condition_keys_for(&req, &action).is_empty());
     }
 
     #[tokio::test]
