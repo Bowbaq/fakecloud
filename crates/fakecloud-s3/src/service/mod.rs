@@ -709,6 +709,40 @@ impl AwsService for S3Service {
             resource,
         })
     }
+
+    fn iam_condition_keys_for(
+        &self,
+        request: &AwsRequest,
+        action: &fakecloud_core::auth::IamAction,
+    ) -> std::collections::BTreeMap<String, Vec<String>> {
+        s3_condition_keys(action.action, &request.query_params)
+    }
+}
+
+/// Extract service-specific IAM condition keys from an S3 request.
+///
+/// Today only `ListObjects` / `ListObjectsV2` expose keys (`s3:prefix`,
+/// `s3:delimiter`, `s3:max-keys`) via their query params. Other actions
+/// return an empty map so the evaluator's safe-fail semantics treat any
+/// policy condition referencing an unknown key as "doesn't apply".
+fn s3_condition_keys(
+    action: &str,
+    query: &std::collections::HashMap<String, String>,
+) -> std::collections::BTreeMap<String, Vec<String>> {
+    let mut out = std::collections::BTreeMap::new();
+    if matches!(action, "ListObjects" | "ListObjectsV2") {
+        // Both list variants share the same query param shape.
+        if let Some(prefix) = query.get("prefix") {
+            out.insert("s3:prefix".to_string(), vec![prefix.clone()]);
+        }
+        if let Some(delimiter) = query.get("delimiter") {
+            out.insert("s3:delimiter".to_string(), vec![delimiter.clone()]);
+        }
+        if let Some(max_keys) = query.get("max-keys") {
+            out.insert("s3:max-keys".to_string(), vec![max_keys.clone()]);
+        }
+    }
+    out
 }
 
 /// Derive the IAM action name from an S3 REST request. Handles the
@@ -2154,6 +2188,43 @@ pub(crate) fn check_object_lock_for_overwrite(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn s3_condition_keys_emits_list_params() {
+        let mut q = std::collections::HashMap::new();
+        q.insert("prefix".to_string(), "logs/".to_string());
+        q.insert("delimiter".to_string(), "/".to_string());
+        q.insert("max-keys".to_string(), "100".to_string());
+        let keys = s3_condition_keys("ListObjectsV2", &q);
+        assert_eq!(keys.get("s3:prefix"), Some(&vec!["logs/".to_string()]));
+        assert_eq!(keys.get("s3:delimiter"), Some(&vec!["/".to_string()]));
+        assert_eq!(keys.get("s3:max-keys"), Some(&vec!["100".to_string()]));
+    }
+
+    #[test]
+    fn s3_condition_keys_omits_absent_params() {
+        let q = std::collections::HashMap::new();
+        let keys = s3_condition_keys("ListObjectsV2", &q);
+        assert!(keys.is_empty());
+    }
+
+    #[test]
+    fn s3_condition_keys_partial_params() {
+        let mut q = std::collections::HashMap::new();
+        q.insert("prefix".to_string(), "archive/".to_string());
+        let keys = s3_condition_keys("ListObjects", &q);
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys.get("s3:prefix"), Some(&vec!["archive/".to_string()]));
+    }
+
+    #[test]
+    fn s3_condition_keys_empty_for_non_list_actions() {
+        let mut q = std::collections::HashMap::new();
+        q.insert("prefix".to_string(), "logs/".to_string());
+        assert!(s3_condition_keys("GetObject", &q).is_empty());
+        assert!(s3_condition_keys("PutObject", &q).is_empty());
+        assert!(s3_condition_keys("ListBuckets", &q).is_empty());
+    }
 
     #[test]
     fn valid_bucket_names() {
