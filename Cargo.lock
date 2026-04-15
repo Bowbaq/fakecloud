@@ -2109,7 +2109,7 @@ dependencies = [
  "aws-types",
  "clap",
  "fakecloud-conformance-macros",
- "libc",
+ "fakecloud-testkit",
  "regex",
  "reqwest",
  "serde",

@@ -1,74 +1,22 @@
-use std::net::TcpListener;
-use std::process::{Child, Command, Stdio};
-use std::time::Duration;
+//! Thin newtype wrapper over `fakecloud_testkit::TestServer` that adds the
+//! per-service SDK client factories conformance tests rely on. Mirrors the
+//! `fakecloud-e2e` helper pattern so the two harnesses stay aligned.
 
-use aws_config::BehaviorVersion;
-use aws_credential_types::Credentials;
-use aws_types::region::Region;
+#![allow(dead_code)]
 
-#[allow(dead_code)]
-pub struct TestServer {
-    child: Option<Child>,
-    port: u16,
-    endpoint: String,
-    container_cli: String,
-}
+pub struct TestServer(fakecloud_testkit::TestServer);
 
-#[allow(dead_code)]
 impl TestServer {
     pub async fn start() -> Self {
-        let bin = find_binary();
-        let container_cli =
-            std::env::var("FAKECLOUD_CONTAINER_CLI").unwrap_or_else(|_| "docker".to_string());
-
-        for _ in 0..3 {
-            let port = find_available_port();
-            let endpoint = format!("http://127.0.0.1:{port}");
-
-            let mut child = Command::new(&bin)
-                .arg("--addr")
-                .arg(format!("127.0.0.1:{port}"))
-                .arg("--log-level")
-                .arg("error")
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .expect("failed to start fakecloud");
-
-            if wait_for_port(&mut child, port).await {
-                return Self {
-                    child: Some(child),
-                    port,
-                    endpoint,
-                    container_cli,
-                };
-            }
-
-            let pid = child.id();
-            graceful_kill(&mut child);
-            sweep_instance_containers(&container_cli, pid);
-        }
-
-        panic!("fakecloud failed to start after 3 attempts");
+        Self(fakecloud_testkit::TestServer::start().await)
     }
 
     pub fn endpoint(&self) -> &str {
-        &self.endpoint
+        self.0.endpoint()
     }
 
     pub async fn aws_config(&self) -> aws_config::SdkConfig {
-        aws_config::defaults(BehaviorVersion::latest())
-            .endpoint_url(self.endpoint())
-            .region(Region::new("us-east-1"))
-            .credentials_provider(Credentials::new(
-                "AKIAIOSFODNN7EXAMPLE",
-                "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-                None,
-                None,
-                "test",
-            ))
-            .load()
-            .await
+        self.0.aws_config().await
     }
 
     pub async fn sqs_client(&self) -> aws_sdk_sqs::Client {
@@ -158,123 +106,4 @@ impl TestServer {
             .build();
         aws_sdk_s3::Client::from_conf(s3_config)
     }
-}
-
-impl Drop for TestServer {
-    fn drop(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            let pid = child.id();
-            graceful_kill(&mut child);
-            sweep_instance_containers(&self.container_cli, pid);
-        }
-    }
-}
-
-/// See `fakecloud-testkit`'s `graceful_kill` — same contract. Duplicated
-/// here because the conformance harness doesn't depend on testkit and
-/// pulling it in just for this helper isn't worth the dep surface.
-fn graceful_kill(child: &mut Child) {
-    #[cfg(unix)]
-    {
-        let pid = child.id() as libc::pid_t;
-        // SAFETY: delivering SIGTERM to a known child PID is well-defined.
-        unsafe {
-            libc::kill(pid, libc::SIGTERM);
-        }
-
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            match child.try_wait() {
-                Ok(Some(_)) => return,
-                Ok(None) => {}
-                Err(_) => break,
-            }
-            if std::time::Instant::now() >= deadline {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-    }
-
-    let _ = child.kill();
-    let _ = child.wait();
-}
-
-fn sweep_instance_containers(cli: &str, pid: u32) {
-    let label = format!("fakecloud-instance=fakecloud-{pid}");
-    let Ok(output) = Command::new(cli)
-        .args(["ps", "-aq", "--filter", &format!("label={label}")])
-        .stderr(Stdio::null())
-        .output()
-    else {
-        return;
-    };
-    if !output.status.success() {
-        return;
-    }
-    let ids = String::from_utf8_lossy(&output.stdout);
-    for id in ids.split_whitespace() {
-        let _ = Command::new(cli)
-            .args(["rm", "-f", id])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-    }
-}
-
-fn find_available_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .expect("bind to random port")
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
-fn find_binary() -> String {
-    let debug_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/debug/fakecloud");
-    let release_path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../target/release/fakecloud"
-    );
-
-    if std::path::Path::new(debug_path).exists() {
-        return debug_path.to_string();
-    }
-    if std::path::Path::new(release_path).exists() {
-        return release_path.to_string();
-    }
-
-    panic!(
-        "fakecloud binary not found. Run `cargo build` first.\n\
-         Looked in:\n  {debug_path}\n  {release_path}"
-    );
-}
-
-async fn wait_for_port(child: &mut Child, port: u16) -> bool {
-    // Two-stage readiness: (1) TCP connect succeeds, (2) an HTTP request
-    // actually reaches an axum handler. A successful TCP connect only
-    // proves the kernel accepted SYNs into fakecloud's listen queue — it
-    // does not prove axum has reached `serve().await` and installed the
-    // request handlers. Tests that hit the server immediately after a
-    // bare TCP connect occasionally saw ConnectionRefused / EOF mid-flight.
-    let addr = format!("127.0.0.1:{port}");
-    let health_url = format!("http://127.0.0.1:{port}/");
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_millis(500))
-        .build()
-        .expect("build reqwest client");
-
-    for _ in 0..300 {
-        if child.try_wait().ok().flatten().is_some() {
-            return false;
-        }
-        if std::net::TcpStream::connect(&addr).is_ok() {
-            // Any HTTP response (including 4xx) proves axum is serving.
-            if client.get(&health_url).send().await.is_ok() {
-                return true;
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    false
 }
