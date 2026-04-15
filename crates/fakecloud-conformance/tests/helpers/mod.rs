@@ -18,8 +18,8 @@ pub struct TestServer {
 impl TestServer {
     pub async fn start() -> Self {
         let bin = find_binary();
-        let container_cli = std::env::var("FAKECLOUD_CONTAINER_CLI")
-            .unwrap_or_else(|_| "docker".to_string());
+        let container_cli =
+            std::env::var("FAKECLOUD_CONTAINER_CLI").unwrap_or_else(|_| "docker".to_string());
 
         for _ in 0..3 {
             let port = find_available_port();
