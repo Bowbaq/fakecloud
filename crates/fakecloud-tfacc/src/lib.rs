@@ -11,10 +11,8 @@
 //! an *allow*-list rather than a deny-list to match fakecloud's
 //! parity-per-implemented-service invariant.
 
-use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
-use std::time::Duration;
+use std::process::{Command, Output, Stdio};
 
 pub mod allowlist;
 
@@ -113,53 +111,22 @@ fn strip_godebug(go_mod: &Path) -> std::io::Result<()> {
     std::fs::write(go_mod, stripped)
 }
 
-/// Minimal fakecloud test server — lifecycle only, no SDK clients.
-pub struct TestServer {
-    child: Option<Child>,
-    port: u16,
-}
+/// Thin newtype over `fakecloud_testkit::TestServer`. Delegates the
+/// lifecycle (graceful SIGTERM, container sweep on drop) to testkit so
+/// tfacc stops leaking Docker containers when a Go acceptance test panics.
+pub struct TestServer(fakecloud_testkit::TestServer);
 
 impl TestServer {
     pub async fn start() -> Self {
-        let bin = find_binary();
-        for _ in 0..3 {
-            let port = find_available_port();
-            let mut child = Command::new(&bin)
-                .arg("--addr")
-                .arg(format!("0.0.0.0:{port}"))
-                .arg("--log-level")
-                .arg("warn")
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .expect("failed to start fakecloud");
-            if wait_for_ready(&mut child, port).await {
-                return Self {
-                    child: Some(child),
-                    port,
-                };
-            }
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        panic!("fakecloud failed to start after 3 attempts");
+        Self(fakecloud_testkit::TestServer::start().await)
     }
 
     pub fn port(&self) -> u16 {
-        self.port
+        self.0.port()
     }
 
     pub fn endpoint(&self) -> String {
-        format!("http://127.0.0.1:{}", self.port)
-    }
-}
-
-impl Drop for TestServer {
-    fn drop(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+        self.0.endpoint().to_string()
     }
 }
 
@@ -316,42 +283,3 @@ pub const ENDPOINT_ENV_VARS: &[(&str, &str)] = &[
     ("AWS_ENDPOINT_URL_APIGATEWAYV2", "apigatewayv2"),
     ("AWS_ENDPOINT_URL_BEDROCK", "bedrock"),
 ];
-
-fn find_available_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind to random port");
-    listener.local_addr().unwrap().port()
-}
-
-fn find_binary() -> PathBuf {
-    let candidates = [
-        concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/debug/fakecloud"),
-        concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../target/release/fakecloud"
-        ),
-    ];
-    for path in candidates {
-        if Path::new(path).exists() {
-            return PathBuf::from(path);
-        }
-    }
-    panic!("fakecloud binary not found. Run `cargo build --bin fakecloud` first.");
-}
-
-async fn wait_for_ready(child: &mut Child, port: u16) -> bool {
-    let health = format!("http://127.0.0.1:{port}/");
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_millis(500))
-        .build()
-        .expect("build reqwest client");
-    for _ in 0..300 {
-        if child.try_wait().ok().flatten().is_some() {
-            return false;
-        }
-        if client.get(&health).send().await.is_ok() {
-            return true;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    false
-}
