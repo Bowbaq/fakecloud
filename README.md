@@ -41,7 +41,7 @@ Other install options (Cargo, Docker, Docker Compose, source) are documented at 
 - **Real infrastructure for stateful services.** Lambda runs in Docker containers (13 runtimes). RDS runs real Postgres/MySQL/MariaDB. ElastiCache runs real Redis/Valkey.
 - **Single binary.** ~19 MB, ~10 MiB idle memory, ~500ms startup. No Docker required to run fakecloud itself (only to exercise the services that need real containers).
 - **First-party test SDKs** for TypeScript, Python, Go, Java, and Rust. Assert on what your code called without writing raw HTTP.
-- **Opt-in SigV4 verification and IAM enforcement.** Off by default so tests just work; turn on `--verify-sigv4` for real cryptographic signature checking and `--iam soft|strict` for Phase 1 identity-policy evaluation (Allow/Deny with Deny precedence, Action/Resource wildcards, user/group/role policies) across IAM, STS, SQS, SNS, and S3. See [the security docs](https://fakecloud.dev/docs/reference/security/).
+- **Opt-in SigV4 verification and IAM enforcement.** Off by default so tests just work; turn on `--verify-sigv4` for real cryptographic signature checking and `--iam soft|strict` for identity-policy evaluation (Allow/Deny with Deny precedence, Action/Resource wildcards, user/group/role policies, `Condition` blocks with all 28 AWS operators against global keys like `aws:username` / `aws:SourceIp` / `aws:CurrentTime`) across IAM, STS, SQS, SNS, and S3. See [the security docs](https://fakecloud.dev/docs/reference/security/).
 
 ## Supported services
 
