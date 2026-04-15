@@ -187,3 +187,117 @@ async fn lambda_create_function_conflict() {
         .await;
     assert!(result.is_err());
 }
+
+#[tokio::test]
+async fn lambda_add_get_remove_permission_roundtrip() {
+    // Drives AddPermission / GetPolicy / RemovePermission through
+    // aws-sdk-lambda against the real fakecloud binary — verifies the
+    // canonical-policy-doc round trip we rely on in the IAM evaluator
+    // path. FAKECLOUD_IAM is off for this test; it only exercises the
+    // handler shape, not enforcement.
+    let server = TestServer::start().await;
+    let client = server.lambda_client().await;
+
+    client
+        .create_function()
+        .function_name("perm-fn")
+        .runtime(aws_sdk_lambda::types::Runtime::Python312)
+        .role("arn:aws:iam::123456789012:role/test-role")
+        .handler("index.handler")
+        .code(
+            aws_sdk_lambda::types::FunctionCode::builder()
+                .zip_file(Blob::new(make_python_zip()))
+                .build(),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    // GetPolicy on a function with no resource policy → ResourceNotFoundException.
+    let missing = client
+        .get_policy()
+        .function_name("perm-fn")
+        .send()
+        .await;
+    assert!(missing.is_err(), "GetPolicy on unpolicied function should 404");
+
+    // AddPermission for EventBridge with SourceArn + SourceAccount.
+    let add_resp = client
+        .add_permission()
+        .function_name("perm-fn")
+        .statement_id("events-invoke")
+        .action("InvokeFunction")
+        .principal("events.amazonaws.com")
+        .source_arn("arn:aws:events:us-east-1:123456789012:rule/my-rule")
+        .source_account("123456789012")
+        .send()
+        .await
+        .unwrap();
+    let statement_str = add_resp.statement().unwrap();
+    let statement: serde_json::Value = serde_json::from_str(statement_str).unwrap();
+    assert_eq!(statement["Sid"], "events-invoke");
+    assert_eq!(statement["Principal"]["Service"], "events.amazonaws.com");
+    assert_eq!(statement["Action"], "lambda:InvokeFunction");
+    assert_eq!(
+        statement["Condition"]["ArnLike"]["aws:SourceArn"],
+        "arn:aws:events:us-east-1:123456789012:rule/my-rule"
+    );
+
+    // Add a second statement so RemovePermission has something to
+    // leave behind after it strips the first one.
+    client
+        .add_permission()
+        .function_name("perm-fn")
+        .statement_id("s3-invoke")
+        .action("InvokeFunction")
+        .principal("s3.amazonaws.com")
+        .send()
+        .await
+        .unwrap();
+
+    // GetPolicy returns the composed document with both statements.
+    let got = client
+        .get_policy()
+        .function_name("perm-fn")
+        .send()
+        .await
+        .unwrap();
+    let doc: serde_json::Value = serde_json::from_str(got.policy().unwrap()).unwrap();
+    let statements = doc["Statement"].as_array().unwrap();
+    assert_eq!(statements.len(), 2);
+    let ids: Vec<&str> = statements
+        .iter()
+        .map(|s| s["Sid"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&"events-invoke"));
+    assert!(ids.contains(&"s3-invoke"));
+
+    // RemovePermission strips only the named statement.
+    client
+        .remove_permission()
+        .function_name("perm-fn")
+        .statement_id("events-invoke")
+        .send()
+        .await
+        .unwrap();
+
+    let got = client
+        .get_policy()
+        .function_name("perm-fn")
+        .send()
+        .await
+        .unwrap();
+    let doc: serde_json::Value = serde_json::from_str(got.policy().unwrap()).unwrap();
+    let statements = doc["Statement"].as_array().unwrap();
+    assert_eq!(statements.len(), 1);
+    assert_eq!(statements[0]["Sid"], "s3-invoke");
+
+    // Removing a non-existent statement id is a 404.
+    let err = client
+        .remove_permission()
+        .function_name("perm-fn")
+        .statement_id("nope")
+        .send()
+        .await;
+    assert!(err.is_err());
+}
