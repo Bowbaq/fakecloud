@@ -43,6 +43,11 @@ pub struct DynamoDbService {
     pub(crate) s3_store: Option<Arc<dyn S3Store>>,
     delivery: Option<Arc<DeliveryBus>>,
     snapshot_store: Option<Arc<dyn SnapshotStore>>,
+    /// Serializes concurrent snapshot writes so the newest observed
+    /// state always wins on disk. Without it, two tasks could race
+    /// between state.read().clone() and store.save() and leave older
+    /// bytes as the final on-disk state.
+    snapshot_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl DynamoDbService {
@@ -53,6 +58,7 @@ impl DynamoDbService {
             s3_store: None,
             delivery: None,
             snapshot_store: None,
+            snapshot_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -79,23 +85,30 @@ impl DynamoDbService {
     /// Persist the current in-memory state as a snapshot. Called after
     /// every state-mutating action. A noop when no snapshot store is
     /// configured (i.e. `StorageMode::Memory`).
-    fn save_snapshot(&self) {
-        let Some(store) = self.snapshot_store.as_ref() else {
+    ///
+    /// The snapshot lock serializes the full clone + serialize + write
+    /// so concurrent mutators cannot leave older bytes on disk, and
+    /// serialization + the blocking file write are offloaded to the
+    /// blocking pool to keep Tokio workers responsive.
+    async fn save_snapshot(&self) {
+        let Some(store) = self.snapshot_store.clone() else {
             return;
         };
+        let _guard = self.snapshot_lock.lock().await;
         let snapshot = DynamoDbSnapshot {
             schema_version: DYNAMODB_SNAPSHOT_SCHEMA_VERSION,
             state: self.state.read().clone(),
         };
-        let bytes = match serde_json::to_vec(&snapshot) {
-            Ok(b) => b,
-            Err(err) => {
-                tracing::error!(%err, "failed to serialize dynamodb snapshot");
-                return;
-            }
-        };
-        if let Err(err) = store.save(&bytes) {
-            tracing::error!(%err, "failed to write dynamodb snapshot");
+        let join = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            let bytes = serde_json::to_vec(&snapshot)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+            store.save(&bytes)
+        })
+        .await;
+        match join {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => tracing::error!(%err, "failed to write dynamodb snapshot"),
+            Err(err) => tracing::error!(%err, "dynamodb snapshot task panicked"),
         }
     }
 
@@ -268,7 +281,7 @@ impl AwsService for DynamoDbService {
             )),
         };
         if mutates && matches!(result.as_ref(), Ok(resp) if resp.status.is_success()) {
-            self.save_snapshot();
+            self.save_snapshot().await;
         }
         result
     }
