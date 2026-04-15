@@ -4,28 +4,94 @@ use chrono::Utc;
 use http::StatusCode;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::Mutex as AsyncMutex;
 
 use fakecloud_aws::arn::Arn;
 use fakecloud_core::delivery::DeliveryBus;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
+use fakecloud_persistence::SnapshotStore;
 
 use crate::state::{
     MessageAttribute, PlatformApplication, PlatformEndpoint, PublishedMessage, SharedSnsState,
-    SnsSubscription, SnsTopic,
+    SnsSnapshot, SnsSubscription, SnsTopic, SNS_SNAPSHOT_SCHEMA_VERSION,
 };
 
 pub struct SnsService {
     state: SharedSnsState,
     delivery: Arc<DeliveryBus>,
+    snapshot_store: Option<Arc<dyn SnapshotStore>>,
+    snapshot_lock: Arc<AsyncMutex<()>>,
 }
 
 impl SnsService {
     pub fn new(state: SharedSnsState, delivery: Arc<DeliveryBus>) -> Self {
-        Self { state, delivery }
+        Self {
+            state,
+            delivery,
+            snapshot_store: None,
+            snapshot_lock: Arc::new(AsyncMutex::new(())),
+        }
+    }
+
+    pub fn with_snapshot_store(mut self, store: Arc<dyn SnapshotStore>) -> Self {
+        self.snapshot_store = Some(store);
+        self
+    }
+
+    /// Persist current state as a snapshot. Held across the
+    /// clone-serialize-write sequence to prevent stale-last writes,
+    /// with serde + file I/O offloaded to the blocking pool.
+    async fn save_snapshot(&self) {
+        let Some(store) = self.snapshot_store.clone() else {
+            return;
+        };
+        let _guard = self.snapshot_lock.lock().await;
+        let snapshot = SnsSnapshot {
+            schema_version: SNS_SNAPSHOT_SCHEMA_VERSION,
+            state: self.state.read().clone(),
+        };
+        let join = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            let bytes = serde_json::to_vec(&snapshot)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+            store.save(&bytes)
+        })
+        .await;
+        match join {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => tracing::error!(%err, "failed to write sns snapshot"),
+            Err(err) => tracing::error!(%err, "sns snapshot task panicked"),
+        }
     }
 }
 
-use std::sync::Arc;
+/// Actions that mutate SNS state.
+fn is_mutating_action(action: &str) -> bool {
+    matches!(
+        action,
+        "CreateTopic"
+            | "DeleteTopic"
+            | "SetTopicAttributes"
+            | "Subscribe"
+            | "ConfirmSubscription"
+            | "Unsubscribe"
+            | "Publish"
+            | "PublishBatch"
+            | "SetSubscriptionAttributes"
+            | "TagResource"
+            | "UntagResource"
+            | "AddPermission"
+            | "RemovePermission"
+            | "CreatePlatformApplication"
+            | "DeletePlatformApplication"
+            | "SetPlatformApplicationAttributes"
+            | "CreatePlatformEndpoint"
+            | "DeleteEndpoint"
+            | "SetEndpointAttributes"
+            | "SetSMSAttributes"
+            | "OptInPhoneNumber"
+    )
+}
 
 const DEFAULT_PAGE_SIZE: usize = 100;
 
@@ -84,7 +150,8 @@ impl AwsService for SnsService {
     }
 
     async fn handle(&self, req: AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        match req.action.as_str() {
+        let mutates = is_mutating_action(req.action.as_str());
+        let result = match req.action.as_str() {
             "CreateTopic" => self.create_topic(&req),
             "DeleteTopic" => self.delete_topic(&req),
             "ListTopics" => self.list_topics(&req),
@@ -124,7 +191,11 @@ impl AwsService for SnsService {
             "ListPhoneNumbersOptedOut" => self.list_phone_numbers_opted_out(&req),
             "OptInPhoneNumber" => self.opt_in_phone_number(&req),
             _ => Err(AwsServiceError::action_not_implemented("sns", &req.action)),
+        };
+        if mutates && matches!(result.as_ref(), Ok(resp) if resp.status.is_success()) {
+            self.save_snapshot().await;
         }
+        result
     }
 
     fn supported_actions(&self) -> &[&str] {

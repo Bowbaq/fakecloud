@@ -384,7 +384,6 @@ async fn main() {
     if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
         for service in [
             "cloudformation",
-            "sns",
             "events",
             "ssm",
             "lambda",
@@ -467,7 +466,58 @@ async fn main() {
     registry.register(Arc::new(sqs_service));
     let sns_state_for_sfn = sns_state.clone();
     let delivery_for_sns_sfn = delivery_for_sns.clone();
-    registry.register(Arc::new(SnsService::new(sns_state, delivery_for_sns)));
+    let sns_snapshot_store: Option<Arc<dyn fakecloud_persistence::SnapshotStore>> =
+        if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
+            let data_path = persistence_config
+                .data_path
+                .as_ref()
+                .expect("validated above")
+                .clone();
+            let path = data_path.join("sns").join("snapshot.json");
+            let store = fakecloud_persistence::DiskSnapshotStore::new(path);
+            match fakecloud_persistence::SnapshotStore::load(&store) {
+                Ok(Some(bytes)) => {
+                    match serde_json::from_slice::<fakecloud_sns::state::SnsSnapshot>(&bytes) {
+                        Ok(snapshot) => {
+                            if snapshot.schema_version
+                                != fakecloud_sns::state::SNS_SNAPSHOT_SCHEMA_VERSION
+                            {
+                                fatal_exit(format_args!(
+                                    "sns persistence schema mismatch: on-disk={}, expected={}",
+                                    snapshot.schema_version,
+                                    fakecloud_sns::state::SNS_SNAPSHOT_SCHEMA_VERSION,
+                                ));
+                            }
+                            let topic_count = snapshot.state.topics.len();
+                            let sub_count = snapshot.state.subscriptions.len();
+                            *sns_state.write() = snapshot.state;
+                            tracing::info!(
+                                topics = topic_count,
+                                subscriptions = sub_count,
+                                "loaded sns persistence snapshot",
+                            );
+                        }
+                        Err(err) => fatal_exit(format_args!(
+                            "failed to parse sns persistence snapshot: {err}"
+                        )),
+                    }
+                }
+                Ok(None) => {
+                    tracing::info!("no sns persistence snapshot found; starting empty");
+                }
+                Err(err) => fatal_exit(format_args!(
+                    "failed to read sns persistence snapshot: {err}"
+                )),
+            }
+            Some(Arc::new(store) as Arc<dyn fakecloud_persistence::SnapshotStore>)
+        } else {
+            None
+        };
+    let mut sns_service = SnsService::new(sns_state, delivery_for_sns);
+    if let Some(store) = sns_snapshot_store {
+        sns_service = sns_service.with_snapshot_store(store);
+    }
+    registry.register(Arc::new(sns_service));
     let mut eb_service = EventBridgeService::new(eb_state.clone(), delivery_for_eb.clone())
         .with_lambda(lambda_state.clone())
         .with_logs(logs_state.clone());

@@ -3,7 +3,7 @@ use parking_lot::RwLock;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SnsTopic {
     pub topic_arn: String,
     pub name: String,
@@ -13,7 +13,7 @@ pub struct SnsTopic {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SnsSubscription {
     pub subscription_arn: String,
     pub topic_arn: String,
@@ -27,14 +27,14 @@ pub struct SnsSubscription {
 }
 
 /// An SNS message attribute (key-value with a data type).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MessageAttribute {
     pub data_type: String,
     pub string_value: Option<String>,
     pub binary_value: Option<Vec<u8>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PublishedMessage {
     pub message_id: String,
     pub topic_arn: String,
@@ -46,7 +46,7 @@ pub struct PublishedMessage {
     pub timestamp: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PlatformApplication {
     pub arn: String,
     pub name: String,
@@ -55,7 +55,7 @@ pub struct PlatformApplication {
     pub endpoints: HashMap<String, PlatformEndpoint>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PlatformEndpoint {
     pub arn: String,
     pub token: String,
@@ -65,7 +65,7 @@ pub struct PlatformEndpoint {
 }
 
 /// A recorded Lambda invocation from SNS delivery.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LambdaInvocation {
     pub function_arn: String,
     pub message: String,
@@ -74,7 +74,7 @@ pub struct LambdaInvocation {
 }
 
 /// A recorded email delivery from SNS (stub).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SentEmail {
     pub email_address: String,
     pub message: String,
@@ -83,6 +83,7 @@ pub struct SentEmail {
     pub timestamp: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SnsState {
     pub account_id: String,
     pub region: String,
@@ -140,3 +141,13 @@ impl SnsState {
 }
 
 pub type SharedSnsState = Arc<RwLock<SnsState>>;
+
+/// On-disk snapshot envelope for SNS state. Versioned so format
+/// changes fail loudly on upgrade.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SnsSnapshot {
+    pub schema_version: u32,
+    pub state: SnsState,
+}
+
+pub const SNS_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
