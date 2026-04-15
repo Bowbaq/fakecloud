@@ -1186,9 +1186,13 @@ async fn main() {
         policy_evaluator: Some(
             fakecloud_iam::policy_evaluator::IamPolicyEvaluatorImpl::shared(iam_state.clone()),
         ),
-        resource_policy_provider: Some(
-            fakecloud_s3::resource_policy::S3ResourcePolicyProvider::shared(s3_state.clone()),
-        ),
+        // Composite resource-policy provider: each concrete provider
+        // gates on its own service prefix and returns None for anything
+        // it doesn't own, so additional services can be added by
+        // appending to this list without touching the core crate.
+        resource_policy_provider: Some(fakecloud_core::auth::MultiResourcePolicyProvider::shared(
+            vec![fakecloud_s3::resource_policy::S3ResourcePolicyProvider::shared(s3_state.clone())],
+        )),
     };
 
     let service_names: Vec<String> = registry

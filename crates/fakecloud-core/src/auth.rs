@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::net::IpAddr;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 
@@ -344,6 +345,58 @@ pub trait ResourcePolicyProvider: Send + Sync {
     fn resource_policy(&self, service: &str, resource_arn: &str) -> Option<String>;
 }
 
+/// Composite [`ResourcePolicyProvider`] that delegates to a list of
+/// sub-providers in order, returning the first `Some` hit.
+///
+/// Each concrete provider (`S3ResourcePolicyProvider`,
+/// `SnsResourcePolicyProvider`, `LambdaResourcePolicyProvider`, …)
+/// already gates on its own service prefix and returns `None` for
+/// anything it doesn't own, so composition is short-circuit and
+/// order-independent. Server bootstrap builds one of these holding
+/// every resource-owning service and passes it to
+/// [`crate::dispatch::DispatchConfig::resource_policy_provider`].
+///
+/// This is the extension point for future resource-owning services:
+/// adding KMS key policies (or anything else) is a one-line push at
+/// bootstrap, never a core-crate refactor.
+pub struct MultiResourcePolicyProvider {
+    providers: Vec<Arc<dyn ResourcePolicyProvider>>,
+}
+
+impl MultiResourcePolicyProvider {
+    /// Build a composite from a list of providers.
+    pub fn new(providers: Vec<Arc<dyn ResourcePolicyProvider>>) -> Self {
+        Self { providers }
+    }
+
+    /// Shared constructor returning the composite as an
+    /// `Arc<dyn ResourcePolicyProvider>`, matching the signature of
+    /// `DispatchConfig::resource_policy_provider`.
+    pub fn shared(
+        providers: Vec<Arc<dyn ResourcePolicyProvider>>,
+    ) -> Arc<dyn ResourcePolicyProvider> {
+        Arc::new(Self::new(providers))
+    }
+
+    /// Number of sub-providers held by this composite. Used by tests.
+    pub fn len(&self) -> usize {
+        self.providers.len()
+    }
+
+    /// True when no sub-providers are registered.
+    pub fn is_empty(&self) -> bool {
+        self.providers.is_empty()
+    }
+}
+
+impl ResourcePolicyProvider for MultiResourcePolicyProvider {
+    fn resource_policy(&self, service: &str, resource_arn: &str) -> Option<String> {
+        self.providers
+            .iter()
+            .find_map(|p| p.resource_policy(service, resource_arn))
+    }
+}
+
 /// How IAM identity policies are evaluated for incoming requests.
 ///
 /// Default is [`IamMode::Off`] — existing behavior, policies are stored but
@@ -603,5 +656,125 @@ mod tests {
         assert!(!is_root_bypass("FKIA123456"));
         assert!(!is_root_bypass("tes"));
         assert!(!is_root_bypass("tst"));
+    }
+
+    // --- MultiResourcePolicyProvider composite -------------------------
+
+    /// Test provider that returns a canned document for one
+    /// (service, arn) pair and `None` for everything else.
+    struct FakeProvider {
+        service: &'static str,
+        arn: &'static str,
+        policy: &'static str,
+    }
+
+    impl ResourcePolicyProvider for FakeProvider {
+        fn resource_policy(&self, service: &str, resource_arn: &str) -> Option<String> {
+            if service.eq_ignore_ascii_case(self.service) && resource_arn == self.arn {
+                Some(self.policy.to_string())
+            } else {
+                None
+            }
+        }
+    }
+
+    fn fake(
+        service: &'static str,
+        arn: &'static str,
+        policy: &'static str,
+    ) -> Arc<dyn ResourcePolicyProvider> {
+        Arc::new(FakeProvider {
+            service,
+            arn,
+            policy,
+        })
+    }
+
+    #[test]
+    fn multi_provider_empty_always_returns_none() {
+        let m = MultiResourcePolicyProvider::new(vec![]);
+        assert!(m.is_empty());
+        assert_eq!(m.len(), 0);
+        assert_eq!(m.resource_policy("s3", "arn:aws:s3:::x"), None);
+    }
+
+    #[test]
+    fn multi_provider_delegates_to_single_child() {
+        let m = MultiResourcePolicyProvider::new(vec![fake("s3", "arn:aws:s3:::b", r#"{"v":1}"#)]);
+        assert_eq!(m.len(), 1);
+        assert_eq!(
+            m.resource_policy("s3", "arn:aws:s3:::b").as_deref(),
+            Some(r#"{"v":1}"#)
+        );
+        assert_eq!(m.resource_policy("s3", "arn:aws:s3:::missing"), None);
+        assert_eq!(m.resource_policy("sns", "arn:aws:s3:::b"), None);
+    }
+
+    #[test]
+    fn multi_provider_hits_first_matching_child() {
+        let m = MultiResourcePolicyProvider::new(vec![
+            fake("s3", "arn:aws:s3:::b", r#"{"v":"s3"}"#),
+            fake("sns", "arn:aws:sns:us-east-1:123:t", r#"{"v":"sns"}"#),
+        ]);
+        assert_eq!(
+            m.resource_policy("s3", "arn:aws:s3:::b").as_deref(),
+            Some(r#"{"v":"s3"}"#)
+        );
+        assert_eq!(
+            m.resource_policy("sns", "arn:aws:sns:us-east-1:123:t")
+                .as_deref(),
+            Some(r#"{"v":"sns"}"#)
+        );
+    }
+
+    #[test]
+    fn multi_provider_is_order_independent_when_services_differ() {
+        // Because each concrete provider gates on its own service
+        // prefix, swapping the order must never change the result.
+        let children: Vec<Arc<dyn ResourcePolicyProvider>> = vec![
+            fake("s3", "arn:aws:s3:::b", "s3-doc"),
+            fake("sns", "arn:aws:sns:us-east-1:123:t", "sns-doc"),
+            fake(
+                "lambda",
+                "arn:aws:lambda:us-east-1:123:function:f",
+                "lam-doc",
+            ),
+        ];
+        let forward = MultiResourcePolicyProvider::new(children.clone());
+        let reversed = MultiResourcePolicyProvider::new({
+            let mut v = children.clone();
+            v.reverse();
+            v
+        });
+        for (svc, arn) in [
+            ("s3", "arn:aws:s3:::b"),
+            ("sns", "arn:aws:sns:us-east-1:123:t"),
+            ("lambda", "arn:aws:lambda:us-east-1:123:function:f"),
+        ] {
+            assert_eq!(
+                forward.resource_policy(svc, arn),
+                reversed.resource_policy(svc, arn),
+                "service {svc}"
+            );
+        }
+    }
+
+    #[test]
+    fn multi_provider_returns_none_for_unhandled_service() {
+        let m = MultiResourcePolicyProvider::new(vec![fake("s3", "arn:aws:s3:::b", "doc")]);
+        assert_eq!(
+            m.resource_policy("kms", "arn:aws:kms:us-east-1:123:key/k"),
+            None
+        );
+        assert_eq!(m.resource_policy("iam", "arn:aws:iam::123:role/r"), None);
+    }
+
+    #[test]
+    fn multi_provider_shared_wraps_in_arc() {
+        let arc = MultiResourcePolicyProvider::shared(vec![fake("s3", "arn:aws:s3:::b", "doc")]);
+        assert_eq!(
+            arc.resource_policy("s3", "arn:aws:s3:::b").as_deref(),
+            Some("doc")
+        );
     }
 }
