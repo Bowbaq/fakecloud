@@ -586,3 +586,230 @@ async fn condition_bool_secure_transport_deny_fires_over_http() {
     let err = sts.get_caller_identity().send().await.unwrap_err();
     assert!(format!("{err:?}").contains("AccessDeniedException"));
 }
+
+// ======================================================================
+// Phase 2: Resource-based policies (S3 bucket policies)
+//
+// Drive the evaluator's resource-policy path end-to-end: a real
+// `aws-sdk-s3` signed request hits strict-mode enforcement, the
+// dispatch layer fetches the bucket policy via the
+// `ResourcePolicyProvider`, and the evaluator combines it with the
+// caller's identity policies using AWS cross-account semantics.
+//
+// fakecloud runs every request against the same account ID today, so
+// all of these exercise the same-account Allow-union path. The
+// cross-account Allow-intersection semantics live under unit tests in
+// `fakecloud-iam::evaluator`; wiring real cross-account requests is a
+// future batch with its own infrastructure.
+// ======================================================================
+
+/// Create a bucket owned by the root credentials, PutObject one key, then
+/// attach the given bucket policy to it. Returns the bucket name.
+async fn seed_bucket_with_policy(server: &TestServer, bucket: &str, policy_json: &str) {
+    let boot = sdk_config_with(server, "test", "test").await;
+    let s3_boot = aws_sdk_s3::Client::new(&boot);
+    s3_boot.create_bucket().bucket(bucket).send().await.unwrap();
+    s3_boot
+        .put_object()
+        .bucket(bucket)
+        .key("readme.md")
+        .body(aws_sdk_s3::primitives::ByteStream::from_static(b"hi"))
+        .send()
+        .await
+        .unwrap();
+    s3_boot
+        .put_bucket_policy()
+        .bucket(bucket)
+        .policy(policy_json)
+        .send()
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn bucket_policy_grants_access_without_identity_policy() {
+    // A user with no identity policy attached can still read an
+    // object when the bucket policy grants them s3:GetObject. This is
+    // the same-account Allow-union path — identity side is implicit
+    // deny, resource side is Allow, so the request succeeds.
+    let server = start_strict().await;
+    let (akid, secret) = bootstrap_user(&server, "bp_reader").await;
+    seed_bucket_with_policy(
+        &server,
+        "bp-shared-docs",
+        r#"{"Version":"2012-10-17","Statement":[{
+            "Effect":"Allow",
+            "Principal":{"AWS":"arn:aws:iam::123456789012:user/bp_reader"},
+            "Action":"s3:GetObject",
+            "Resource":"arn:aws:s3:::bp-shared-docs/*"
+        }]}"#,
+    )
+    .await;
+
+    let cfg = sdk_config_with(&server, &akid, &secret).await;
+    let s3 = aws_sdk_s3::Client::new(&cfg);
+    let resp = s3
+        .get_object()
+        .bucket("bp-shared-docs")
+        .key("readme.md")
+        .send()
+        .await
+        .unwrap();
+    let body = resp.body.collect().await.unwrap().into_bytes();
+    assert_eq!(body.as_ref(), b"hi");
+}
+
+#[tokio::test]
+async fn bucket_policy_explicit_deny_beats_identity_allow() {
+    // Identity policy grants s3:GetObject but the bucket policy denies
+    // it for this user. Explicit deny on either side wins, regardless
+    // of identity-side allow.
+    let server = start_strict().await;
+    let (akid, secret) = bootstrap_user(&server, "bp_blocked").await;
+    attach_inline_policy(
+        &server,
+        "bp_blocked",
+        "AllowReadAll",
+        r#"{"Version":"2012-10-17","Statement":[
+            {"Effect":"Allow","Action":"s3:GetObject","Resource":"*"}
+        ]}"#,
+    )
+    .await;
+    seed_bucket_with_policy(
+        &server,
+        "bp-locked-docs",
+        r#"{"Version":"2012-10-17","Statement":[{
+            "Effect":"Deny",
+            "Principal":{"AWS":"arn:aws:iam::123456789012:user/bp_blocked"},
+            "Action":"s3:GetObject",
+            "Resource":"arn:aws:s3:::bp-locked-docs/*"
+        }]}"#,
+    )
+    .await;
+
+    let cfg = sdk_config_with(&server, &akid, &secret).await;
+    let s3 = aws_sdk_s3::Client::new(&cfg);
+    let err = s3
+        .get_object()
+        .bucket("bp-locked-docs")
+        .key("readme.md")
+        .send()
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{err:?}").contains("AccessDenied"),
+        "expected AccessDenied, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn bucket_policy_identity_allow_no_bucket_policy_still_works() {
+    // Regression guard: if no bucket policy is attached, same-account
+    // identity-only access must keep working exactly as it did in
+    // Phase 1. Batch 3 added the provider lookup; this test asserts
+    // the lookup returning None does not change identity-only
+    // semantics.
+    let server = start_strict().await;
+    let boot = sdk_config_with(&server, "test", "test").await;
+    let s3_boot = aws_sdk_s3::Client::new(&boot);
+    s3_boot
+        .create_bucket()
+        .bucket("bp-plain-docs")
+        .send()
+        .await
+        .unwrap();
+    s3_boot
+        .put_object()
+        .bucket("bp-plain-docs")
+        .key("readme.md")
+        .body(aws_sdk_s3::primitives::ByteStream::from_static(b"hi"))
+        .send()
+        .await
+        .unwrap();
+
+    let (akid, secret) = bootstrap_user(&server, "bp_plain").await;
+    attach_inline_policy(
+        &server,
+        "bp_plain",
+        "ReadPlain",
+        r#"{"Version":"2012-10-17","Statement":[
+            {"Effect":"Allow","Action":"s3:GetObject","Resource":"arn:aws:s3:::bp-plain-docs/*"}
+        ]}"#,
+    )
+    .await;
+
+    let cfg = sdk_config_with(&server, &akid, &secret).await;
+    let s3 = aws_sdk_s3::Client::new(&cfg);
+    s3.get_object()
+        .bucket("bp-plain-docs")
+        .key("readme.md")
+        .send()
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn bucket_policy_principal_wildcard_grants_any_user() {
+    // Public bucket idiom: `"Principal": "*"`. Any non-root caller
+    // signing real SigV4 requests should be able to GetObject,
+    // regardless of their identity policy set.
+    let server = start_strict().await;
+    let (akid, secret) = bootstrap_user(&server, "bp_anyone").await;
+    seed_bucket_with_policy(
+        &server,
+        "bp-public-docs",
+        r#"{"Version":"2012-10-17","Statement":[{
+            "Effect":"Allow",
+            "Principal":"*",
+            "Action":"s3:GetObject",
+            "Resource":"arn:aws:s3:::bp-public-docs/*"
+        }]}"#,
+    )
+    .await;
+
+    let cfg = sdk_config_with(&server, &akid, &secret).await;
+    let s3 = aws_sdk_s3::Client::new(&cfg);
+    s3.get_object()
+        .bucket("bp-public-docs")
+        .key("readme.md")
+        .send()
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn bucket_policy_condition_block_gates_access() {
+    // Regression guard: Phase 2 condition evaluation still applies to
+    // resource-policy statements. Grant is conditional on
+    // `aws:SecureTransport == true`, and fakecloud's test server
+    // serves plain HTTP, so the condition does not match and the
+    // grant does not apply. Result: implicit deny.
+    let server = start_strict().await;
+    let (akid, secret) = bootstrap_user(&server, "bp_tls_only").await;
+    seed_bucket_with_policy(
+        &server,
+        "bp-tls-docs",
+        r#"{"Version":"2012-10-17","Statement":[{
+            "Effect":"Allow",
+            "Principal":"*",
+            "Action":"s3:GetObject",
+            "Resource":"arn:aws:s3:::bp-tls-docs/*",
+            "Condition":{"Bool":{"aws:SecureTransport":"true"}}
+        }]}"#,
+    )
+    .await;
+
+    let cfg = sdk_config_with(&server, &akid, &secret).await;
+    let s3 = aws_sdk_s3::Client::new(&cfg);
+    let err = s3
+        .get_object()
+        .bucket("bp-tls-docs")
+        .key("readme.md")
+        .send()
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{err:?}").contains("AccessDenied"),
+        "expected AccessDenied, got {err:?}"
+    );
+}
