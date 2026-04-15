@@ -2539,6 +2539,7 @@ dependencies = [
  "chrono",
  "fakecloud-aws",
  "fakecloud-core",
+ "fakecloud-persistence",
  "fakecloud-secretsmanager",
  "http 1.4.0",
  "md5",
@@ -2548,6 +2549,8 @@ dependencies = [
  "serde_yaml",
  "sha2 0.10.9",
  "thiserror 2.0.18",
+ "tokio",
+ "tracing",
  "uuid",
 ]
 

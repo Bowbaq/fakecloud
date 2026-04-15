@@ -3,7 +3,7 @@ use parking_lot::RwLock;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SsmParameter {
     pub name: String,
     pub value: String,
@@ -22,7 +22,7 @@ pub struct SsmParameter {
     pub policies: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SsmParameterVersion {
     pub value: String,
     pub version: i64,
@@ -33,7 +33,7 @@ pub struct SsmParameterVersion {
     pub labels: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SsmDocument {
     pub name: String,
     pub content: String,
@@ -51,7 +51,7 @@ pub struct SsmDocument {
     pub permissions: HashMap<String, Vec<String>>, // permission_type -> account_ids
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SsmDocumentVersion {
     pub content: String,
     pub document_version: String,
@@ -62,7 +62,7 @@ pub struct SsmDocumentVersion {
     pub is_default_version: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SsmCommand {
     pub command_id: String,
     pub document_name: String,
@@ -82,7 +82,7 @@ pub struct SsmCommand {
     pub document_hash_type: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MaintenanceWindowTarget {
     pub window_target_id: String,
     pub window_id: String,
@@ -93,7 +93,7 @@ pub struct MaintenanceWindowTarget {
     pub owner_information: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MaintenanceWindowTask {
     pub window_task_id: String,
     pub window_id: String,
@@ -108,7 +108,7 @@ pub struct MaintenanceWindowTask {
     pub description: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MaintenanceWindow {
     pub id: String,
     pub name: String,
@@ -128,7 +128,7 @@ pub struct MaintenanceWindow {
     pub client_token: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PatchBaseline {
     pub id: String,
     pub name: String,
@@ -147,13 +147,13 @@ pub struct PatchBaseline {
     pub client_token: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PatchGroup {
     pub baseline_id: String,
     pub patch_group: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SsmAssociation {
     pub association_id: String,
     pub name: String, // document name
@@ -184,7 +184,7 @@ pub struct SsmAssociation {
     pub versions: Vec<SsmAssociationVersion>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SsmAssociationVersion {
     pub version: i64,
     pub name: String,
@@ -199,7 +199,7 @@ pub struct SsmAssociationVersion {
     pub compliance_severity: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SsmOpsItem {
     pub ops_item_id: String,
     pub title: String,
@@ -224,7 +224,7 @@ pub struct SsmOpsItem {
     pub actual_end_time: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SsmResourcePolicy {
     pub policy_id: String,
     pub policy_hash: String,
@@ -232,7 +232,7 @@ pub struct SsmResourcePolicy {
     pub resource_arn: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SsmServiceSetting {
     pub setting_id: String,
     pub setting_value: String,
@@ -241,7 +241,7 @@ pub struct SsmServiceSetting {
     pub status: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct OpsItemRelatedItem {
     pub association_id: String,
     pub ops_item_id: String,
@@ -254,7 +254,7 @@ pub struct OpsItemRelatedItem {
     pub last_modified_by: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct OpsItemEvent {
     pub ops_item_id: String,
     pub event_id: String,
@@ -264,7 +264,7 @@ pub struct OpsItemEvent {
     pub created_by: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct OpsMetadataEntry {
     pub ops_metadata_arn: String,
     pub resource_id: String,
@@ -272,7 +272,7 @@ pub struct OpsMetadataEntry {
     pub creation_date: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AutomationExecution {
     pub automation_execution_id: String,
     pub document_name: String,
@@ -295,7 +295,7 @@ pub struct AutomationExecution {
     pub scheduled_time: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AutomationStepExecution {
     pub step_name: String,
     pub action: String,
@@ -307,7 +307,7 @@ pub struct AutomationStepExecution {
     pub step_execution_id: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SsmSession {
     pub session_id: String,
     pub target: String,
@@ -318,7 +318,7 @@ pub struct SsmSession {
     pub reason: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SsmActivation {
     pub activation_id: String,
     pub iam_role: String,
@@ -332,7 +332,7 @@ pub struct SsmActivation {
     pub tags: HashMap<String, String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ManagedInstance {
     pub instance_id: String,
     pub activation_id: Option<String>,
@@ -353,7 +353,7 @@ pub struct ManagedInstance {
     pub source_type: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ExecutionPreview {
     pub execution_preview_id: String,
     pub document_name: String,
@@ -361,6 +361,7 @@ pub struct ExecutionPreview {
     pub created_time: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SsmState {
     pub account_id: String,
     pub region: String,
@@ -644,7 +645,7 @@ impl SsmState {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MaintenanceWindowExecution {
     pub window_execution_id: String,
     pub window_id: String,
@@ -654,7 +655,7 @@ pub struct MaintenanceWindowExecution {
     pub tasks: Vec<MaintenanceWindowExecutionTask>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MaintenanceWindowExecutionTask {
     pub task_execution_id: String,
     pub window_execution_id: String,
@@ -666,7 +667,7 @@ pub struct MaintenanceWindowExecutionTask {
     pub invocations: Vec<MaintenanceWindowExecutionTaskInvocation>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MaintenanceWindowExecutionTaskInvocation {
     pub invocation_id: String,
     pub task_execution_id: String,
@@ -681,7 +682,7 @@ pub struct MaintenanceWindowExecutionTaskInvocation {
     pub status_details: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct InventoryItem {
     pub type_name: String,
     pub schema_version: String,
@@ -691,13 +692,13 @@ pub struct InventoryItem {
     pub context: Option<HashMap<String, String>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct InventoryEntry {
     pub instance_id: String,
     pub items: Vec<InventoryItem>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct InventoryDeletion {
     pub deletion_id: String,
     pub type_name: String,
@@ -708,7 +709,7 @@ pub struct InventoryDeletion {
     pub last_status_update_time: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ComplianceItem {
     pub resource_id: String,
     pub resource_type: String,
@@ -721,7 +722,7 @@ pub struct ComplianceItem {
     pub execution_summary: serde_json::Value,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ResourceDataSync {
     pub sync_name: String,
     pub sync_type: Option<String>,
@@ -735,3 +736,13 @@ pub struct ResourceDataSync {
 }
 
 pub type SharedSsmState = Arc<RwLock<SsmState>>;
+
+/// On-disk snapshot envelope for SSM state. Versioned so format
+/// changes fail loudly on upgrade.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SsmSnapshot {
+    pub schema_version: u32,
+    pub state: SsmState,
+}
+
+pub const SSM_SNAPSHOT_SCHEMA_VERSION: u32 = 1;

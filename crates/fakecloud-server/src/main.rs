@@ -385,7 +385,6 @@ async fn main() {
         for service in [
             "cloudformation",
             "events",
-            "ssm",
             "lambda",
             "secretsmanager",
             "logs",
@@ -595,9 +594,57 @@ async fn main() {
     }
     registry.register(Arc::new(iam_service));
     registry.register(Arc::new(sts_service));
-    registry.register(Arc::new(
-        SsmService::new(ssm_state).with_secretsmanager(secretsmanager_state.clone()),
-    ));
+    let ssm_snapshot_store: Option<Arc<dyn fakecloud_persistence::SnapshotStore>> =
+        if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
+            let data_path = persistence_config
+                .data_path
+                .as_ref()
+                .expect("validated above")
+                .clone();
+            let path = data_path.join("ssm").join("snapshot.json");
+            let store = fakecloud_persistence::DiskSnapshotStore::new(path);
+            match fakecloud_persistence::SnapshotStore::load(&store) {
+                Ok(Some(bytes)) => {
+                    match serde_json::from_slice::<fakecloud_ssm::state::SsmSnapshot>(&bytes) {
+                        Ok(snapshot) => {
+                            if snapshot.schema_version
+                                != fakecloud_ssm::state::SSM_SNAPSHOT_SCHEMA_VERSION
+                            {
+                                fatal_exit(format_args!(
+                                    "ssm persistence schema mismatch: on-disk={}, expected={}",
+                                    snapshot.schema_version,
+                                    fakecloud_ssm::state::SSM_SNAPSHOT_SCHEMA_VERSION,
+                                ));
+                            }
+                            let param_count = snapshot.state.parameters.len();
+                            *ssm_state.write() = snapshot.state;
+                            tracing::info!(
+                                parameters = param_count,
+                                "loaded ssm persistence snapshot",
+                            );
+                        }
+                        Err(err) => fatal_exit(format_args!(
+                            "failed to parse ssm persistence snapshot: {err}"
+                        )),
+                    }
+                }
+                Ok(None) => {
+                    tracing::info!("no ssm persistence snapshot found; starting empty");
+                }
+                Err(err) => fatal_exit(format_args!(
+                    "failed to read ssm persistence snapshot: {err}"
+                )),
+            }
+            Some(Arc::new(store) as Arc<dyn fakecloud_persistence::SnapshotStore>)
+        } else {
+            None
+        };
+    let mut ssm_service =
+        SsmService::new(ssm_state).with_secretsmanager(secretsmanager_state.clone());
+    if let Some(store) = ssm_snapshot_store {
+        ssm_service = ssm_service.with_snapshot_store(store);
+    }
+    registry.register(Arc::new(ssm_service));
     // DynamoDB is registered later, after s3_store is constructed, so the
     // export path can persist result objects through the S3 store.
     let dynamodb_state_for_register = dynamodb_state.clone();

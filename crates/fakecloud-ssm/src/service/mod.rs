@@ -14,20 +14,114 @@ mod resource_sync;
 mod sessions;
 mod tags;
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use http::StatusCode;
+use tokio::sync::Mutex as AsyncMutex;
 
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
+use fakecloud_persistence::SnapshotStore;
 
-use crate::state::SharedSsmState;
+use crate::state::{SharedSsmState, SsmSnapshot, SSM_SNAPSHOT_SCHEMA_VERSION};
 
 use fakecloud_secretsmanager::state::SharedSecretsManagerState;
 
 const PARAMETER_VERSION_LIMIT: i64 = 100;
 
+/// Actions that do NOT mutate SSM state. Everything else triggers a
+/// snapshot save on HTTP 2xx. Listing non-mutating actions (rather than
+/// mutating ones) is safer here because SSM has ~150 actions and the
+/// read-only set is small and stable.
+fn is_read_only_action(action: &str) -> bool {
+    matches!(
+        action,
+        "GetParameter"
+            | "GetParameters"
+            | "GetParametersByPath"
+            | "DescribeParameters"
+            | "GetParameterHistory"
+            | "ListTagsForResource"
+            | "GetDocument"
+            | "DescribeDocument"
+            | "ListDocuments"
+            | "DescribeDocumentPermission"
+            | "ListCommands"
+            | "GetCommandInvocation"
+            | "ListCommandInvocations"
+            | "DescribeMaintenanceWindows"
+            | "GetMaintenanceWindow"
+            | "DescribeMaintenanceWindowTargets"
+            | "DescribeMaintenanceWindowTasks"
+            | "DescribePatchBaselines"
+            | "GetPatchBaseline"
+            | "GetPatchBaselineForPatchGroup"
+            | "DescribePatchGroups"
+            | "DescribeAssociation"
+            | "ListAssociations"
+            | "ListAssociationVersions"
+            | "DescribeAssociationExecutions"
+            | "DescribeAssociationExecutionTargets"
+            | "GetOpsItem"
+            | "DescribeOpsItems"
+            | "ListDocumentVersions"
+            | "ListDocumentMetadataHistory"
+            | "GetResourcePolicies"
+            | "GetInventory"
+            | "GetInventorySchema"
+            | "ListInventoryEntries"
+            | "DescribeInventoryDeletions"
+            | "ListComplianceItems"
+            | "ListComplianceSummaries"
+            | "ListResourceComplianceSummaries"
+            | "GetMaintenanceWindowTask"
+            | "GetMaintenanceWindowExecution"
+            | "GetMaintenanceWindowExecutionTask"
+            | "GetMaintenanceWindowExecutionTaskInvocation"
+            | "DescribeMaintenanceWindowExecutions"
+            | "DescribeMaintenanceWindowExecutionTasks"
+            | "DescribeMaintenanceWindowExecutionTaskInvocations"
+            | "DescribeMaintenanceWindowSchedule"
+            | "DescribeMaintenanceWindowsForTarget"
+            | "DescribeInstancePatchStates"
+            | "DescribeInstancePatchStatesForPatchGroup"
+            | "DescribeInstancePatches"
+            | "DescribeEffectivePatchesForPatchBaseline"
+            | "GetDeployablePatchSnapshotForInstance"
+            | "ListResourceDataSync"
+            | "ListOpsItemRelatedItems"
+            | "ListOpsItemEvents"
+            | "GetOpsMetadata"
+            | "ListOpsMetadata"
+            | "GetOpsSummary"
+            | "GetAutomationExecution"
+            | "DescribeAutomationExecutions"
+            | "DescribeAutomationStepExecutions"
+            | "GetExecutionPreview"
+            | "DescribeSessions"
+            | "GetAccessToken"
+            | "DescribeActivations"
+            | "DescribeInstanceInformation"
+            | "DescribeInstanceProperties"
+            | "ListNodes"
+            | "ListNodesSummary"
+            | "DescribeEffectiveInstanceAssociations"
+            | "DescribeInstanceAssociationsStatus"
+            | "GetConnectionStatus"
+            | "GetCalendarState"
+            | "DescribePatchGroupState"
+            | "DescribePatchProperties"
+            | "DescribeAvailablePatches"
+            | "GetDefaultPatchBaseline"
+            | "GetServiceSetting"
+    )
+}
+
 pub struct SsmService {
     state: SharedSsmState,
     secretsmanager_state: Option<SharedSecretsManagerState>,
+    snapshot_store: Option<Arc<dyn SnapshotStore>>,
+    snapshot_lock: Arc<AsyncMutex<()>>,
 }
 
 impl SsmService {
@@ -35,12 +129,44 @@ impl SsmService {
         Self {
             state,
             secretsmanager_state: None,
+            snapshot_store: None,
+            snapshot_lock: Arc::new(AsyncMutex::new(())),
         }
     }
 
     pub fn with_secretsmanager(mut self, sm_state: SharedSecretsManagerState) -> Self {
         self.secretsmanager_state = Some(sm_state);
         self
+    }
+
+    pub fn with_snapshot_store(mut self, store: Arc<dyn SnapshotStore>) -> Self {
+        self.snapshot_store = Some(store);
+        self
+    }
+
+    /// Persist current state as a snapshot. Held across the
+    /// clone-serialize-write sequence to prevent stale-last writes,
+    /// with serde + file I/O offloaded to the blocking pool.
+    async fn save_snapshot(&self) {
+        let Some(store) = self.snapshot_store.clone() else {
+            return;
+        };
+        let _guard = self.snapshot_lock.lock().await;
+        let snapshot = SsmSnapshot {
+            schema_version: SSM_SNAPSHOT_SCHEMA_VERSION,
+            state: self.state.read().clone(),
+        };
+        let join = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            let bytes = serde_json::to_vec(&snapshot)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+            store.save(&bytes)
+        })
+        .await;
+        match join {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => tracing::error!(%err, "failed to write ssm snapshot"),
+            Err(err) => tracing::error!(%err, "ssm snapshot task panicked"),
+        }
     }
 }
 
@@ -51,7 +177,8 @@ impl AwsService for SsmService {
     }
 
     async fn handle(&self, req: AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        match req.action.as_str() {
+        let mutates = !is_read_only_action(req.action.as_str());
+        let result = match req.action.as_str() {
             "PutParameter" => self.put_parameter(&req),
             "GetParameter" => self.get_parameter(&req),
             "GetParameters" => self.get_parameters(&req),
@@ -248,7 +375,11 @@ impl AwsService for SsmService {
             "ResetServiceSetting" => self.reset_service_setting(&req),
             "UpdateServiceSetting" => self.update_service_setting(&req),
             _ => Err(AwsServiceError::action_not_implemented("ssm", &req.action)),
+        };
+        if mutates && matches!(result.as_ref(), Ok(resp) if resp.status.is_success()) {
+            self.save_snapshot().await;
         }
+        result
     }
 
     fn supported_actions(&self) -> &[&str] {
