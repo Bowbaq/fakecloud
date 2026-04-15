@@ -267,7 +267,7 @@ impl AwsService for DynamoDbService {
                 &req.action,
             )),
         };
-        if mutates && result.is_ok() {
+        if mutates && matches!(result.as_ref(), Ok(resp) if resp.status.is_success()) {
             self.save_snapshot();
         }
         result

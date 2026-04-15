@@ -338,7 +338,40 @@ async fn persistence_round_trip_tables_and_items() {
         .await
         .unwrap();
     let got_item = got.item().unwrap();
-    assert_eq!(got_item, &item1);
+    // Set-valued attributes (SS/NS/BS) have no guaranteed element order
+    // across serialize/deserialize, so compare them as sorted vecs;
+    // everything else can use direct equality.
+    let sort_ss = |av: &AttributeValue| -> Vec<String> {
+        let mut v = av.as_ss().unwrap().clone();
+        v.sort();
+        v
+    };
+    let sort_ns = |av: &AttributeValue| -> Vec<String> {
+        let mut v = av.as_ns().unwrap().clone();
+        v.sort();
+        v
+    };
+    let sort_bs = |av: &AttributeValue| -> Vec<Vec<u8>> {
+        let mut v: Vec<Vec<u8>> = av
+            .as_bs()
+            .unwrap()
+            .iter()
+            .map(|b| b.as_ref().to_vec())
+            .collect();
+        v.sort();
+        v
+    };
+    assert_eq!(sort_ss(&got_item["tags"]), sort_ss(&item1["tags"]));
+    assert_eq!(sort_ns(&got_item["scores"]), sort_ns(&item1["scores"]));
+    assert_eq!(sort_bs(&got_item["blobs"]), sort_bs(&item1["blobs"]));
+    // Non-set attributes: compare the rest by removing sets from both sides.
+    let mut got_rest = got_item.clone();
+    let mut want_rest = item1.clone();
+    for key in ["tags", "scores", "blobs"] {
+        got_rest.remove(key);
+        want_rest.remove(key);
+    }
+    assert_eq!(got_rest, want_rest);
 
     // Scan returns both users.
     let scan = client.scan().table_name("users").send().await.unwrap();
