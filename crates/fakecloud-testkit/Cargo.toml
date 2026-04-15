@@ -6,6 +6,37 @@ repository.workspace = true
 version.workspace = true
 publish = false
 
+[features]
+# Pull every aws-sdk-* crate used across the fakecloud test suites and
+# expose per-service `TestServer::<svc>_client()` factories. Off by default
+# so lifecycle-only consumers (e.g. fakecloud-tfacc) don't pay the compile
+# cost.
+sdk-clients = [
+    "dep:aws-sdk-sqs",
+    "dep:aws-sdk-sns",
+    "dep:aws-sdk-eventbridge",
+    "dep:aws-sdk-iam",
+    "dep:aws-sdk-sts",
+    "dep:aws-sdk-ssm",
+    "dep:aws-sdk-s3",
+    "dep:aws-sdk-dynamodb",
+    "dep:aws-sdk-lambda",
+    "dep:aws-sdk-secretsmanager",
+    "dep:aws-sdk-cloudwatchlogs",
+    "dep:aws-sdk-kms",
+    "dep:aws-sdk-kinesis",
+    "dep:aws-sdk-rds",
+    "dep:aws-sdk-elasticache",
+    "dep:aws-sdk-cloudformation",
+    "dep:aws-sdk-ses",
+    "dep:aws-sdk-sesv2",
+    "dep:aws-sdk-cognitoidentityprovider",
+    "dep:aws-sdk-sfn",
+    "dep:aws-sdk-apigatewayv2",
+    "dep:aws-sdk-bedrock",
+    "dep:aws-sdk-bedrockruntime",
+]
+
 [dependencies]
 tokio = { workspace = true }
 reqwest = { workspace = true }
@@ -14,6 +45,30 @@ serde_json = { workspace = true }
 aws-config = "1"
 aws-credential-types = "1"
 aws-types = "1"
+
+aws-sdk-sqs = { version = "1", optional = true }
+aws-sdk-sns = { version = "1", optional = true }
+aws-sdk-eventbridge = { version = "1", optional = true }
+aws-sdk-iam = { version = "1", optional = true }
+aws-sdk-sts = { version = "1", optional = true }
+aws-sdk-ssm = { version = "1", optional = true }
+aws-sdk-s3 = { version = "1", optional = true }
+aws-sdk-dynamodb = { version = "1", optional = true }
+aws-sdk-lambda = { version = "1", optional = true }
+aws-sdk-secretsmanager = { version = "1", optional = true }
+aws-sdk-cloudwatchlogs = { version = "1", optional = true }
+aws-sdk-kms = { version = "1", optional = true }
+aws-sdk-kinesis = { version = "1", optional = true }
+aws-sdk-rds = { version = "1", optional = true }
+aws-sdk-elasticache = { version = "1", optional = true }
+aws-sdk-cloudformation = { version = "1", optional = true }
+aws-sdk-ses = { version = "1", optional = true }
+aws-sdk-sesv2 = { version = "1", optional = true }
+aws-sdk-cognitoidentityprovider = { version = "1", optional = true }
+aws-sdk-sfn = { version = "1", optional = true }
+aws-sdk-apigatewayv2 = { version = "1", optional = true }
+aws-sdk-bedrock = { version = "1", optional = true }
+aws-sdk-bedrockruntime = { version = "1", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
