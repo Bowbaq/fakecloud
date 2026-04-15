@@ -17,4 +17,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - run: cargo install cargo-audit
-      - run: cargo audit
+      # RUSTSEC-2026-0098/0099 (rustls-webpki 0.101.x) reach us only through
+      # rustls 0.21 -> aws-smithy-http-client. Our own rustls-webpki 0.103.x
+      # is already on the patched release; we can't drop the 0.101 pull chain
+      # until the AWS Rust SDK moves off rustls 0.21.
+      - run: cargo audit --ignore RUSTSEC-2026-0098 --ignore RUSTSEC-2026-0099

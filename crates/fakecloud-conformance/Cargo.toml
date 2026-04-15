@@ -21,6 +21,7 @@ regex = "1"
 
 [dev-dependencies]
 fakecloud-conformance-macros = { path = "../fakecloud-conformance-macros" }
+fakecloud-testkit = { path = "../fakecloud-testkit" }
 aws-config = "1"
 aws-sdk-sqs = "1"
 aws-sdk-sns = "1"
@@ -49,6 +50,3 @@ aws-credential-types = "1"
 aws-types = "1"
 tokio = { workspace = true }
 zip = { workspace = true }
-
-[target.'cfg(unix)'.dev-dependencies]
-libc = "0.2"
