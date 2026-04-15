@@ -6,11 +6,17 @@ use chrono::Utc;
 use http::StatusCode;
 use serde_json::{json, Value};
 
+use tokio::sync::Mutex as AsyncMutex;
+
 use fakecloud_core::delivery::DeliveryBus;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
 use fakecloud_core::validation::*;
+use fakecloud_persistence::SnapshotStore;
 
-use crate::state::{RotationRules, Secret, SecretVersion, SharedSecretsManagerState};
+use crate::state::{
+    RotationRules, Secret, SecretVersion, SecretsManagerSnapshot, SharedSecretsManagerState,
+    SECRETSMANAGER_SNAPSHOT_SCHEMA_VERSION,
+};
 
 /// Information needed to invoke the rotation Lambda after releasing state lock.
 struct RotationInvocation {
@@ -53,9 +59,33 @@ fn check_secret_version_idempotency(
     }
 }
 
+/// Actions that mutate Secrets Manager state.
+fn is_mutating_action(action: &str) -> bool {
+    matches!(
+        action,
+        "CreateSecret"
+            | "PutSecretValue"
+            | "UpdateSecret"
+            | "DeleteSecret"
+            | "RestoreSecret"
+            | "TagResource"
+            | "UntagResource"
+            | "RotateSecret"
+            | "CancelRotateSecret"
+            | "UpdateSecretVersionStage"
+            | "PutResourcePolicy"
+            | "DeleteResourcePolicy"
+            | "ReplicateSecretToRegions"
+            | "RemoveRegionsFromReplication"
+            | "StopReplicationToReplica"
+    )
+}
+
 pub struct SecretsManagerService {
     state: SharedSecretsManagerState,
     delivery_bus: Option<Arc<DeliveryBus>>,
+    snapshot_store: Option<Arc<dyn SnapshotStore>>,
+    snapshot_lock: Arc<AsyncMutex<()>>,
 }
 
 impl SecretsManagerService {
@@ -63,12 +93,44 @@ impl SecretsManagerService {
         Self {
             state,
             delivery_bus: None,
+            snapshot_store: None,
+            snapshot_lock: Arc::new(AsyncMutex::new(())),
         }
     }
 
     pub fn with_delivery(mut self, delivery_bus: Arc<DeliveryBus>) -> Self {
         self.delivery_bus = Some(delivery_bus);
         self
+    }
+
+    pub fn with_snapshot_store(mut self, store: Arc<dyn SnapshotStore>) -> Self {
+        self.snapshot_store = Some(store);
+        self
+    }
+
+    /// Persist current state as a snapshot. Held across the
+    /// clone-serialize-write sequence to prevent stale-last writes,
+    /// with serde + file I/O offloaded to the blocking pool.
+    async fn save_snapshot(&self) {
+        let Some(store) = self.snapshot_store.clone() else {
+            return;
+        };
+        let _guard = self.snapshot_lock.lock().await;
+        let snapshot = SecretsManagerSnapshot {
+            schema_version: SECRETSMANAGER_SNAPSHOT_SCHEMA_VERSION,
+            state: self.state.read().clone(),
+        };
+        let join = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            let bytes = serde_json::to_vec(&snapshot)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+            store.save(&bytes)
+        })
+        .await;
+        match join {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => tracing::error!(%err, "failed to write secretsmanager snapshot"),
+            Err(err) => tracing::error!(%err, "secretsmanager snapshot task panicked"),
+        }
     }
 
     fn create_secret(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
@@ -2007,7 +2069,8 @@ impl AwsService for SecretsManagerService {
     }
 
     async fn handle(&self, req: AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        match req.action.as_str() {
+        let mutates = is_mutating_action(req.action.as_str());
+        let result = match req.action.as_str() {
             "CreateSecret" => self.create_secret(&req),
             "GetSecretValue" => self.get_secret_value(&req),
             "PutSecretValue" => self.put_secret_value(&req),
@@ -2074,7 +2137,11 @@ impl AwsService for SecretsManagerService {
                 "secretsmanager",
                 &req.action,
             )),
+        };
+        if mutates && matches!(result.as_ref(), Ok(resp) if resp.status.is_success()) {
+            self.save_snapshot().await;
         }
+        result
     }
 
     fn supported_actions(&self) -> &[&str] {
