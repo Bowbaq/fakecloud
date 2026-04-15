@@ -1351,3 +1351,72 @@ async fn lambda_function_policy_source_arn_condition_gates_grant() {
         "condition-gated grant should not apply; expected AccessDenied, got {err:?}"
     );
 }
+
+#[tokio::test]
+async fn lambda_add_permission_principal_condition_key() {
+    // Policy allows lambda:AddPermission only when lambda:Principal
+    // == "s3.amazonaws.com". An s3 grant succeeds; an events grant
+    // is denied.
+    let server = start_strict().await;
+    let boot = sdk_config_with(&server, "test", "test").await;
+    let lambda_boot = aws_sdk_lambda::Client::new(&boot);
+    lambda_boot
+        .create_function()
+        .function_name("lam-cond-fn")
+        .runtime(aws_sdk_lambda::types::Runtime::Python312)
+        .role("arn:aws:iam::123456789012:role/test-role")
+        .handler("index.handler")
+        .code(
+            aws_sdk_lambda::types::FunctionCode::builder()
+                .zip_file(aws_sdk_lambda::primitives::Blob::new(
+                    make_empty_python_zip(),
+                ))
+                .build(),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    let (akid, secret) = bootstrap_user(&server, "lam_cond").await;
+    attach_inline_policy(
+        &server,
+        "lam_cond",
+        "AllowS3Principal",
+        r#"{"Version":"2012-10-17","Statement":[{
+            "Effect":"Allow",
+            "Action":"lambda:AddPermission",
+            "Resource":"arn:aws:lambda:us-east-1:123456789012:function:lam-cond-fn",
+            "Condition":{"StringEquals":{"lambda:Principal":"s3.amazonaws.com"}}
+        }]}"#,
+    )
+    .await;
+
+    let cfg = sdk_config_with(&server, &akid, &secret).await;
+    let lambda = aws_sdk_lambda::Client::new(&cfg);
+
+    // Allowed: Principal=s3.amazonaws.com matches the condition.
+    lambda
+        .add_permission()
+        .function_name("lam-cond-fn")
+        .statement_id("s3-ok")
+        .action("lambda:InvokeFunction")
+        .principal("s3.amazonaws.com")
+        .send()
+        .await
+        .unwrap();
+
+    // Denied: Principal=events.amazonaws.com fails the condition.
+    let err = lambda
+        .add_permission()
+        .function_name("lam-cond-fn")
+        .statement_id("events-no")
+        .action("lambda:InvokeFunction")
+        .principal("events.amazonaws.com")
+        .send()
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{err:?}").contains("AccessDeniedException"),
+        "expected AccessDeniedException for non-s3 principal, got {err:?}"
+    );
+}
