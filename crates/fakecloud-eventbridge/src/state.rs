@@ -1,11 +1,12 @@
 use chrono::{DateTime, Utc};
 use fakecloud_aws::arn::Arn;
 use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventBus {
     pub name: String,
     pub arn: String,
@@ -18,7 +19,7 @@ pub struct EventBus {
     pub last_modified_time: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventRule {
     pub name: String,
     pub arn: String,
@@ -38,7 +39,7 @@ pub struct EventRule {
 /// Composite key for rules: (event_bus_name, rule_name)
 pub type RuleKey = (String, String);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventTarget {
     pub id: String,
     pub arn: String,
@@ -48,7 +49,7 @@ pub struct EventTarget {
     pub sqs_parameters: Option<Value>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PutEvent {
     pub event_id: String,
     pub source: String,
@@ -59,7 +60,7 @@ pub struct PutEvent {
     pub resources: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Archive {
     pub name: String,
     pub arn: String,
@@ -74,7 +75,7 @@ pub struct Archive {
     pub events: Vec<PutEvent>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Connection {
     pub name: String,
     pub arn: String,
@@ -88,7 +89,7 @@ pub struct Connection {
     pub last_authorized_time: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiDestination {
     pub name: String,
     pub arn: String,
@@ -102,7 +103,7 @@ pub struct ApiDestination {
     pub last_modified_time: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Replay {
     pub name: String,
     pub arn: String,
@@ -116,7 +117,7 @@ pub struct Replay {
     pub replay_end_time: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Endpoint {
     pub name: String,
     pub arn: String,
@@ -132,7 +133,7 @@ pub struct Endpoint {
     pub last_modified_time: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PartnerEventSource {
     pub name: String,
     pub arn: String,
@@ -143,7 +144,7 @@ pub struct PartnerEventSource {
 }
 
 /// A recorded Lambda invocation from EventBridge delivery.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LambdaInvocation {
     pub function_arn: String,
     pub payload: String,
@@ -151,7 +152,7 @@ pub struct LambdaInvocation {
 }
 
 /// A recorded CloudWatch Logs delivery from EventBridge.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogDelivery {
     pub log_group_arn: String,
     pub payload: String,
@@ -159,17 +160,48 @@ pub struct LogDelivery {
 }
 
 /// A recorded Step Functions invocation from EventBridge delivery.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StepFunctionExecution {
     pub state_machine_arn: String,
     pub payload: String,
     pub timestamp: DateTime<Utc>,
 }
 
+/// JSON object keys must be strings, so serialize `HashMap<(String,String), V>`
+/// as a list of `[bus, rule, value]` tuples.
+mod rule_map_serde {
+    use super::{EventRule, RuleKey};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::HashMap;
+
+    pub fn serialize<S: Serializer>(
+        map: &HashMap<RuleKey, EventRule>,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
+        let entries: Vec<(&String, &String, &EventRule)> = map
+            .iter()
+            .map(|((bus, name), rule)| (bus, name, rule))
+            .collect();
+        entries.serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<HashMap<RuleKey, EventRule>, D::Error> {
+        let entries: Vec<(String, String, EventRule)> = Vec::deserialize(d)?;
+        Ok(entries
+            .into_iter()
+            .map(|(bus, name, rule)| ((bus, name), rule))
+            .collect())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventBridgeState {
     pub account_id: String,
     pub region: String,
     pub buses: HashMap<String, EventBus>,
+    #[serde(with = "rule_map_serde")]
     pub rules: HashMap<RuleKey, EventRule>,
     pub events: Vec<PutEvent>,
     pub archives: HashMap<String, Archive>,
@@ -272,3 +304,13 @@ impl EventBridgeState {
 }
 
 pub type SharedEventBridgeState = Arc<RwLock<EventBridgeState>>;
+
+/// On-disk snapshot envelope for EventBridge state. Versioned so
+/// format changes fail loudly on upgrade.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventBridgeSnapshot {
+    pub schema_version: u32,
+    pub state: EventBridgeState,
+}
+
+pub const EVENTBRIDGE_SNAPSHOT_SCHEMA_VERSION: u32 = 1;

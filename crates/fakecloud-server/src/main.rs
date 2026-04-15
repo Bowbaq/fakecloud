@@ -384,7 +384,6 @@ async fn main() {
     if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
         for service in [
             "cloudformation",
-            "events",
             "lambda",
             "logs",
             "ses",
@@ -514,11 +513,63 @@ async fn main() {
         sns_service = sns_service.with_snapshot_store(store);
     }
     registry.register(Arc::new(sns_service));
+    let eb_snapshot_store: Option<Arc<dyn fakecloud_persistence::SnapshotStore>> =
+        if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
+            let data_path = persistence_config
+                .data_path
+                .as_ref()
+                .expect("validated above")
+                .clone();
+            let path = data_path.join("eventbridge").join("snapshot.json");
+            let store = fakecloud_persistence::DiskSnapshotStore::new(path);
+            match fakecloud_persistence::SnapshotStore::load(&store) {
+                Ok(Some(bytes)) => {
+                    match serde_json::from_slice::<fakecloud_eventbridge::state::EventBridgeSnapshot>(
+                        &bytes,
+                    ) {
+                        Ok(snapshot) => {
+                            if snapshot.schema_version
+                                != fakecloud_eventbridge::state::EVENTBRIDGE_SNAPSHOT_SCHEMA_VERSION
+                            {
+                                fatal_exit(format_args!(
+                                    "eventbridge persistence schema mismatch: on-disk={}, expected={}",
+                                    snapshot.schema_version,
+                                    fakecloud_eventbridge::state::EVENTBRIDGE_SNAPSHOT_SCHEMA_VERSION,
+                                ));
+                            }
+                            let bus_count = snapshot.state.buses.len();
+                            let rule_count = snapshot.state.rules.len();
+                            *eb_state.write() = snapshot.state;
+                            tracing::info!(
+                                buses = bus_count,
+                                rules = rule_count,
+                                "loaded eventbridge persistence snapshot",
+                            );
+                        }
+                        Err(err) => fatal_exit(format_args!(
+                            "failed to parse eventbridge persistence snapshot: {err}"
+                        )),
+                    }
+                }
+                Ok(None) => {
+                    tracing::info!("no eventbridge persistence snapshot found; starting empty");
+                }
+                Err(err) => fatal_exit(format_args!(
+                    "failed to read eventbridge persistence snapshot: {err}"
+                )),
+            }
+            Some(Arc::new(store) as Arc<dyn fakecloud_persistence::SnapshotStore>)
+        } else {
+            None
+        };
     let mut eb_service = EventBridgeService::new(eb_state.clone(), delivery_for_eb.clone())
         .with_lambda(lambda_state.clone())
         .with_logs(logs_state.clone());
     if let Some(ref rt) = container_runtime {
         eb_service = eb_service.with_runtime(rt.clone());
+    }
+    if let Some(store) = eb_snapshot_store {
+        eb_service = eb_service.with_snapshot_store(store);
     }
     registry.register(Arc::new(eb_service));
 
