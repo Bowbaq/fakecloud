@@ -120,15 +120,41 @@ Every operator supports the `...IfExists` suffix (missing key evaluates to `true
 
 **Safe-fail semantics.** Any unimplemented operator, unknown key, or parse failure (malformed date, invalid CIDR, non-numeric value where numeric expected) is logged to `fakecloud::iam::audit` at debug level and evaluates to `false` — i.e. the statement *does not apply*. The evaluator will never silently treat an unrecognized condition as a match. If you see unexpected denies, raise the `fakecloud::iam::audit` log level to see which statements were skipped.
 
+### Resource-based policies
+
+S3 bucket policies are fully wired into the evaluator. When enforcement is on and a bucket has a policy attached, dispatch fetches it and hands it to the evaluator alongside the caller's identity policies; the evaluator combines the two using AWS's cross-account semantics:
+
+- **Explicit Deny** from either the identity policy or the resource policy wins immediately.
+- **Same-account** callers (principal account ID equals the resource's owning account): the request is allowed if the identity policy **or** the resource policy grants it.
+- **Cross-account** callers: the request is allowed only if the identity policy **and** the resource policy both grant it.
+
+The resource's owning account is parsed from the ARN; S3 ARNs have an empty account segment, so fakecloud falls back to the server's configured account ID (#381 multi-account alignment — the decision is per-ARN, not a global config knob).
+
+**Principal matching.** S3 bucket policies use `Principal` / `NotPrincipal` keys that identity policies don't. The evaluator supports the shapes S3 bucket policies actually use in practice:
+
+| Shape | Meaning |
+| --- | --- |
+| `"Principal": "*"` | Any authenticated principal |
+| `"Principal": {"AWS": "*"}` | Same as above |
+| `"Principal": {"AWS": "arn:aws:iam::ACCOUNT:root"}` | Any principal whose account ID is `ACCOUNT` |
+| `"Principal": {"AWS": "ACCOUNT"}` | 12-digit account ID shorthand, equivalent to `...:root` |
+| `"Principal": {"AWS": "arn:aws:iam::ACCOUNT:user/alice"}` | Exact principal ARN match |
+| `"Principal": {"AWS": [...]}` | List form — any entry matches |
+| `"Principal": {"Service": "lambda.amazonaws.com"}` | Matches an assumed-role principal whose ARN contains the service host |
+
+`NotPrincipal` is **not** evaluated — statements carrying it are skipped entirely with a `fakecloud::iam::audit` debug log and never silently grant. `Principal` types other than `AWS` / `Service` (`Federated`, `CanonicalUser`) fall through to "doesn't match" for the same reason.
+
+`Condition` blocks on resource-policy statements are evaluated with the same operator set and global condition keys as identity policies — the condition entry points are shared.
+
 ### Not implemented
 
 - Service-specific condition keys (`s3:prefix`, `s3:delimiter`, `sqs:MessageAttribute.*`, …). The `service_keys` plumbing is already in place; per-service population lands in a follow-up batch.
-- Resource-based policies (S3 bucket policies, SNS topic policies, KMS key policies, Lambda resource policies).
+- Resource-based policies on services other than S3: **SNS topic policies**, **KMS key policies**, **Lambda resource policies**. Each has a distinct storage model and deserves its own wiring — separate future rollouts.
 - Permission boundaries.
 - Service control policies (SCPs).
 - Session policies passed to `AssumeRole`.
 - ABAC / tag conditions (`aws:ResourceTag`, `aws:RequestTag`, `aws:TagKeys`).
-- `NotPrincipal`.
+- `NotPrincipal` (S3 bucket policies carrying it are skipped, not evaluated).
 
 If you need any of these for your test scenarios, **use real AWS**. fakecloud is a test tool, not a full IAM simulator.
 
