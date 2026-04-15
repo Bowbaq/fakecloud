@@ -1846,10 +1846,13 @@ async fn main() {
     let listener = TcpListener::bind(&cli.addr).await.unwrap();
     tracing::info!(addr = %cli.addr, "fakecloud is ready");
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .unwrap();
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .unwrap();
 
     // Clean up Lambda containers on shutdown
     if let Some(rt) = container_runtime {
