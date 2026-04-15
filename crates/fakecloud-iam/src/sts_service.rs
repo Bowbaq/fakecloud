@@ -1,10 +1,14 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use http::StatusCode;
 
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
 use fakecloud_core::validation::*;
+use fakecloud_persistence::SnapshotStore;
 
+use crate::persistence::{save_iam_snapshot, IamSnapshotLock};
 use crate::state::{CredentialIdentity, SharedIamState, StsTempCredential};
 use crate::xml_responses::{self, StsCredentials};
 
@@ -57,12 +61,41 @@ fn compute_expiration(req: &AwsRequest, default_duration: i64) -> Result<String,
 
 pub struct StsService {
     state: SharedIamState,
+    snapshot_store: Option<Arc<dyn SnapshotStore>>,
+    snapshot_lock: IamSnapshotLock,
 }
 
 impl StsService {
     pub fn new(state: SharedIamState) -> Self {
-        Self { state }
+        Self {
+            state,
+            snapshot_store: None,
+            snapshot_lock: crate::persistence::new_snapshot_lock(),
+        }
     }
+
+    pub fn with_snapshot_store(mut self, store: Arc<dyn SnapshotStore>) -> Self {
+        self.snapshot_store = Some(store);
+        self
+    }
+
+    pub fn with_snapshot_lock(mut self, lock: IamSnapshotLock) -> Self {
+        self.snapshot_lock = lock;
+        self
+    }
+}
+
+/// STS actions that mutate IAM state (by adding new entries to
+/// `sts_temp_credentials` or `credential_identities`).
+fn is_mutating_action(action: &str) -> bool {
+    matches!(
+        action,
+        "AssumeRole"
+            | "AssumeRoleWithWebIdentity"
+            | "AssumeRoleWithSAML"
+            | "GetSessionToken"
+            | "GetFederationToken"
+    )
 }
 
 #[async_trait]
@@ -72,7 +105,8 @@ impl AwsService for StsService {
     }
 
     async fn handle(&self, req: AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        match req.action.as_str() {
+        let mutates = is_mutating_action(req.action.as_str());
+        let result = match req.action.as_str() {
             "GetCallerIdentity" => self.get_caller_identity(&req),
             "AssumeRole" => self.assume_role(&req),
             "AssumeRoleWithWebIdentity" => self.assume_role_with_web_identity(&req),
@@ -82,7 +116,16 @@ impl AwsService for StsService {
             "GetAccessKeyInfo" => self.get_access_key_info(&req),
             "DecodeAuthorizationMessage" => self.decode_authorization_message(&req),
             _ => Err(AwsServiceError::action_not_implemented("sts", &req.action)),
+        };
+        if mutates && matches!(result.as_ref(), Ok(resp) if resp.status.is_success()) {
+            save_iam_snapshot(
+                &self.state,
+                self.snapshot_store.clone(),
+                &self.snapshot_lock,
+            )
+            .await;
         }
+        result
     }
 
     fn supported_actions(&self) -> &[&str] {
