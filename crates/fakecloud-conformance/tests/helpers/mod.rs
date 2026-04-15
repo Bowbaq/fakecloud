@@ -11,12 +11,15 @@ pub struct TestServer {
     child: Option<Child>,
     port: u16,
     endpoint: String,
+    container_cli: String,
 }
 
 #[allow(dead_code)]
 impl TestServer {
     pub async fn start() -> Self {
         let bin = find_binary();
+        let container_cli =
+            std::env::var("FAKECLOUD_CONTAINER_CLI").unwrap_or_else(|_| "docker".to_string());
 
         for _ in 0..3 {
             let port = find_available_port();
@@ -37,11 +40,13 @@ impl TestServer {
                     child: Some(child),
                     port,
                     endpoint,
+                    container_cli,
                 };
             }
 
-            let _ = child.kill();
-            let _ = child.wait();
+            let pid = child.id();
+            graceful_kill(&mut child);
+            sweep_instance_containers(&container_cli, pid);
         }
 
         panic!("fakecloud failed to start after 3 attempts");
@@ -158,9 +163,62 @@ impl TestServer {
 impl Drop for TestServer {
     fn drop(&mut self) {
         if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+            let pid = child.id();
+            graceful_kill(&mut child);
+            sweep_instance_containers(&self.container_cli, pid);
         }
+    }
+}
+
+/// See `fakecloud-testkit`'s `graceful_kill` — same contract. Duplicated
+/// here because the conformance harness doesn't depend on testkit and
+/// pulling it in just for this helper isn't worth the dep surface.
+fn graceful_kill(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        let pid = child.id() as libc::pid_t;
+        // SAFETY: delivering SIGTERM to a known child PID is well-defined.
+        unsafe {
+            libc::kill(pid, libc::SIGTERM);
+        }
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) => {}
+                Err(_) => break,
+            }
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn sweep_instance_containers(cli: &str, pid: u32) {
+    let label = format!("fakecloud-instance=fakecloud-{pid}");
+    let Ok(output) = Command::new(cli)
+        .args(["ps", "-aq", "--filter", &format!("label={label}")])
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return;
+    };
+    if !output.status.success() {
+        return;
+    }
+    let ids = String::from_utf8_lossy(&output.stdout);
+    for id in ids.split_whitespace() {
+        let _ = Command::new(cli)
+            .args(["rm", "-f", id])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
     }
 }
 

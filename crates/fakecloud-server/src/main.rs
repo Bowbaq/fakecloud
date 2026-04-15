@@ -17,6 +17,7 @@ mod dynamodb_streams_lambda_poller;
 mod introspection;
 mod kinesis_lambda_poller;
 mod lambda_delivery;
+mod reaper;
 mod reset;
 mod sqs_lambda_poller;
 mod stepfunctions_delivery;
@@ -116,6 +117,10 @@ async fn main() {
     let lambda_state = Arc::new(parking_lot::RwLock::new(
         fakecloud_lambda::state::LambdaState::new(&cli.account_id, &cli.region),
     ));
+
+    // Reap any backing containers left behind by a previous fakecloud process
+    // that was killed before it could run its own cleanup (SIGKILL, crash, OOM).
+    reaper::reap_stale_containers();
 
     // Auto-detect Docker/Podman for Lambda execution
     let container_runtime = fakecloud_lambda::runtime::ContainerRuntime::new().map(Arc::new);
@@ -385,7 +390,6 @@ async fn main() {
             "iam",
             "sts",
             "ssm",
-            "dynamodb",
             "lambda",
             "secretsmanager",
             "logs",
@@ -531,12 +535,64 @@ async fn main() {
         S3Service::with_store(s3_state.clone(), delivery_for_s3, s3_store.clone())
             .with_kms(kms_state),
     ));
-    registry.register(Arc::new(
-        DynamoDbService::new(dynamodb_state_for_register)
-            .with_s3(s3_state.clone())
-            .with_s3_store(s3_store.clone())
-            .with_delivery(delivery_for_dynamodb_register),
-    ));
+    // Snapshot store is only wired in persistent mode. In memory mode we
+    // leave it unset so the service doesn't pay the per-mutation
+    // serialization cost for a store that would just drop the bytes.
+    let dynamodb_snapshot_store: Option<Arc<dyn fakecloud_persistence::SnapshotStore>> =
+        if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
+            let data_path = persistence_config
+                .data_path
+                .as_ref()
+                .expect("validated above")
+                .clone();
+            let path = data_path.join("dynamodb").join("snapshot.json");
+            let store = fakecloud_persistence::DiskSnapshotStore::new(path);
+            match fakecloud_persistence::SnapshotStore::load(&store) {
+                Ok(Some(bytes)) => {
+                    match serde_json::from_slice::<fakecloud_dynamodb::state::DynamoDbSnapshot>(
+                        &bytes,
+                    ) {
+                        Ok(snapshot) => {
+                            if snapshot.schema_version
+                                != fakecloud_dynamodb::state::DYNAMODB_SNAPSHOT_SCHEMA_VERSION
+                            {
+                                fatal_exit(format_args!(
+                                    "dynamodb persistence schema mismatch: on-disk={}, expected={}",
+                                    snapshot.schema_version,
+                                    fakecloud_dynamodb::state::DYNAMODB_SNAPSHOT_SCHEMA_VERSION,
+                                ));
+                            }
+                            let table_count = snapshot.state.tables.len();
+                            *dynamodb_state_for_register.write() = snapshot.state;
+                            tracing::info!(
+                                tables = table_count,
+                                "loaded dynamodb persistence snapshot",
+                            );
+                        }
+                        Err(err) => fatal_exit(format_args!(
+                            "failed to parse dynamodb persistence snapshot: {err}"
+                        )),
+                    }
+                }
+                Ok(None) => {
+                    tracing::info!("no dynamodb persistence snapshot found; starting empty");
+                }
+                Err(err) => fatal_exit(format_args!(
+                    "failed to read dynamodb persistence snapshot: {err}"
+                )),
+            }
+            Some(Arc::new(store) as Arc<dyn fakecloud_persistence::SnapshotStore>)
+        } else {
+            None
+        };
+    let mut dynamodb_service = DynamoDbService::new(dynamodb_state_for_register)
+        .with_s3(s3_state.clone())
+        .with_s3_store(s3_store.clone())
+        .with_delivery(delivery_for_dynamodb_register);
+    if let Some(store) = dynamodb_snapshot_store {
+        dynamodb_service = dynamodb_service.with_snapshot_store(store);
+    }
+    registry.register(Arc::new(dynamodb_service));
     // SES delivery bus (event fanout to SNS topics and EventBridge buses)
     let eb_delivery_for_ses = Arc::new(
         fakecloud_eventbridge::delivery::EventBridgeDeliveryImpl::new(
@@ -1859,9 +1915,28 @@ async fn main() {
 }
 
 async fn shutdown_signal() {
-    tokio::signal::ctrl_c()
-        .await
-        .expect("failed to install Ctrl+C handler");
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
     tracing::info!("shutting down");
 }
 
