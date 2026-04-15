@@ -114,8 +114,8 @@ impl TestServer {
                 };
             }
 
-            let _ = child.kill();
-            let _ = child.wait();
+            graceful_kill(&mut child);
+            sweep_instance_containers(&container_cli, child.id());
         }
 
         panic!("fakecloud failed to start after 3 attempts");
@@ -125,8 +125,9 @@ impl TestServer {
     /// Allocates a new port because the previous one may still be in TIME_WAIT.
     pub async fn restart(&mut self) {
         if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+            let pid = child.id();
+            graceful_kill(&mut child);
+            sweep_instance_containers(&self.container_cli, pid);
         }
         let bin = find_binary();
         for _ in 0..5 {
@@ -150,8 +151,9 @@ impl TestServer {
                 self.endpoint = endpoint;
                 return;
             }
-            let _ = child.kill();
-            let _ = child.wait();
+            let pid = child.id();
+            graceful_kill(&mut child);
+            sweep_instance_containers(&self.container_cli, pid);
         }
         panic!("fakecloud failed to restart");
     }
@@ -185,26 +187,67 @@ impl Drop for TestServer {
     fn drop(&mut self) {
         if let Some(mut child) = self.child.take() {
             let pid = child.id();
-            let _ = child.kill();
-            let _ = child.wait();
-
-            // Clean up any Lambda containers spawned by this server instance.
-            let label = format!("fakecloud-instance=fakecloud-{}", pid);
-            let cli = &self.container_cli;
-            let output = Command::new(cli)
-                .args(["ps", "-aq", "--filter", &format!("label={}", label)])
-                .output();
-            if let Ok(output) = output {
-                let ids = String::from_utf8_lossy(&output.stdout);
-                for id in ids.split_whitespace() {
-                    let _ = Command::new(cli)
-                        .args(["rm", "-f", id])
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .status();
-                }
-            }
+            graceful_kill(&mut child);
+            sweep_instance_containers(&self.container_cli, pid);
         }
+    }
+}
+
+/// Ask fakecloud to shut down gracefully so it can run its own container
+/// cleanup, falling back to SIGKILL if it doesn't exit within the timeout.
+///
+/// The server listens for SIGTERM and runs `stop_all()` on every container
+/// runtime before exiting. Going straight to `child.kill()` (SIGKILL) skips
+/// that path entirely and leaks postgres/redis/lambda containers.
+fn graceful_kill(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        let pid = child.id() as libc::pid_t;
+        // SAFETY: delivering SIGTERM to a known child PID is well-defined.
+        unsafe {
+            libc::kill(pid, libc::SIGTERM);
+        }
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) => {}
+                Err(_) => break,
+            }
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Belt-and-braces: after the server process exits, sweep any containers
+/// still tagged with its instance label. Runs regardless of graceful vs.
+/// forced shutdown so a hung stop_all() or a SIGKILL fallback can't leak.
+fn sweep_instance_containers(cli: &str, pid: u32) {
+    let label = format!("fakecloud-instance=fakecloud-{pid}");
+    let Ok(output) = Command::new(cli)
+        .args(["ps", "-aq", "--filter", &format!("label={label}")])
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return;
+    };
+    if !output.status.success() {
+        return;
+    }
+    let ids = String::from_utf8_lossy(&output.stdout);
+    for id in ids.split_whitespace() {
+        let _ = Command::new(cli)
+            .args(["rm", "-f", id])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
     }
 }
 
