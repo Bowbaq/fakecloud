@@ -5,6 +5,37 @@ use parking_lot::RwLock;
 
 pub type SharedLogsState = Arc<RwLock<LogsState>>;
 
+/// JSON object keys must be strings, so serialize
+/// `HashMap<(String,String), AccountPolicy>` as a list of
+/// `[policy_name, policy_type, policy]` tuples.
+mod account_policy_map_serde {
+    use super::AccountPolicy;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::HashMap;
+
+    pub fn serialize<S: Serializer>(
+        map: &HashMap<(String, String), AccountPolicy>,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
+        let entries: Vec<(&String, &String, &AccountPolicy)> = map
+            .iter()
+            .map(|((name, kind), p)| (name, kind, p))
+            .collect();
+        entries.serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<HashMap<(String, String), AccountPolicy>, D::Error> {
+        let entries: Vec<(String, String, AccountPolicy)> = Vec::deserialize(d)?;
+        Ok(entries
+            .into_iter()
+            .map(|(name, kind, p)| ((name, kind), p))
+            .collect())
+    }
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct LogsState {
     pub account_id: String,
     pub region: String,
@@ -19,6 +50,7 @@ pub struct LogsState {
     pub deliveries: HashMap<String, Delivery>,
     pub query_definitions: HashMap<String, QueryDefinition>,
     /// Account policies keyed by (policy_name, policy_type)
+    #[serde(with = "account_policy_map_serde")]
     pub account_policies: HashMap<(String, String), AccountPolicy>,
     /// Anomaly detectors keyed by detector ARN
     pub anomaly_detectors: HashMap<String, AnomalyDetector>,
@@ -89,6 +121,7 @@ impl LogsState {
     }
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct LogGroup {
     pub name: String,
     pub arn: String,
@@ -109,6 +142,7 @@ pub struct LogGroup {
     pub log_group_class: Option<String>,
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct LogStream {
     pub name: String,
     pub arn: String,
@@ -120,13 +154,14 @@ pub struct LogStream {
     pub events: Vec<LogEvent>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct LogEvent {
     pub timestamp: i64,
     pub message: String,
     pub ingestion_time: i64,
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct SubscriptionFilter {
     pub filter_name: String,
     pub log_group_name: String,
@@ -137,6 +172,7 @@ pub struct SubscriptionFilter {
     pub creation_time: i64,
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct MetricFilter {
     pub filter_name: String,
     pub filter_pattern: String,
@@ -145,6 +181,7 @@ pub struct MetricFilter {
     pub creation_time: i64,
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct MetricTransformation {
     pub metric_name: String,
     pub metric_namespace: String,
@@ -152,12 +189,14 @@ pub struct MetricTransformation {
     pub default_value: Option<f64>,
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct ResourcePolicy {
     pub policy_name: String,
     pub policy_document: String,
     pub last_updated_time: i64,
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Destination {
     pub destination_name: String,
     pub target_arn: String,
@@ -168,6 +207,7 @@ pub struct Destination {
     pub tags: HashMap<String, String>,
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct QueryInfo {
     pub query_id: String,
     pub log_group_name: String,
@@ -178,6 +218,7 @@ pub struct QueryInfo {
     pub create_time: i64,
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct ExportTask {
     pub task_id: String,
     pub task_name: Option<String>,
@@ -191,6 +232,7 @@ pub struct ExportTask {
     pub status_message: String,
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct DeliveryDestination {
     pub name: String,
     pub arn: String,
@@ -200,6 +242,7 @@ pub struct DeliveryDestination {
     pub delivery_destination_policy: Option<String>,
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct DeliverySource {
     pub name: String,
     pub arn: String,
@@ -209,6 +252,7 @@ pub struct DeliverySource {
     pub tags: HashMap<String, String>,
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Delivery {
     pub id: String,
     pub delivery_source_name: String,
@@ -218,6 +262,7 @@ pub struct Delivery {
     pub tags: HashMap<String, String>,
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct QueryDefinition {
     pub query_definition_id: String,
     pub name: String,
@@ -226,6 +271,7 @@ pub struct QueryDefinition {
     pub last_modified: i64,
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct AccountPolicy {
     pub policy_name: String,
     pub policy_type: String,
@@ -236,23 +282,27 @@ pub struct AccountPolicy {
     pub last_updated_time: i64,
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct DataProtectionPolicy {
     pub policy_document: String,
     pub last_updated_time: i64,
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct IndexPolicy {
     pub policy_name: String,
     pub policy_document: String,
     pub last_updated_time: i64,
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Transformer {
     pub transformer_config: serde_json::Value,
     pub creation_time: i64,
     pub last_modified_time: i64,
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct AnomalyDetector {
     pub detector_name: String,
     pub arn: String,
@@ -265,6 +315,7 @@ pub struct AnomalyDetector {
     pub enabled: bool,
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct ImportTask {
     pub import_id: String,
     pub import_source_arn: String,
@@ -274,6 +325,7 @@ pub struct ImportTask {
     pub creation_time: i64,
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Integration {
     pub integration_name: String,
     pub integration_type: String,
@@ -282,6 +334,7 @@ pub struct Integration {
     pub creation_time: i64,
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct LookupTable {
     pub lookup_table_name: String,
     pub arn: String,
@@ -290,6 +343,7 @@ pub struct LookupTable {
     pub last_modified_time: i64,
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct ScheduledQuery {
     pub name: String,
     pub arn: String,
@@ -301,3 +355,13 @@ pub struct ScheduledQuery {
     pub creation_time: i64,
     pub last_modified_time: i64,
 }
+
+/// On-disk snapshot envelope for CloudWatch Logs state. Versioned so
+/// format changes fail loudly on upgrade.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct LogsSnapshot {
+    pub schema_version: u32,
+    pub state: LogsState,
+}
+
+pub const LOGS_SNAPSHOT_SCHEMA_VERSION: u32 = 1;

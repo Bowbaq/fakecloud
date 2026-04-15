@@ -385,7 +385,6 @@ async fn main() {
         for service in [
             "cloudformation",
             "lambda",
-            "logs",
             "ses",
             "cognito-idp",
             "rds",
@@ -766,7 +765,56 @@ async fn main() {
         secretsmanager_service = secretsmanager_service.with_snapshot_store(store);
     }
     registry.register(Arc::new(secretsmanager_service));
-    registry.register(Arc::new(LogsService::new(logs_state, delivery_for_logs)));
+    let logs_snapshot_store: Option<Arc<dyn fakecloud_persistence::SnapshotStore>> =
+        if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
+            let data_path = persistence_config
+                .data_path
+                .as_ref()
+                .expect("validated above")
+                .clone();
+            let path = data_path.join("logs").join("snapshot.json");
+            let store = fakecloud_persistence::DiskSnapshotStore::new(path);
+            match fakecloud_persistence::SnapshotStore::load(&store) {
+                Ok(Some(bytes)) => {
+                    match serde_json::from_slice::<fakecloud_logs::state::LogsSnapshot>(&bytes) {
+                        Ok(snapshot) => {
+                            if snapshot.schema_version
+                                != fakecloud_logs::state::LOGS_SNAPSHOT_SCHEMA_VERSION
+                            {
+                                fatal_exit(format_args!(
+                                    "logs persistence schema mismatch: on-disk={}, expected={}",
+                                    snapshot.schema_version,
+                                    fakecloud_logs::state::LOGS_SNAPSHOT_SCHEMA_VERSION,
+                                ));
+                            }
+                            let group_count = snapshot.state.log_groups.len();
+                            *logs_state.write() = snapshot.state;
+                            tracing::info!(
+                                log_groups = group_count,
+                                "loaded logs persistence snapshot",
+                            );
+                        }
+                        Err(err) => fatal_exit(format_args!(
+                            "failed to parse logs persistence snapshot: {err}"
+                        )),
+                    }
+                }
+                Ok(None) => {
+                    tracing::info!("no logs persistence snapshot found; starting empty");
+                }
+                Err(err) => fatal_exit(format_args!(
+                    "failed to read logs persistence snapshot: {err}"
+                )),
+            }
+            Some(Arc::new(store) as Arc<dyn fakecloud_persistence::SnapshotStore>)
+        } else {
+            None
+        };
+    let mut logs_service = LogsService::new(logs_state, delivery_for_logs);
+    if let Some(store) = logs_snapshot_store {
+        logs_service = logs_service.with_snapshot_store(store);
+    }
+    registry.register(Arc::new(logs_service));
     let kms_snapshot_store: Option<Arc<dyn fakecloud_persistence::SnapshotStore>> =
         if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
             let data_path = persistence_config
