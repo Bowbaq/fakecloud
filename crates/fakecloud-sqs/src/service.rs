@@ -5,12 +5,15 @@ use md5::Md5;
 use serde_json::{json, Value};
 use sha2::Sha256;
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 
 use fakecloud_aws::arn::Arn;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
+use fakecloud_persistence::SnapshotStore;
 
 use crate::state::{
-    MessageAttribute, RedrivePolicy, SharedSqsState, SqsMessage, SqsQueue, SqsState,
+    MessageAttribute, RedrivePolicy, SharedSqsState, SqsMessage, SqsQueue, SqsSnapshot, SqsState,
+    SQS_SNAPSHOT_SCHEMA_VERSION,
 };
 
 /// Validate DelaySeconds (0–900) and MaximumMessageSize (1024–1 MiB) if
@@ -356,12 +359,65 @@ fn validate_redrive_policy_target(
 
 pub struct SqsService {
     state: SharedSqsState,
+    snapshot_store: Option<Arc<dyn SnapshotStore>>,
 }
 
 impl SqsService {
     pub fn new(state: SharedSqsState) -> Self {
-        Self { state }
+        Self {
+            state,
+            snapshot_store: None,
+        }
     }
+
+    pub fn with_snapshot_store(mut self, store: Arc<dyn SnapshotStore>) -> Self {
+        self.snapshot_store = Some(store);
+        self
+    }
+
+    /// Persist the current in-memory state as a snapshot. Called after
+    /// every successful mutating action. Noop when no store is wired.
+    fn save_snapshot(&self) {
+        let Some(store) = self.snapshot_store.as_ref() else {
+            return;
+        };
+        let snapshot = SqsSnapshot {
+            schema_version: SQS_SNAPSHOT_SCHEMA_VERSION,
+            state: self.state.read().clone(),
+        };
+        let bytes = match serde_json::to_vec(&snapshot) {
+            Ok(b) => b,
+            Err(err) => {
+                tracing::error!(%err, "failed to serialize sqs snapshot");
+                return;
+            }
+        };
+        if let Err(err) = store.save(&bytes) {
+            tracing::error!(%err, "failed to write sqs snapshot");
+        }
+    }
+}
+
+/// Actions that mutate SQS state. Kept in sync with the dispatch table.
+fn is_mutating_action(action: &str) -> bool {
+    matches!(
+        action,
+        "CreateQueue"
+            | "DeleteQueue"
+            | "SetQueueAttributes"
+            | "SendMessage"
+            | "SendMessageBatch"
+            | "ReceiveMessage"
+            | "DeleteMessage"
+            | "DeleteMessageBatch"
+            | "PurgeQueue"
+            | "ChangeMessageVisibility"
+            | "ChangeMessageVisibilityBatch"
+            | "TagQueue"
+            | "UntagQueue"
+            | "AddPermission"
+            | "RemovePermission"
+    )
 }
 
 #[async_trait]
@@ -371,7 +427,8 @@ impl AwsService for SqsService {
     }
 
     async fn handle(&self, req: AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        match req.action.as_str() {
+        let mutates = is_mutating_action(req.action.as_str());
+        let result = match req.action.as_str() {
             "CreateQueue" => self.create_queue(&req),
             "DeleteQueue" => self.delete_queue(&req),
             "ListQueues" => self.list_queues(&req),
@@ -393,7 +450,11 @@ impl AwsService for SqsService {
             "RemovePermission" => self.remove_permission(&req),
             "ListDeadLetterSourceQueues" => self.list_dead_letter_source_queues(&req),
             _ => Err(AwsServiceError::action_not_implemented("sqs", &req.action)),
+        };
+        if mutates && matches!(result.as_ref(), Ok(resp) if resp.status.is_success()) {
+            self.save_snapshot();
         }
+        result
     }
 
     fn supported_actions(&self) -> &[&str] {

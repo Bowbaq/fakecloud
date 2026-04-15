@@ -1,16 +1,17 @@
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageAttribute {
     pub data_type: String,
     pub string_value: Option<String>,
     pub binary_value: Option<Vec<u8>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SqsMessage {
     pub message_id: String,
     pub receipt_handle: Option<String>,
@@ -32,13 +33,13 @@ pub struct SqsMessage {
     pub sequence_number: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RedrivePolicy {
     pub dead_letter_target_arn: String,
     pub max_receive_count: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SqsQueue {
     pub queue_name: String,
     pub queue_url: String,
@@ -62,6 +63,7 @@ pub struct SqsQueue {
     pub receipt_handle_map: HashMap<String, Vec<String>>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SqsState {
     pub account_id: String,
     pub region: String,
@@ -90,3 +92,14 @@ impl SqsState {
 }
 
 pub type SharedSqsState = Arc<RwLock<SqsState>>;
+
+/// On-disk snapshot envelope for SQS. Mirrors the DynamoDB pattern: a
+/// versioned wrapper around the full [`SqsState`] so format changes fail
+/// loudly on upgrade instead of silently corrupting state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SqsSnapshot {
+    pub schema_version: u32,
+    pub state: SqsState,
+}
+
+pub const SQS_SNAPSHOT_SCHEMA_VERSION: u32 = 1;

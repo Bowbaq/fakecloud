@@ -384,7 +384,6 @@ async fn main() {
     if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
         for service in [
             "cloudformation",
-            "sqs",
             "sns",
             "events",
             "iam",
@@ -421,7 +420,53 @@ async fn main() {
             delivery: delivery_for_cf,
         },
     )));
-    registry.register(Arc::new(SqsService::new(sqs_state.clone())));
+    let sqs_snapshot_store: Option<Arc<dyn fakecloud_persistence::SnapshotStore>> =
+        if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
+            let data_path = persistence_config
+                .data_path
+                .as_ref()
+                .expect("validated above")
+                .clone();
+            let path = data_path.join("sqs").join("snapshot.json");
+            let store = fakecloud_persistence::DiskSnapshotStore::new(path);
+            match fakecloud_persistence::SnapshotStore::load(&store) {
+                Ok(Some(bytes)) => {
+                    match serde_json::from_slice::<fakecloud_sqs::state::SqsSnapshot>(&bytes) {
+                        Ok(snapshot) => {
+                            if snapshot.schema_version
+                                != fakecloud_sqs::state::SQS_SNAPSHOT_SCHEMA_VERSION
+                            {
+                                fatal_exit(format_args!(
+                                    "sqs persistence schema mismatch: on-disk={}, expected={}",
+                                    snapshot.schema_version,
+                                    fakecloud_sqs::state::SQS_SNAPSHOT_SCHEMA_VERSION,
+                                ));
+                            }
+                            let queue_count = snapshot.state.queues.len();
+                            *sqs_state.write() = snapshot.state;
+                            tracing::info!(queues = queue_count, "loaded sqs persistence snapshot",);
+                        }
+                        Err(err) => fatal_exit(format_args!(
+                            "failed to parse sqs persistence snapshot: {err}"
+                        )),
+                    }
+                }
+                Ok(None) => {
+                    tracing::info!("no sqs persistence snapshot found; starting empty");
+                }
+                Err(err) => fatal_exit(format_args!(
+                    "failed to read sqs persistence snapshot: {err}"
+                )),
+            }
+            Some(Arc::new(store) as Arc<dyn fakecloud_persistence::SnapshotStore>)
+        } else {
+            None
+        };
+    let mut sqs_service = SqsService::new(sqs_state.clone());
+    if let Some(store) = sqs_snapshot_store {
+        sqs_service = sqs_service.with_snapshot_store(store);
+    }
+    registry.register(Arc::new(sqs_service));
     let sns_state_for_sfn = sns_state.clone();
     let delivery_for_sns_sfn = delivery_for_sns.clone();
     registry.register(Arc::new(SnsService::new(sns_state, delivery_for_sns)));
