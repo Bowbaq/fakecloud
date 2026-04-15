@@ -192,9 +192,6 @@ pub const SERVICES: &[Service] = &[
             "TestAccDynamoDBTable_backupEncryption",
             "TestAccDynamoDBTable_backup_overrideEncryption",
             "TestAccDynamoDBTable_importTable",
-            // --- gap: DynamoDB Streams shape parity not yet complete ---
-            "TestAccDynamoDBTable_streamSpecification",
-            "TestAccDynamoDBTable_streamSpecificationDiffs",
             // --- gap: encryption attribute round-trip ---
             "TestAccDynamoDBTable_encryption",
             // --- hung: did not complete in triage run; revisit in a later batch ---

@@ -1,0 +1,15 @@
+[advisories]
+ignore = [
+    # rustls-webpki 0.101.7 is pulled in transitively by rustls 0.21 ->
+    # aws-smithy-http-client -> aws-config (test-only dev dependency
+    # used by fakecloud-testkit). There is no fixed release on the
+    # 0.101.x branch; the upstream fix is in 0.103.12, which requires
+    # bumping rustls, which in turn requires a coordinated AWS SDK
+    # ecosystem bump. fakecloud never validates untrusted certificates
+    # at runtime — the SDK is only exercised by our own test clients
+    # against a loopback fakecloud instance, so the name-constraints
+    # wildcard issue is not reachable. Reassess once aws-smithy-http-client
+    # drops rustls 0.21.
+    "RUSTSEC-2026-0098",
+    "RUSTSEC-2026-0099",
+]

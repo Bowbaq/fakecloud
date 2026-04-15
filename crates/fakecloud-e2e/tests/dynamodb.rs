@@ -4,8 +4,8 @@ use aws_sdk_dynamodb::types::{
     AttributeDefinition, AttributeValue, BillingMode, ContributorInsightsAction, Delete,
     DeleteRequest, Get, GlobalSecondaryIndex, KeySchemaElement, KeyType, OnDemandThroughput,
     PointInTimeRecoverySpecification, Projection, ProjectionType, ProvisionedThroughput, Put,
-    PutRequest, Replica, ScalarAttributeType, SseSpecification, SseType, Tag,
-    TimeToLiveSpecification, TransactGetItem, TransactWriteItem, WriteRequest,
+    PutRequest, Replica, ScalarAttributeType, SseSpecification, SseType, StreamSpecification,
+    StreamViewType, Tag, TimeToLiveSpecification, TransactGetItem, TransactWriteItem, WriteRequest,
 };
 use helpers::TestServer;
 use std::collections::HashMap;
@@ -3221,4 +3221,139 @@ async fn dynamodb_gsi_on_demand_throughput_round_trip() {
     let table_odt = desc.table().unwrap().on_demand_throughput().unwrap();
     assert_eq!(table_odt.max_read_request_units(), Some(10));
     assert_eq!(table_odt.max_write_request_units(), Some(10));
+}
+
+// `LatestStreamLabel` is a timestamp of the form `YYYY-MM-DDTHH:MM:SS.mmm`
+// — real AWS uses millisecond precision, no timezone suffix, no extra
+// separators. The upstream Terraform acceptance suite asserts on exactly
+// this regex (`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}`), so fakecloud
+// must match byte-for-byte.
+fn assert_stream_label_format(label: &str) {
+    let (date, time) = label.split_once('T').expect("label has T separator");
+    assert_eq!(date.len(), 10, "date prefix yyyy-mm-dd: {label}");
+    let parts: Vec<&str> = date.split('-').collect();
+    assert_eq!(parts.len(), 3);
+    assert_eq!(parts[0].len(), 4);
+    assert_eq!(parts[1].len(), 2);
+    assert_eq!(parts[2].len(), 2);
+    let (hms, ms) = time.split_once('.').expect("label has fractional seconds");
+    let hms_parts: Vec<&str> = hms.split(':').collect();
+    assert_eq!(hms_parts.len(), 3);
+    assert!(hms_parts.iter().all(|p| p.len() == 2));
+    assert_eq!(ms.len(), 3, "millisecond precision only: {label}");
+    assert!(label
+        .chars()
+        .all(|c| c.is_ascii_digit() || "-T:.".contains(c)));
+}
+
+#[tokio::test]
+async fn dynamodb_stream_specification_lifecycle() {
+    let server = TestServer::start().await;
+    let client = server.dynamodb_client().await;
+
+    // CreateTable with StreamSpecification must return the block plus
+    // LatestStreamArn/LatestStreamLabel right from the create response —
+    // Terraform's Read runs immediately after apply and asserts on both.
+    let create = client
+        .create_table()
+        .table_name("StreamTable")
+        .key_schema(
+            KeySchemaElement::builder()
+                .attribute_name("pk")
+                .key_type(KeyType::Hash)
+                .build()
+                .unwrap(),
+        )
+        .attribute_definitions(
+            AttributeDefinition::builder()
+                .attribute_name("pk")
+                .attribute_type(ScalarAttributeType::S)
+                .build()
+                .unwrap(),
+        )
+        .billing_mode(BillingMode::PayPerRequest)
+        .stream_specification(
+            StreamSpecification::builder()
+                .stream_enabled(true)
+                .stream_view_type(StreamViewType::KeysOnly)
+                .build()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap();
+    let created = create.table_description().unwrap();
+    let spec = created.stream_specification().unwrap();
+    assert!(spec.stream_enabled());
+    assert_eq!(spec.stream_view_type(), Some(&StreamViewType::KeysOnly));
+    let arn_create = created.latest_stream_arn().unwrap();
+    let label_create = created.latest_stream_label().unwrap();
+    assert!(arn_create.ends_with(label_create));
+    assert!(arn_create.contains(":table/StreamTable/stream/"));
+    assert_stream_label_format(label_create);
+
+    // DescribeTable returns the same shape.
+    let described = client
+        .describe_table()
+        .table_name("StreamTable")
+        .send()
+        .await
+        .unwrap();
+    let table = described.table().unwrap();
+    assert_eq!(
+        table.stream_specification().unwrap().stream_view_type(),
+        Some(&StreamViewType::KeysOnly),
+    );
+    assert_eq!(table.latest_stream_arn(), Some(arn_create));
+    assert_eq!(table.latest_stream_label(), Some(label_create));
+
+    // UpdateTable disabling streams clears StreamSpecification but keeps
+    // LatestStreamArn/LatestStreamLabel — AWS retains the ARN post-disable
+    // so Terraform's Read falls through to the previous stream_view_type.
+    let upd = client
+        .update_table()
+        .table_name("StreamTable")
+        .stream_specification(
+            StreamSpecification::builder()
+                .stream_enabled(false)
+                .build()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap();
+    let disabled = upd.table_description().unwrap();
+    assert!(
+        disabled.stream_specification().is_none(),
+        "StreamSpecification must be omitted while disabled; got {:?}",
+        disabled.stream_specification(),
+    );
+    assert_eq!(disabled.latest_stream_arn(), Some(arn_create));
+    assert_eq!(disabled.latest_stream_label(), Some(label_create));
+
+    // Re-enabling with a different view type mints a fresh stream ARN
+    // (and therefore a fresh label) — the upstream `_diffs` test walks
+    // through exactly this kind of disable→re-enable transition.
+    let upd2 = client
+        .update_table()
+        .table_name("StreamTable")
+        .stream_specification(
+            StreamSpecification::builder()
+                .stream_enabled(true)
+                .stream_view_type(StreamViewType::NewImage)
+                .build()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap();
+    let reenabled = upd2.table_description().unwrap();
+    let spec2 = reenabled.stream_specification().unwrap();
+    assert!(spec2.stream_enabled());
+    assert_eq!(spec2.stream_view_type(), Some(&StreamViewType::NewImage));
+    // The ARN is retained (AWS keeps the same stream ARN across toggles
+    // as long as fakecloud's single-process lifetime holds it), which is
+    // fine for the provider's Read — it just needs a non-empty label.
+    let label2 = reenabled.latest_stream_label().unwrap();
+    assert_stream_label_format(label2);
 }

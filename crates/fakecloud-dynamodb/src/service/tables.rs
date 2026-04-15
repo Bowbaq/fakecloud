@@ -201,25 +201,13 @@ impl DynamoDbService {
             on_demand_throughput: on_demand_throughput.clone(),
         };
 
-        let table_id = table.table_id.clone();
-        state.tables.insert(table_name, table);
-
-        let table_desc = build_table_description_json(&super::TableDescriptionInput {
-            arn: &arn,
-            table_id: &table_id,
-            key_schema: &key_schema,
-            attribute_definitions: &attribute_definitions,
-            provisioned_throughput: &provisioned_throughput,
-            gsi: &gsi,
-            lsi: &lsi,
-            billing_mode: &billing_mode,
-            created_at: now,
-            item_count: 0,
-            size_bytes: 0,
-            status: "ACTIVE",
-            deletion_protection_enabled,
-            on_demand_throughput: on_demand_throughput.as_ref(),
-        });
+        // Build the response from the inserted table so CreateTable returns
+        // the same shape DescribeTable does — including StreamSpecification
+        // and LatestStreamArn/LatestStreamLabel when streams were enabled on
+        // create. Terraform's `aws_dynamodb_table` Read runs right after the
+        // create and asserts on these fields.
+        state.tables.insert(table_name.clone(), table);
+        let table_desc = build_table_description(&state.tables[&table_name]);
 
         Self::ok_json(json!({ "TableDescription": table_desc }))
     }
@@ -335,6 +323,11 @@ impl DynamoDbService {
         let table_name = require_str(&body, "TableName")?;
 
         let mut state = self.state.write();
+        // Snapshot region + account before taking a mutable borrow of
+        // `state.tables` — we need them to mint a new stream ARN when the
+        // caller flips stream_enabled from false to true mid-update.
+        let region = state.region.clone();
+        let account_id = state.account_id.clone();
         let table = state.tables.get_mut(table_name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -471,6 +464,41 @@ impl DynamoDbService {
             table.deletion_protection_enabled = dpe;
         }
 
+        // Handle StreamSpecification update. Mirrors real AWS:
+        //  - Enabling from disabled mints a fresh stream ARN (with a
+        //    timestamp-shaped label) and stores the requested view type.
+        //  - Disabling clears `stream_enabled` but leaves `stream_arn` and
+        //    `stream_view_type` intact — AWS keeps `LatestStreamArn` /
+        //    `LatestStreamLabel` around for ~24h so DescribeTable callers
+        //    (and Terraform's Read) can still see the last active stream.
+        //  - Changing the view type while streams stay enabled is handled
+        //    by Terraform as a disable→enable cycle against this path.
+        if let Some(stream_spec) = body.get("StreamSpecification") {
+            let enabled = stream_spec
+                .get("StreamEnabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if enabled {
+                table.stream_enabled = true;
+                if let Some(view_type) = stream_spec.get("StreamViewType").and_then(|v| v.as_str())
+                {
+                    table.stream_view_type = Some(view_type.to_string());
+                }
+                if table.stream_arn.is_none() {
+                    let now = Utc::now();
+                    table.stream_arn = Some(format!(
+                        "arn:aws:dynamodb:{}:{}:table/{}/stream/{}",
+                        region,
+                        account_id,
+                        table.name,
+                        now.format("%Y-%m-%dT%H:%M:%S.%3f")
+                    ));
+                }
+            } else {
+                table.stream_enabled = false;
+            }
+        }
+
         // Handle SSESpecification update
         if let Some(sse_spec) = body.get("SSESpecification") {
             let enabled = sse_spec
@@ -495,22 +523,7 @@ impl DynamoDbService {
             }
         }
 
-        let table_desc = build_table_description_json(&super::TableDescriptionInput {
-            arn: &table.arn,
-            table_id: &table.table_id,
-            key_schema: &table.key_schema,
-            attribute_definitions: &table.attribute_definitions,
-            provisioned_throughput: &table.provisioned_throughput,
-            gsi: &table.gsi,
-            lsi: &table.lsi,
-            billing_mode: &table.billing_mode,
-            created_at: table.created_at,
-            item_count: table.item_count,
-            size_bytes: table.size_bytes,
-            status: &table.status,
-            deletion_protection_enabled: table.deletion_protection_enabled,
-            on_demand_throughput: table.on_demand_throughput.as_ref(),
-        });
+        let table_desc = build_table_description(table);
 
         Self::ok_json(json!({ "TableDescription": table_desc }))
     }

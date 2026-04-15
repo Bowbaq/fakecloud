@@ -2270,12 +2270,21 @@ fn build_table_description(table: &DynamoTable) -> Value {
         on_demand_throughput: table.on_demand_throughput.as_ref(),
     });
 
-    // Add stream specification if streams are enabled
+    // `LatestStreamArn` / `LatestStreamLabel` persist after a stream has
+    // been created, even if streams are currently disabled — real AWS
+    // keeps them for ~24h post-disable so DescribeTable callers can still
+    // observe the last active stream. fakecloud keeps them for the
+    // table's lifetime, which is sufficient for any single test run.
+    if let Some(ref stream_arn) = table.stream_arn {
+        desc["LatestStreamArn"] = json!(stream_arn);
+        desc["LatestStreamLabel"] = json!(stream_arn.rsplit('/').next().unwrap_or(""));
+    }
+    // The `StreamSpecification` block is only present while streams are
+    // actively enabled. When absent, the Terraform provider Read falls
+    // through to the prior `stream_view_type` from its own state rather
+    // than clearing it, which matches the diff behaviour the upstream
+    // acceptance tests assert on.
     if table.stream_enabled {
-        if let Some(ref stream_arn) = table.stream_arn {
-            desc["LatestStreamArn"] = json!(stream_arn);
-            desc["LatestStreamLabel"] = json!(stream_arn.rsplit('/').next().unwrap_or(""));
-        }
         if let Some(ref view_type) = table.stream_view_type {
             desc["StreamSpecification"] = json!({
                 "StreamEnabled": true,
