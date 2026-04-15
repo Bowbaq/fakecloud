@@ -836,7 +836,7 @@ async fn main() {
     registry.register(Arc::new(BedrockService::new(bedrock_state.clone())));
 
     // Spawn background tasks
-    let lifecycle_processor = fakecloud_s3::lifecycle::LifecycleProcessor::new(s3_state);
+    let lifecycle_processor = fakecloud_s3::lifecycle::LifecycleProcessor::new(s3_state.clone());
     tokio::spawn(lifecycle_processor.run());
 
     let mut sqs_lambda_poller = SqsLambdaPoller::new(sqs_state, lambda_state);
@@ -894,6 +894,9 @@ async fn main() {
         ),
         policy_evaluator: Some(
             fakecloud_iam::policy_evaluator::IamPolicyEvaluatorImpl::shared(iam_state.clone()),
+        ),
+        resource_policy_provider: Some(
+            fakecloud_s3::resource_policy::S3ResourcePolicyProvider::shared(s3_state.clone()),
         ),
     };
 
