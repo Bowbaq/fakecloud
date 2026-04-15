@@ -2586,7 +2586,7 @@ dependencies = [
 name = "fakecloud-tfacc"
 version = "0.9.2"
 dependencies = [
- "reqwest",
+ "fakecloud-testkit",
  "tokio",
 ]
 
