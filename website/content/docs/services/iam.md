@@ -25,8 +25,8 @@ Query protocol. Form-encoded body, `Action` parameter, XML responses.
 
 ## Gotchas
 
-- **Policies are stored, not evaluated.** fakecloud records IAM policies but does not enforce them at request time. Every request is treated as authorized. This is intentional — testing IAM policy evaluation belongs against real AWS (or dedicated policy simulators), and cross-cutting authz checks are out of scope for an emulator.
-- **Access keys are dummy.** fakecloud accepts any credentials for any request. Access keys created via IAM are recorded but never checked against SigV4 signatures.
+- **Policies are stored and optionally evaluated.** By default fakecloud records IAM policies without evaluating them. Set `FAKECLOUD_IAM=strict` (or `soft` for log-only) to turn on Phase 1 identity-policy evaluation — Allow/Deny with Deny precedence, Action/Resource wildcards, user/group/role inline and managed policies. `Condition` blocks, resource-based policies, permission boundaries, SCPs, and ABAC are explicitly not evaluated yet. See [SigV4 verification and IAM enforcement](@/docs/reference/security.md) for the full scope.
+- **SigV4 verification is opt-in.** By default fakecloud parses signatures for routing but doesn't verify them. Set `FAKECLOUD_VERIFY_SIGV4=true` to turn on cryptographic verification with the standard ±15-minute clock skew window. The reserved `test`/`test` root-bypass convention always passes, matching LocalStack.
 
 ## Source
 

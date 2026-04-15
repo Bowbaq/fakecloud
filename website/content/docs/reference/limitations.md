@@ -24,9 +24,16 @@ Lambda function execution, RDS DB instances, and ElastiCache clusters all use re
 
 If you don't need Lambda/RDS/ElastiCache, fakecloud runs fine without Docker at all — just don't mount the socket and those services will return errors only when you try to use them.
 
-## SigV4 signatures are not validated
+## SigV4 signatures and IAM policies are off by default
 
-fakecloud parses SigV4 headers to route requests to the right service but does not validate the signature itself. This is intentional — fakecloud uses dummy credentials and there's nothing to validate against. If your test depends on signature rejection, you'll need to test that against real AWS.
+fakecloud parses SigV4 headers for routing and stores IAM policies without evaluating them. Both can be turned on explicitly:
+
+```bash
+FAKECLOUD_VERIFY_SIGV4=true    # real cryptographic signature verification
+FAKECLOUD_IAM=soft|strict      # Phase 1 identity-policy evaluation
+```
+
+Phase 1 evaluation covers `Allow` / `Deny` with Deny precedence, `Action` / `NotAction` / `Resource` / `NotResource` with wildcards, and identity policies attached via user/group/role. It does **not** cover `Condition` blocks, resource-based policies (bucket policies, topic policies, etc.), permission boundaries, SCPs, session policies, or ABAC tag conditions — those are Phase 2 and explicitly skipped during evaluation. See [SigV4 verification and IAM enforcement](@/docs/reference/security.md) for the full scope, enforced-service list, and the reserved `test`/`test` root-bypass convention.
 
 ## Everything else is in scope
 
