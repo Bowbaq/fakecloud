@@ -19,9 +19,16 @@
 //! - Identity policies attached to roles (inline + managed).
 //! - Empty effective policy set → implicit deny.
 //!
+//! **Phase 2** — `Condition` block evaluation is now integrated via
+//! [`crate::condition`]. A statement that carries a `Condition` is
+//! evaluated against the [`RequestContext`] (populated at dispatch time);
+//! the statement applies iff every operator entry matches. Unknown
+//! operators / unknown keys / parse errors safe-fail to "statement does
+//! not apply" with a `fakecloud::iam::audit` debug log, matching the
+//! no-silent-accept rule from Phase 1.
+//!
 //! **Not** implemented (returns implicit deny rather than guessing — these
-//! are tracked for Phase 2 and documented on `/docs/reference/security`):
-//! - `Condition` blocks (StringEquals, IpAddress, DateLessThan, …)
+//! are tracked for future phases and documented on `/docs/reference/security`):
 //! - `NotPrincipal` (used in resource-based policies)
 //! - Resource-based policies (S3 bucket policies, SNS topic policies,
 //!   KMS key policies, Lambda resource policies, …)
@@ -30,16 +37,20 @@
 //! - Session policies passed to `AssumeRole`
 //! - ABAC / tag conditions
 //!
-//! Statements that contain a `Condition` block are **skipped during
-//! evaluation** with a `tracing::debug!` so users running in `soft` mode
-//! can see which policies didn't get considered.
-
 use std::collections::HashSet;
 
 use fakecloud_core::auth::{Principal, PrincipalType};
 use serde_json::Value;
 
+use crate::condition::{CompiledCondition, ConditionContext};
 use crate::state::IamState;
+
+/// Request-time context keys used when evaluating `Condition` blocks.
+///
+/// This is a re-export of [`ConditionContext`] to keep the evaluator's
+/// public API stable while centralizing the context definition in the
+/// [`crate::condition`] module.
+pub type RequestContext = ConditionContext;
 
 /// The result of evaluating a request against a set of policies.
 ///
@@ -68,9 +79,8 @@ impl Decision {
 /// AWS ARN; the per-service resource extractors in batches 6-8 produce
 /// these.
 ///
-/// `_context` is reserved for Phase 2 condition-key plumbing and is
-/// currently unused — present as a field so the evaluator's call sites
-/// don't need to change when conditions land.
+/// `context` carries request-time condition keys (populated at dispatch)
+/// used when evaluating statements with a `Condition` block.
 #[derive(Debug, Clone)]
 pub struct EvalRequest<'a> {
     pub principal: &'a Principal,
@@ -79,22 +89,16 @@ pub struct EvalRequest<'a> {
     pub context: RequestContext,
 }
 
-/// Request-time context keys that Phase 2 will use for `Condition`
-/// evaluation. Currently empty so the evaluator API doesn't need a
-/// breaking change later.
-#[derive(Debug, Clone, Default)]
-pub struct RequestContext {}
-
 /// Parsed view of a single statement within a policy document.
 #[derive(Debug, Clone)]
 pub(crate) struct ParsedStatement {
     pub effect: Effect,
     pub action: ActionMatch,
     pub resource: ResourceMatch,
-    /// Whether this statement carried a `Condition` block. Phase 1 cannot
-    /// evaluate conditions, so any conditioned statement is skipped during
-    /// evaluation rather than silently treated as unconditioned.
-    pub has_condition: bool,
+    /// Compiled `Condition` block if the statement carried one. A
+    /// statement with `Some(_)` only applies when the compiled block
+    /// evaluates to `true` against the request's [`RequestContext`].
+    pub condition: Option<CompiledCondition>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,12 +200,12 @@ fn parse_statement(value: &Value) -> Option<ParsedStatement> {
     } else {
         ResourceMatch::Implicit
     };
-    let has_condition = obj.contains_key("Condition");
+    let condition = obj.get("Condition").map(CompiledCondition::parse);
     Some(ParsedStatement {
         effect,
         action,
         resource,
-        has_condition,
+        condition,
     })
 }
 
@@ -228,29 +232,33 @@ fn coerce_string_list(value: &Value) -> Vec<String> {
 /// # Algorithm
 ///
 /// 1. Walk every statement in every policy.
-/// 2. Skip any statement that has a `Condition` block (Phase 2).
-/// 3. For each statement that matches the request's action *and* resource:
+/// 2. For each statement that matches the request's action *and* resource:
+///    - If the statement has a `Condition` block, evaluate it against
+///      [`EvalRequest::context`]; skip the statement if the condition
+///      does not match.
 ///    - If `Effect: Deny` → return [`Decision::ExplicitDeny`] immediately.
 ///    - If `Effect: Allow` → record that we saw an allow.
-/// 4. After all statements are scanned: return [`Decision::Allow`] if any
+/// 3. After all statements are scanned: return [`Decision::Allow`] if any
 ///    allow matched, otherwise [`Decision::ImplicitDeny`].
 pub fn evaluate(policies: &[PolicyDocument], request: &EvalRequest<'_>) -> Decision {
     let mut allowed = false;
     for policy in policies {
         for statement in &policy.statements {
-            if statement.has_condition {
-                tracing::debug!(
-                    target: "fakecloud::iam::audit",
-                    action = %request.action,
-                    "skipping statement with Condition (not yet evaluated in Phase 1)"
-                );
-                continue;
-            }
             if !action_matches(&statement.action, &request.action) {
                 continue;
             }
             if !resource_matches(&statement.resource, &request.resource) {
                 continue;
+            }
+            if let Some(condition) = &statement.condition {
+                if !condition.matches(&request.context) {
+                    tracing::debug!(
+                        target: "fakecloud::iam::audit",
+                        action = %request.action,
+                        "condition did not match; statement does not apply"
+                    );
+                    continue;
+                }
             }
             match statement.effect {
                 Effect::Deny => return Decision::ExplicitDeny,
@@ -732,43 +740,84 @@ mod tests {
         );
     }
 
+    fn req_with_ctx<'a>(
+        principal: &'a Principal,
+        action: &str,
+        resource: &str,
+        context: RequestContext,
+    ) -> EvalRequest<'a> {
+        EvalRequest {
+            principal,
+            action: action.to_string(),
+            resource: resource.to_string(),
+            context,
+        }
+    }
+
+    fn ctx_alice() -> RequestContext {
+        RequestContext {
+            aws_username: Some("alice".into()),
+            aws_principal_arn: Some("arn:aws:iam::123456789012:user/alice".into()),
+            aws_principal_account: Some("123456789012".into()),
+            aws_principal_type: Some("User".into()),
+            aws_userid: Some("AIDA".into()),
+            ..Default::default()
+        }
+    }
+
     #[test]
-    fn statement_with_condition_is_skipped_in_phase1() {
+    fn condition_string_equals_username_allows_match() {
         let p = principal_user("arn:aws:iam::123456789012:user/alice");
         let policy = doc(json!({
             "Statement": [{
                 "Effect": "Allow",
                 "Action": "*",
                 "Resource": "*",
-                "Condition": {
-                    "StringEquals": { "aws:username": "alice" }
-                }
+                "Condition": { "StringEquals": { "aws:username": "alice" } }
             }]
         }));
-        // Phase 1 doesn't evaluate Condition, so the statement is skipped
-        // and we fall through to implicit deny — safer than guessing.
         assert_eq!(
             evaluate(
                 &[policy],
-                &req(&p, "s3:GetObject", "arn:aws:s3:::bucket/key")
+                &req_with_ctx(&p, "s3:GetObject", "arn:aws:s3:::bucket/key", ctx_alice())
+            ),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn condition_string_equals_username_denies_mismatch() {
+        let p = principal_user("arn:aws:iam::123456789012:user/alice");
+        let policy = doc(json!({
+            "Statement": [{
+                "Effect": "Allow",
+                "Action": "*",
+                "Resource": "*",
+                "Condition": { "StringEquals": { "aws:username": "bob" } }
+            }]
+        }));
+        assert_eq!(
+            evaluate(
+                &[policy],
+                &req_with_ctx(&p, "s3:GetObject", "arn:aws:s3:::bucket/key", ctx_alice())
             ),
             Decision::ImplicitDeny
         );
     }
 
     #[test]
-    fn deny_with_condition_does_not_stop_an_otherwise_allowed_request() {
+    fn deny_with_condition_fires_when_condition_matches() {
         let p = principal_user("arn:aws:iam::123456789012:user/alice");
-        // A Deny-with-Condition is also skipped (we can't tell if the
-        // condition would have matched). The Allow that follows still
-        // grants the request.
+        // Deny-MFA-absent + unconditional Allow => the Deny only fires
+        // when the SecureTransport context value is false. Deny precedence
+        // beats the unconditional Allow.
         let policy = doc(json!({
             "Statement": [
                 {
                     "Effect": "Deny",
                     "Action": "*",
                     "Resource": "*",
-                    "Condition": { "Bool": { "aws:MultiFactorAuthPresent": "false" } }
+                    "Condition": { "Bool": { "aws:SecureTransport": "false" } }
                 },
                 {
                     "Effect": "Allow",
@@ -777,12 +826,183 @@ mod tests {
                 }
             ]
         }));
+        let mut ctx = ctx_alice();
+        ctx.aws_secure_transport = Some(false);
+        assert_eq!(
+            evaluate(
+                &[policy.clone()],
+                &req_with_ctx(&p, "s3:GetObject", "arn:aws:s3:::bucket/key", ctx)
+            ),
+            Decision::ExplicitDeny
+        );
+        // When the request IS secure, the conditional Deny should not
+        // fire and the Allow wins.
+        let mut ctx_secure = ctx_alice();
+        ctx_secure.aws_secure_transport = Some(true);
         assert_eq!(
             evaluate(
                 &[policy],
-                &req(&p, "s3:GetObject", "arn:aws:s3:::bucket/key")
+                &req_with_ctx(&p, "s3:GetObject", "arn:aws:s3:::bucket/key", ctx_secure)
             ),
             Decision::Allow
+        );
+    }
+
+    #[test]
+    fn condition_ip_address_allows_within_cidr() {
+        let p = principal_user("arn:aws:iam::123456789012:user/alice");
+        let policy = doc(json!({
+            "Statement": [{
+                "Effect": "Allow",
+                "Action": "s3:GetObject",
+                "Resource": "*",
+                "Condition": { "IpAddress": { "aws:SourceIp": "10.0.0.0/24" } }
+            }]
+        }));
+        let mut ctx = ctx_alice();
+        ctx.aws_source_ip = Some("10.0.0.17".parse().unwrap());
+        assert_eq!(
+            evaluate(
+                &[policy.clone()],
+                &req_with_ctx(&p, "s3:GetObject", "arn:aws:s3:::bucket/key", ctx)
+            ),
+            Decision::Allow
+        );
+        let mut wrong = ctx_alice();
+        wrong.aws_source_ip = Some("192.168.1.1".parse().unwrap());
+        assert_eq!(
+            evaluate(
+                &[policy],
+                &req_with_ctx(&p, "s3:GetObject", "arn:aws:s3:::bucket/key", wrong)
+            ),
+            Decision::ImplicitDeny
+        );
+    }
+
+    #[test]
+    fn condition_date_less_than_blocks_expired() {
+        let p = principal_user("arn:aws:iam::123456789012:user/alice");
+        let policy = doc(json!({
+            "Statement": [{
+                "Effect": "Allow",
+                "Action": "s3:GetObject",
+                "Resource": "*",
+                "Condition": {
+                    "DateLessThan": { "aws:CurrentTime": "2020-01-01T00:00:00Z" }
+                }
+            }]
+        }));
+        let mut ctx = ctx_alice();
+        ctx.aws_current_time = Some(
+            chrono::DateTime::parse_from_rfc3339("2024-06-15T12:00:00Z")
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+        );
+        assert_eq!(
+            evaluate(
+                &[policy],
+                &req_with_ctx(&p, "s3:GetObject", "arn:aws:s3:::bucket/key", ctx)
+            ),
+            Decision::ImplicitDeny
+        );
+    }
+
+    #[test]
+    fn condition_missing_key_without_if_exists_denies() {
+        // Context has no SourceIp; the IpAddress operator should
+        // safe-fail, making the statement not apply.
+        let p = principal_user("arn:aws:iam::123456789012:user/alice");
+        let policy = doc(json!({
+            "Statement": [{
+                "Effect": "Allow",
+                "Action": "*",
+                "Resource": "*",
+                "Condition": { "IpAddress": { "aws:SourceIp": "10.0.0.0/8" } }
+            }]
+        }));
+        assert_eq!(
+            evaluate(
+                &[policy],
+                &req_with_ctx(&p, "s3:GetObject", "arn:aws:s3:::bucket/key", ctx_alice())
+            ),
+            Decision::ImplicitDeny
+        );
+    }
+
+    #[test]
+    fn condition_if_exists_passes_on_missing_key() {
+        let p = principal_user("arn:aws:iam::123456789012:user/alice");
+        let policy = doc(json!({
+            "Statement": [{
+                "Effect": "Allow",
+                "Action": "*",
+                "Resource": "*",
+                "Condition": {
+                    "IpAddressIfExists": { "aws:SourceIp": "10.0.0.0/8" }
+                }
+            }]
+        }));
+        // SourceIp not populated; IfExists => condition passes.
+        assert_eq!(
+            evaluate(
+                &[policy],
+                &req_with_ctx(&p, "s3:GetObject", "arn:aws:s3:::bucket/key", ctx_alice())
+            ),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn condition_multiple_operators_all_must_match() {
+        let p = principal_user("arn:aws:iam::123456789012:user/alice");
+        let policy = doc(json!({
+            "Statement": [{
+                "Effect": "Allow",
+                "Action": "*",
+                "Resource": "*",
+                "Condition": {
+                    "StringEquals": { "aws:username": "alice" },
+                    "IpAddress":    { "aws:SourceIp": "10.0.0.0/24" }
+                }
+            }]
+        }));
+        let mut ctx = ctx_alice();
+        ctx.aws_source_ip = Some("10.0.0.1".parse().unwrap());
+        assert_eq!(
+            evaluate(
+                &[policy.clone()],
+                &req_with_ctx(&p, "s3:GetObject", "arn:aws:s3:::bucket/key", ctx)
+            ),
+            Decision::Allow
+        );
+        let mut wrong_ip = ctx_alice();
+        wrong_ip.aws_source_ip = Some("192.168.1.1".parse().unwrap());
+        assert_eq!(
+            evaluate(
+                &[policy],
+                &req_with_ctx(&p, "s3:GetObject", "arn:aws:s3:::bucket/key", wrong_ip)
+            ),
+            Decision::ImplicitDeny
+        );
+    }
+
+    #[test]
+    fn condition_unknown_operator_fails_closed() {
+        let p = principal_user("arn:aws:iam::123456789012:user/alice");
+        let policy = doc(json!({
+            "Statement": [{
+                "Effect": "Allow",
+                "Action": "*",
+                "Resource": "*",
+                "Condition": { "NotARealOperator": { "aws:username": "alice" } }
+            }]
+        }));
+        assert_eq!(
+            evaluate(
+                &[policy],
+                &req_with_ctx(&p, "s3:GetObject", "arn:aws:s3:::bucket/key", ctx_alice())
+            ),
+            Decision::ImplicitDeny
         );
     }
 
