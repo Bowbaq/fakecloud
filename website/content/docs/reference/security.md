@@ -118,6 +118,21 @@ Every operator supports the `...IfExists` suffix (missing key evaluates to `true
 | `aws:SecureTransport` | `true` iff the request carries `x-forwarded-proto: https` (the fakecloud server itself speaks HTTP; set this header from an upstream TLS terminator to test) |
 | `aws:RequestedRegion` | Region extracted from SigV4 / config |
 
+**Supported service-specific condition keys:**
+
+| Key | Populated on | Source |
+| --- | --- | --- |
+| `s3:prefix` | `s3:ListObjects`, `s3:ListObjectsV2` | `?prefix=` query param |
+| `s3:delimiter` | `s3:ListObjects`, `s3:ListObjectsV2` | `?delimiter=` query param |
+| `s3:max-keys` | `s3:ListObjects`, `s3:ListObjectsV2` | `?max-keys=` query param |
+| `sns:Protocol` | `sns:Subscribe` | `Protocol` request parameter |
+| `sns:Endpoint` | `sns:Subscribe` | `Endpoint` request parameter |
+| `lambda:FunctionArn` | `lambda:AddPermission` | Target function ARN resolved from the path |
+| `lambda:Principal` | `lambda:AddPermission` | `Principal` field from the JSON body |
+| `sqs:MessageAttribute.<Name>` | `sqs:SendMessage` | Each named `MessageAttribute`'s `StringValue` (Binary / Number attributes fall back to the data type) |
+
+New services plug in by implementing `iam_condition_keys_for` on their `AwsService` impl; the dispatcher merges the result into the shared context before the evaluator runs.
+
 **Safe-fail semantics.** Any unimplemented operator, unknown key, or parse failure (malformed date, invalid CIDR, non-numeric value where numeric expected) is logged to `fakecloud::iam::audit` at debug level and evaluates to `false` — i.e. the statement *does not apply*. The evaluator will never silently treat an unrecognized condition as a match. If you see unexpected denies, raise the `fakecloud::iam::audit` log level to see which statements were skipped.
 
 ### Resource-based policies
@@ -154,7 +169,7 @@ The resource's owning account is parsed from the ARN; S3 ARNs have an empty acco
 
 ### Not implemented
 
-- Service-specific condition keys (`s3:prefix`, `s3:delimiter`, `sqs:MessageAttribute.*`, …). The `service_keys` plumbing is already in place; per-service population lands in a follow-up batch.
+- Service-specific condition keys for services / operations beyond the ones listed in the table above. The hook is `AwsService::iam_condition_keys_for`; extending coverage is additive and requires no signature changes.
 - **KMS key policies.** KMS has a deny-by-default semantic (no policy means nothing is allowed, including the account root) that is materially different from S3 / SNS / Lambda's allow-on-match-or-fall-through and deserves its own migration story.
 - Permission boundaries.
 - Service control policies (SCPs).
