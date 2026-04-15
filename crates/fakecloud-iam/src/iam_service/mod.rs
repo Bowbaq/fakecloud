@@ -171,7 +171,12 @@ impl AwsService for IamService {
     }
 
     async fn handle(&self, req: AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        // Track access key usage for GetAccessKeyLastUsed
+        // Track access key usage for GetAccessKeyLastUsed. This is itself
+        // a state mutation, so we have to flag it for snapshot persistence
+        // even though the action itself may be read-only (e.g. `ListUsers`).
+        // Without this, `access_key_last_used` drifts between in-memory
+        // and on-disk state and reads after a restart lose the timestamp.
+        let mut last_used_updated = false;
         if let Some(ref key_id) = req.access_key_id {
             let mut state = self.state.write();
             let is_known = state
@@ -187,11 +192,12 @@ impl AwsService for IamService {
                         region: req.region.clone(),
                     },
                 );
+                last_used_updated = true;
             }
             drop(state);
         }
 
-        let mutates = is_mutating_action(req.action.as_str());
+        let mutates = is_mutating_action(req.action.as_str()) || last_used_updated;
         let result = match req.action.as_str() {
             // Users
             "CreateUser" => self.create_user(&req),
