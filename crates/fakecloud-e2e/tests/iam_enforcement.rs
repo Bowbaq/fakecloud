@@ -432,6 +432,73 @@ async fn s3_get_object_resource_scoped() {
     assert!(format!("{err:?}").contains("AccessDenied"));
 }
 
+#[tokio::test]
+async fn s3_list_objects_v2_prefix_condition_key() {
+    // A policy that only allows ListObjectsV2 when `s3:prefix` starts
+    // with "logs/" must let `prefix=logs/2026/` through and deny
+    // `prefix=secrets/`.
+    let server = start_strict().await;
+    let boot = sdk_config_with(&server, "test", "test").await;
+    let s3_boot = aws_sdk_s3::Client::new(&boot);
+    s3_boot
+        .create_bucket()
+        .bucket("prefixed")
+        .send()
+        .await
+        .unwrap();
+
+    let (akid, secret) = bootstrap_user(&server, "s3prefixuser").await;
+    attach_inline_policy(
+        &server,
+        "s3prefixuser",
+        "AllowListLogs",
+        r#"{"Version":"2012-10-17","Statement":[{
+            "Effect":"Allow",
+            "Action":"s3:ListObjectsV2",
+            "Resource":"arn:aws:s3:::prefixed",
+            "Condition":{"StringLike":{"s3:prefix":"logs/*"}}
+        }]}"#,
+    )
+    .await;
+
+    let cfg = sdk_config_with(&server, &akid, &secret).await;
+    let s3 = aws_sdk_s3::Client::new(&cfg);
+
+    // Allowed: prefix=logs/2026/ matches StringLike "logs/*".
+    s3.list_objects_v2()
+        .bucket("prefixed")
+        .prefix("logs/2026/")
+        .send()
+        .await
+        .unwrap();
+
+    // Denied: prefix=secrets/ fails the condition.
+    let err = s3
+        .list_objects_v2()
+        .bucket("prefixed")
+        .prefix("secrets/")
+        .send()
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{err:?}").contains("AccessDenied"),
+        "expected AccessDenied, got {err:?}"
+    );
+
+    // Denied: no prefix at all. Without the key populated the
+    // condition is unmatched and the statement doesn't apply.
+    let err = s3
+        .list_objects_v2()
+        .bucket("prefixed")
+        .send()
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{err:?}").contains("AccessDenied"),
+        "expected AccessDenied on missing prefix, got {err:?}"
+    );
+}
+
 // ======================================================================
 // Phase 2: Condition block evaluation
 //
