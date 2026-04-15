@@ -5203,4 +5203,210 @@ mod tests {
             "malformed FilterPolicy JSON must not match (fail closed)"
         );
     }
+
+    // ── Platform applications and endpoints ─────────────────────────
+
+    fn create_app(svc: &SnsService, name: &str, platform: &str) -> String {
+        let req = sns_request(
+            "CreatePlatformApplication",
+            vec![
+                ("Name", name),
+                ("Platform", platform),
+                ("Attributes.entry.1.key", "PlatformPrincipal"),
+                ("Attributes.entry.1.value", "principal"),
+                ("Attributes.entry.2.key", "PlatformCredential"),
+                ("Attributes.entry.2.value", "secret"),
+            ],
+        );
+        let resp = svc.create_platform_application(&req).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
+        let start =
+            body.find("<PlatformApplicationArn>").unwrap() + "<PlatformApplicationArn>".len();
+        let end = body.find("</PlatformApplicationArn>").unwrap();
+        body[start..end].to_string()
+    }
+
+    #[test]
+    fn create_platform_application_persists_arn_and_attrs() {
+        let (svc, state) = make_sns();
+        let arn = create_app(&svc, "MyApp", "GCM");
+        let s = state.read();
+        let app = s.platform_applications.get(&arn).unwrap();
+        assert_eq!(app.name, "MyApp");
+        assert_eq!(app.platform, "GCM");
+        assert_eq!(
+            app.attributes.get("PlatformPrincipal").map(String::as_str),
+            Some("principal")
+        );
+    }
+
+    #[test]
+    fn list_platform_applications_returns_created_app() {
+        let (svc, _) = make_sns();
+        let arn = create_app(&svc, "MyApp", "APNS");
+        let req = sns_request("ListPlatformApplications", vec![]);
+        let resp = svc.list_platform_applications(&req).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
+        assert!(body.contains(&arn));
+    }
+
+    #[test]
+    fn get_platform_application_attributes_unknown_errors() {
+        let (svc, _) = make_sns();
+        let req = sns_request(
+            "GetPlatformApplicationAttributes",
+            vec![(
+                "PlatformApplicationArn",
+                "arn:aws:sns:us-east-1:123456789012:app/GCM/Ghost",
+            )],
+        );
+        let result = svc.get_platform_application_attributes(&req);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn set_platform_application_attributes_updates_attrs() {
+        let (svc, state) = make_sns();
+        let arn = create_app(&svc, "MyApp", "GCM");
+        let req = sns_request(
+            "SetPlatformApplicationAttributes",
+            vec![
+                ("PlatformApplicationArn", arn.as_str()),
+                ("Attributes.entry.1.key", "Enabled"),
+                ("Attributes.entry.1.value", "false"),
+            ],
+        );
+        svc.set_platform_application_attributes(&req).unwrap();
+        let s = state.read();
+        assert_eq!(
+            s.platform_applications
+                .get(&arn)
+                .unwrap()
+                .attributes
+                .get("Enabled")
+                .map(String::as_str),
+            Some("false")
+        );
+    }
+
+    #[test]
+    fn delete_platform_application_removes_entry() {
+        let (svc, state) = make_sns();
+        let arn = create_app(&svc, "MyApp", "GCM");
+        let req = sns_request(
+            "DeletePlatformApplication",
+            vec![("PlatformApplicationArn", arn.as_str())],
+        );
+        svc.delete_platform_application(&req).unwrap();
+        assert!(state.read().platform_applications.is_empty());
+    }
+
+    fn create_endpoint(svc: &SnsService, app_arn: &str, token: &str) -> String {
+        let req = sns_request(
+            "CreatePlatformEndpoint",
+            vec![("PlatformApplicationArn", app_arn), ("Token", token)],
+        );
+        let resp = svc.create_platform_endpoint(&req).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
+        let start = body.find("<EndpointArn>").unwrap() + "<EndpointArn>".len();
+        let end = body.find("</EndpointArn>").unwrap();
+        body[start..end].to_string()
+    }
+
+    #[test]
+    fn create_platform_endpoint_unknown_app_errors() {
+        let (svc, _) = make_sns();
+        let req = sns_request(
+            "CreatePlatformEndpoint",
+            vec![
+                (
+                    "PlatformApplicationArn",
+                    "arn:aws:sns:us-east-1:123456789012:app/GCM/Ghost",
+                ),
+                ("Token", "token-1"),
+            ],
+        );
+        assert!(svc.create_platform_endpoint(&req).is_err());
+    }
+
+    #[test]
+    fn create_platform_endpoint_idempotent_on_same_token() {
+        let (svc, _) = make_sns();
+        let app_arn = create_app(&svc, "MyApp", "GCM");
+        let arn1 = create_endpoint(&svc, &app_arn, "token-1");
+        let arn2 = create_endpoint(&svc, &app_arn, "token-1");
+        assert_eq!(arn1, arn2, "duplicate Token should return same EndpointArn");
+    }
+
+    #[test]
+    fn create_platform_endpoint_same_token_different_attrs_errors() {
+        let (svc, _) = make_sns();
+        let app_arn = create_app(&svc, "MyApp", "GCM");
+        let _ = create_endpoint(&svc, &app_arn, "token-1");
+        let req = sns_request(
+            "CreatePlatformEndpoint",
+            vec![
+                ("PlatformApplicationArn", app_arn.as_str()),
+                ("Token", "token-1"),
+                ("Attributes.entry.1.key", "Enabled"),
+                ("Attributes.entry.1.value", "false"),
+            ],
+        );
+        let result = svc.create_platform_endpoint(&req);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn get_set_endpoint_attributes_round_trip() {
+        let (svc, _) = make_sns();
+        let app_arn = create_app(&svc, "MyApp", "GCM");
+        let endpoint_arn = create_endpoint(&svc, &app_arn, "token-1");
+
+        let set_req = sns_request(
+            "SetEndpointAttributes",
+            vec![
+                ("EndpointArn", endpoint_arn.as_str()),
+                ("Attributes.entry.1.key", "CustomUserData"),
+                ("Attributes.entry.1.value", "user-1"),
+            ],
+        );
+        svc.set_endpoint_attributes(&set_req).unwrap();
+
+        let get_req = sns_request(
+            "GetEndpointAttributes",
+            vec![("EndpointArn", endpoint_arn.as_str())],
+        );
+        let resp = svc.get_endpoint_attributes(&get_req).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
+        assert!(body.contains("<key>CustomUserData</key>"));
+        assert!(body.contains("<value>user-1</value>"));
+    }
+
+    #[test]
+    fn delete_endpoint_removes_endpoint() {
+        let (svc, state) = make_sns();
+        let app_arn = create_app(&svc, "MyApp", "GCM");
+        let endpoint_arn = create_endpoint(&svc, &app_arn, "token-1");
+        let del = sns_request(
+            "DeleteEndpoint",
+            vec![("EndpointArn", endpoint_arn.as_str())],
+        );
+        svc.delete_endpoint(&del).unwrap();
+        let s = state.read();
+        let app = s.platform_applications.get(&app_arn).unwrap();
+        assert!(app.endpoints.is_empty());
+    }
+
+    #[test]
+    fn get_endpoint_attributes_unknown_errors() {
+        let (svc, _) = make_sns();
+        let req = sns_request(
+            "GetEndpointAttributes",
+            vec![(
+                "EndpointArn",
+                "arn:aws:sns:us-east-1:123456789012:endpoint/GCM/MyApp/ghost",
+            )],
+        );
+        assert!(svc.get_endpoint_attributes(&req).is_err());
+    }
 }
