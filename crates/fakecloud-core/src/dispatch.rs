@@ -293,12 +293,14 @@ pub async fn dispatch(
             if let Some(principal) = aws_request.principal.as_ref() {
                 if !principal.is_root() {
                     if let Some(iam_action) = service.iam_action_for(&aws_request) {
-                        let condition_context = build_condition_context(
+                        let mut condition_context = build_condition_context(
                             principal,
                             remote_addr,
                             &aws_request.region,
                             is_secure_transport(&aws_request.headers),
                         );
+                        condition_context.service_keys =
+                            service.iam_condition_keys_for(&aws_request, &iam_action);
                         // Phase 2: fetch the resource-based policy (if
                         // any) attached to the target resource and
                         // pass it to the evaluator alongside the

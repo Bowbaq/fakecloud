@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use http::{HeaderMap, Method, StatusCode};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::auth::Principal;
 
@@ -317,5 +317,120 @@ pub trait AwsService: Send + Sync {
     /// (#381) works once per-account state partitioning lands.
     fn iam_action_for(&self, _request: &AwsRequest) -> Option<crate::auth::IamAction> {
         None
+    }
+
+    /// Derive service-specific IAM condition keys for an incoming request.
+    ///
+    /// Called right after [`AwsService::iam_action_for`] when IAM
+    /// enforcement is enabled. The returned map is merged into the
+    /// [`crate::auth::ConditionContext::service_keys`] before the
+    /// evaluator runs, so policies can reference keys like `s3:prefix`
+    /// or `sns:Protocol` the same way they reference global keys.
+    ///
+    /// Keys MUST be in the full `"service:key"` form, lowercased
+    /// (e.g. `"s3:prefix"`), matching the case-insensitive lookup in
+    /// [`crate::auth::ConditionContext::lookup`]. Extractors should
+    /// only emit keys they can populate with confidence; anything
+    /// ambiguous or unimplemented should be skipped with a
+    /// `tracing::debug!(target: "fakecloud::iam::audit", ...)` so
+    /// condition evaluation safe-fails to "doesn't apply" rather than
+    /// "matches".
+    ///
+    /// Default impl returns an empty map: services that haven't been
+    /// plumbed yet behave exactly as before.
+    fn iam_condition_keys_for(
+        &self,
+        _request: &AwsRequest,
+        _action: &crate::auth::IamAction,
+    ) -> BTreeMap<String, Vec<String>> {
+        BTreeMap::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::IamAction;
+    use async_trait::async_trait;
+
+    struct DefaultService;
+
+    #[async_trait]
+    impl AwsService for DefaultService {
+        fn service_name(&self) -> &str {
+            "default"
+        }
+        async fn handle(&self, _request: AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+            unreachable!()
+        }
+        fn supported_actions(&self) -> &[&str] {
+            &[]
+        }
+    }
+
+    struct PopulatedService;
+
+    #[async_trait]
+    impl AwsService for PopulatedService {
+        fn service_name(&self) -> &str {
+            "populated"
+        }
+        async fn handle(&self, _request: AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+            unreachable!()
+        }
+        fn supported_actions(&self) -> &[&str] {
+            &[]
+        }
+        fn iam_condition_keys_for(
+            &self,
+            _request: &AwsRequest,
+            _action: &IamAction,
+        ) -> BTreeMap<String, Vec<String>> {
+            let mut m = BTreeMap::new();
+            m.insert("s3:prefix".to_string(), vec!["logs/".to_string()]);
+            m
+        }
+    }
+
+    fn sample_request() -> AwsRequest {
+        AwsRequest {
+            service: "default".into(),
+            action: "Noop".into(),
+            region: "us-east-1".into(),
+            account_id: "123456789012".into(),
+            request_id: "req-1".into(),
+            headers: HeaderMap::new(),
+            query_params: HashMap::new(),
+            body: Bytes::new(),
+            path_segments: vec![],
+            raw_path: "/".into(),
+            raw_query: String::new(),
+            method: Method::GET,
+            is_query_protocol: false,
+            access_key_id: None,
+            principal: None,
+        }
+    }
+
+    fn sample_action() -> IamAction {
+        IamAction {
+            service: "s3",
+            action: "ListBucket",
+            resource: "arn:aws:s3:::my-bucket".to_string(),
+        }
+    }
+
+    #[test]
+    fn iam_condition_keys_for_default_is_empty() {
+        let svc = DefaultService;
+        let keys = svc.iam_condition_keys_for(&sample_request(), &sample_action());
+        assert!(keys.is_empty());
+    }
+
+    #[test]
+    fn iam_condition_keys_for_override_returns_map() {
+        let svc = PopulatedService;
+        let keys = svc.iam_condition_keys_for(&sample_request(), &sample_action());
+        assert_eq!(keys.get("s3:prefix"), Some(&vec!["logs/".to_string()]));
     }
 }
