@@ -389,7 +389,6 @@ async fn main() {
             "lambda",
             "secretsmanager",
             "logs",
-            "kms",
             "ses",
             "cognito-idp",
             "kinesis",
@@ -621,7 +620,53 @@ async fn main() {
         SecretsManagerService::new(secretsmanager_state).with_delivery(delivery_for_secretsmanager),
     ));
     registry.register(Arc::new(LogsService::new(logs_state, delivery_for_logs)));
-    registry.register(Arc::new(KmsService::new(kms_state.clone())));
+    let kms_snapshot_store: Option<Arc<dyn fakecloud_persistence::SnapshotStore>> =
+        if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
+            let data_path = persistence_config
+                .data_path
+                .as_ref()
+                .expect("validated above")
+                .clone();
+            let path = data_path.join("kms").join("snapshot.json");
+            let store = fakecloud_persistence::DiskSnapshotStore::new(path);
+            match fakecloud_persistence::SnapshotStore::load(&store) {
+                Ok(Some(bytes)) => {
+                    match serde_json::from_slice::<fakecloud_kms::state::KmsSnapshot>(&bytes) {
+                        Ok(snapshot) => {
+                            if snapshot.schema_version
+                                != fakecloud_kms::state::KMS_SNAPSHOT_SCHEMA_VERSION
+                            {
+                                fatal_exit(format_args!(
+                                    "kms persistence schema mismatch: on-disk={}, expected={}",
+                                    snapshot.schema_version,
+                                    fakecloud_kms::state::KMS_SNAPSHOT_SCHEMA_VERSION,
+                                ));
+                            }
+                            let key_count = snapshot.state.keys.len();
+                            *kms_state.write() = snapshot.state;
+                            tracing::info!(keys = key_count, "loaded kms persistence snapshot",);
+                        }
+                        Err(err) => fatal_exit(format_args!(
+                            "failed to parse kms persistence snapshot: {err}"
+                        )),
+                    }
+                }
+                Ok(None) => {
+                    tracing::info!("no kms persistence snapshot found; starting empty");
+                }
+                Err(err) => fatal_exit(format_args!(
+                    "failed to read kms persistence snapshot: {err}"
+                )),
+            }
+            Some(Arc::new(store) as Arc<dyn fakecloud_persistence::SnapshotStore>)
+        } else {
+            None
+        };
+    let mut kms_service = KmsService::new(kms_state.clone());
+    if let Some(store) = kms_snapshot_store {
+        kms_service = kms_service.with_snapshot_store(store);
+    }
+    registry.register(Arc::new(kms_service));
     let mut shared_body_cache: Option<Arc<fakecloud_persistence::cache::BodyCache>> = None;
     let s3_store: Arc<dyn fakecloud_persistence::S3Store> = match persistence_config.mode {
         fakecloud_persistence::StorageMode::Persistent => {

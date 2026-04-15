@@ -5,6 +5,7 @@ use parking_lot::RwLock;
 
 pub type SharedKmsState = Arc<RwLock<KmsState>>;
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct KmsState {
     pub account_id: String,
     pub region: String,
@@ -34,7 +35,7 @@ impl KmsState {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct KmsKey {
     pub key_id: String,
     pub arn: String,
@@ -64,6 +65,7 @@ pub struct KmsKey {
     pub primary_region: Option<String>,
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct KmsAlias {
     pub alias_name: String,
     pub alias_arn: String,
@@ -71,6 +73,7 @@ pub struct KmsAlias {
     pub creation_date: f64,
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct KmsGrant {
     pub grant_id: String,
     pub grant_token: String,
@@ -83,13 +86,14 @@ pub struct KmsGrant {
     pub creation_date: f64,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct KeyRotation {
     pub key_id: String,
     pub rotation_date: f64,
     pub rotation_type: String,
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct CustomKeyStore {
     pub custom_key_store_id: String,
     pub custom_key_store_name: String,
@@ -103,3 +107,13 @@ pub struct CustomKeyStore {
     pub xks_proxy_vpc_endpoint_service_name: Option<String>,
     pub xks_proxy_connectivity: Option<String>,
 }
+
+/// On-disk snapshot envelope for KMS state. Versioned so format
+/// changes fail loudly on upgrade.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct KmsSnapshot {
+    pub schema_version: u32,
+    pub state: KmsState,
+}
+
+pub const KMS_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
