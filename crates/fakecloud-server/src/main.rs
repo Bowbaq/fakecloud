@@ -385,7 +385,6 @@ async fn main() {
             "iam",
             "sts",
             "ssm",
-            "dynamodb",
             "lambda",
             "secretsmanager",
             "logs",
@@ -531,11 +530,62 @@ async fn main() {
         S3Service::with_store(s3_state.clone(), delivery_for_s3, s3_store.clone())
             .with_kms(kms_state),
     ));
+    let dynamodb_snapshot_store: Arc<dyn fakecloud_persistence::SnapshotStore> =
+        match persistence_config.mode {
+            fakecloud_persistence::StorageMode::Persistent => {
+                let data_path = persistence_config
+                    .data_path
+                    .as_ref()
+                    .expect("validated above")
+                    .clone();
+                let path = data_path.join("dynamodb").join("snapshot.json");
+                let store = fakecloud_persistence::DiskSnapshotStore::new(path);
+                match fakecloud_persistence::SnapshotStore::load(&store) {
+                    Ok(Some(bytes)) => {
+                        match serde_json::from_slice::<fakecloud_dynamodb::state::DynamoDbSnapshot>(
+                            &bytes,
+                        ) {
+                            Ok(snapshot) => {
+                                if snapshot.schema_version
+                                    != fakecloud_dynamodb::state::DYNAMODB_SNAPSHOT_SCHEMA_VERSION
+                                {
+                                    fatal_exit(format_args!(
+                                        "dynamodb persistence schema mismatch: on-disk={}, expected={}",
+                                        snapshot.schema_version,
+                                        fakecloud_dynamodb::state::DYNAMODB_SNAPSHOT_SCHEMA_VERSION,
+                                    ));
+                                }
+                                let table_count = snapshot.state.tables.len();
+                                *dynamodb_state_for_register.write() = snapshot.state;
+                                tracing::info!(
+                                    tables = table_count,
+                                    "loaded dynamodb persistence snapshot",
+                                );
+                            }
+                            Err(err) => fatal_exit(format_args!(
+                                "failed to parse dynamodb persistence snapshot: {err}"
+                            )),
+                        }
+                    }
+                    Ok(None) => {
+                        tracing::info!("no dynamodb persistence snapshot found; starting empty");
+                    }
+                    Err(err) => fatal_exit(format_args!(
+                        "failed to read dynamodb persistence snapshot: {err}"
+                    )),
+                }
+                Arc::new(store)
+            }
+            fakecloud_persistence::StorageMode::Memory => {
+                Arc::new(fakecloud_persistence::MemorySnapshotStore::new())
+            }
+        };
     registry.register(Arc::new(
         DynamoDbService::new(dynamodb_state_for_register)
             .with_s3(s3_state.clone())
             .with_s3_store(s3_store.clone())
-            .with_delivery(delivery_for_dynamodb_register),
+            .with_delivery(delivery_for_dynamodb_register)
+            .with_snapshot_store(dynamodb_snapshot_store),
     ));
     // SES delivery bus (event fanout to SNS topics and EventBridge buses)
     let eb_delivery_for_ses = Arc::new(
