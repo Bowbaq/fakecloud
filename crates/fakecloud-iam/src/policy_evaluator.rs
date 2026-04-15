@@ -7,9 +7,11 @@
 
 use std::sync::Arc;
 
-use fakecloud_core::auth::{IamAction, IamDecision, IamPolicyEvaluator, Principal};
+use fakecloud_core::auth::{
+    ConditionContext, IamAction, IamDecision, IamPolicyEvaluator, Principal,
+};
 
-use crate::evaluator::{self, Decision, EvalRequest, RequestContext};
+use crate::evaluator::{self, Decision, EvalRequest};
 use crate::state::SharedIamState;
 
 /// [`IamPolicyEvaluator`] backed by shared [`crate::state::IamState`].
@@ -29,14 +31,19 @@ impl IamPolicyEvaluatorImpl {
 }
 
 impl IamPolicyEvaluator for IamPolicyEvaluatorImpl {
-    fn evaluate(&self, principal: &Principal, action: &IamAction) -> IamDecision {
+    fn evaluate(
+        &self,
+        principal: &Principal,
+        action: &IamAction,
+        context: &ConditionContext,
+    ) -> IamDecision {
         let state = self.state.read();
         let policies = evaluator::collect_identity_policies(&state, principal);
         let request = EvalRequest {
             principal,
             action: action.action_string(),
             resource: action.resource.clone(),
-            context: RequestContext::default(),
+            context: context.clone(),
         };
         match evaluator::evaluate(&policies, &request) {
             Decision::Allow => IamDecision::Allow,
@@ -108,7 +115,10 @@ mod tests {
             action: "GetObject",
             resource: "arn:aws:s3:::bucket/key".into(),
         };
-        assert_eq!(eval.evaluate(&principal(), &action), IamDecision::Allow);
+        assert_eq!(
+            eval.evaluate(&principal(), &action, &ConditionContext::default()),
+            IamDecision::Allow
+        );
     }
 
     #[test]
@@ -135,7 +145,7 @@ mod tests {
             resource: "arn:aws:s3:::bucket/key".into(),
         };
         assert_eq!(
-            eval.evaluate(&principal(), &action),
+            eval.evaluate(&principal(), &action, &ConditionContext::default()),
             IamDecision::ExplicitDeny
         );
     }
@@ -150,7 +160,7 @@ mod tests {
             resource: "arn:aws:s3:::bucket/key".into(),
         };
         assert_eq!(
-            eval.evaluate(&principal(), &action),
+            eval.evaluate(&principal(), &action, &ConditionContext::default()),
             IamDecision::ImplicitDeny
         );
     }

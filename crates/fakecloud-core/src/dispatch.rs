@@ -1,22 +1,28 @@
 use axum::body::Body;
-use axum::extract::{Extension, Query};
+use axum::extract::{ConnectInfo, Extension, Query};
 use axum::http::{Request, StatusCode};
 use axum::response::Response;
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
 
-use crate::auth::{is_root_bypass, CredentialResolver, IamMode, IamPolicyEvaluator};
+use crate::auth::{
+    is_root_bypass, ConditionContext, CredentialResolver, IamMode, IamPolicyEvaluator, Principal,
+    PrincipalType,
+};
 use crate::protocol::{self, AwsProtocol};
 use crate::registry::ServiceRegistry;
 use crate::service::{AwsRequest, ResponseBody};
 
 /// The main dispatch handler. All HTTP requests come through here.
 pub async fn dispatch(
+    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
     Extension(registry): Extension<Arc<ServiceRegistry>>,
     Extension(config): Extension<Arc<DispatchConfig>>,
     Query(query_params): Query<HashMap<String, String>>,
     request: Request<Body>,
 ) -> Response<Body> {
+    let remote_addr = Some(remote_addr);
     let request_id = uuid::Uuid::new_v4().to_string();
 
     let (parts, body) = request.into_parts();
@@ -287,7 +293,14 @@ pub async fn dispatch(
             if let Some(principal) = aws_request.principal.as_ref() {
                 if !principal.is_root() {
                     if let Some(iam_action) = service.iam_action_for(&aws_request) {
-                        let decision = evaluator.evaluate(principal, &iam_action);
+                        let condition_context = build_condition_context(
+                            principal,
+                            remote_addr,
+                            &aws_request.region,
+                            is_secure_transport(&aws_request.headers),
+                        );
+                        let decision =
+                            evaluator.evaluate(principal, &iam_action, &condition_context);
                         if !decision.is_allow() {
                             tracing::warn!(
                                 target: "fakecloud::iam::audit",
@@ -515,6 +528,69 @@ fn build_error_response_with_fields(
         .unwrap()
 }
 
+/// Build the [`ConditionContext`] passed to the IAM evaluator for one
+/// request. Populates the 10 global condition keys from the resolved
+/// principal + the HTTP request. Service-specific keys are deferred to
+/// a follow-up batch and left empty.
+fn build_condition_context(
+    principal: &Principal,
+    remote_addr: Option<SocketAddr>,
+    region: &str,
+    secure_transport: bool,
+) -> ConditionContext {
+    let now = chrono::Utc::now();
+    ConditionContext {
+        aws_username: aws_username_from_principal(principal),
+        aws_userid: Some(principal.user_id.clone()),
+        aws_principal_arn: Some(principal.arn.clone()),
+        aws_principal_account: Some(principal.account_id.clone()),
+        aws_principal_type: Some(principal_type_label(principal.principal_type).to_string()),
+        aws_source_ip: remote_addr.map(|sa| sa.ip()),
+        aws_current_time: Some(now),
+        aws_epoch_time: Some(now.timestamp()),
+        aws_secure_transport: Some(secure_transport),
+        aws_requested_region: Some(region.to_string()),
+        service_keys: Default::default(),
+    }
+}
+
+/// `aws:username` is only set for IAM users, matching AWS. For assumed
+/// roles, federated users, root, and unknown principals the key is
+/// absent — operators that reference it without `IfExists` safe-fail.
+fn aws_username_from_principal(principal: &Principal) -> Option<String> {
+    if principal.principal_type != PrincipalType::User {
+        return None;
+    }
+    let after = principal.arn.rsplit_once(":user/").map(|(_, s)| s)?;
+    // Strip any IAM path prefix; bare username is the last segment.
+    Some(after.rsplit('/').next().unwrap_or(after).to_string())
+}
+
+/// AWS's `aws:PrincipalType` uses PascalCase identifiers, distinct from
+/// the lowercase ones [`PrincipalType::as_str`] returns for ARNs.
+fn principal_type_label(t: PrincipalType) -> &'static str {
+    match t {
+        PrincipalType::User => "User",
+        PrincipalType::AssumedRole => "AssumedRole",
+        PrincipalType::FederatedUser => "FederatedUser",
+        PrincipalType::Root => "Account",
+        PrincipalType::Unknown => "Unknown",
+    }
+}
+
+/// Best-effort detection of TLS-terminated requests. Direct HTTPS
+/// connections are not yet supported by the fakecloud server (it speaks
+/// plain HTTP), so the only signal is an `x-forwarded-proto: https`
+/// header set by an upstream proxy. Anything else evaluates to `false`,
+/// which matches the typical local-dev setup.
+fn is_secure_transport(headers: &http::HeaderMap) -> bool {
+    headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.eq_ignore_ascii_case("https"))
+        .unwrap_or(false)
+}
+
 trait ProtocolExt {
     fn error_status(&self) -> StatusCode;
 }
@@ -536,6 +612,80 @@ mod tests {
         assert_eq!(cfg.account_id, "123456789012");
         assert!(!cfg.verify_sigv4);
         assert_eq!(cfg.iam_mode, IamMode::Off);
+    }
+
+    #[test]
+    fn aws_username_strips_iam_path_for_users() {
+        let p = Principal {
+            arn: "arn:aws:iam::123456789012:user/engineering/alice".into(),
+            user_id: "AIDAALICE".into(),
+            account_id: "123456789012".into(),
+            principal_type: PrincipalType::User,
+            source_identity: None,
+        };
+        assert_eq!(aws_username_from_principal(&p), Some("alice".into()));
+    }
+
+    #[test]
+    fn aws_username_unset_for_assumed_role() {
+        let p = Principal {
+            arn: "arn:aws:sts::123456789012:assumed-role/ops/session".into(),
+            user_id: "AROAOPS:session".into(),
+            account_id: "123456789012".into(),
+            principal_type: PrincipalType::AssumedRole,
+            source_identity: None,
+        };
+        assert_eq!(aws_username_from_principal(&p), None);
+    }
+
+    #[test]
+    fn principal_type_label_matches_aws_casing() {
+        assert_eq!(principal_type_label(PrincipalType::User), "User");
+        assert_eq!(
+            principal_type_label(PrincipalType::AssumedRole),
+            "AssumedRole"
+        );
+        assert_eq!(principal_type_label(PrincipalType::Root), "Account");
+    }
+
+    #[test]
+    fn build_condition_context_populates_global_keys() {
+        let p = Principal {
+            arn: "arn:aws:iam::123456789012:user/alice".into(),
+            user_id: "AIDAALICE".into(),
+            account_id: "123456789012".into(),
+            principal_type: PrincipalType::User,
+            source_identity: None,
+        };
+        let addr: SocketAddr = "10.0.0.1:54321".parse().unwrap();
+        let ctx = build_condition_context(&p, Some(addr), "us-east-1", false);
+        assert_eq!(ctx.aws_username.as_deref(), Some("alice"));
+        assert_eq!(ctx.aws_userid.as_deref(), Some("AIDAALICE"));
+        assert_eq!(
+            ctx.aws_principal_arn.as_deref(),
+            Some("arn:aws:iam::123456789012:user/alice")
+        );
+        assert_eq!(ctx.aws_principal_account.as_deref(), Some("123456789012"));
+        assert_eq!(ctx.aws_principal_type.as_deref(), Some("User"));
+        assert_eq!(
+            ctx.aws_source_ip.map(|i| i.to_string()).as_deref(),
+            Some("10.0.0.1")
+        );
+        assert_eq!(ctx.aws_requested_region.as_deref(), Some("us-east-1"));
+        assert_eq!(ctx.aws_secure_transport, Some(false));
+        assert!(ctx.aws_current_time.is_some());
+        assert!(ctx.aws_epoch_time.is_some());
+    }
+
+    #[test]
+    fn is_secure_transport_reads_x_forwarded_proto() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-forwarded-proto", "https".parse().unwrap());
+        assert!(is_secure_transport(&headers));
+        headers.insert("x-forwarded-proto", "http".parse().unwrap());
+        assert!(!is_secure_transport(&headers));
+        let empty = http::HeaderMap::new();
+        assert!(!is_secure_transport(&empty));
     }
 
     #[test]

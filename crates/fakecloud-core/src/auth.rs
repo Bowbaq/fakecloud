@@ -10,8 +10,12 @@
 //! `/docs/reference/security` (added in a later batch) for the user-facing
 //! contract.
 
+use std::collections::BTreeMap;
 use std::fmt;
+use std::net::IpAddr;
 use std::str::FromStr;
+
+use chrono::{DateTime, Utc};
 
 /// Kind of principal a set of credentials resolves to.
 ///
@@ -183,14 +187,104 @@ impl IamDecision {
     }
 }
 
-/// Abstraction over "given a principal and an action, say Allow / Deny".
-/// Implemented by `fakecloud-iam` against `IamState` + the Phase 1
-/// evaluator. Dispatch calls this for every request when
-/// `FAKECLOUD_IAM != off` and the target service opts into enforcement.
+/// Request-time values consulted when a policy statement carries a
+/// `Condition` block. Populated at dispatch time from the resolved
+/// [`Principal`] and the incoming HTTP request, then handed to
+/// [`IamPolicyEvaluator::evaluate`].
+///
+/// Lives in `fakecloud-core` (not `fakecloud-iam`) so the trait can
+/// reference it without creating a circular crate dependency. All
+/// fields are optional — a missing field means the key wasn't knowable
+/// at dispatch time, and any operator that references it safe-fails to
+/// `false` (unless the operator carries the `IfExists` suffix, in which
+/// case it evaluates to `true`, matching AWS).
+///
+/// The `service_keys` map is reserved for service-specific condition
+/// keys (`s3:prefix`, `sqs:MessageAttribute`, …) which Phase 2 ships
+/// empty; service-specific support lands in a follow-up batch without
+/// a signature change.
+#[derive(Debug, Clone, Default)]
+pub struct ConditionContext {
+    /// `aws:username` — username segment of an IAM user ARN, or `None`
+    /// for assumed roles / federated users where AWS does not set the key.
+    pub aws_username: Option<String>,
+    /// `aws:userid` — the unique `AIDA...`/`AROA...` identifier.
+    pub aws_userid: Option<String>,
+    /// `aws:PrincipalArn` — full principal ARN.
+    pub aws_principal_arn: Option<String>,
+    /// `aws:PrincipalAccount` — 12-digit account ID sourced from the
+    /// credential, not global config (#381 multi-account alignment).
+    pub aws_principal_account: Option<String>,
+    /// `aws:PrincipalType` — `"User"`, `"AssumedRole"`, etc.
+    pub aws_principal_type: Option<String>,
+    /// `aws:SourceIp` — remote address of the HTTP connection.
+    pub aws_source_ip: Option<IpAddr>,
+    /// `aws:CurrentTime` — evaluation timestamp (UTC).
+    pub aws_current_time: Option<DateTime<Utc>>,
+    /// `aws:EpochTime` — same moment as `aws_current_time` in seconds
+    /// since the Unix epoch.
+    pub aws_epoch_time: Option<i64>,
+    /// `aws:SecureTransport` — `true` iff the request came in over TLS.
+    pub aws_secure_transport: Option<bool>,
+    /// `aws:RequestedRegion` — region extracted from SigV4 / config.
+    pub aws_requested_region: Option<String>,
+    /// Service-specific keys (`s3:prefix`, `sqs:MessageAttribute`, …).
+    /// Reserved; empty in the initial Phase 2 rollout.
+    pub service_keys: BTreeMap<String, Vec<String>>,
+}
+
+impl ConditionContext {
+    /// Resolve a condition key (e.g. `"aws:username"`) to the list of
+    /// context values. Returns `None` if the key is not populated.
+    /// Key names are matched case-insensitively — AWS treats
+    /// `aws:username` and `AWS:UserName` as the same key.
+    pub fn lookup(&self, key: &str) -> Option<Vec<String>> {
+        let lower = key.to_ascii_lowercase();
+        let one = |s: &str| Some(vec![s.to_string()]);
+        match lower.as_str() {
+            "aws:username" => self.aws_username.as_deref().and_then(one),
+            "aws:userid" => self.aws_userid.as_deref().and_then(one),
+            "aws:principalarn" => self.aws_principal_arn.as_deref().and_then(one),
+            "aws:principalaccount" => self.aws_principal_account.as_deref().and_then(one),
+            "aws:principaltype" => self.aws_principal_type.as_deref().and_then(one),
+            "aws:sourceip" => self.aws_source_ip.map(|ip| vec![ip.to_string()]),
+            "aws:currenttime" => self
+                .aws_current_time
+                .map(|t| vec![t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)]),
+            "aws:epochtime" => self.aws_epoch_time.map(|e| vec![e.to_string()]),
+            "aws:securetransport" => self.aws_secure_transport.map(|b| vec![b.to_string()]),
+            "aws:requestedregion" => self.aws_requested_region.as_deref().and_then(one),
+            _ => {
+                if let Some(vs) = self.service_keys.get(&lower) {
+                    if vs.is_empty() {
+                        None
+                    } else {
+                        Some(vs.clone())
+                    }
+                } else {
+                    self.service_keys
+                        .iter()
+                        .find(|(k, _)| k.eq_ignore_ascii_case(key))
+                        .map(|(_, vs)| vs.clone())
+                }
+            }
+        }
+    }
+}
+
+/// Abstraction over "given a principal, an action, and request-time
+/// condition keys, say Allow / Deny". Implemented by `fakecloud-iam`
+/// against `IamState` + the evaluator. Dispatch calls this for every
+/// request when `FAKECLOUD_IAM != off` and the target service opts in.
 pub trait IamPolicyEvaluator: Send + Sync {
     /// Evaluate `action` against the identity policies attached to
-    /// `principal`.
-    fn evaluate(&self, principal: &Principal, action: &IamAction) -> IamDecision;
+    /// `principal`, using `context` for `Condition` block resolution.
+    fn evaluate(
+        &self,
+        principal: &Principal,
+        action: &IamAction,
+        context: &ConditionContext,
+    ) -> IamDecision;
 }
 
 /// How IAM identity policies are evaluated for incoming requests.
