@@ -1,20 +1,15 @@
-# cargo-audit configuration
-#
-# The ignored advisories below all flag rustls-webpki 0.101.7, which
-# ships transitively via aws-smithy-http-client 1.1.12 ->
-# hyper-rustls 0.24 -> rustls 0.21 -> rustls-webpki 0.101.7. The fix
-# (>= 0.103.12) is only available on the rustls 0.103 branch; the
-# legacy rustls 0.21 tree consumed by aws-smithy-http-client has no
-# backport and aws-smithy-http-client has no newer release that drops
-# it. Our own rustls-webpki (0.103.x) is already updated to 0.103.12
-# so the vulnerable code paths are only reachable through the AWS SDK
-# client stack we don't control.
-#
-# Revisit when aws-smithy-http-client publishes a release that moves
-# off rustls 0.21.
-
 [advisories]
 ignore = [
-    "RUSTSEC-2026-0098", # rustls-webpki 0.101.7 (via aws-smithy-http-client legacy rustls 0.21 tree)
-    "RUSTSEC-2026-0099", # rustls-webpki 0.101.7 (via aws-smithy-http-client legacy rustls 0.21 tree)
+    # rustls-webpki 0.101.7 is pulled in transitively by rustls 0.21 ->
+    # aws-smithy-http-client -> aws-config (test-only dev dependency
+    # used by fakecloud-testkit). There is no fixed release on the
+    # 0.101.x branch; the upstream fix is in 0.103.12, which requires
+    # bumping rustls, which in turn requires a coordinated AWS SDK
+    # ecosystem bump. fakecloud never validates untrusted certificates
+    # at runtime — the SDK is only exercised by our own test clients
+    # against a loopback fakecloud instance, so the name-constraints
+    # wildcard issue is not reachable. Reassess once aws-smithy-http-client
+    # drops rustls 0.21.
+    "RUSTSEC-2026-0098",
+    "RUSTSEC-2026-0099",
 ]

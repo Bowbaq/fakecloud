@@ -7,8 +7,10 @@ version.workspace = true
 publish = false
 
 [dependencies]
+fakecloud-testkit = { path = "../fakecloud-testkit" }
+
+[dev-dependencies]
 tokio = { workspace = true }
-reqwest = { workspace = true }
 
 [[bin]]
 name = "tfacc_services"
