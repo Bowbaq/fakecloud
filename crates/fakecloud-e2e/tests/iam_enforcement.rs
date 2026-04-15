@@ -229,3 +229,205 @@ async fn off_mode_does_not_enforce() {
     // Frank has no policies, but enforcement is off -> succeeds.
     iam.list_users().send().await.unwrap();
 }
+
+// ======================================================================
+// SQS tests
+// ======================================================================
+
+#[tokio::test]
+async fn sqs_send_message_denied_without_policy() {
+    let server = start_strict().await;
+    // Bootstrap queue via root bypass.
+    let boot = sdk_config_with(&server, "test", "test").await;
+    aws_sdk_sqs::Client::new(&boot)
+        .create_queue()
+        .queue_name("jobs")
+        .send()
+        .await
+        .unwrap();
+    let (akid, secret) = bootstrap_user(&server, "sqsuser1").await;
+    let cfg = sdk_config_with(&server, &akid, &secret).await;
+    let sqs = aws_sdk_sqs::Client::new(&cfg);
+    // GetQueueUrl is denied first — match the error shape.
+    let err = sqs
+        .get_queue_url()
+        .queue_name("jobs")
+        .send()
+        .await
+        .unwrap_err();
+    assert!(format!("{err:?}").contains("AccessDeniedException"));
+}
+
+#[tokio::test]
+async fn sqs_resource_scoped_policy_distinguishes_queues() {
+    let server = start_strict().await;
+    let boot = sdk_config_with(&server, "test", "test").await;
+    let boot_sqs = aws_sdk_sqs::Client::new(&boot);
+    let jobs_url = boot_sqs
+        .create_queue()
+        .queue_name("jobs")
+        .send()
+        .await
+        .unwrap()
+        .queue_url()
+        .unwrap()
+        .to_string();
+    let secrets_url = boot_sqs
+        .create_queue()
+        .queue_name("secrets")
+        .send()
+        .await
+        .unwrap()
+        .queue_url()
+        .unwrap()
+        .to_string();
+    let (akid, secret) = bootstrap_user(&server, "sqsuser2").await;
+    attach_inline_policy(
+        &server,
+        "sqsuser2",
+        "AllowJobs",
+        r#"{"Version":"2012-10-17","Statement":[
+            {"Effect":"Allow","Action":"sqs:SendMessage","Resource":"arn:aws:sqs:us-east-1:123456789012:jobs"}
+        ]}"#,
+    )
+    .await;
+
+    let cfg = sdk_config_with(&server, &akid, &secret).await;
+    let sqs = aws_sdk_sqs::Client::new(&cfg);
+
+    // Allowed: SendMessage to jobs.
+    sqs.send_message()
+        .queue_url(&jobs_url)
+        .message_body("hello")
+        .send()
+        .await
+        .unwrap();
+
+    // Denied: SendMessage to secrets (same action, wrong resource).
+    let err = sqs
+        .send_message()
+        .queue_url(&secrets_url)
+        .message_body("leak")
+        .send()
+        .await
+        .unwrap_err();
+    assert!(format!("{err:?}").contains("AccessDeniedException"));
+}
+
+// ======================================================================
+// SNS tests
+// ======================================================================
+
+#[tokio::test]
+async fn sns_publish_denied_without_policy() {
+    let server = start_strict().await;
+    let boot = sdk_config_with(&server, "test", "test").await;
+    let topic_arn = aws_sdk_sns::Client::new(&boot)
+        .create_topic()
+        .name("alerts")
+        .send()
+        .await
+        .unwrap()
+        .topic_arn()
+        .unwrap()
+        .to_string();
+
+    let (akid, secret) = bootstrap_user(&server, "snsuser1").await;
+    let cfg = sdk_config_with(&server, &akid, &secret).await;
+    let sns = aws_sdk_sns::Client::new(&cfg);
+    let err = sns
+        .publish()
+        .topic_arn(&topic_arn)
+        .message("oops")
+        .send()
+        .await
+        .unwrap_err();
+    assert!(format!("{err:?}").contains("AccessDeniedException"));
+}
+
+#[tokio::test]
+async fn sns_publish_allowed_on_specific_topic() {
+    let server = start_strict().await;
+    let boot = sdk_config_with(&server, "test", "test").await;
+    let topic_arn = aws_sdk_sns::Client::new(&boot)
+        .create_topic()
+        .name("news")
+        .send()
+        .await
+        .unwrap()
+        .topic_arn()
+        .unwrap()
+        .to_string();
+
+    let (akid, secret) = bootstrap_user(&server, "snsuser2").await;
+    let policy = format!(
+        r#"{{"Version":"2012-10-17","Statement":[{{"Effect":"Allow","Action":"sns:Publish","Resource":"{topic_arn}"}}]}}"#
+    );
+    attach_inline_policy(&server, "snsuser2", "AllowPublishNews", &policy).await;
+
+    let cfg = sdk_config_with(&server, &akid, &secret).await;
+    let sns = aws_sdk_sns::Client::new(&cfg);
+    sns.publish()
+        .topic_arn(&topic_arn)
+        .message("hello")
+        .send()
+        .await
+        .unwrap();
+}
+
+// ======================================================================
+// S3 tests
+// ======================================================================
+
+#[tokio::test]
+async fn s3_get_object_resource_scoped() {
+    let server = start_strict().await;
+    let boot = sdk_config_with(&server, "test", "test").await;
+    let s3_boot = aws_sdk_s3::Client::new(&boot);
+    s3_boot
+        .create_bucket()
+        .bucket("private-docs")
+        .send()
+        .await
+        .unwrap();
+    s3_boot
+        .put_object()
+        .bucket("private-docs")
+        .key("readme.md")
+        .body(aws_sdk_s3::primitives::ByteStream::from_static(b"hi"))
+        .send()
+        .await
+        .unwrap();
+
+    let (akid, secret) = bootstrap_user(&server, "s3user1").await;
+    attach_inline_policy(
+        &server,
+        "s3user1",
+        "ReadDocs",
+        r#"{"Version":"2012-10-17","Statement":[
+            {"Effect":"Allow","Action":"s3:GetObject","Resource":"arn:aws:s3:::private-docs/*"}
+        ]}"#,
+    )
+    .await;
+
+    let cfg = sdk_config_with(&server, &akid, &secret).await;
+    let s3 = aws_sdk_s3::Client::new(&cfg);
+    // Allowed: GetObject on private-docs/readme.md.
+    s3.get_object()
+        .bucket("private-docs")
+        .key("readme.md")
+        .send()
+        .await
+        .unwrap();
+
+    // Denied: PutObject (different action not covered by policy).
+    let err = s3
+        .put_object()
+        .bucket("private-docs")
+        .key("evil.md")
+        .body(aws_sdk_s3::primitives::ByteStream::from_static(b"x"))
+        .send()
+        .await
+        .unwrap_err();
+    assert!(format!("{err:?}").contains("AccessDenied"));
+}
