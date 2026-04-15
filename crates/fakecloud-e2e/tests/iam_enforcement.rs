@@ -431,3 +431,158 @@ async fn s3_get_object_resource_scoped() {
         .unwrap_err();
     assert!(format!("{err:?}").contains("AccessDenied"));
 }
+
+// ======================================================================
+// Phase 2: Condition block evaluation
+//
+// These drive real aws-sdk-rust signed requests against FAKECLOUD_IAM=strict
+// to verify that condition keys populated at dispatch time are matched
+// against the inline policy. Start soft mode would swallow the deny — all
+// four must run under strict so the deny path is observable as an error.
+// ======================================================================
+
+#[tokio::test]
+async fn condition_string_equals_username_allows_owner() {
+    // A policy whose Allow is gated on `aws:username == dana` should
+    // let dana in and keep everyone else out of the same action.
+    let server = start_strict().await;
+    let (akid, secret) = bootstrap_user(&server, "dana").await;
+    attach_inline_policy(
+        &server,
+        "dana",
+        "AllowIfDana",
+        r#"{"Version":"2012-10-17","Statement":[{
+            "Effect":"Allow",
+            "Action":"sts:GetCallerIdentity",
+            "Resource":"*",
+            "Condition":{"StringEquals":{"aws:username":"dana"}}
+        }]}"#,
+    )
+    .await;
+    let cfg = sdk_config_with(&server, &akid, &secret).await;
+    let sts = StsClient::new(&cfg);
+    let identity = sts.get_caller_identity().send().await.unwrap();
+    assert!(identity.arn().unwrap().contains("user/dana"));
+}
+
+#[tokio::test]
+async fn condition_string_equals_username_denies_other_user() {
+    // Same policy text attached to a different user: the condition
+    // should not match and the request should be denied.
+    let server = start_strict().await;
+    let (akid, secret) = bootstrap_user(&server, "erin").await;
+    attach_inline_policy(
+        &server,
+        "erin",
+        "AllowIfDana",
+        r#"{"Version":"2012-10-17","Statement":[{
+            "Effect":"Allow",
+            "Action":"sts:GetCallerIdentity",
+            "Resource":"*",
+            "Condition":{"StringEquals":{"aws:username":"dana"}}
+        }]}"#,
+    )
+    .await;
+    let cfg = sdk_config_with(&server, &akid, &secret).await;
+    let sts = StsClient::new(&cfg);
+    let err = sts.get_caller_identity().send().await.unwrap_err();
+    assert!(format!("{err:?}").contains("AccessDeniedException"));
+}
+
+#[tokio::test]
+async fn condition_ip_address_loopback_allows() {
+    // The fakecloud test server binds 127.0.0.1, so aws:SourceIp will
+    // always be a loopback address. A policy restricting access to
+    // 127.0.0.0/8 must allow.
+    let server = start_strict().await;
+    let (akid, secret) = bootstrap_user(&server, "frank").await;
+    attach_inline_policy(
+        &server,
+        "frank",
+        "AllowFromLoopback",
+        r#"{"Version":"2012-10-17","Statement":[{
+            "Effect":"Allow",
+            "Action":"sts:GetCallerIdentity",
+            "Resource":"*",
+            "Condition":{"IpAddress":{"aws:SourceIp":"127.0.0.0/8"}}
+        }]}"#,
+    )
+    .await;
+    let cfg = sdk_config_with(&server, &akid, &secret).await;
+    let sts = StsClient::new(&cfg);
+    let identity = sts.get_caller_identity().send().await.unwrap();
+    assert!(identity.arn().unwrap().contains("user/frank"));
+}
+
+#[tokio::test]
+async fn condition_ip_address_non_matching_cidr_denies() {
+    // Same test but with a CIDR block the loopback address cannot be
+    // in — the condition should not match and the request should be
+    // denied.
+    let server = start_strict().await;
+    let (akid, secret) = bootstrap_user(&server, "grace").await;
+    attach_inline_policy(
+        &server,
+        "grace",
+        "AllowFromExternal",
+        r#"{"Version":"2012-10-17","Statement":[{
+            "Effect":"Allow",
+            "Action":"sts:GetCallerIdentity",
+            "Resource":"*",
+            "Condition":{"IpAddress":{"aws:SourceIp":"203.0.113.0/24"}}
+        }]}"#,
+    )
+    .await;
+    let cfg = sdk_config_with(&server, &akid, &secret).await;
+    let sts = StsClient::new(&cfg);
+    let err = sts.get_caller_identity().send().await.unwrap_err();
+    assert!(format!("{err:?}").contains("AccessDeniedException"));
+}
+
+#[tokio::test]
+async fn condition_date_less_than_past_deadline_denies() {
+    // A policy whose Allow only fires before a deadline in the past
+    // should be denied — the current time is always after 2020-01-01.
+    let server = start_strict().await;
+    let (akid, secret) = bootstrap_user(&server, "henry").await;
+    attach_inline_policy(
+        &server,
+        "henry",
+        "AllowBefore2020",
+        r#"{"Version":"2012-10-17","Statement":[{
+            "Effect":"Allow",
+            "Action":"sts:GetCallerIdentity",
+            "Resource":"*",
+            "Condition":{"DateLessThan":{"aws:CurrentTime":"2020-01-01T00:00:00Z"}}
+        }]}"#,
+    )
+    .await;
+    let cfg = sdk_config_with(&server, &akid, &secret).await;
+    let sts = StsClient::new(&cfg);
+    let err = sts.get_caller_identity().send().await.unwrap_err();
+    assert!(format!("{err:?}").contains("AccessDeniedException"));
+}
+
+#[tokio::test]
+async fn condition_bool_secure_transport_deny_fires_over_http() {
+    // A Deny statement gated on `aws:SecureTransport == false` must
+    // fire when the request comes in over plain HTTP (fakecloud's
+    // test server). The Deny beats the unconditional Allow.
+    let server = start_strict().await;
+    let (akid, secret) = bootstrap_user(&server, "irene").await;
+    attach_inline_policy(
+        &server,
+        "irene",
+        "RequireTls",
+        r#"{"Version":"2012-10-17","Statement":[
+            {"Effect":"Allow","Action":"*","Resource":"*"},
+            {"Effect":"Deny","Action":"*","Resource":"*",
+             "Condition":{"Bool":{"aws:SecureTransport":"false"}}}
+        ]}"#,
+    )
+    .await;
+    let cfg = sdk_config_with(&server, &akid, &secret).await;
+    let sts = StsClient::new(&cfg);
+    let err = sts.get_caller_identity().send().await.unwrap_err();
+    assert!(format!("{err:?}").contains("AccessDeniedException"));
+}
