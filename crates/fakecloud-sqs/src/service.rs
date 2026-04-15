@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 use sha2::Sha256;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
+use tokio::sync::Mutex as AsyncMutex;
 
 use fakecloud_aws::arn::Arn;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
@@ -360,6 +361,11 @@ fn validate_redrive_policy_target(
 pub struct SqsService {
     state: SharedSqsState,
     snapshot_store: Option<Arc<dyn SnapshotStore>>,
+    /// Serializes concurrent snapshot writes so the newest observed
+    /// state always wins on disk. Without it, two tasks could race
+    /// between read-clone and save, leaving older bytes as the final
+    /// on-disk state (P1 in Cubic review).
+    snapshot_lock: Arc<AsyncMutex<()>>,
 }
 
 impl SqsService {
@@ -367,6 +373,7 @@ impl SqsService {
         Self {
             state,
             snapshot_store: None,
+            snapshot_lock: Arc::new(AsyncMutex::new(())),
         }
     }
 
@@ -377,23 +384,31 @@ impl SqsService {
 
     /// Persist the current in-memory state as a snapshot. Called after
     /// every successful mutating action. Noop when no store is wired.
-    fn save_snapshot(&self) {
-        let Some(store) = self.snapshot_store.as_ref() else {
+    ///
+    /// The snapshot lock is held across the clone + serialize + write
+    /// sequence so concurrent mutators cannot interleave and leave
+    /// stale bytes on disk. Serialization and the blocking write are
+    /// offloaded to the blocking pool to keep Tokio worker threads
+    /// responsive under write-heavy load.
+    async fn save_snapshot(&self) {
+        let Some(store) = self.snapshot_store.clone() else {
             return;
         };
+        let _guard = self.snapshot_lock.lock().await;
         let snapshot = SqsSnapshot {
             schema_version: SQS_SNAPSHOT_SCHEMA_VERSION,
             state: self.state.read().clone(),
         };
-        let bytes = match serde_json::to_vec(&snapshot) {
-            Ok(b) => b,
-            Err(err) => {
-                tracing::error!(%err, "failed to serialize sqs snapshot");
-                return;
-            }
-        };
-        if let Err(err) = store.save(&bytes) {
-            tracing::error!(%err, "failed to write sqs snapshot");
+        let join = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            let bytes = serde_json::to_vec(&snapshot)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+            store.save(&bytes)
+        })
+        .await;
+        match join {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => tracing::error!(%err, "failed to write sqs snapshot"),
+            Err(err) => tracing::error!(%err, "sqs snapshot task panicked"),
         }
     }
 }
@@ -452,7 +467,7 @@ impl AwsService for SqsService {
             _ => Err(AwsServiceError::action_not_implemented("sqs", &req.action)),
         };
         if mutates && matches!(result.as_ref(), Ok(resp) if resp.status.is_success()) {
-            self.save_snapshot();
+            self.save_snapshot().await;
         }
         result
     }
