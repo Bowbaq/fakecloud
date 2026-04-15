@@ -299,8 +299,27 @@ pub async fn dispatch(
                             &aws_request.region,
                             is_secure_transport(&aws_request.headers),
                         );
-                        let decision =
-                            evaluator.evaluate(principal, &iam_action, &condition_context);
+                        // Phase 2: fetch the resource-based policy (if
+                        // any) attached to the target resource and
+                        // pass it to the evaluator alongside the
+                        // principal's identity policies. The resource's
+                        // owning account is parsed from the ARN (#381
+                        // multi-account alignment); S3 ARNs have an
+                        // empty account field, so we fall back to the
+                        // server's configured account ID in that case.
+                        let resource_policy_json =
+                            config.resource_policy_provider.as_ref().and_then(|p| {
+                                p.resource_policy(&detected.service, &iam_action.resource)
+                            });
+                        let resource_account_id = parse_account_from_arn(&iam_action.resource)
+                            .unwrap_or_else(|| config.account_id.clone());
+                        let decision = evaluator.evaluate_with_resource_policy(
+                            principal,
+                            &iam_action,
+                            &condition_context,
+                            resource_policy_json.as_deref(),
+                            &resource_account_id,
+                        );
                         if !decision.is_allow() {
                             tracing::warn!(
                                 target: "fakecloud::iam::audit",
@@ -308,6 +327,7 @@ pub async fn dispatch(
                                 action = %iam_action.action_string(),
                                 resource = %iam_action.resource,
                                 principal = %principal.arn,
+                                resource_policy_present = resource_policy_json.is_some(),
                                 decision = ?decision,
                                 mode = %config.iam_mode,
                                 request_id = %request_id,
@@ -484,6 +504,33 @@ impl DispatchConfig {
             policy_evaluator: None,
             resource_policy_provider: None,
         }
+    }
+}
+
+/// Extract the 12-digit account ID segment from an AWS ARN.
+///
+/// ARNs follow `arn:<partition>:<service>:<region>:<account>:<resource>`.
+/// For the cross-account decision in IAM enforcement, the "resource
+/// account" is the ARN's account segment. Some services (notably S3)
+/// produce ARNs with an empty account field — for those we return
+/// `None` and let the caller fall back to the server's configured
+/// account ID. Malformed or non-ARN strings also return `None`.
+fn parse_account_from_arn(arn: &str) -> Option<String> {
+    let mut parts = arn.splitn(6, ':');
+    if parts.next()? != "arn" {
+        return None;
+    }
+    let _partition = parts.next()?;
+    let _service = parts.next()?;
+    let _region = parts.next()?;
+    let account = parts.next()?;
+    // Resource segment must exist (parts.next().is_some()) for the ARN
+    // to be well-formed, but we don't consume its value here.
+    parts.next()?;
+    if account.is_empty() {
+        None
+    } else {
+        Some(account.to_string())
     }
 }
 
@@ -701,6 +748,36 @@ mod tests {
         assert!(!is_secure_transport(&headers));
         let empty = http::HeaderMap::new();
         assert!(!is_secure_transport(&empty));
+    }
+
+    #[test]
+    fn parse_account_from_arn_extracts_standard_shapes() {
+        assert_eq!(
+            parse_account_from_arn("arn:aws:sqs:us-east-1:123456789012:queue"),
+            Some("123456789012".to_string())
+        );
+        assert_eq!(
+            parse_account_from_arn("arn:aws:iam::123456789012:user/alice"),
+            Some("123456789012".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_account_from_arn_returns_none_for_s3_empty_account() {
+        // S3 ARNs have both region and account empty.
+        assert_eq!(parse_account_from_arn("arn:aws:s3:::my-bucket"), None);
+        assert_eq!(
+            parse_account_from_arn("arn:aws:s3:::my-bucket/path/to/key"),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_account_from_arn_returns_none_for_malformed() {
+        assert_eq!(parse_account_from_arn(""), None);
+        assert_eq!(parse_account_from_arn("not-an-arn"), None);
+        assert_eq!(parse_account_from_arn("arn:aws:sqs:us-east-1"), None);
+        assert_eq!(parse_account_from_arn("arn:aws:sqs"), None);
     }
 
     #[test]
