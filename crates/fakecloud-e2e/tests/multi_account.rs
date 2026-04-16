@@ -38,6 +38,26 @@ async fn config_with(server: &TestServer, akid: &str, secret: &str) -> aws_confi
         .await
 }
 
+async fn config_with_session(
+    server: &TestServer,
+    akid: &str,
+    secret: &str,
+    token: &str,
+) -> aws_config::SdkConfig {
+    aws_config::defaults(aws_config::BehaviorVersion::latest())
+        .endpoint_url(server.endpoint())
+        .region(aws_config::Region::new("us-east-1"))
+        .credentials_provider(Credentials::new(
+            akid,
+            secret,
+            Some(token.to_string()),
+            None,
+            "multi-acct-session",
+        ))
+        .load()
+        .await
+}
+
 // ======================================================================
 // STS: GetCallerIdentity returns correct account after AssumeRole
 // ======================================================================
@@ -46,14 +66,34 @@ async fn config_with(server: &TestServer, akid: &str, secret: &str) -> aws_confi
 async fn sts_caller_identity_reflects_assumed_account() {
     let server = start().await;
 
-    // Bootstrap admin in account B via introspection endpoint
-    let (b_akid, b_secret) = server.create_admin(ACCOUNT_B, "admin-b").await;
-    let b_cfg = config_with(&server, &b_akid, &b_secret).await;
+    // Admin in account A can AssumeRole into account B
+    let (a_akid, a_secret) = server.create_admin(ACCOUNT_A, "admin-a").await;
+    let a_cfg = config_with(&server, &a_akid, &a_secret).await;
 
-    let sts = StsClient::new(&b_cfg);
-    let identity = sts.get_caller_identity().send().await.unwrap();
+    let sts = StsClient::new(&a_cfg);
+    let role_arn = format!("arn:aws:iam::{ACCOUNT_B}:role/cross-account-role");
+    let assumed = sts
+        .assume_role()
+        .role_arn(&role_arn)
+        .role_session_name("test-session")
+        .send()
+        .await
+        .unwrap();
+    let creds = assumed.credentials().unwrap();
+
+    // The assumed-role credentials should resolve to account B
+    let b_cfg = config_with_session(
+        &server,
+        creds.access_key_id(),
+        creds.secret_access_key(),
+        creds.session_token(),
+    )
+    .await;
+    let sts_b = StsClient::new(&b_cfg);
+    let identity = sts_b.get_caller_identity().send().await.unwrap();
     assert_eq!(identity.account().unwrap(), ACCOUNT_B);
     assert!(identity.arn().unwrap().contains(ACCOUNT_B));
+    assert!(identity.arn().unwrap().contains("assumed-role"));
 }
 
 // ======================================================================
