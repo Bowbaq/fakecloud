@@ -4544,4 +4544,451 @@ mod tests {
         let b = resp_json(&resp);
         assert_eq!(b["UserStatus"], "CONFIRMED");
     }
+
+    // ── User Pool CRUD ──
+
+    #[test]
+    fn describe_user_pool() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+
+        let req = make_req(
+            "DescribeUserPool",
+            &json!({"UserPoolId": pool_id}).to_string(),
+        );
+        let resp = svc.describe_user_pool(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["UserPool"]["Id"], pool_id);
+        assert_eq!(b["UserPool"]["Name"], "test-pool");
+    }
+
+    #[test]
+    fn update_user_pool() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+
+        let body = json!({
+            "UserPoolId": pool_id,
+            "AdminCreateUserConfig": {"AllowAdminCreateUserOnly": true},
+        });
+        let req = make_req("UpdateUserPool", &body.to_string());
+        svc.update_user_pool(&req).unwrap();
+
+        let req = make_req(
+            "DescribeUserPool",
+            &json!({"UserPoolId": pool_id}).to_string(),
+        );
+        let resp = svc.describe_user_pool(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(
+            b["UserPool"]["AdminCreateUserConfig"]["AllowAdminCreateUserOnly"],
+            true
+        );
+    }
+
+    #[test]
+    fn delete_user_pool() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+
+        let req = make_req(
+            "DeleteUserPool",
+            &json!({"UserPoolId": pool_id}).to_string(),
+        );
+        svc.delete_user_pool(&req).unwrap();
+
+        let req = make_req(
+            "DescribeUserPool",
+            &json!({"UserPoolId": pool_id}).to_string(),
+        );
+        assert!(svc.describe_user_pool(&req).is_err());
+    }
+
+    #[test]
+    fn list_user_pools() {
+        let (svc, _) = make_svc();
+        create_pool(&svc);
+
+        let req = make_req("ListUserPools", &json!({"MaxResults": 10}).to_string());
+        let resp = svc.list_user_pools(&req).unwrap();
+        let b = resp_json(&resp);
+        assert!(!b["UserPools"].as_array().unwrap().is_empty());
+    }
+
+    // ── User Pool Client CRUD ──
+
+    #[test]
+    fn describe_user_pool_client() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+
+        let body = json!({"UserPoolId": pool_id, "ClientId": client_id});
+        let req = make_req("DescribeUserPoolClient", &body.to_string());
+        let resp = svc.describe_user_pool_client(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["UserPoolClient"]["ClientId"], client_id);
+    }
+
+    #[test]
+    fn update_user_pool_client() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+
+        let body = json!({
+            "UserPoolId": pool_id,
+            "ClientId": client_id,
+            "ClientName": "renamed-client",
+        });
+        let req = make_req("UpdateUserPoolClient", &body.to_string());
+        let resp = svc.update_user_pool_client(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["UserPoolClient"]["ClientName"], "renamed-client");
+    }
+
+    #[test]
+    fn delete_user_pool_client() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+
+        let body = json!({"UserPoolId": pool_id, "ClientId": client_id});
+        let req = make_req("DeleteUserPoolClient", &body.to_string());
+        svc.delete_user_pool_client(&req).unwrap();
+
+        // Describe should fail
+        let body = json!({"UserPoolId": pool_id, "ClientId": client_id});
+        let req = make_req("DescribeUserPoolClient", &body.to_string());
+        assert!(svc.describe_user_pool_client(&req).is_err());
+    }
+
+    #[test]
+    fn list_user_pool_clients() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        create_client(&svc, &pool_id);
+
+        let body = json!({"UserPoolId": pool_id});
+        let req = make_req("ListUserPoolClients", &body.to_string());
+        let resp = svc.list_user_pool_clients(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["UserPoolClients"].as_array().unwrap().len(), 1);
+    }
+
+    // ── Group CRUD (extended) ──
+
+    #[test]
+    fn group_crud_full() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+
+        // Create
+        let body = json!({
+            "UserPoolId": pool_id,
+            "GroupName": "editors",
+            "Description": "Editor group",
+            "Precedence": 5,
+        });
+        let req = make_req("CreateGroup", &body.to_string());
+        let resp = svc.create_group(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["Group"]["GroupName"], "editors");
+
+        // Get
+        let body = json!({"UserPoolId": pool_id, "GroupName": "editors"});
+        let req = make_req("GetGroup", &body.to_string());
+        let resp = svc.get_group(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["Group"]["Description"], "Editor group");
+
+        // List
+        let body = json!({"UserPoolId": pool_id});
+        let req = make_req("ListGroups", &body.to_string());
+        let resp = svc.list_groups(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["Groups"].as_array().unwrap().len(), 1);
+
+        // Update
+        let body = json!({
+            "UserPoolId": pool_id,
+            "GroupName": "editors",
+            "Description": "Updated desc",
+        });
+        let req = make_req("UpdateGroup", &body.to_string());
+        let resp = svc.update_group(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["Group"]["Description"], "Updated desc");
+
+        // Delete
+        let body = json!({"UserPoolId": pool_id, "GroupName": "editors"});
+        let req = make_req("DeleteGroup", &body.to_string());
+        svc.delete_group(&req).unwrap();
+
+        // Get should fail
+        let body = json!({"UserPoolId": pool_id, "GroupName": "editors"});
+        let req = make_req("GetGroup", &body.to_string());
+        assert!(svc.get_group(&req).is_err());
+    }
+
+    #[test]
+    fn list_users_in_group() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "grp-member");
+
+        let body = json!({"UserPoolId": pool_id, "GroupName": "team"});
+        let req = make_req("CreateGroup", &body.to_string());
+        svc.create_group(&req).unwrap();
+
+        svc.admin_add_user_to_group(&make_req(
+            "AdminAddUserToGroup",
+            &json!({"UserPoolId": pool_id, "Username": "grp-member", "GroupName": "team"})
+                .to_string(),
+        ))
+        .unwrap();
+
+        let body = json!({"UserPoolId": pool_id, "GroupName": "team"});
+        let req = make_req("ListUsersInGroup", &body.to_string());
+        let resp = svc.list_users_in_group(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["Users"].as_array().unwrap().len(), 1);
+    }
+
+    // ── Identity Provider CRUD ──
+
+    #[test]
+    fn identity_provider_crud() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+
+        // Create
+        let body = json!({
+            "UserPoolId": pool_id,
+            "ProviderName": "Google",
+            "ProviderType": "Google",
+            "ProviderDetails": {"client_id": "gid", "client_secret": "gsec", "authorize_scopes": "openid"},
+        });
+        let req = make_req("CreateIdentityProvider", &body.to_string());
+        svc.create_identity_provider(&req).unwrap();
+
+        // Describe
+        let body = json!({"UserPoolId": pool_id, "ProviderName": "Google"});
+        let req = make_req("DescribeIdentityProvider", &body.to_string());
+        let resp = svc.describe_identity_provider(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["IdentityProvider"]["ProviderName"], "Google");
+
+        // List
+        let body = json!({"UserPoolId": pool_id});
+        let req = make_req("ListIdentityProviders", &body.to_string());
+        let resp = svc.list_identity_providers(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["Providers"].as_array().unwrap().len(), 1);
+
+        // Update
+        let body = json!({
+            "UserPoolId": pool_id,
+            "ProviderName": "Google",
+            "ProviderDetails": {"client_id": "new-gid", "client_secret": "gsec", "authorize_scopes": "openid email"},
+        });
+        let req = make_req("UpdateIdentityProvider", &body.to_string());
+        svc.update_identity_provider(&req).unwrap();
+
+        // Delete
+        let body = json!({"UserPoolId": pool_id, "ProviderName": "Google"});
+        let req = make_req("DeleteIdentityProvider", &body.to_string());
+        svc.delete_identity_provider(&req).unwrap();
+
+        // List should be empty
+        let body = json!({"UserPoolId": pool_id});
+        let req = make_req("ListIdentityProviders", &body.to_string());
+        let resp = svc.list_identity_providers(&req).unwrap();
+        let b = resp_json(&resp);
+        assert!(b["Providers"].as_array().unwrap().is_empty());
+    }
+
+    // ── Resource Server CRUD ──
+
+    #[test]
+    fn resource_server_crud() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+
+        // Create
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Identifier": "https://api.example.com",
+            "Name": "My API",
+            "Scopes": [{"ScopeName": "read", "ScopeDescription": "Read access"}],
+        });
+        let req = make_req("CreateResourceServer", &body.to_string());
+        svc.create_resource_server(&req).unwrap();
+
+        // Describe
+        let body = json!({"UserPoolId": pool_id, "Identifier": "https://api.example.com"});
+        let req = make_req("DescribeResourceServer", &body.to_string());
+        let resp = svc.describe_resource_server(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["ResourceServer"]["Name"], "My API");
+
+        // List
+        let body = json!({"UserPoolId": pool_id});
+        let req = make_req("ListResourceServers", &body.to_string());
+        let resp = svc.list_resource_servers(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["ResourceServers"].as_array().unwrap().len(), 1);
+
+        // Update
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Identifier": "https://api.example.com",
+            "Name": "Updated API",
+            "Scopes": [
+                {"ScopeName": "read", "ScopeDescription": "Read"},
+                {"ScopeName": "write", "ScopeDescription": "Write"},
+            ],
+        });
+        let req = make_req("UpdateResourceServer", &body.to_string());
+        svc.update_resource_server(&req).unwrap();
+
+        // Delete
+        let body = json!({"UserPoolId": pool_id, "Identifier": "https://api.example.com"});
+        let req = make_req("DeleteResourceServer", &body.to_string());
+        svc.delete_resource_server(&req).unwrap();
+    }
+
+    // ── MFA Config ──
+
+    #[test]
+    fn mfa_config_set_and_get() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+
+        let body = json!({
+            "UserPoolId": pool_id,
+            "MfaConfiguration": "OPTIONAL",
+            "SoftwareTokenMfaConfiguration": {"Enabled": true},
+        });
+        let req = make_req("SetUserPoolMfaConfig", &body.to_string());
+        svc.set_user_pool_mfa_config(&req).unwrap();
+
+        let body = json!({"UserPoolId": pool_id});
+        let req = make_req("GetUserPoolMfaConfig", &body.to_string());
+        let resp = svc.get_user_pool_mfa_config(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["MfaConfiguration"], "OPTIONAL");
+        assert_eq!(b["SoftwareTokenMfaConfiguration"]["Enabled"], true);
+    }
+
+    // ── Domain CRUD ──
+
+    #[test]
+    fn user_pool_domain_crud() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+
+        // Create
+        let body = json!({"UserPoolId": pool_id, "Domain": "my-auth-domain"});
+        let req = make_req("CreateUserPoolDomain", &body.to_string());
+        svc.create_user_pool_domain(&req).unwrap();
+
+        // Describe
+        let body = json!({"Domain": "my-auth-domain"});
+        let req = make_req("DescribeUserPoolDomain", &body.to_string());
+        let resp = svc.describe_user_pool_domain(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["DomainDescription"]["Domain"], "my-auth-domain");
+
+        // Delete
+        let body = json!({"UserPoolId": pool_id, "Domain": "my-auth-domain"});
+        let req = make_req("DeleteUserPoolDomain", &body.to_string());
+        svc.delete_user_pool_domain(&req).unwrap();
+    }
+
+    // ── UI Customization ──
+
+    #[test]
+    fn ui_customization_set_and_get() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+
+        let body = json!({
+            "UserPoolId": pool_id,
+            "CSS": ".banner { background: red; }",
+        });
+        let req = make_req("SetUICustomization", &body.to_string());
+        svc.set_ui_customization(&req).unwrap();
+
+        let body = json!({"UserPoolId": pool_id});
+        let req = make_req("GetUICustomization", &body.to_string());
+        let resp = svc.get_ui_customization(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["UICustomization"]["CSS"], ".banner { background: red; }");
+    }
+
+    // ── Device management ──
+
+    #[test]
+    fn device_management_admin() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        admin_create_user_helper(&svc, &pool_id, "devuser");
+        set_user_password(&svc, &pool_id, "devuser", "Pass123!");
+
+        // Auth to get a device key
+        let body = json!({
+            "UserPoolId": pool_id,
+            "ClientId": client_id,
+            "AuthFlow": "ADMIN_NO_SRP_AUTH",
+            "AuthParameters": {"USERNAME": "devuser", "PASSWORD": "Pass123!"},
+        });
+        let req = make_req("AdminInitiateAuth", &body.to_string());
+        block_on(svc.admin_initiate_auth(&req)).unwrap();
+
+        // AdminListDevices - should return empty initially
+        let body = json!({"UserPoolId": pool_id, "Username": "devuser"});
+        let req = make_req("AdminListDevices", &body.to_string());
+        let resp = svc.admin_list_devices(&req).unwrap();
+        let b = resp_json(&resp);
+        assert!(b["Devices"].as_array().unwrap().is_empty());
+    }
+
+    // ── AdminDeleteUserAttributes ──
+
+    #[test]
+    fn admin_delete_user_attributes() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "delattr");
+
+        // Add custom attribute
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Username": "delattr",
+            "UserAttributes": [{"Name": "custom:role", "Value": "admin"}],
+        });
+        let req = make_req("AdminUpdateUserAttributes", &body.to_string());
+        svc.admin_update_user_attributes(&req).unwrap();
+
+        // Delete it
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Username": "delattr",
+            "UserAttributeNames": ["custom:role"],
+        });
+        let req = make_req("AdminDeleteUserAttributes", &body.to_string());
+        svc.admin_delete_user_attributes(&req).unwrap();
+
+        // Verify removed
+        let req = make_req(
+            "AdminGetUser",
+            &json!({"UserPoolId": pool_id, "Username": "delattr"}).to_string(),
+        );
+        let resp = svc.admin_get_user(&req).unwrap();
+        let b = resp_json(&resp);
+        let attrs = b["UserAttributes"].as_array().unwrap();
+        assert!(!attrs.iter().any(|a| a["Name"] == "custom:role"));
+    }
 }
