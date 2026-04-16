@@ -3,20 +3,32 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub type SharedStepFunctionsState = Arc<RwLock<StepFunctionsState>>;
 
+pub const STEPFUNCTIONS_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StepFunctionsSnapshot {
+    pub schema_version: u32,
+    pub state: StepFunctionsState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StepFunctionsState {
     pub account_id: String,
     pub region: String,
     /// State machines keyed by ARN.
+    #[serde(default)]
     pub state_machines: HashMap<String, StateMachine>,
     /// Executions keyed by execution ARN.
+    #[serde(default)]
     pub executions: HashMap<String, Execution>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StateMachine {
     pub name: String,
     pub arn: String,
@@ -33,7 +45,7 @@ pub struct StateMachine {
     pub description: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StateMachineType {
     Standard,
     Express,
@@ -56,7 +68,7 @@ impl StateMachineType {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StateMachineStatus {
     Active,
     Deleting,
@@ -71,7 +83,7 @@ impl StateMachineStatus {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Execution {
     pub execution_arn: String,
     pub state_machine_arn: String,
@@ -87,7 +99,7 @@ pub struct Execution {
     pub history_events: Vec<HistoryEvent>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExecutionStatus {
     Running,
     Succeeded,
@@ -110,7 +122,7 @@ impl ExecutionStatus {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryEvent {
     pub id: i64,
     pub event_type: String,

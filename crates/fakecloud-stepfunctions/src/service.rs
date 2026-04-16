@@ -5,17 +5,19 @@ use async_trait::async_trait;
 use chrono::Utc;
 use http::StatusCode;
 use serde_json::{json, Value};
+use tokio::sync::Mutex as AsyncMutex;
 
 use fakecloud_core::delivery::DeliveryBus;
 use fakecloud_core::pagination::paginate;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
 use fakecloud_core::validation::*;
 use fakecloud_dynamodb::state::SharedDynamoDbState;
+use fakecloud_persistence::SnapshotStore;
 
 use crate::interpreter;
 use crate::state::{
     Execution, ExecutionStatus, SharedStepFunctionsState, StateMachine, StateMachineStatus,
-    StateMachineType,
+    StateMachineType, StepFunctionsSnapshot, STEPFUNCTIONS_SNAPSHOT_SCHEMA_VERSION,
 };
 
 const SUPPORTED: &[&str] = &[
@@ -39,6 +41,8 @@ pub struct StepFunctionsService {
     state: SharedStepFunctionsState,
     delivery: Option<Arc<DeliveryBus>>,
     dynamodb_state: Option<SharedDynamoDbState>,
+    snapshot_store: Option<Arc<dyn SnapshotStore>>,
+    snapshot_lock: Arc<AsyncMutex<()>>,
 }
 
 impl StepFunctionsService {
@@ -47,6 +51,8 @@ impl StepFunctionsService {
             state,
             delivery: None,
             dynamodb_state: None,
+            snapshot_store: None,
+            snapshot_lock: Arc::new(AsyncMutex::new(())),
         }
     }
 
@@ -59,6 +65,46 @@ impl StepFunctionsService {
         self.dynamodb_state = Some(dynamodb_state);
         self
     }
+
+    pub fn with_snapshot_store(mut self, store: Arc<dyn SnapshotStore>) -> Self {
+        self.snapshot_store = Some(store);
+        self
+    }
+
+    async fn save_snapshot(&self) {
+        let Some(store) = self.snapshot_store.clone() else {
+            return;
+        };
+        let _guard = self.snapshot_lock.lock().await;
+        let snapshot = StepFunctionsSnapshot {
+            schema_version: STEPFUNCTIONS_SNAPSHOT_SCHEMA_VERSION,
+            state: self.state.read().clone(),
+        };
+        let join = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            let bytes = serde_json::to_vec(&snapshot)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+            store.save(&bytes)
+        })
+        .await;
+        match join {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => tracing::error!(%err, "failed to write stepfunctions snapshot"),
+            Err(err) => tracing::error!(%err, "stepfunctions snapshot task panicked"),
+        }
+    }
+}
+
+fn is_mutating_action(action: &str) -> bool {
+    matches!(
+        action,
+        "CreateStateMachine"
+            | "DeleteStateMachine"
+            | "UpdateStateMachine"
+            | "TagResource"
+            | "UntagResource"
+            | "StartExecution"
+            | "StopExecution"
+    )
 }
 
 #[async_trait]
@@ -68,7 +114,8 @@ impl AwsService for StepFunctionsService {
     }
 
     async fn handle(&self, req: AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        match req.action.as_str() {
+        let mutates = is_mutating_action(req.action.as_str());
+        let result = match req.action.as_str() {
             "CreateStateMachine" => self.create_state_machine(&req),
             "DescribeStateMachine" => self.describe_state_machine(&req),
             "ListStateMachines" => self.list_state_machines(&req),
@@ -87,7 +134,11 @@ impl AwsService for StepFunctionsService {
                 "states",
                 &req.action,
             )),
+        };
+        if mutates && matches!(result.as_ref(), Ok(resp) if resp.status.is_success()) {
+            self.save_snapshot().await;
         }
+        result
     }
 
     fn supported_actions(&self) -> &[&str] {
