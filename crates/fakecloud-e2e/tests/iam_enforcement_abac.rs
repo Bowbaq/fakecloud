@@ -1,14 +1,14 @@
 //! End-to-end tests for ABAC (attribute-based access control) tag conditions.
 //!
-//! Tests `aws:PrincipalTag/<key>` condition evaluation with
-//! `FAKECLOUD_IAM=strict`. The framework plumbs principal tags from
-//! IamState through to the condition evaluator; this file proves it
-//! works end-to-end with real aws-sdk-rust calls.
+//! Tests `aws:PrincipalTag/<key>`, `aws:ResourceTag/<key>`,
+//! `aws:RequestTag/<key>`, and `aws:TagKeys` condition evaluation with
+//! `FAKECLOUD_IAM=strict`.
 
 mod helpers;
 
 use aws_credential_types::Credentials;
 use aws_sdk_iam::Client as IamClient;
+use aws_sdk_s3::Client as S3Client;
 use aws_sdk_sts::Client as StsClient;
 use helpers::TestServer;
 
@@ -183,5 +183,232 @@ async fn principal_tag_case_sensitive_key() {
     assert!(
         format!("{err:?}").contains("AccessDeniedException"),
         "expected AccessDeniedException — tag keys are case-sensitive"
+    );
+}
+
+// ======================================================================
+// aws:ResourceTag tests (S3)
+// ======================================================================
+
+#[tokio::test]
+async fn s3_resource_tag_allows_when_object_tag_matches() {
+    let server = start_strict().await;
+    let (akid, secret) = bootstrap_tagged_user(&server, "s3alice", &[]).await;
+
+    // Allow all S3, but deny GetObject unless ResourceTag/Environment == dev
+    attach_inline_policy(
+        &server,
+        "s3alice",
+        "AllowAll",
+        r#"{"Version":"2012-10-17","Statement":[
+            {"Effect":"Allow","Action":"s3:*","Resource":"*"}
+        ]}"#,
+    )
+    .await;
+    attach_inline_policy(
+        &server,
+        "s3alice",
+        "DenyGetUnlessDev",
+        r#"{"Version":"2012-10-17","Statement":[{
+            "Effect":"Deny",
+            "Action":"s3:GetObject",
+            "Resource":"arn:aws:s3:::test-bucket/*",
+            "Condition":{"StringNotEquals":{"aws:ResourceTag/Environment":"dev"}}
+        }]}"#,
+    )
+    .await;
+
+    let cfg = sdk_config_with(&server, &akid, &secret).await;
+    let s3 = S3Client::new(&cfg);
+
+    // Create bucket and put an object with tags
+    let boot_cfg = sdk_config_with(&server, "test", "test").await;
+    let boot_s3 = S3Client::new(&boot_cfg);
+    boot_s3
+        .create_bucket()
+        .bucket("test-bucket")
+        .send()
+        .await
+        .unwrap();
+
+    // Put object with Environment=dev tag
+    s3.put_object()
+        .bucket("test-bucket")
+        .key("dev-file.txt")
+        .body(aws_sdk_s3::primitives::ByteStream::from_static(b"hello"))
+        .tagging("Environment=dev")
+        .send()
+        .await
+        .unwrap();
+
+    // Put object with Environment=prod tag
+    s3.put_object()
+        .bucket("test-bucket")
+        .key("prod-file.txt")
+        .body(aws_sdk_s3::primitives::ByteStream::from_static(b"hello"))
+        .tagging("Environment=prod")
+        .send()
+        .await
+        .unwrap();
+
+    // GetObject on dev file: allowed (ResourceTag/Environment == dev)
+    s3.get_object()
+        .bucket("test-bucket")
+        .key("dev-file.txt")
+        .send()
+        .await
+        .unwrap();
+
+    // GetObject on prod file: denied (ResourceTag/Environment != dev)
+    let err = s3
+        .get_object()
+        .bucket("test-bucket")
+        .key("prod-file.txt")
+        .send()
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{err:?}").contains("AccessDenied"),
+        "expected AccessDenied for prod-tagged object, got {err:?}"
+    );
+}
+
+// ======================================================================
+// aws:RequestTag tests (S3)
+// ======================================================================
+
+#[tokio::test]
+async fn s3_request_tag_denies_put_with_wrong_tag() {
+    let server = start_strict().await;
+    let (akid, secret) = bootstrap_tagged_user(&server, "s3bob", &[]).await;
+
+    // Allow all S3, but deny PutObject unless RequestTag/CostCenter == 123
+    attach_inline_policy(
+        &server,
+        "s3bob",
+        "AllowAll",
+        r#"{"Version":"2012-10-17","Statement":[
+            {"Effect":"Allow","Action":"s3:*","Resource":"*"}
+        ]}"#,
+    )
+    .await;
+    attach_inline_policy(
+        &server,
+        "s3bob",
+        "DenyPutUnlessCC",
+        r#"{"Version":"2012-10-17","Statement":[{
+            "Effect":"Deny",
+            "Action":"s3:PutObject",
+            "Resource":"arn:aws:s3:::tag-bucket/*",
+            "Condition":{"StringNotEquals":{"aws:RequestTag/CostCenter":"123"}}
+        }]}"#,
+    )
+    .await;
+
+    let boot_cfg = sdk_config_with(&server, "test", "test").await;
+    let boot_s3 = S3Client::new(&boot_cfg);
+    boot_s3
+        .create_bucket()
+        .bucket("tag-bucket")
+        .send()
+        .await
+        .unwrap();
+
+    let cfg = sdk_config_with(&server, &akid, &secret).await;
+    let s3 = S3Client::new(&cfg);
+
+    // PutObject with CostCenter=123: allowed
+    s3.put_object()
+        .bucket("tag-bucket")
+        .key("good.txt")
+        .body(aws_sdk_s3::primitives::ByteStream::from_static(b"ok"))
+        .tagging("CostCenter=123")
+        .send()
+        .await
+        .unwrap();
+
+    // PutObject with CostCenter=999: denied
+    let err = s3
+        .put_object()
+        .bucket("tag-bucket")
+        .key("bad.txt")
+        .body(aws_sdk_s3::primitives::ByteStream::from_static(b"no"))
+        .tagging("CostCenter=999")
+        .send()
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{err:?}").contains("AccessDenied"),
+        "expected AccessDenied for wrong CostCenter"
+    );
+}
+
+// ======================================================================
+// aws:TagKeys tests (S3)
+// ======================================================================
+
+#[tokio::test]
+async fn s3_tag_keys_for_all_values_restricts_allowed_keys() {
+    let server = start_strict().await;
+    let (akid, secret) = bootstrap_tagged_user(&server, "s3carol", &[]).await;
+
+    // Allow all S3, but deny PutObject with tag keys outside the allowed set
+    attach_inline_policy(
+        &server,
+        "s3carol",
+        "AllowAll",
+        r#"{"Version":"2012-10-17","Statement":[
+            {"Effect":"Allow","Action":"s3:*","Resource":"*"}
+        ]}"#,
+    )
+    .await;
+    attach_inline_policy(
+        &server,
+        "s3carol",
+        "DenyBadTagKeys",
+        r#"{"Version":"2012-10-17","Statement":[{
+            "Effect":"Deny",
+            "Action":"s3:PutObject",
+            "Resource":"arn:aws:s3:::keys-bucket/*",
+            "Condition":{"ForAnyValue:StringNotEquals":{"aws:TagKeys":["Environment","Team"]}}
+        }]}"#,
+    )
+    .await;
+
+    let boot_cfg = sdk_config_with(&server, "test", "test").await;
+    let boot_s3 = S3Client::new(&boot_cfg);
+    boot_s3
+        .create_bucket()
+        .bucket("keys-bucket")
+        .send()
+        .await
+        .unwrap();
+
+    let cfg = sdk_config_with(&server, &akid, &secret).await;
+    let s3 = S3Client::new(&cfg);
+
+    // PutObject with allowed keys only: succeeds
+    s3.put_object()
+        .bucket("keys-bucket")
+        .key("ok.txt")
+        .body(aws_sdk_s3::primitives::ByteStream::from_static(b"ok"))
+        .tagging("Environment=dev&Team=platform")
+        .send()
+        .await
+        .unwrap();
+
+    // PutObject with disallowed key "Secret": denied
+    let err = s3
+        .put_object()
+        .bucket("keys-bucket")
+        .key("bad.txt")
+        .body(aws_sdk_s3::primitives::ByteStream::from_static(b"no"))
+        .tagging("Environment=dev&Secret=classified")
+        .send()
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{err:?}").contains("AccessDenied"),
+        "expected AccessDenied for disallowed tag key"
     );
 }

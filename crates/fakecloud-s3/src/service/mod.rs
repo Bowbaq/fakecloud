@@ -717,6 +717,21 @@ impl AwsService for S3Service {
     ) -> std::collections::BTreeMap<String, Vec<String>> {
         s3_condition_keys(action.action, &request.query_params)
     }
+
+    fn resource_tags_for(
+        &self,
+        resource_arn: &str,
+    ) -> Option<std::collections::HashMap<String, String>> {
+        s3_resource_tags(&self.state, resource_arn)
+    }
+
+    fn request_tags_from(
+        &self,
+        request: &AwsRequest,
+        action: &str,
+    ) -> Option<std::collections::HashMap<String, String>> {
+        s3_request_tags(request, action)
+    }
 }
 
 /// Extract service-specific IAM condition keys from an S3 request.
@@ -743,6 +758,71 @@ fn s3_condition_keys(
         }
     }
     out
+}
+
+/// Look up resource tags for an S3 ARN.
+///
+/// Bucket-level ARN (`arn:aws:s3:::bucket`) -> bucket tags.
+/// Object-level ARN (`arn:aws:s3:::bucket/key`) -> object tags.
+/// `*` (ListBuckets) -> `Some(empty)` (no resource to tag).
+fn s3_resource_tags(
+    state: &SharedS3State,
+    resource_arn: &str,
+) -> Option<std::collections::HashMap<String, String>> {
+    if resource_arn == "*" {
+        return Some(std::collections::HashMap::new());
+    }
+    // S3 ARNs: arn:aws:s3:::bucket or arn:aws:s3:::bucket/key
+    let after_prefix = resource_arn.strip_prefix("arn:aws:s3:::")?;
+    let state = state.read();
+    if let Some(slash_pos) = after_prefix.find('/') {
+        // Object-level: bucket/key
+        let bucket_name = &after_prefix[..slash_pos];
+        let key = &after_prefix[slash_pos + 1..];
+        let bucket = state.buckets.get(bucket_name)?;
+        // Try current objects first, then versioned objects (latest version)
+        if let Some(obj) = bucket.objects.get(key) {
+            Some(obj.tags.clone())
+        } else if let Some(versions) = bucket.object_versions.get(key) {
+            versions.last().map(|v| v.tags.clone())
+        } else {
+            // Object doesn't exist yet (e.g. PutObject creating it)
+            Some(std::collections::HashMap::new())
+        }
+    } else {
+        // Bucket-level
+        let bucket = state.buckets.get(after_prefix)?;
+        Some(bucket.tags.clone())
+    }
+}
+
+/// Extract tags from an S3 request body/headers.
+///
+/// S3 sends tags via:
+/// - `x-amz-tagging` header (URL-encoded `key=value&...`) on PutObject
+/// - XML body on PutBucketTagging / PutObjectTagging
+fn s3_request_tags(
+    request: &AwsRequest,
+    action: &str,
+) -> Option<std::collections::HashMap<String, String>> {
+    match action {
+        "PutObject" | "CopyObject" | "CreateMultipartUpload" => {
+            // Tags come via x-amz-tagging header
+            if let Some(tagging) = request.headers.get("x-amz-tagging") {
+                let tags = parse_url_encoded_tags(tagging.to_str().unwrap_or(""));
+                Some(tags.into_iter().collect())
+            } else {
+                Some(std::collections::HashMap::new())
+            }
+        }
+        "PutBucketTagging" | "PutObjectTagging" => {
+            // Tags come in XML body
+            let body = std::str::from_utf8(&request.body).unwrap_or("");
+            let tags = parse_tagging_xml(body);
+            Some(tags.into_iter().collect())
+        }
+        _ => Some(std::collections::HashMap::new()),
+    }
 }
 
 /// Derive the IAM action name from an S3 REST request. Handles the
