@@ -132,6 +132,8 @@ impl AwsService for S3Service {
             None
         };
 
+        let account_id = req.account_id.as_str();
+
         // Multipart upload operations (checked before main match)
         if let Some(b) = bucket {
             // POST /{bucket}/{key}?uploads — CreateMultipartUpload
@@ -139,7 +141,7 @@ impl AwsService for S3Service {
                 && key.is_some()
                 && req.query_params.contains_key("uploads")
             {
-                return self.create_multipart_upload(&req, b, key.as_deref().unwrap());
+                return self.create_multipart_upload(account_id, &req, b, key.as_deref().unwrap());
             }
 
             // POST /{bucket}/{key}?restore
@@ -147,13 +149,14 @@ impl AwsService for S3Service {
                 && key.is_some()
                 && req.query_params.contains_key("restore")
             {
-                return self.restore_object(&req, b, key.as_deref().unwrap());
+                return self.restore_object(account_id, &req, b, key.as_deref().unwrap());
             }
 
             // POST /{bucket}/{key}?uploadId=X — CompleteMultipartUpload
             if req.method == Method::POST && key.is_some() {
                 if let Some(upload_id) = req.query_params.get("uploadId").cloned() {
                     return self.complete_multipart_upload(
+                        account_id,
                         &req,
                         b,
                         key.as_deref().unwrap(),
@@ -171,6 +174,7 @@ impl AwsService for S3Service {
                     if let Ok(part_number) = part_num_str.parse::<i64>() {
                         if req.headers.contains_key("x-amz-copy-source") {
                             return self.upload_part_copy(
+                                account_id,
                                 &req,
                                 b,
                                 key.as_deref().unwrap(),
@@ -179,6 +183,7 @@ impl AwsService for S3Service {
                             );
                         }
                         return self.upload_part(
+                            account_id,
                             &req,
                             b,
                             key.as_deref().unwrap(),
@@ -192,7 +197,12 @@ impl AwsService for S3Service {
             // DELETE /{bucket}/{key}?uploadId=X — AbortMultipartUpload
             if req.method == Method::DELETE && key.is_some() {
                 if let Some(upload_id) = req.query_params.get("uploadId").cloned() {
-                    return self.abort_multipart_upload(b, key.as_deref().unwrap(), &upload_id);
+                    return self.abort_multipart_upload(
+                        account_id,
+                        b,
+                        key.as_deref().unwrap(),
+                        &upload_id,
+                    );
                 }
             }
 
@@ -201,13 +211,19 @@ impl AwsService for S3Service {
                 && key.is_none()
                 && req.query_params.contains_key("uploads")
             {
-                return self.list_multipart_uploads(b);
+                return self.list_multipart_uploads(account_id, b);
             }
 
             // GET /{bucket}/{key}?uploadId=X — ListParts
             if req.method == Method::GET && key.is_some() {
                 if let Some(upload_id) = req.query_params.get("uploadId").cloned() {
-                    return self.list_parts(&req, b, key.as_deref().unwrap(), &upload_id);
+                    return self.list_parts(
+                        account_id,
+                        &req,
+                        b,
+                        key.as_deref().unwrap(),
+                        &upload_id,
+                    );
                 }
             }
         }
@@ -216,7 +232,9 @@ impl AwsService for S3Service {
         if req.method == Method::OPTIONS {
             if let Some(b_name) = bucket {
                 let cors_config = {
-                    let state = self.state.read();
+                    let accounts = self.state.read();
+                    let _empty_s3 = crate::state::S3State::new(&req.account_id, &req.region);
+                    let state = accounts.get(&req.account_id).unwrap_or(&_empty_s3);
                     state
                         .buckets
                         .get(b_name)
@@ -304,119 +322,121 @@ impl AwsService for S3Service {
 
         let mut result = match (&req.method, bucket, key.as_deref()) {
             // ListBuckets: GET /
-            (&Method::GET, None, None) => self.list_buckets(&req),
+            (&Method::GET, None, None) => self.list_buckets(account_id, &req),
 
             // Bucket-level operations (no key)
             (&Method::PUT, Some(b), None) => {
                 if req.query_params.contains_key("tagging") {
-                    self.put_bucket_tagging(&req, b)
+                    self.put_bucket_tagging(account_id, &req, b)
                 } else if req.query_params.contains_key("acl") {
-                    self.put_bucket_acl(&req, b)
+                    self.put_bucket_acl(account_id, &req, b)
                 } else if req.query_params.contains_key("versioning") {
-                    self.put_bucket_versioning(&req, b)
+                    self.put_bucket_versioning(account_id, &req, b)
                 } else if req.query_params.contains_key("cors") {
-                    self.put_bucket_cors(&req, b)
+                    self.put_bucket_cors(account_id, &req, b)
                 } else if req.query_params.contains_key("notification") {
-                    self.put_bucket_notification(&req, b)
+                    self.put_bucket_notification(account_id, &req, b)
                 } else if req.query_params.contains_key("website") {
-                    self.put_bucket_website(&req, b)
+                    self.put_bucket_website(account_id, &req, b)
                 } else if req.query_params.contains_key("accelerate") {
-                    self.put_bucket_accelerate(&req, b)
+                    self.put_bucket_accelerate(account_id, &req, b)
                 } else if req.query_params.contains_key("publicAccessBlock") {
-                    self.put_public_access_block(&req, b)
+                    self.put_public_access_block(account_id, &req, b)
                 } else if req.query_params.contains_key("encryption") {
-                    self.put_bucket_encryption(&req, b)
+                    self.put_bucket_encryption(account_id, &req, b)
                 } else if req.query_params.contains_key("lifecycle") {
-                    self.put_bucket_lifecycle(&req, b)
+                    self.put_bucket_lifecycle(account_id, &req, b)
                 } else if req.query_params.contains_key("logging") {
-                    self.put_bucket_logging(&req, b)
+                    self.put_bucket_logging(account_id, &req, b)
                 } else if req.query_params.contains_key("policy") {
-                    self.put_bucket_policy(&req, b)
+                    self.put_bucket_policy(account_id, &req, b)
                 } else if req.query_params.contains_key("object-lock") {
-                    self.put_object_lock_config(&req, b)
+                    self.put_object_lock_config(account_id, &req, b)
                 } else if req.query_params.contains_key("replication") {
-                    self.put_bucket_replication(&req, b)
+                    self.put_bucket_replication(account_id, &req, b)
                 } else if req.query_params.contains_key("ownershipControls") {
-                    self.put_bucket_ownership_controls(&req, b)
+                    self.put_bucket_ownership_controls(account_id, &req, b)
                 } else if req.query_params.contains_key("inventory") {
-                    self.put_bucket_inventory(&req, b)
+                    self.put_bucket_inventory(account_id, &req, b)
                 } else {
-                    self.create_bucket(&req, b)
+                    self.create_bucket(account_id, &req, b)
                 }
             }
             (&Method::DELETE, Some(b), None) => {
                 if req.query_params.contains_key("tagging") {
-                    self.delete_bucket_tagging(&req, b)
+                    self.delete_bucket_tagging(account_id, &req, b)
                 } else if req.query_params.contains_key("cors") {
-                    self.delete_bucket_cors(b)
+                    self.delete_bucket_cors(account_id, b)
                 } else if req.query_params.contains_key("website") {
-                    self.delete_bucket_website(b)
+                    self.delete_bucket_website(account_id, b)
                 } else if req.query_params.contains_key("publicAccessBlock") {
-                    self.delete_public_access_block(b)
+                    self.delete_public_access_block(account_id, b)
                 } else if req.query_params.contains_key("encryption") {
-                    self.delete_bucket_encryption(b)
+                    self.delete_bucket_encryption(account_id, b)
                 } else if req.query_params.contains_key("lifecycle") {
-                    self.delete_bucket_lifecycle(b)
+                    self.delete_bucket_lifecycle(account_id, b)
                 } else if req.query_params.contains_key("policy") {
-                    self.delete_bucket_policy(b)
+                    self.delete_bucket_policy(account_id, b)
                 } else if req.query_params.contains_key("replication") {
-                    self.delete_bucket_replication(b)
+                    self.delete_bucket_replication(account_id, b)
                 } else if req.query_params.contains_key("ownershipControls") {
-                    self.delete_bucket_ownership_controls(b)
+                    self.delete_bucket_ownership_controls(account_id, b)
                 } else if req.query_params.contains_key("inventory") {
-                    self.delete_bucket_inventory(&req, b)
+                    self.delete_bucket_inventory(account_id, &req, b)
                 } else {
-                    self.delete_bucket(&req, b)
+                    self.delete_bucket(account_id, &req, b)
                 }
             }
-            (&Method::HEAD, Some(b), None) => self.head_bucket(b),
+            (&Method::HEAD, Some(b), None) => self.head_bucket(account_id, b),
             (&Method::GET, Some(b), None) => {
                 if req.query_params.contains_key("tagging") {
-                    self.get_bucket_tagging(&req, b)
+                    self.get_bucket_tagging(account_id, &req, b)
                 } else if req.query_params.contains_key("location") {
-                    self.get_bucket_location(b)
+                    self.get_bucket_location(account_id, b)
                 } else if req.query_params.contains_key("acl") {
-                    self.get_bucket_acl(&req, b)
+                    self.get_bucket_acl(account_id, &req, b)
                 } else if req.query_params.contains_key("versioning") {
-                    self.get_bucket_versioning(b)
+                    self.get_bucket_versioning(account_id, b)
                 } else if req.query_params.contains_key("versions") {
-                    self.list_object_versions(&req, b)
+                    self.list_object_versions(account_id, &req, b)
                 } else if req.query_params.contains_key("object-lock") {
-                    self.get_object_lock_configuration(b)
+                    self.get_object_lock_configuration(account_id, b)
                 } else if req.query_params.contains_key("cors") {
-                    self.get_bucket_cors(b)
+                    self.get_bucket_cors(account_id, b)
                 } else if req.query_params.contains_key("notification") {
-                    self.get_bucket_notification(b)
+                    self.get_bucket_notification(account_id, b)
                 } else if req.query_params.contains_key("website") {
-                    self.get_bucket_website(b)
+                    self.get_bucket_website(account_id, b)
                 } else if req.query_params.contains_key("accelerate") {
-                    self.get_bucket_accelerate(b)
+                    self.get_bucket_accelerate(account_id, b)
                 } else if req.query_params.contains_key("publicAccessBlock") {
-                    self.get_public_access_block(b)
+                    self.get_public_access_block(account_id, b)
                 } else if req.query_params.contains_key("encryption") {
-                    self.get_bucket_encryption(b)
+                    self.get_bucket_encryption(account_id, b)
                 } else if req.query_params.contains_key("lifecycle") {
-                    self.get_bucket_lifecycle(b)
+                    self.get_bucket_lifecycle(account_id, b)
                 } else if req.query_params.contains_key("logging") {
-                    self.get_bucket_logging(b)
+                    self.get_bucket_logging(account_id, b)
                 } else if req.query_params.contains_key("policy") {
-                    self.get_bucket_policy(b)
+                    self.get_bucket_policy(account_id, b)
                 } else if req.query_params.contains_key("replication") {
-                    self.get_bucket_replication(b)
+                    self.get_bucket_replication(account_id, b)
                 } else if req.query_params.contains_key("ownershipControls") {
-                    self.get_bucket_ownership_controls(b)
+                    self.get_bucket_ownership_controls(account_id, b)
                 } else if req.query_params.contains_key("inventory") {
                     if req.query_params.contains_key("id") {
-                        self.get_bucket_inventory(&req, b)
+                        self.get_bucket_inventory(account_id, &req, b)
                     } else {
-                        self.list_bucket_inventory_configurations(b)
+                        self.list_bucket_inventory_configurations(account_id, b)
                     }
                 } else if req.query_params.get("list-type").map(|s| s.as_str()) == Some("2") {
-                    self.list_objects_v2(&req, b)
+                    self.list_objects_v2(account_id, &req, b)
                 } else if req.query_params.is_empty() {
                     // If bucket has website config and no query params, serve index document
                     let website_config = {
-                        let state = self.state.read();
+                        let accounts = self.state.read();
+                        let _empty_s3 = crate::state::S3State::new(&req.account_id, &req.region);
+                        let state = accounts.get(&req.account_id).unwrap_or(&_empty_s3);
                         state
                             .buckets
                             .get(b)
@@ -432,47 +452,47 @@ impl AwsService for S3Service {
                                 Some(inner[s..e].trim().to_string())
                             })
                         }) {
-                            self.serve_website_object(&req, b, &index_doc, config)
+                            self.serve_website_object(account_id, &req, b, &index_doc, config)
                         } else {
-                            self.list_objects_v1(&req, b)
+                            self.list_objects_v1(account_id, &req, b)
                         }
                     } else {
-                        self.list_objects_v1(&req, b)
+                        self.list_objects_v1(account_id, &req, b)
                     }
                 } else {
-                    self.list_objects_v1(&req, b)
+                    self.list_objects_v1(account_id, &req, b)
                 }
             }
 
             // Object-level operations
             (&Method::PUT, Some(b), Some(k)) => {
                 if req.query_params.contains_key("tagging") {
-                    self.put_object_tagging(&req, b, k)
+                    self.put_object_tagging(account_id, &req, b, k)
                 } else if req.query_params.contains_key("acl") {
-                    self.put_object_acl(&req, b, k)
+                    self.put_object_acl(account_id, &req, b, k)
                 } else if req.query_params.contains_key("retention") {
-                    self.put_object_retention(&req, b, k)
+                    self.put_object_retention(account_id, &req, b, k)
                 } else if req.query_params.contains_key("legal-hold") {
-                    self.put_object_legal_hold(&req, b, k)
+                    self.put_object_legal_hold(account_id, &req, b, k)
                 } else if req.headers.contains_key("x-amz-copy-source") {
-                    self.copy_object(&req, b, k)
+                    self.copy_object(account_id, &req, b, k)
                 } else {
-                    self.put_object(&req, b, k)
+                    self.put_object(account_id, &req, b, k)
                 }
             }
             (&Method::GET, Some(b), Some(k)) => {
                 if req.query_params.contains_key("tagging") {
-                    self.get_object_tagging(&req, b, k)
+                    self.get_object_tagging(account_id, &req, b, k)
                 } else if req.query_params.contains_key("acl") {
-                    self.get_object_acl(&req, b, k)
+                    self.get_object_acl(account_id, &req, b, k)
                 } else if req.query_params.contains_key("retention") {
-                    self.get_object_retention(&req, b, k)
+                    self.get_object_retention(account_id, &req, b, k)
                 } else if req.query_params.contains_key("legal-hold") {
-                    self.get_object_legal_hold(&req, b, k)
+                    self.get_object_legal_hold(account_id, &req, b, k)
                 } else if req.query_params.contains_key("attributes") {
-                    self.get_object_attributes(&req, b, k)
+                    self.get_object_attributes(account_id, &req, b, k)
                 } else {
-                    let result = self.get_object(&req, b, k);
+                    let result = self.get_object(account_id, &req, b, k);
                     // If object not found and bucket has website config, serve error document
                     let is_not_found = matches!(
                         &result,
@@ -480,7 +500,10 @@ impl AwsService for S3Service {
                     );
                     if is_not_found {
                         let website_config = {
-                            let state = self.state.read();
+                            let accounts = self.state.read();
+                            let _empty_s3 =
+                                crate::state::S3State::new(&req.account_id, &req.region);
+                            let state = accounts.get(&req.account_id).unwrap_or(&_empty_s3);
                             state
                                 .buckets
                                 .get(b)
@@ -497,7 +520,7 @@ impl AwsService for S3Service {
                                 })
                                 .or_else(|| extract_xml_value(config, "Key"))
                             {
-                                return self.serve_website_error(&req, b, &error_key);
+                                return self.serve_website_error(account_id, &req, b, &error_key);
                             }
                         }
                     }
@@ -506,16 +529,16 @@ impl AwsService for S3Service {
             }
             (&Method::DELETE, Some(b), Some(k)) => {
                 if req.query_params.contains_key("tagging") {
-                    self.delete_object_tagging(b, k)
+                    self.delete_object_tagging(account_id, b, k)
                 } else {
-                    self.delete_object(&req, b, k)
+                    self.delete_object(account_id, &req, b, k)
                 }
             }
-            (&Method::HEAD, Some(b), Some(k)) => self.head_object(&req, b, k),
+            (&Method::HEAD, Some(b), Some(k)) => self.head_object(account_id, &req, b, k),
 
             // POST /{bucket}?delete — batch delete
             (&Method::POST, Some(b), None) if req.query_params.contains_key("delete") => {
-                self.delete_objects(&req, b)
+                self.delete_objects(account_id, &req, b)
             }
 
             _ => Err(AwsServiceError::aws_error(
@@ -528,7 +551,9 @@ impl AwsService for S3Service {
         // Apply CORS headers to the response if Origin was present
         if let (Some(ref origin), Some(b_name)) = (&origin_header, bucket) {
             let cors_config = {
-                let state = self.state.read();
+                let accounts = self.state.read();
+                let _empty_s3 = crate::state::S3State::new(&req.account_id, &req.region);
+                let state = accounts.get(&req.account_id).unwrap_or(&_empty_s3);
                 state
                     .buckets
                     .get(b_name)
@@ -774,7 +799,13 @@ fn s3_resource_tags(
     }
     // S3 ARNs: arn:aws:s3:::bucket or arn:aws:s3:::bucket/key
     let after_prefix = resource_arn.strip_prefix("arn:aws:s3:::")?;
-    let state = state.read();
+    let mas = state.read();
+    // S3 bucket names are globally unique; scan all accounts to find the bucket
+    let bucket_name = after_prefix.split('/').next().unwrap_or(after_prefix);
+    let state = mas
+        .find_account(|s| s.buckets.contains_key(bucket_name))
+        .and_then(|id| mas.get(id))
+        .or_else(|| Some(mas.default_ref()))?;
     if let Some(slash_pos) = after_prefix.find('/') {
         // Object-level: bucket/key
         let bucket_name = &after_prefix[..slash_pos];
@@ -2763,7 +2794,7 @@ mod tests {
     // running Axum router.
     // ────────────────────────────────────────────────────────────────
 
-    use crate::state::{S3Bucket, S3Object, S3State};
+    use crate::state::{S3Bucket, S3Object};
     use bytes::Bytes;
     use fakecloud_core::delivery::DeliveryBus;
     use fakecloud_core::service::{AwsRequest, AwsServiceError};
@@ -2773,19 +2804,23 @@ mod tests {
     use std::sync::Arc;
 
     fn make_service() -> S3Service {
-        let state: SharedS3State = Arc::new(RwLock::new(S3State::new("123456789012", "us-east-1")));
+        let state: SharedS3State = Arc::new(RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         S3Service::new(state, Arc::new(DeliveryBus::new()))
     }
 
     fn seed_bucket(svc: &S3Service, name: &str) {
-        let mut state = svc.state.write();
+        let mut mas = svc.state.write();
+        let state = mas.default_mut();
         state
             .buckets
             .insert(name.to_string(), S3Bucket::new(name, "us-east-1", "owner"));
     }
 
     fn seed_object(svc: &S3Service, bucket: &str, key: &str, body: &[u8]) {
-        let mut state = svc.state.write();
+        let mut mas = svc.state.write();
+        let state = mas.default_mut();
         let b = state.buckets.get_mut(bucket).expect("bucket seeded");
         let mut obj = S3Object {
             key: key.to_string(),
@@ -2860,8 +2895,9 @@ mod tests {
         seed_bucket(&svc, "b");
         seed_object(&svc, "b", "k", b"hello");
         {
-            let mut state = svc.state.write();
-            let obj = state
+            let mut mas = svc.state.write();
+            let obj = mas
+                .default_mut()
                 .buckets
                 .get_mut("b")
                 .unwrap()
@@ -2873,7 +2909,9 @@ mod tests {
         }
 
         let req = make_request(Method::GET, "/b/k", &[("tagging", "")], b"");
-        let resp = svc.get_object_tagging(&req, "b", "k").unwrap();
+        let resp = svc
+            .get_object_tagging("123456789012", &req, "b", "k")
+            .unwrap();
         assert_eq!(resp.status, StatusCode::OK);
         let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
         assert!(body.contains("<Tag><Key>env</Key><Value>prod</Value></Tag>"));
@@ -2884,7 +2922,10 @@ mod tests {
     fn get_object_tagging_missing_bucket_errors() {
         let svc = make_service();
         let req = make_request(Method::GET, "/nope/k", &[("tagging", "")], b"");
-        assert_aws_err(svc.get_object_tagging(&req, "nope", "k"), "NoSuchBucket");
+        assert_aws_err(
+            svc.get_object_tagging("123456789012", &req, "nope", "k"),
+            "NoSuchBucket",
+        );
     }
 
     #[test]
@@ -2895,7 +2936,10 @@ mod tests {
 
         let xml = r#"<Tagging><TagSet><Tag><Key>aws:internal</Key><Value>v</Value></Tag></TagSet></Tagging>"#;
         let req = make_request(Method::PUT, "/b/k", &[("tagging", "")], xml.as_bytes());
-        assert_aws_err(svc.put_object_tagging(&req, "b", "k"), "InvalidTag");
+        assert_aws_err(
+            svc.put_object_tagging("123456789012", &req, "b", "k"),
+            "InvalidTag",
+        );
     }
 
     #[test]
@@ -2910,7 +2954,10 @@ mod tests {
         }
         xml.push_str("</TagSet></Tagging>");
         let req = make_request(Method::PUT, "/b/k", &[("tagging", "")], xml.as_bytes());
-        assert_aws_err(svc.put_object_tagging(&req, "b", "k"), "BadRequest");
+        assert_aws_err(
+            svc.put_object_tagging("123456789012", &req, "b", "k"),
+            "BadRequest",
+        );
     }
 
     #[test]
@@ -2925,7 +2972,10 @@ mod tests {
             &[("tagging", "")],
             xml.as_bytes(),
         );
-        assert_aws_err(svc.put_object_tagging(&req, "b", "missing"), "NoSuchKey");
+        assert_aws_err(
+            svc.put_object_tagging("123456789012", &req, "b", "missing"),
+            "NoSuchKey",
+        );
     }
 
     #[test]
@@ -2934,8 +2984,9 @@ mod tests {
         seed_bucket(&svc, "b");
         seed_object(&svc, "b", "k", b"x");
         {
-            let mut state = svc.state.write();
-            let obj = state
+            let mut mas = svc.state.write();
+            let obj = mas
+                .default_mut()
                 .buckets
                 .get_mut("b")
                 .unwrap()
@@ -2948,10 +2999,13 @@ mod tests {
         let xml =
             r#"<Tagging><TagSet><Tag><Key>new</Key><Value>here</Value></Tag></TagSet></Tagging>"#;
         let req = make_request(Method::PUT, "/b/k", &[("tagging", "")], xml.as_bytes());
-        let resp = svc.put_object_tagging(&req, "b", "k").unwrap();
+        let resp = svc
+            .put_object_tagging("123456789012", &req, "b", "k")
+            .unwrap();
         assert_eq!(resp.status, StatusCode::OK);
 
-        let state = svc.state.read();
+        let __mas = svc.state.read();
+        let state = __mas.default_ref();
         let tags = &state
             .buckets
             .get("b")
@@ -2970,8 +3024,9 @@ mod tests {
         seed_bucket(&svc, "b");
         seed_object(&svc, "b", "k", b"x");
         {
-            let mut state = svc.state.write();
-            let obj = state
+            let mut mas = svc.state.write();
+            let obj = mas
+                .default_mut()
                 .buckets
                 .get_mut("b")
                 .unwrap()
@@ -2981,9 +3036,10 @@ mod tests {
             obj.tags.insert("env".to_string(), "prod".to_string());
         }
 
-        let resp = svc.delete_object_tagging("b", "k").unwrap();
+        let resp = svc.delete_object_tagging("123456789012", "b", "k").unwrap();
         assert_eq!(resp.status, StatusCode::NO_CONTENT);
-        let state = svc.state.read();
+        let __mas = svc.state.read();
+        let state = __mas.default_ref();
         assert!(state
             .buckets
             .get("b")
@@ -2999,7 +3055,10 @@ mod tests {
     fn delete_object_tagging_missing_key_errors() {
         let svc = make_service();
         seed_bucket(&svc, "b");
-        assert_aws_err(svc.delete_object_tagging("b", "gone"), "NoSuchKey");
+        assert_aws_err(
+            svc.delete_object_tagging("123456789012", "b", "gone"),
+            "NoSuchKey",
+        );
     }
 
     // ── Multipart (service/multipart.rs) ─────────────────────────────
@@ -3011,7 +3070,9 @@ mod tests {
             &[("uploads", "")],
             b"",
         );
-        let resp = svc.create_multipart_upload(&req, bucket, key).unwrap();
+        let resp = svc
+            .create_multipart_upload("123456789012", &req, bucket, key)
+            .unwrap();
         let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
         let start = body.find("<UploadId>").unwrap() + "<UploadId>".len();
         let end = body.find("</UploadId>").unwrap();
@@ -3023,7 +3084,8 @@ mod tests {
         let svc = make_service();
         seed_bucket(&svc, "b");
         let upload_id = initiate_mpu(&svc, "b", "big.bin");
-        let state = svc.state.read();
+        let __mas = svc.state.read();
+        let state = __mas.default_ref();
         assert!(state
             .buckets
             .get("b")
@@ -3041,7 +3103,7 @@ mod tests {
         req.headers
             .insert("x-amz-grant-read", "id=owner".parse().unwrap());
         assert_aws_err(
-            svc.create_multipart_upload(&req, "b", "k"),
+            svc.create_multipart_upload("123456789012", &req, "b", "k"),
             "InvalidRequest",
         );
     }
@@ -3051,7 +3113,7 @@ mod tests {
         let svc = make_service();
         let req = make_request(Method::POST, "/ghost/k", &[("uploads", "")], b"");
         assert_aws_err(
-            svc.create_multipart_upload(&req, "ghost", "k"),
+            svc.create_multipart_upload("123456789012", &req, "ghost", "k"),
             "NoSuchBucket",
         );
     }
@@ -3065,14 +3127,14 @@ mod tests {
         // part_number < 1 is masked as NoSuchUpload (matching AWS behavior).
         let req = make_request(Method::PUT, "/b/k", &[("partNumber", "0")], b"body");
         assert_aws_err(
-            svc.upload_part(&req, "b", "k", &upload_id, 0),
+            svc.upload_part("123456789012", &req, "b", "k", &upload_id, 0),
             "NoSuchUpload",
         );
 
         // part_number > 10000 returns InvalidArgument.
         let req2 = make_request(Method::PUT, "/b/k", &[("partNumber", "10001")], b"body");
         assert_aws_err(
-            svc.upload_part(&req2, "b", "k", &upload_id, 10_001),
+            svc.upload_part("123456789012", &req2, "b", "k", &upload_id, 10_001),
             "InvalidArgument",
         );
     }
@@ -3083,7 +3145,7 @@ mod tests {
         seed_bucket(&svc, "b");
         let req = make_request(Method::PUT, "/b/k", &[("partNumber", "1")], b"body");
         assert_aws_err(
-            svc.upload_part(&req, "b", "k", "not-an-upload", 1),
+            svc.upload_part("123456789012", &req, "b", "k", "not-an-upload", 1),
             "NoSuchUpload",
         );
     }
@@ -3098,7 +3160,9 @@ mod tests {
         // only applies to non-last parts, so a single part of any size works.
         let part_body = b"hello";
         let req = make_request(Method::PUT, "/b/k", &[("partNumber", "1")], part_body);
-        let resp = svc.upload_part(&req, "b", "k", &upload_id, 1).unwrap();
+        let resp = svc
+            .upload_part("123456789012", &req, "b", "k", &upload_id, 1)
+            .unwrap();
         let etag = resp
             .headers
             .get("etag")
@@ -3117,11 +3181,12 @@ mod tests {
             complete_xml.as_bytes(),
         );
         let resp = svc
-            .complete_multipart_upload(&complete_req, "b", "k", &upload_id)
+            .complete_multipart_upload("123456789012", &complete_req, "b", "k", &upload_id)
             .unwrap();
         assert_eq!(resp.status, StatusCode::OK);
 
-        let state = svc.state.read();
+        let __mas = svc.state.read();
+        let state = __mas.default_ref();
         let bucket = state.buckets.get("b").unwrap();
         let obj = bucket.objects.get("k").expect("object materialized");
         assert_eq!(obj.size, part_body.len() as u64);
@@ -3142,12 +3207,14 @@ mod tests {
                 &[("partNumber", &n.to_string())],
                 body.as_bytes(),
             );
-            svc.upload_part(&req, "b", "k", &upload_id, n).unwrap();
+            svc.upload_part("123456789012", &req, "b", "k", &upload_id, n)
+                .unwrap();
         }
 
         // Grab the etags from state.
         let (etag1, etag2) = {
-            let state = svc.state.read();
+            let __mas = svc.state.read();
+            let state = __mas.default_ref();
             let parts = &state
                 .buckets
                 .get("b")
@@ -3172,7 +3239,7 @@ mod tests {
             complete_xml.as_bytes(),
         );
         assert_aws_err(
-            svc.complete_multipart_upload(&complete_req, "b", "k", &upload_id),
+            svc.complete_multipart_upload("123456789012", &complete_req, "b", "k", &upload_id),
             "EntityTooSmall",
         );
     }
@@ -3182,9 +3249,12 @@ mod tests {
         let svc = make_service();
         seed_bucket(&svc, "b");
         let upload_id = initiate_mpu(&svc, "b", "k");
-        let resp = svc.abort_multipart_upload("b", "k", &upload_id).unwrap();
+        let resp = svc
+            .abort_multipart_upload("123456789012", "b", "k", &upload_id)
+            .unwrap();
         assert_eq!(resp.status, StatusCode::NO_CONTENT);
-        let state = svc.state.read();
+        let __mas = svc.state.read();
+        let state = __mas.default_ref();
         assert!(!state
             .buckets
             .get("b")
@@ -3198,7 +3268,7 @@ mod tests {
         let svc = make_service();
         seed_bucket(&svc, "b");
         assert_aws_err(
-            svc.abort_multipart_upload("b", "k", "no-such"),
+            svc.abort_multipart_upload("123456789012", "b", "k", "no-such"),
             "NoSuchUpload",
         );
     }
@@ -3209,7 +3279,7 @@ mod tests {
         seed_bucket(&svc, "b");
         let u1 = initiate_mpu(&svc, "b", "a");
         let u2 = initiate_mpu(&svc, "b", "b");
-        let resp = svc.list_multipart_uploads("b").unwrap();
+        let resp = svc.list_multipart_uploads("123456789012", "b").unwrap();
         let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
         assert!(body.contains(&u1));
         assert!(body.contains(&u2));
@@ -3221,10 +3291,13 @@ mod tests {
         seed_bucket(&svc, "b");
         let upload_id = initiate_mpu(&svc, "b", "k");
         let req = make_request(Method::PUT, "/b/k", &[("partNumber", "1")], b"data");
-        svc.upload_part(&req, "b", "k", &upload_id, 1).unwrap();
+        svc.upload_part("123456789012", &req, "b", "k", &upload_id, 1)
+            .unwrap();
 
         let list_req = make_request(Method::GET, "/b/k", &[("uploadId", &upload_id)], b"");
-        let resp = svc.list_parts(&list_req, "b", "k", &upload_id).unwrap();
+        let resp = svc
+            .list_parts("123456789012", &list_req, "b", "k", &upload_id)
+            .unwrap();
         let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
         assert!(body.contains("<PartNumber>1</PartNumber>"));
     }
@@ -3238,19 +3311,21 @@ mod tests {
 
         let xml = r#"<ServerSideEncryptionConfiguration><Rule><ApplyServerSideEncryptionByDefault><SSEAlgorithm>AES256</SSEAlgorithm></ApplyServerSideEncryptionByDefault></Rule></ServerSideEncryptionConfiguration>"#;
         let req = make_request(Method::PUT, "/b", &[("encryption", "")], xml.as_bytes());
-        let resp = svc.put_bucket_encryption(&req, "b").unwrap();
+        let resp = svc
+            .put_bucket_encryption("123456789012", &req, "b")
+            .unwrap();
         assert_eq!(resp.status, StatusCode::OK);
 
         // Normalized body should include BucketKeyEnabled=false.
-        let get = svc.get_bucket_encryption("b").unwrap();
+        let get = svc.get_bucket_encryption("123456789012", "b").unwrap();
         let body = std::str::from_utf8(get.body.expect_bytes()).unwrap();
         assert!(body.contains("AES256"));
         assert!(body.contains("<BucketKeyEnabled>false</BucketKeyEnabled>"));
 
-        let del = svc.delete_bucket_encryption("b").unwrap();
+        let del = svc.delete_bucket_encryption("123456789012", "b").unwrap();
         assert_eq!(del.status, StatusCode::NO_CONTENT);
         assert_aws_err(
-            svc.get_bucket_encryption("b"),
+            svc.get_bucket_encryption("123456789012", "b"),
             "ServerSideEncryptionConfigurationNotFoundError",
         );
     }
@@ -3260,7 +3335,10 @@ mod tests {
         let svc = make_service();
         seed_bucket(&svc, "b");
         let req = make_request(Method::PUT, "/b", &[("policy", "")], b"not-json");
-        assert_aws_err(svc.put_bucket_policy(&req, "b"), "MalformedPolicy");
+        assert_aws_err(
+            svc.put_bucket_policy("123456789012", &req, "b"),
+            "MalformedPolicy",
+        );
     }
 
     #[test]
@@ -3270,15 +3348,20 @@ mod tests {
 
         let body = br#"{"Version":"2012-10-17","Statement":[]}"#;
         let put_req = make_request(Method::PUT, "/b", &[("policy", "")], body);
-        let resp = svc.put_bucket_policy(&put_req, "b").unwrap();
+        let resp = svc
+            .put_bucket_policy("123456789012", &put_req, "b")
+            .unwrap();
         assert_eq!(resp.status, StatusCode::NO_CONTENT);
 
-        let get = svc.get_bucket_policy("b").unwrap();
+        let get = svc.get_bucket_policy("123456789012", "b").unwrap();
         assert_eq!(get.body.expect_bytes(), body);
 
-        let del = svc.delete_bucket_policy("b").unwrap();
+        let del = svc.delete_bucket_policy("123456789012", "b").unwrap();
         assert_eq!(del.status, StatusCode::NO_CONTENT);
-        assert_aws_err(svc.get_bucket_policy("b"), "NoSuchBucketPolicy");
+        assert_aws_err(
+            svc.get_bucket_policy("123456789012", "b"),
+            "NoSuchBucketPolicy",
+        );
     }
 
     #[test]
@@ -3286,7 +3369,8 @@ mod tests {
         let svc = make_service();
         seed_bucket(&svc, "b");
         {
-            let mut state = svc.state.write();
+            let mut __mas = svc.state.write();
+            let state = __mas.default_mut();
             state.buckets.get_mut("b").unwrap().lifecycle_config = Some("placeholder".to_string());
         }
         let req = make_request(
@@ -3295,8 +3379,9 @@ mod tests {
             &[("lifecycle", "")],
             b"<LifecycleConfiguration></LifecycleConfiguration>",
         );
-        svc.put_bucket_lifecycle(&req, "b").unwrap();
-        let state = svc.state.read();
+        svc.put_bucket_lifecycle("123456789012", &req, "b").unwrap();
+        let __mas = svc.state.read();
+        let state = __mas.default_ref();
         assert!(state.buckets.get("b").unwrap().lifecycle_config.is_none());
     }
 
@@ -3306,13 +3391,16 @@ mod tests {
         seed_bucket(&svc, "b");
         let xml = br#"<CORSConfiguration><CORSRule><AllowedMethod>GET</AllowedMethod><AllowedOrigin>*</AllowedOrigin></CORSRule></CORSConfiguration>"#;
         let req = make_request(Method::PUT, "/b", &[("cors", "")], xml);
-        svc.put_bucket_cors(&req, "b").unwrap();
-        let got = svc.get_bucket_cors("b").unwrap();
+        svc.put_bucket_cors("123456789012", &req, "b").unwrap();
+        let got = svc.get_bucket_cors("123456789012", "b").unwrap();
         assert!(std::str::from_utf8(got.body.expect_bytes())
             .unwrap()
             .contains("CORSConfiguration"));
-        svc.delete_bucket_cors("b").unwrap();
-        assert_aws_err(svc.get_bucket_cors("b"), "NoSuchCORSConfiguration");
+        svc.delete_bucket_cors("123456789012", "b").unwrap();
+        assert_aws_err(
+            svc.get_bucket_cors("123456789012", "b"),
+            "NoSuchCORSConfiguration",
+        );
     }
 
     #[test]
@@ -3325,16 +3413,18 @@ mod tests {
             &[("versioning", "")],
             b"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>",
         );
-        svc.put_bucket_versioning(&req, "b").unwrap();
+        svc.put_bucket_versioning("123456789012", &req, "b")
+            .unwrap();
 
-        let state = svc.state.read();
+        let __mas = svc.state.read();
+        let state = __mas.default_ref();
         assert_eq!(
             state.buckets.get("b").unwrap().versioning.as_deref(),
             Some("Enabled")
         );
-        drop(state);
+        drop(__mas);
 
-        let resp = svc.get_bucket_versioning("b").unwrap();
+        let resp = svc.get_bucket_versioning("123456789012", "b").unwrap();
         let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
         assert!(body.contains("<Status>Enabled</Status>"));
     }
@@ -3349,15 +3439,21 @@ mod tests {
             &[("tagging", "")],
             br#"<Tagging><TagSet><Tag><Key>env</Key><Value>prod</Value></Tag></TagSet></Tagging>"#,
         );
-        svc.put_bucket_tagging(&req, "b").unwrap();
+        svc.put_bucket_tagging("123456789012", &req, "b").unwrap();
         let get_req = make_request(Method::GET, "/b", &[("tagging", "")], b"");
-        let got = svc.get_bucket_tagging(&get_req, "b").unwrap();
+        let got = svc
+            .get_bucket_tagging("123456789012", &get_req, "b")
+            .unwrap();
         assert!(std::str::from_utf8(got.body.expect_bytes())
             .unwrap()
             .contains("<Key>env</Key>"));
         let del_req = make_request(Method::DELETE, "/b", &[("tagging", "")], b"");
-        svc.delete_bucket_tagging(&del_req, "b").unwrap();
-        assert_aws_err(svc.get_bucket_tagging(&get_req, "b"), "NoSuchTagSet");
+        svc.delete_bucket_tagging("123456789012", &del_req, "b")
+            .unwrap();
+        assert_aws_err(
+            svc.get_bucket_tagging("123456789012", &get_req, "b"),
+            "NoSuchTagSet",
+        );
     }
 
     #[test]
@@ -3370,7 +3466,10 @@ mod tests {
             &[("accelerate", "")],
             b"<AccelerateConfiguration><Status>Bogus</Status></AccelerateConfiguration>",
         );
-        assert_aws_err(svc.put_bucket_accelerate(&req, "b"), "MalformedXML");
+        assert_aws_err(
+            svc.put_bucket_accelerate("123456789012", &req, "b"),
+            "MalformedXML",
+        );
     }
 
     #[test]
@@ -3383,8 +3482,9 @@ mod tests {
             &[("accelerate", "")],
             b"<AccelerateConfiguration><Status>Enabled</Status></AccelerateConfiguration>",
         );
-        svc.put_bucket_accelerate(&req, "b").unwrap();
-        let got = svc.get_bucket_accelerate("b").unwrap();
+        svc.put_bucket_accelerate("123456789012", &req, "b")
+            .unwrap();
+        let got = svc.get_bucket_accelerate("123456789012", "b").unwrap();
         assert!(std::str::from_utf8(got.body.expect_bytes())
             .unwrap()
             .contains("<Status>Enabled</Status>"));
@@ -3396,14 +3496,15 @@ mod tests {
         seed_bucket(&svc, "b");
         let body = br#"<PublicAccessBlockConfiguration><BlockPublicAcls>true</BlockPublicAcls><IgnorePublicAcls>true</IgnorePublicAcls><BlockPublicPolicy>true</BlockPublicPolicy><RestrictPublicBuckets>true</RestrictPublicBuckets></PublicAccessBlockConfiguration>"#;
         let req = make_request(Method::PUT, "/b", &[("publicAccessBlock", "")], body);
-        svc.put_public_access_block(&req, "b").unwrap();
-        let got = svc.get_public_access_block("b").unwrap();
+        svc.put_public_access_block("123456789012", &req, "b")
+            .unwrap();
+        let got = svc.get_public_access_block("123456789012", "b").unwrap();
         assert!(std::str::from_utf8(got.body.expect_bytes())
             .unwrap()
             .contains("<BlockPublicAcls>true</BlockPublicAcls>"));
-        svc.delete_public_access_block("b").unwrap();
+        svc.delete_public_access_block("123456789012", "b").unwrap();
         assert_aws_err(
-            svc.get_public_access_block("b"),
+            svc.get_public_access_block("123456789012", "b"),
             "NoSuchPublicAccessBlockConfiguration",
         );
     }
@@ -3418,20 +3519,26 @@ mod tests {
             &[("website", "")],
             b"<WebsiteConfiguration><IndexDocument><Suffix>index.html</Suffix></IndexDocument></WebsiteConfiguration>",
         );
-        svc.put_bucket_website(&req, "b").unwrap();
-        let got = svc.get_bucket_website("b").unwrap();
+        svc.put_bucket_website("123456789012", &req, "b").unwrap();
+        let got = svc.get_bucket_website("123456789012", "b").unwrap();
         assert!(std::str::from_utf8(got.body.expect_bytes())
             .unwrap()
             .contains("<Suffix>index.html</Suffix>"));
-        svc.delete_bucket_website("b").unwrap();
-        assert_aws_err(svc.get_bucket_website("b"), "NoSuchWebsiteConfiguration");
+        svc.delete_bucket_website("123456789012", "b").unwrap();
+        assert_aws_err(
+            svc.get_bucket_website("123456789012", "b"),
+            "NoSuchWebsiteConfiguration",
+        );
     }
 
     #[test]
     fn bucket_replication_requires_existing_bucket() {
         let svc = make_service();
         let req = make_request(Method::PUT, "/nope", &[("replication", "")], b"<x/>");
-        assert_aws_err(svc.put_bucket_replication(&req, "nope"), "NoSuchBucket");
+        assert_aws_err(
+            svc.put_bucket_replication("123456789012", &req, "nope"),
+            "NoSuchBucket",
+        );
     }
 
     #[test]
@@ -3444,14 +3551,18 @@ mod tests {
             &[("ownershipControls", "")],
             b"<OwnershipControls><Rule><ObjectOwnership>BucketOwnerEnforced</ObjectOwnership></Rule></OwnershipControls>",
         );
-        svc.put_bucket_ownership_controls(&req, "b").unwrap();
-        let got = svc.get_bucket_ownership_controls("b").unwrap();
+        svc.put_bucket_ownership_controls("123456789012", &req, "b")
+            .unwrap();
+        let got = svc
+            .get_bucket_ownership_controls("123456789012", "b")
+            .unwrap();
         assert!(std::str::from_utf8(got.body.expect_bytes())
             .unwrap()
             .contains("BucketOwnerEnforced"));
-        svc.delete_bucket_ownership_controls("b").unwrap();
+        svc.delete_bucket_ownership_controls("123456789012", "b")
+            .unwrap();
         assert_aws_err(
-            svc.get_bucket_ownership_controls("b"),
+            svc.get_bucket_ownership_controls("123456789012", "b"),
             "OwnershipControlsNotFoundError",
         );
     }
@@ -3462,7 +3573,10 @@ mod tests {
     fn get_object_nonexistent_bucket() {
         let svc = make_service();
         let req = make_request(Method::GET, "/no-bucket/key", &[], b"");
-        assert_aws_err(svc.get_object(&req, "no-bucket", "key"), "NoSuchBucket");
+        assert_aws_err(
+            svc.get_object("123456789012", &req, "no-bucket", "key"),
+            "NoSuchBucket",
+        );
     }
 
     #[test]
@@ -3470,7 +3584,10 @@ mod tests {
         let svc = make_service();
         seed_bucket(&svc, "b");
         let req = make_request(Method::GET, "/b/missing", &[], b"");
-        assert_aws_err(svc.get_object(&req, "b", "missing"), "NoSuchKey");
+        assert_aws_err(
+            svc.get_object("123456789012", &req, "b", "missing"),
+            "NoSuchKey",
+        );
     }
 
     #[test]
@@ -3479,7 +3596,10 @@ mod tests {
         seed_bucket(&svc, "b");
         let long_key = "x".repeat(1025);
         let req = make_request(Method::PUT, &format!("/b/{long_key}"), &[], b"data");
-        assert_aws_err(svc.put_object(&req, "b", &long_key), "KeyTooLongError");
+        assert_aws_err(
+            svc.put_object("123456789012", &req, "b", &long_key),
+            "KeyTooLongError",
+        );
     }
 
     #[test]
@@ -3489,7 +3609,10 @@ mod tests {
         let mut req = make_request(Method::PUT, "/b/tagged", &[], b"data");
         req.headers
             .insert("x-amz-tagging", "aws:reserved=nope".parse().unwrap());
-        assert_aws_err(svc.put_object(&req, "b", "tagged"), "InvalidTag");
+        assert_aws_err(
+            svc.put_object("123456789012", &req, "b", "tagged"),
+            "InvalidTag",
+        );
     }
 
     #[test]
@@ -3501,7 +3624,10 @@ mod tests {
             .insert("x-amz-acl", "public-read".parse().unwrap());
         req.headers
             .insert("x-amz-grant-read", "id=abc123".parse().unwrap());
-        assert_aws_err(svc.put_object(&req, "b", "conflict"), "InvalidRequest");
+        assert_aws_err(
+            svc.put_object("123456789012", &req, "b", "conflict"),
+            "InvalidRequest",
+        );
     }
 
     #[test]
@@ -3509,21 +3635,30 @@ mod tests {
         let svc = make_service();
         seed_bucket(&svc, "b");
         let req = make_request(Method::HEAD, "/b/missing", &[], b"");
-        assert_aws_err(svc.head_object(&req, "b", "missing"), "NoSuchKey");
+        assert_aws_err(
+            svc.head_object("123456789012", &req, "b", "missing"),
+            "NoSuchKey",
+        );
     }
 
     #[test]
     fn head_object_nonexistent_bucket() {
         let svc = make_service();
         let req = make_request(Method::HEAD, "/nope/key", &[], b"");
-        assert_aws_err(svc.head_object(&req, "nope", "key"), "NoSuchBucket");
+        assert_aws_err(
+            svc.head_object("123456789012", &req, "nope", "key"),
+            "NoSuchBucket",
+        );
     }
 
     #[test]
     fn delete_object_nonexistent_bucket() {
         let svc = make_service();
         let req = make_request(Method::DELETE, "/nope/key", &[], b"");
-        assert_aws_err(svc.delete_object(&req, "nope", "key"), "NoSuchBucket");
+        assert_aws_err(
+            svc.delete_object("123456789012", &req, "nope", "key"),
+            "NoSuchBucket",
+        );
     }
 
     #[test]
@@ -3534,7 +3669,10 @@ mod tests {
         let mut req = make_request(Method::PUT, "/dst-b/copied", &[], b"");
         req.headers
             .insert("x-amz-copy-source", "src-b/nonexistent".parse().unwrap());
-        assert_aws_err(svc.copy_object(&req, "dst-b", "copied"), "NoSuchKey");
+        assert_aws_err(
+            svc.copy_object("123456789012", &req, "dst-b", "copied"),
+            "NoSuchKey",
+        );
     }
 
     #[test]
@@ -3544,14 +3682,20 @@ mod tests {
         let mut req = make_request(Method::PUT, "/dst-b2/copied", &[], b"");
         req.headers
             .insert("x-amz-copy-source", "nope-bucket/key".parse().unwrap());
-        assert_aws_err(svc.copy_object(&req, "dst-b2", "copied"), "NoSuchBucket");
+        assert_aws_err(
+            svc.copy_object("123456789012", &req, "dst-b2", "copied"),
+            "NoSuchBucket",
+        );
     }
 
     #[test]
     fn list_objects_v2_nonexistent_bucket() {
         let svc = make_service();
         let req = make_request(Method::GET, "/nope", &[("list-type", "2")], b"");
-        assert_aws_err(svc.list_objects_v2(&req, "nope"), "NoSuchBucket");
+        assert_aws_err(
+            svc.list_objects_v2("123456789012", &req, "nope"),
+            "NoSuchBucket",
+        );
     }
 
     #[test]
@@ -3564,21 +3708,30 @@ mod tests {
             &[("list-type", "2"), ("continuation-token", "")],
             b"",
         );
-        assert_aws_err(svc.list_objects_v2(&req, "b"), "InvalidArgument");
+        assert_aws_err(
+            svc.list_objects_v2("123456789012", &req, "b"),
+            "InvalidArgument",
+        );
     }
 
     #[test]
     fn list_objects_v1_nonexistent_bucket() {
         let svc = make_service();
         let req = make_request(Method::GET, "/nope", &[], b"");
-        assert_aws_err(svc.list_objects_v1(&req, "nope"), "NoSuchBucket");
+        assert_aws_err(
+            svc.list_objects_v1("123456789012", &req, "nope"),
+            "NoSuchBucket",
+        );
     }
 
     #[test]
     fn list_object_versions_nonexistent_bucket() {
         let svc = make_service();
         let req = make_request(Method::GET, "/nope", &[("versions", "")], b"");
-        assert_aws_err(svc.list_object_versions(&req, "nope"), "NoSuchBucket");
+        assert_aws_err(
+            svc.list_object_versions("123456789012", &req, "nope"),
+            "NoSuchBucket",
+        );
     }
 
     // ── Error branch tests: multipart operations ──
@@ -3588,7 +3741,7 @@ mod tests {
         let svc = make_service();
         let req = make_request(Method::POST, "/nope/key", &[("uploads", "")], b"");
         assert_aws_err(
-            svc.create_multipart_upload(&req, "nope", "key"),
+            svc.create_multipart_upload("123456789012", &req, "nope", "key"),
             "NoSuchBucket",
         );
     }
@@ -3604,7 +3757,7 @@ mod tests {
             b"data",
         );
         assert_aws_err(
-            svc.upload_part(&req, "b", "key", "bogus", 1),
+            svc.upload_part("123456789012", &req, "b", "key", "bogus", 1),
             "NoSuchUpload",
         );
     }
@@ -3620,7 +3773,7 @@ mod tests {
             b"<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>\"abc\"</ETag></Part></CompleteMultipartUpload>",
         );
         assert_aws_err(
-            svc.complete_multipart_upload(&req, "b", "key", "bogus"),
+            svc.complete_multipart_upload("123456789012", &req, "b", "key", "bogus"),
             "NoSuchUpload",
         );
     }
@@ -3630,7 +3783,7 @@ mod tests {
         let svc = make_service();
         seed_bucket(&svc, "b");
         assert_aws_err(
-            svc.abort_multipart_upload("b", "key", "bogus"),
+            svc.abort_multipart_upload("123456789012", "b", "key", "bogus"),
             "NoSuchUpload",
         );
     }
@@ -3640,7 +3793,10 @@ mod tests {
         let svc = make_service();
         seed_bucket(&svc, "b");
         let req = make_request(Method::GET, "/b/key", &[("uploadId", "bogus")], b"");
-        assert_aws_err(svc.list_parts(&req, "b", "key", "bogus"), "NoSuchUpload");
+        assert_aws_err(
+            svc.list_parts("123456789012", &req, "b", "key", "bogus"),
+            "NoSuchUpload",
+        );
     }
 
     // ── Error branch tests: config operations ──
@@ -3649,13 +3805,19 @@ mod tests {
     fn get_bucket_acl_nonexistent() {
         let svc = make_service();
         let req = make_request(Method::GET, "/nope", &[("acl", "")], b"");
-        assert_aws_err(svc.get_bucket_acl(&req, "nope"), "NoSuchBucket");
+        assert_aws_err(
+            svc.get_bucket_acl("123456789012", &req, "nope"),
+            "NoSuchBucket",
+        );
     }
 
     #[test]
     fn get_bucket_versioning_nonexistent() {
         let svc = make_service();
-        assert_aws_err(svc.get_bucket_versioning("nope"), "NoSuchBucket");
+        assert_aws_err(
+            svc.get_bucket_versioning("123456789012", "nope"),
+            "NoSuchBucket",
+        );
     }
 
     #[test]
@@ -3667,43 +3829,64 @@ mod tests {
             &[("versioning", "")],
             b"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>",
         );
-        assert_aws_err(svc.put_bucket_versioning(&req, "nope"), "NoSuchBucket");
+        assert_aws_err(
+            svc.put_bucket_versioning("123456789012", &req, "nope"),
+            "NoSuchBucket",
+        );
     }
 
     #[test]
     fn get_bucket_location_nonexistent() {
         let svc = make_service();
-        assert_aws_err(svc.get_bucket_location("nope"), "NoSuchBucket");
+        assert_aws_err(
+            svc.get_bucket_location("123456789012", "nope"),
+            "NoSuchBucket",
+        );
     }
 
     #[test]
     fn get_bucket_lifecycle_nonexistent() {
         let svc = make_service();
-        assert_aws_err(svc.get_bucket_lifecycle("nope"), "NoSuchBucket");
+        assert_aws_err(
+            svc.get_bucket_lifecycle("123456789012", "nope"),
+            "NoSuchBucket",
+        );
     }
 
     #[test]
     fn get_bucket_notification_nonexistent() {
         let svc = make_service();
-        assert_aws_err(svc.get_bucket_notification("nope"), "NoSuchBucket");
+        assert_aws_err(
+            svc.get_bucket_notification("123456789012", "nope"),
+            "NoSuchBucket",
+        );
     }
 
     #[test]
     fn get_bucket_encryption_nonexistent() {
         let svc = make_service();
-        assert_aws_err(svc.get_bucket_encryption("nope"), "NoSuchBucket");
+        assert_aws_err(
+            svc.get_bucket_encryption("123456789012", "nope"),
+            "NoSuchBucket",
+        );
     }
 
     #[test]
     fn get_bucket_logging_nonexistent() {
         let svc = make_service();
-        assert_aws_err(svc.get_bucket_logging("nope"), "NoSuchBucket");
+        assert_aws_err(
+            svc.get_bucket_logging("123456789012", "nope"),
+            "NoSuchBucket",
+        );
     }
 
     #[test]
     fn get_object_lock_nonexistent() {
         let svc = make_service();
-        assert_aws_err(svc.get_object_lock_configuration("nope"), "NoSuchBucket");
+        assert_aws_err(
+            svc.get_object_lock_configuration("123456789012", "nope"),
+            "NoSuchBucket",
+        );
     }
 
     #[test]
@@ -3711,7 +3894,10 @@ mod tests {
         let svc = make_service();
         seed_bucket(&svc, "b");
         let req = make_request(Method::GET, "/b/missing", &[("attributes", "")], b"");
-        assert_aws_err(svc.get_object_attributes(&req, "b", "missing"), "NoSuchKey");
+        assert_aws_err(
+            svc.get_object_attributes("123456789012", &req, "b", "missing"),
+            "NoSuchKey",
+        );
     }
 
     #[test]
@@ -3719,7 +3905,7 @@ mod tests {
         let svc = make_service();
         let req = make_request(Method::GET, "/nope/key", &[("attributes", "")], b"");
         assert_aws_err(
-            svc.get_object_attributes(&req, "nope", "key"),
+            svc.get_object_attributes("123456789012", &req, "nope", "key"),
             "NoSuchBucket",
         );
     }
@@ -3733,38 +3919,53 @@ mod tests {
             &[("restore", "")],
             b"<RestoreRequest><Days>1</Days></RestoreRequest>",
         );
-        assert_aws_err(svc.restore_object(&req, "nope", "key"), "NoSuchBucket");
+        assert_aws_err(
+            svc.restore_object("123456789012", &req, "nope", "key"),
+            "NoSuchBucket",
+        );
     }
 
     #[test]
     fn get_public_access_block_nonexistent() {
         let svc = make_service();
-        assert_aws_err(svc.get_public_access_block("nope"), "NoSuchBucket");
+        assert_aws_err(
+            svc.get_public_access_block("123456789012", "nope"),
+            "NoSuchBucket",
+        );
     }
 
     #[test]
     fn get_bucket_policy_nonexistent() {
         let svc = make_service();
-        assert_aws_err(svc.get_bucket_policy("nope"), "NoSuchBucket");
+        assert_aws_err(
+            svc.get_bucket_policy("123456789012", "nope"),
+            "NoSuchBucket",
+        );
     }
 
     #[test]
     fn get_bucket_cors_nonexistent() {
         let svc = make_service();
-        assert_aws_err(svc.get_bucket_cors("nope"), "NoSuchBucket");
+        assert_aws_err(svc.get_bucket_cors("123456789012", "nope"), "NoSuchBucket");
     }
 
     #[test]
     fn get_bucket_tagging_nonexistent() {
         let svc = make_service();
         let req = make_request(Method::GET, "/nope", &[("tagging", "")], b"");
-        assert_aws_err(svc.get_bucket_tagging(&req, "nope"), "NoSuchBucket");
+        assert_aws_err(
+            svc.get_bucket_tagging("123456789012", &req, "nope"),
+            "NoSuchBucket",
+        );
     }
 
     #[test]
     fn get_bucket_website_nonexistent() {
         let svc = make_service();
-        assert_aws_err(svc.get_bucket_website("nope"), "NoSuchBucket");
+        assert_aws_err(
+            svc.get_bucket_website("123456789012", "nope"),
+            "NoSuchBucket",
+        );
     }
 
     // ── Object lock (lock.rs - 0% coverage) ──
@@ -3782,7 +3983,7 @@ mod tests {
             &[("retention", "")],
             body,
         );
-        svc.put_object_retention(&req, "lock-b", "retained.txt")
+        svc.put_object_retention("123456789012", &req, "lock-b", "retained.txt")
             .unwrap();
 
         let req = make_request(
@@ -3792,7 +3993,7 @@ mod tests {
             b"",
         );
         let resp = svc
-            .get_object_retention(&req, "lock-b", "retained.txt")
+            .get_object_retention("123456789012", &req, "lock-b", "retained.txt")
             .unwrap();
         let body_str = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
         assert!(body_str.contains("GOVERNANCE"));
@@ -3803,7 +4004,7 @@ mod tests {
         let svc = make_service();
         let req = make_request(Method::GET, "/nope/key", &[("retention", "")], b"");
         assert_aws_err(
-            svc.get_object_retention(&req, "nope", "key"),
+            svc.get_object_retention("123456789012", &req, "nope", "key"),
             "NoSuchBucket",
         );
     }
@@ -3814,7 +4015,7 @@ mod tests {
         seed_bucket(&svc, "lock-b2");
         let req = make_request(Method::GET, "/lock-b2/missing", &[("retention", "")], b"");
         assert_aws_err(
-            svc.get_object_retention(&req, "lock-b2", "missing"),
+            svc.get_object_retention("123456789012", &req, "lock-b2", "missing"),
             "NoSuchKey",
         );
     }
@@ -3827,12 +4028,12 @@ mod tests {
 
         let body = b"<LegalHold><Status>ON</Status></LegalHold>";
         let req = make_request(Method::PUT, "/hold-b/held.txt", &[("legal-hold", "")], body);
-        svc.put_object_legal_hold(&req, "hold-b", "held.txt")
+        svc.put_object_legal_hold("123456789012", &req, "hold-b", "held.txt")
             .unwrap();
 
         let req = make_request(Method::GET, "/hold-b/held.txt", &[("legal-hold", "")], b"");
         let resp = svc
-            .get_object_legal_hold(&req, "hold-b", "held.txt")
+            .get_object_legal_hold("123456789012", &req, "hold-b", "held.txt")
             .unwrap();
         let body_str = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
         assert!(body_str.contains("ON"));
@@ -3843,7 +4044,7 @@ mod tests {
         let svc = make_service();
         let req = make_request(Method::GET, "/nope/key", &[("legal-hold", "")], b"");
         assert_aws_err(
-            svc.get_object_legal_hold(&req, "nope", "key"),
+            svc.get_object_legal_hold("123456789012", &req, "nope", "key"),
             "NoSuchBucket",
         );
     }
@@ -3857,7 +4058,9 @@ mod tests {
         seed_object(&svc, "acl-b", "file.txt", b"data");
 
         let req = make_request(Method::GET, "/acl-b/file.txt", &[("acl", "")], b"");
-        let resp = svc.get_object_acl(&req, "acl-b", "file.txt").unwrap();
+        let resp = svc
+            .get_object_acl("123456789012", &req, "acl-b", "file.txt")
+            .unwrap();
         let body_str = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
         assert!(body_str.contains("AccessControlPolicy"));
     }
@@ -3866,7 +4069,10 @@ mod tests {
     fn get_object_acl_nonexistent_bucket() {
         let svc = make_service();
         let req = make_request(Method::GET, "/nope/key", &[("acl", "")], b"");
-        assert_aws_err(svc.get_object_acl(&req, "nope", "key"), "NoSuchBucket");
+        assert_aws_err(
+            svc.get_object_acl("123456789012", &req, "nope", "key"),
+            "NoSuchBucket",
+        );
     }
 
     #[test]
@@ -3874,7 +4080,10 @@ mod tests {
         let svc = make_service();
         seed_bucket(&svc, "acl-b2");
         let req = make_request(Method::GET, "/acl-b2/missing", &[("acl", "")], b"");
-        assert_aws_err(svc.get_object_acl(&req, "acl-b2", "missing"), "NoSuchKey");
+        assert_aws_err(
+            svc.get_object_acl("123456789012", &req, "acl-b2", "missing"),
+            "NoSuchKey",
+        );
     }
 
     #[test]
@@ -3885,6 +4094,7 @@ mod tests {
 
         let acl_xml = b"<AccessControlPolicy><Owner><ID>owner</ID></Owner><AccessControlList><Grant><Grantee xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:type=\"CanonicalUser\"><ID>owner</ID></Grantee><Permission>FULL_CONTROL</Permission></Grant></AccessControlList></AccessControlPolicy>";
         let req = make_request(Method::PUT, "/acl-put-b/file.txt", &[("acl", "")], acl_xml);
-        svc.put_object_acl(&req, "acl-put-b", "file.txt").unwrap();
+        svc.put_object_acl("123456789012", &req, "acl-put-b", "file.txt")
+            .unwrap();
     }
 }

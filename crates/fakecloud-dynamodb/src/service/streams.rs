@@ -43,7 +43,9 @@ impl DynamoDbService {
         let body = Self::parse_body(req)?;
         let table_name = require_str(&body, "TableName")?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty_ddb = crate::state::DynamoDbState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty_ddb);
         let table = get_table(&state.tables, table_name)?;
 
         Self::ok_json(json!({
@@ -62,7 +64,9 @@ impl DynamoDbService {
         let body = Self::parse_body(req)?;
         let table_name = require_str(&body, "TableName")?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty_ddb = crate::state::DynamoDbState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty_ddb);
         let table = get_table(&state.tables, table_name)?;
 
         Self::ok_json(json!({
@@ -88,7 +92,8 @@ impl DynamoDbService {
             .as_str()
             .unwrap_or("MILLISECOND");
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let table = get_table_mut(&mut state.tables, table_name)?;
 
         table.kinesis_destinations.push(KinesisDestination {
@@ -115,7 +120,8 @@ impl DynamoDbService {
         let table_name = require_str(&body, "TableName")?;
         let stream_arn = require_str(&body, "StreamArn")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let table = get_table_mut(&mut state.tables, table_name)?;
 
         if let Some(dest) = table
@@ -140,7 +146,9 @@ impl DynamoDbService {
         let body = Self::parse_body(req)?;
         let table_name = require_str(&body, "TableName")?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty_ddb = crate::state::DynamoDbState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty_ddb);
         let table = get_table(&state.tables, table_name)?;
 
         let destinations: Vec<Value> = table
@@ -173,7 +181,8 @@ impl DynamoDbService {
             .as_str()
             .unwrap_or("MILLISECOND");
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let table = get_table_mut(&mut state.tables, table_name)?;
 
         if let Some(dest) = table
@@ -204,7 +213,9 @@ impl DynamoDbService {
         let table_name = require_str(&body, "TableName")?;
         let index_name = body["IndexName"].as_str();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty_ddb = crate::state::DynamoDbState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty_ddb);
         let table = get_table(&state.tables, table_name)?;
 
         let top = table.top_contributors(10);
@@ -240,7 +251,8 @@ impl DynamoDbService {
         let action = require_str(&body, "ContributorInsightsAction")?;
         let index_name = body["IndexName"].as_str();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let table = get_table_mut(&mut state.tables, table_name)?;
 
         let status = match action {
@@ -279,7 +291,9 @@ impl DynamoDbService {
         validate_optional_range_i64("maxResults", body["MaxResults"].as_i64(), 0, 100)?;
         let table_name = body["TableName"].as_str();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty_ddb = crate::state::DynamoDbState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty_ddb);
         let summaries: Vec<Value> = state
             .tables
             .values()

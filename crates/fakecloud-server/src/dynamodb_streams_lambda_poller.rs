@@ -88,7 +88,8 @@ impl DynamoDbStreamsLambdaPoller {
 
             // Read stream records from DynamoDB
             let records = {
-                let dynamodb = self.dynamodb_state.read();
+                let dynamodb_mas = self.dynamodb_state.read();
+                let dynamodb = dynamodb_mas.default_ref();
                 let table = match dynamodb.tables.get(table_name) {
                     Some(t) => t,
                     None => continue,

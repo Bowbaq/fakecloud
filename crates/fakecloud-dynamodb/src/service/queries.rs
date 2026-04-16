@@ -17,7 +17,9 @@ impl DynamoDbService {
         let body = Self::parse_body(req)?;
         let table_name = require_str(&body, "TableName")?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty_ddb = crate::state::DynamoDbState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty_ddb);
         let table = get_table(&state.tables, table_name)?;
 
         let expr_attr_names = parse_expression_attribute_names(&body);
@@ -201,10 +203,11 @@ impl DynamoDbService {
             result["LastEvaluatedKey"] = json!(lek);
         }
 
-        drop(state);
+        drop(accounts);
 
         if !accessed_keys.is_empty() {
-            let mut state = self.state.write();
+            let mut accounts = self.state.write();
+            let state = accounts.get_or_create(&req.account_id);
             if let Some(table) = state.tables.get_mut(table_name) {
                 // Re-check insights status after acquiring write lock in case it
                 // was disabled between the read and write lock acquisitions.
@@ -226,7 +229,9 @@ impl DynamoDbService {
         let body = Self::parse_body(req)?;
         let table_name = require_str(&body, "TableName")?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty_ddb = crate::state::DynamoDbState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty_ddb);
         let table = get_table(&state.tables, table_name)?;
 
         let expr_attr_names = parse_expression_attribute_names(&body);
@@ -305,10 +310,11 @@ impl DynamoDbService {
             result["LastEvaluatedKey"] = json!(lek);
         }
 
-        drop(state);
+        drop(accounts);
 
         if !accessed_keys.is_empty() {
-            let mut state = self.state.write();
+            let mut accounts = self.state.write();
+            let state = accounts.get_or_create(&req.account_id);
             if let Some(table) = state.tables.get_mut(table_name) {
                 // Re-check insights status after acquiring write lock in case it
                 // was disabled between the read and write lock acquisitions.

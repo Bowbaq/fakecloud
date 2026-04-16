@@ -19,7 +19,8 @@ struct BucketSnapshot {
 pub fn tick_lifecycle(state: &SharedS3State) -> LifecycleTickResult {
     // Snapshot object counts and storage classes before processing
     let (buckets_with_lifecycle, before_snapshot) = {
-        let s = state.read();
+        let __mas = state.read();
+        let s = __mas.default_ref();
         let mut count = 0u64;
         let mut snapshot: Vec<BucketSnapshot> = Vec::new();
         for bucket in s.buckets.values() {
@@ -48,7 +49,8 @@ pub fn tick_lifecycle(state: &SharedS3State) -> LifecycleTickResult {
     let mut expired_objects = 0u64;
     let mut transitioned_objects = 0u64;
 
-    let s = state.read();
+    let __mas = state.read();
+    let s = __mas.default_ref();
     for snap in &before_snapshot {
         let bucket = match s.buckets.get(&snap.name) {
             Some(b) => b,
@@ -81,14 +83,16 @@ pub fn tick_lifecycle(state: &SharedS3State) -> LifecycleTickResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{S3Bucket, S3Object, S3State};
+    use crate::state::{S3Bucket, S3Object};
     use bytes::Bytes;
     use chrono::{Duration, Utc};
     use parking_lot::RwLock;
     use std::sync::Arc;
 
     fn make_state() -> SharedS3State {
-        Arc::new(RwLock::new(S3State::new("123456789012", "us-east-1")))
+        Arc::new(RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ))
     }
 
     fn make_object(key: &str, age_days: i64) -> S3Object {
@@ -109,7 +113,8 @@ mod tests {
         let state = make_state();
 
         {
-            let mut s = state.write();
+            let mut __mas = state.write();
+            let s = __mas.default_mut();
             let mut bucket = S3Bucket::new("test-bucket", "us-east-1", "123456789012");
             bucket.lifecycle_config = Some(
                 r#"<LifecycleConfiguration>
@@ -135,7 +140,8 @@ mod tests {
         assert_eq!(result.expired_objects, 1);
         assert_eq!(result.transitioned_objects, 0);
 
-        let s = state.read();
+        let __mas = state.read();
+        let s = __mas.default_ref();
         let bucket = s.buckets.get("test-bucket").unwrap();
         assert_eq!(bucket.objects.len(), 1);
         assert!(bucket.objects.contains_key("new-file.txt"));
@@ -146,7 +152,8 @@ mod tests {
         let state = make_state();
 
         {
-            let mut s = state.write();
+            let mut __mas = state.write();
+            let s = __mas.default_mut();
             let mut bucket = S3Bucket::new("trans-bucket", "us-east-1", "123456789012");
             bucket.lifecycle_config = Some(
                 r#"<LifecycleConfiguration>
@@ -172,7 +179,8 @@ mod tests {
         assert_eq!(result.expired_objects, 0);
         assert_eq!(result.transitioned_objects, 1);
 
-        let s = state.read();
+        let __mas = state.read();
+        let s = __mas.default_ref();
         let obj = s.buckets["trans-bucket"]
             .objects
             .get("old-file.txt")
@@ -185,7 +193,8 @@ mod tests {
         let state = make_state();
 
         {
-            let mut s = state.write();
+            let mut __mas = state.write();
+            let s = __mas.default_mut();
             let bucket = S3Bucket::new("empty-bucket", "us-east-1", "123456789012");
             s.buckets.insert("empty-bucket".to_string(), bucket);
         }

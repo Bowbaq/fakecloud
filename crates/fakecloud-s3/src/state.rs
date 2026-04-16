@@ -251,7 +251,13 @@ impl S3State {
     }
 }
 
-pub type SharedS3State = Arc<RwLock<S3State>>;
+impl fakecloud_core::multi_account::AccountState for S3State {
+    fn new_for_account(account_id: &str, region: &str, _endpoint: &str) -> Self {
+        Self::new(account_id, region)
+    }
+}
+
+pub type SharedS3State = Arc<RwLock<fakecloud_core::multi_account::MultiAccountState<S3State>>>;
 
 /// Construct a memory-backed [`BodyRef`] from [`Bytes`].
 pub fn memory_body(bytes: Bytes) -> BodyRef {

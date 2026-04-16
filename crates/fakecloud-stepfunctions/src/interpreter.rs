@@ -1226,7 +1226,8 @@ fn invoke_dynamodb_get_item(
 
     let key_map: HashMap<String, Value> = key.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
 
-    let state = ddb.read();
+    let __mas = ddb.read();
+    let state = __mas.default_ref();
     let table = state.tables.get(table_name).ok_or_else(|| {
         (
             "States.TaskFailed".to_string(),
@@ -1279,7 +1280,8 @@ fn invoke_dynamodb_put_item(
     let item_map: HashMap<String, Value> =
         item.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
 
-    let mut state = ddb.write();
+    let mut __mas = ddb.write();
+    let state = __mas.default_mut();
     let table = state.tables.get_mut(table_name).ok_or_else(|| {
         (
             "States.TaskFailed".to_string(),
@@ -1328,7 +1330,8 @@ fn invoke_dynamodb_delete_item(
 
     let key_map: HashMap<String, Value> = key.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
 
-    let mut state = ddb.write();
+    let mut __mas = ddb.write();
+    let state = __mas.default_mut();
     let table = state.tables.get_mut(table_name).ok_or_else(|| {
         (
             "States.TaskFailed".to_string(),
@@ -1375,7 +1378,8 @@ fn invoke_dynamodb_update_item(
 
     let key_map: HashMap<String, Value> = key.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
 
-    let mut state = ddb.write();
+    let mut __mas = ddb.write();
+    let state = __mas.default_mut();
     let table = state.tables.get_mut(table_name).ok_or_else(|| {
         (
             "States.TaskFailed".to_string(),

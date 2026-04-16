@@ -101,6 +101,19 @@ impl<T: AccountState> MultiAccountState<T> {
         );
     }
 
+    /// Find the first account whose state satisfies `predicate` and return
+    /// the account id. Useful for resolving globally-unique resources (e.g.
+    /// S3 bucket names) back to their owning account.
+    pub fn find_account<F>(&self, predicate: F) -> Option<&str>
+    where
+        F: Fn(&T) -> bool,
+    {
+        self.accounts
+            .iter()
+            .find(|(_, v)| predicate(v))
+            .map(|(k, _)| k.as_str())
+    }
+
     /// Number of accounts with state.
     pub fn account_count(&self) -> usize {
         self.accounts.len()

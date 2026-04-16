@@ -80,7 +80,9 @@ pub fn maybe_write_access_log(
 ) {
     // Read logging config from the source bucket
     let logging_config_xml = {
-        let st = state.read();
+        let mas = state.read();
+        let _empty_s3 = crate::state::S3State::new("", "");
+        let st = mas.default_ref();
         st.buckets
             .get(source_bucket)
             .and_then(|b| b.logging_config.clone())
@@ -92,7 +94,9 @@ pub fn maybe_write_access_log(
     };
 
     let bucket_owner = {
-        let st = state.read();
+        let mas = state.read();
+        let _empty_s3 = crate::state::S3State::new("", "");
+        let st = mas.default_ref();
         st.buckets
             .get(source_bucket)
             .map(|b| b.acl_owner_id.clone())
@@ -125,7 +129,8 @@ pub fn maybe_write_access_log(
 
     let meta = object_meta_snapshot(&log_object);
     {
-        let mut st = state.write();
+        let mut mas = state.write();
+        let st = mas.default_mut();
         if let Some(target) = st.buckets.get_mut(&config.target_bucket) {
             target.objects.insert(log_key.clone(), log_object);
         } else {

@@ -36,7 +36,8 @@ impl DynamoDbService {
             })
             .collect::<Vec<_>>();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if state.global_tables.contains_key(global_table_name) {
             return Err(AwsServiceError::aws_error(
@@ -86,7 +87,9 @@ impl DynamoDbService {
         let global_table_name = require_str(&body, "GlobalTableName")?;
         validate_string_length("globalTableName", global_table_name, 3, 255)?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty_ddb = crate::state::DynamoDbState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty_ddb);
         let gt = state.global_tables.get(global_table_name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -117,7 +120,9 @@ impl DynamoDbService {
         let global_table_name = require_str(&body, "GlobalTableName")?;
         validate_string_length("globalTableName", global_table_name, 3, 255)?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty_ddb = crate::state::DynamoDbState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty_ddb);
         let gt = state.global_tables.get(global_table_name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -159,7 +164,9 @@ impl DynamoDbService {
         validate_optional_range_i64("limit", body["Limit"].as_i64(), 1, i64::MAX)?;
         let limit = body["Limit"].as_i64().unwrap_or(100) as usize;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty_ddb = crate::state::DynamoDbState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty_ddb);
         let tables: Vec<Value> = state
             .global_tables
             .values()
@@ -188,7 +195,8 @@ impl DynamoDbService {
         validate_string_length("globalTableName", global_table_name, 3, 255)?;
         validate_required("replicaUpdates", &body["ReplicaUpdates"])?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let gt = state
             .global_tables
             .get_mut(global_table_name)
@@ -251,7 +259,9 @@ impl DynamoDbService {
             i64::MAX,
         )?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty_ddb = crate::state::DynamoDbState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty_ddb);
         let gt = state.global_tables.get(global_table_name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,

@@ -262,7 +262,11 @@ mod tests {
                 fakecloud_ssm::state::SsmState::new("123456789012", "us-east-1"),
             )),
             dynamodb: Arc::new(parking_lot::RwLock::new(
-                fakecloud_dynamodb::state::DynamoDbState::new("123456789012", "us-east-1"),
+                fakecloud_core::multi_account::MultiAccountState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "",
+                ),
             )),
             lambda: Arc::new(parking_lot::RwLock::new(
                 fakecloud_lambda::state::LambdaState::new("123456789012", "us-east-1"),
@@ -273,10 +277,13 @@ mod tests {
                     "us-east-1",
                 ),
             )),
-            s3: Arc::new(parking_lot::RwLock::new(fakecloud_s3::state::S3State::new(
-                "123456789012",
-                "us-east-1",
-            ))),
+            s3: Arc::new(parking_lot::RwLock::new(
+                fakecloud_core::multi_account::MultiAccountState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "http://localhost:4566",
+                ),
+            )),
             logs: Arc::new(parking_lot::RwLock::new(
                 fakecloud_logs::state::LogsState::new("123456789012", "us-east-1"),
             )),

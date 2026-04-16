@@ -26,7 +26,8 @@ impl DynamoDbService {
         // --- Acquire write lock ONLY for validation + mutation ---
         // Capture kinesis delivery info alongside the return value
         let (old_item, kinesis_info) = {
-            let mut state = self.state.write();
+            let mut accounts = self.state.write();
+            let state = accounts.get_or_create(&req.account_id);
             let region = state.region.clone();
             let table = get_table_mut(&mut state.tables, table_name)?;
 
@@ -128,7 +129,9 @@ impl DynamoDbService {
 
         // --- Use a read lock for the lookup (allows concurrent GetItem calls) ---
         let (result, needs_insights) = {
-            let state = self.state.read();
+            let accounts = self.state.read();
+            let empty_ddb = crate::state::DynamoDbState::new(&req.account_id, &req.region);
+            let state = accounts.get(&req.account_id).unwrap_or(&empty_ddb);
             let table = get_table(&state.tables, table_name)?;
             let needs_insights = table.contributor_insights_status == "ENABLED";
 
@@ -146,7 +149,8 @@ impl DynamoDbService {
 
         // Only acquire write lock if contributor insights tracking is enabled
         if needs_insights {
-            let mut state = self.state.write();
+            let mut accounts = self.state.write();
+            let state = accounts.get_or_create(&req.account_id);
             if let Some(table) = state.tables.get_mut(table_name) {
                 table.record_key_access(&key);
             }
@@ -188,7 +192,8 @@ impl DynamoDbService {
         let key = require_object(&body, "Key")?;
 
         let (result, kinesis_info) = {
-            let mut state = self.state.write();
+            let mut accounts = self.state.write();
+            let state = accounts.get_or_create(&req.account_id);
             let region = state.region.clone();
             let table = get_table_mut(&mut state.tables, table_name)?;
 
@@ -275,7 +280,8 @@ impl DynamoDbService {
         let table_name = require_str(&body, "TableName")?;
         let key = require_object(&body, "Key")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let region = state.region.clone();
         let table = get_table_mut(&mut state.tables, table_name)?;
 
@@ -372,7 +378,7 @@ impl DynamoDbService {
         table.recalculate_stats();
 
         // Release the write lock (drop `state`)
-        drop(state);
+        drop(accounts);
 
         // Deliver to Kinesis destinations outside the lock
         if let Some((target, ev, keys, old_image, new_image)) = kinesis_info {

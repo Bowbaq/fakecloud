@@ -20,6 +20,7 @@ use super::{
 impl S3Service {
     pub(super) fn create_multipart_upload(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
         key: &str,
@@ -78,7 +79,8 @@ impl S3Service {
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_uppercase());
 
-        let mut state = self.state.write();
+        let mut accts = self.state.write();
+        let state = accts.get_or_create(account_id);
         let b = state
             .buckets
             .get_mut(bucket)
@@ -147,6 +149,7 @@ impl S3Service {
 
     pub(super) fn upload_part(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
         key: &str,
@@ -173,7 +176,8 @@ impl S3Service {
         let data = req.body.clone();
         let etag = compute_md5(&data);
 
-        let mut state = self.state.write();
+        let mut accts = self.state.write();
+        let state = accts.get_or_create(account_id);
         let b = state
             .buckets
             .get_mut(bucket)
@@ -226,6 +230,7 @@ impl S3Service {
 
     pub(super) fn upload_part_copy(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
         key: &str,
@@ -271,7 +276,8 @@ impl S3Service {
             .get("x-amz-copy-source-range")
             .and_then(|v| v.to_str().ok());
 
-        let mut state = self.state.write();
+        let mut accts = self.state.write();
+        let state = accts.get_or_create(account_id);
         let src_body_ref = {
             let sb = state
                 .buckets
@@ -348,6 +354,7 @@ impl S3Service {
 
     pub(super) fn complete_multipart_upload(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
         key: &str,
@@ -371,7 +378,8 @@ impl S3Service {
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
 
-        let mut state = self.state.write();
+        let mut accts = self.state.write();
+        let state = accts.get_or_create(account_id);
         let (upload, already_has_object) = {
             let b = state
                 .buckets
@@ -608,11 +616,13 @@ impl S3Service {
 
     pub(super) fn abort_multipart_upload(
         &self,
+        account_id: &str,
         bucket: &str,
         key: &str,
         upload_id: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let mut state = self.state.write();
+        let mut accts = self.state.write();
+        let state = accts.get_or_create(account_id);
         let b = state
             .buckets
             .get_mut(bucket)
@@ -644,9 +654,12 @@ impl S3Service {
 
     pub(super) fn list_multipart_uploads(
         &self,
+        account_id: &str,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let accts = self.state.read();
+        let __empty = crate::state::S3State::new(account_id, "us-east-1");
+        let state = accts.get(account_id).unwrap_or(&__empty);
         let b = state
             .buckets
             .get(bucket)
@@ -685,6 +698,7 @@ impl S3Service {
 
     pub(super) fn list_parts(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
         key: &str,
@@ -741,7 +755,9 @@ impl S3Service {
             ));
         }
 
-        let state = self.state.read();
+        let accts = self.state.read();
+        let __empty = crate::state::S3State::new(account_id, "us-east-1");
+        let state = accts.get(account_id).unwrap_or(&__empty);
         let b = state
             .buckets
             .get(bucket)

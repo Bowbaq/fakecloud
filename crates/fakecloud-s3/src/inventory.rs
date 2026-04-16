@@ -39,7 +39,9 @@ fn bucket_name_from_arn(arn: &str) -> Option<&str> {
 pub fn generate_inventory_report(state: &SharedS3State, source_bucket: &str, config_id: &str) {
     // Read the inventory config
     let config_xml = {
-        let st = state.read();
+        let mas = state.read();
+        let _empty_s3 = crate::state::S3State::new("", "");
+        let st = mas.default_ref();
         st.buckets
             .get(source_bucket)
             .and_then(|b| b.inventory_configs.get(config_id).cloned())
@@ -62,7 +64,9 @@ pub fn generate_inventory_report(state: &SharedS3State, source_bucket: &str, con
 
     // Collect object data from source bucket
     let rows: Vec<String> = {
-        let st = state.read();
+        let mas = state.read();
+        let _empty_s3 = crate::state::S3State::new("", "");
+        let st = mas.default_ref();
         let bucket = match st.buckets.get(source_bucket) {
             Some(b) => b,
             None => return,
@@ -120,7 +124,8 @@ pub fn generate_inventory_report(state: &SharedS3State, source_bucket: &str, con
         ..Default::default()
     };
 
-    let mut st = state.write();
+    let mut mas = state.write();
+    let st = mas.default_mut();
     if let Some(target) = st.buckets.get_mut(&dest_bucket_name) {
         target.objects.insert(report_key, report_object);
     }

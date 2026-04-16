@@ -653,7 +653,8 @@ pub(crate) fn deliver_notifications(
     // Deliver to EventBridge if enabled for this bucket
     let eventbridge_enabled = s3_state
         .and_then(|st| {
-            let state = st.read();
+            let mas = st.read();
+            let state = mas.default_ref();
             state
                 .buckets
                 .get(bucket_name)
@@ -736,12 +737,16 @@ pub(crate) fn deliver_notifications(
     // Record notification event for introspection only if at least one target matched
     if delivered {
         if let Some(state) = s3_state {
-            state.write().notification_events.push(S3NotificationEvent {
-                bucket: bucket_name.to_string(),
-                key: key.to_string(),
-                event_type: s3_event_name,
-                timestamp: Utc::now(),
-            });
+            state
+                .write()
+                .default_mut()
+                .notification_events
+                .push(S3NotificationEvent {
+                    bucket: bucket_name.to_string(),
+                    key: key.to_string(),
+                    event_type: s3_event_name,
+                    timestamp: Utc::now(),
+                });
         }
     }
 }

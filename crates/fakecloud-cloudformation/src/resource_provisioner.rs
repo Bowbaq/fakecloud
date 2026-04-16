@@ -456,14 +456,16 @@ impl ResourceProvisioner {
             .and_then(|v| v.as_str())
             .unwrap_or(&resource.logical_id);
 
-        let mut state = self.s3_state.write();
+        let mut __s3_mas = self.s3_state.write();
+        let state = __s3_mas.get_or_create(&self.account_id);
         let bucket = S3Bucket::new(bucket_name, &state.region, &state.account_id);
         state.buckets.insert(bucket_name.to_string(), bucket);
         Ok(bucket_name.to_string())
     }
 
     fn delete_s3_bucket(&self, physical_id: &str) -> Result<(), String> {
-        let mut state = self.s3_state.write();
+        let mut __s3_mas = self.s3_state.write();
+        let state = __s3_mas.get_or_create(&self.account_id);
         state.buckets.remove(physical_id);
         Ok(())
     }
@@ -670,7 +672,8 @@ impl ResourceProvisioner {
                     .unwrap_or(-1),
             });
 
-        let mut state = self.dynamodb_state.write();
+        let mut __ddb_mas = self.dynamodb_state.write();
+        let state = __ddb_mas.get_or_create(&self.account_id);
         let arn = format!(
             "arn:aws:dynamodb:{}:{}:table/{}",
             state.region, state.account_id, table_name
@@ -724,7 +727,8 @@ impl ResourceProvisioner {
     }
 
     fn delete_dynamodb_table(&self, physical_id: &str) -> Result<(), String> {
-        let mut state = self.dynamodb_state.write();
+        let mut __ddb_mas = self.dynamodb_state.write();
+        let state = __ddb_mas.get_or_create(&self.account_id);
         // physical_id is the ARN; find the table name
         let table_name = state
             .tables
@@ -925,16 +929,16 @@ mod tests {
             iam_state: Arc::new(RwLock::new(
                 fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", "http://localhost:4566"),
             )),
-            s3_state: Arc::new(RwLock::new(fakecloud_s3::state::S3State::new(
+            s3_state: Arc::new(RwLock::new(fakecloud_core::multi_account::MultiAccountState::new(
                 "123456789012",
-                "us-east-1",
+                "us-east-1", "",
             ))),
             eventbridge_state: Arc::new(RwLock::new(
                 fakecloud_eventbridge::state::EventBridgeState::new("123456789012", "us-east-1"),
             )),
-            dynamodb_state: Arc::new(RwLock::new(fakecloud_dynamodb::state::DynamoDbState::new(
+            dynamodb_state: Arc::new(RwLock::new(fakecloud_core::multi_account::MultiAccountState::new(
                 "123456789012",
-                "us-east-1",
+                "us-east-1", "",
             ))),
             logs_state: Arc::new(RwLock::new(fakecloud_logs::state::LogsState::new(
                 "123456789012",

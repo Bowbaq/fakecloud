@@ -13,11 +13,14 @@ use super::{
 impl S3Service {
     pub(super) fn get_object_acl(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
         key: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let accts = self.state.read();
+        let __empty = crate::state::S3State::new(account_id, "us-east-1");
+        let state = accts.get(account_id).unwrap_or(&__empty);
         let b = state
             .buckets
             .get(bucket)
@@ -31,6 +34,7 @@ impl S3Service {
 
     pub(super) fn put_object_acl(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
         key: &str,
@@ -41,7 +45,8 @@ impl S3Service {
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
 
-        let mut state = self.state.write();
+        let mut accts = self.state.write();
+        let state = accts.get_or_create(account_id);
         let b = state
             .buckets
             .get_mut(bucket)

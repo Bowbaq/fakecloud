@@ -13,6 +13,7 @@ use super::{
 impl S3Service {
     pub(super) fn put_object_retention(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
         key: &str,
@@ -23,7 +24,8 @@ impl S3Service {
         let retain_until = extract_xml_value(body_str, "RetainUntilDate")
             .and_then(|s| s.parse::<DateTime<Utc>>().ok());
 
-        let mut state = self.state.write();
+        let mut accts = self.state.write();
+        let state = accts.get_or_create(account_id);
         let b = state
             .buckets
             .get_mut(bucket)
@@ -103,11 +105,14 @@ impl S3Service {
 
     pub(super) fn get_object_retention(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
         key: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let accts = self.state.read();
+        let __empty = crate::state::S3State::new(account_id, "us-east-1");
+        let state = accts.get(account_id).unwrap_or(&__empty);
         let b = state
             .buckets
             .get(bucket)
@@ -137,6 +142,7 @@ impl S3Service {
 
     pub(super) fn put_object_legal_hold(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
         key: &str,
@@ -145,7 +151,8 @@ impl S3Service {
         let body_str = std::str::from_utf8(&req.body).unwrap_or("");
         let status = extract_xml_value(body_str, "Status");
 
-        let mut state = self.state.write();
+        let mut accts = self.state.write();
+        let state = accts.get_or_create(account_id);
         let b = state
             .buckets
             .get_mut(bucket)
@@ -217,11 +224,14 @@ impl S3Service {
 
     pub(super) fn get_object_legal_hold(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
         key: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let accts = self.state.read();
+        let __empty = crate::state::S3State::new(account_id, "us-east-1");
+        let state = accts.get(account_id).unwrap_or(&__empty);
         let b = state
             .buckets
             .get(bucket)
