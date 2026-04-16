@@ -4591,4 +4591,256 @@ mod tests {
         let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
         assert!(body.contains("LoggingEnabled"));
     }
+
+    // ── Versioned object operations ──
+
+    #[test]
+    fn versioned_put_and_get() {
+        let svc = make_service();
+        seed_bucket(&svc, "vb");
+
+        // Enable versioning
+        let req = make_request(
+            Method::PUT,
+            "/vb",
+            &[("versioning", "")],
+            b"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>",
+        );
+        svc.put_bucket_versioning("123456789012", &req, "vb")
+            .unwrap();
+
+        // Put v1
+        let req = make_request(Method::PUT, "/vb/key", &[], b"version1");
+        let resp = svc.put_object("123456789012", &req, "vb", "key").unwrap();
+        let v1 = resp
+            .headers
+            .get("x-amz-version-id")
+            .map(|h| h.to_str().unwrap().to_string());
+        assert!(v1.is_some());
+
+        // Put v2
+        let req = make_request(Method::PUT, "/vb/key", &[], b"version2");
+        let resp = svc.put_object("123456789012", &req, "vb", "key").unwrap();
+        let _v2 = resp
+            .headers
+            .get("x-amz-version-id")
+            .map(|h| h.to_str().unwrap().to_string());
+
+        // Get latest
+        let req = make_request(Method::GET, "/vb/key", &[], b"");
+        let resp = svc.get_object("123456789012", &req, "vb", "key").unwrap();
+        assert_eq!(resp.body.expect_bytes(), b"version2");
+
+        // List versions
+        let req = make_request(Method::GET, "/vb", &[("versions", "")], b"");
+        let resp = svc
+            .list_object_versions("123456789012", &req, "vb")
+            .unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("<Version>"));
+    }
+
+    // ── Conditional GET ──
+
+    #[test]
+    fn get_object_if_match_succeeds() {
+        let svc = make_service();
+        seed_bucket(&svc, "cond");
+
+        let req = make_request(Method::PUT, "/cond/f.txt", &[], b"data");
+        let resp = svc
+            .put_object("123456789012", &req, "cond", "f.txt")
+            .unwrap();
+        let etag = resp
+            .headers
+            .get("etag")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        let mut req = make_request(Method::GET, "/cond/f.txt", &[], b"");
+        req.headers.insert("if-match", etag.parse().unwrap());
+        let resp = svc
+            .get_object("123456789012", &req, "cond", "f.txt")
+            .unwrap();
+        assert_eq!(resp.body.expect_bytes(), b"data");
+    }
+
+    #[test]
+    fn get_object_if_match_fails() {
+        let svc = make_service();
+        seed_bucket(&svc, "cond2");
+
+        let req = make_request(Method::PUT, "/cond2/f.txt", &[], b"data");
+        svc.put_object("123456789012", &req, "cond2", "f.txt")
+            .unwrap();
+
+        let mut req = make_request(Method::GET, "/cond2/f.txt", &[], b"");
+        req.headers
+            .insert("if-match", "\"wrong-etag\"".parse().unwrap());
+        assert_aws_err(
+            svc.get_object("123456789012", &req, "cond2", "f.txt"),
+            "PreconditionFailed",
+        );
+    }
+
+    #[test]
+    fn get_object_if_none_match_returns_304() {
+        let svc = make_service();
+        seed_bucket(&svc, "cond3");
+
+        let req = make_request(Method::PUT, "/cond3/f.txt", &[], b"data");
+        let resp = svc
+            .put_object("123456789012", &req, "cond3", "f.txt")
+            .unwrap();
+        let etag = resp
+            .headers
+            .get("etag")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        let mut req = make_request(Method::GET, "/cond3/f.txt", &[], b"");
+        req.headers.insert("if-none-match", etag.parse().unwrap());
+        let err = svc.get_object("123456789012", &req, "cond3", "f.txt");
+        // Should return PreconditionFailed or 304 Not Modified
+        assert!(err.is_err());
+    }
+
+    // ── Put with if-none-match (conditional put) ──
+
+    #[test]
+    fn put_object_if_none_match_prevents_overwrite() {
+        let svc = make_service();
+        seed_bucket(&svc, "cnm");
+
+        let req = make_request(Method::PUT, "/cnm/f.txt", &[], b"first");
+        svc.put_object("123456789012", &req, "cnm", "f.txt")
+            .unwrap();
+
+        // Try to put again with if-none-match: *
+        let mut req = make_request(Method::PUT, "/cnm/f.txt", &[], b"second");
+        req.headers.insert("if-none-match", "*".parse().unwrap());
+        assert_aws_err(
+            svc.put_object("123456789012", &req, "cnm", "f.txt"),
+            "PreconditionFailed",
+        );
+    }
+
+    // ── Storage class ──
+
+    #[test]
+    fn put_object_with_storage_class() {
+        let svc = make_service();
+        seed_bucket(&svc, "sc");
+
+        let mut req = make_request(Method::PUT, "/sc/f.txt", &[], b"data");
+        req.headers
+            .insert("x-amz-storage-class", "GLACIER".parse().unwrap());
+        svc.put_object("123456789012", &req, "sc", "f.txt").unwrap();
+
+        let req = make_request(Method::HEAD, "/sc/f.txt", &[], b"");
+        let resp = svc
+            .head_object("123456789012", &req, "sc", "f.txt")
+            .unwrap();
+        assert_eq!(
+            resp.headers
+                .get("x-amz-storage-class")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "GLACIER"
+        );
+    }
+
+    // ── Delete versioned object creates delete marker ──
+
+    #[test]
+    fn delete_versioned_object_creates_marker() {
+        let svc = make_service();
+        seed_bucket(&svc, "dv");
+
+        let req = make_request(
+            Method::PUT,
+            "/dv",
+            &[("versioning", "")],
+            b"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>",
+        );
+        svc.put_bucket_versioning("123456789012", &req, "dv")
+            .unwrap();
+
+        let req = make_request(Method::PUT, "/dv/key", &[], b"data");
+        svc.put_object("123456789012", &req, "dv", "key").unwrap();
+
+        let req = make_request(Method::DELETE, "/dv/key", &[], b"");
+        let resp = svc
+            .delete_object("123456789012", &req, "dv", "key")
+            .unwrap();
+        assert!(resp.headers.get("x-amz-delete-marker").is_some());
+
+        // GET should fail (object is "deleted")
+        let req = make_request(Method::GET, "/dv/key", &[], b"");
+        assert_aws_err(
+            svc.get_object("123456789012", &req, "dv", "key"),
+            "NoSuchKey",
+        );
+    }
+
+    // ── Copy with metadata replacement ──
+
+    #[test]
+    fn copy_object_with_metadata_replace() {
+        let svc = make_service();
+        seed_bucket(&svc, "cpm");
+
+        let mut req = make_request(Method::PUT, "/cpm/src", &[], b"data");
+        req.headers
+            .insert("x-amz-meta-original", "yes".parse().unwrap());
+        svc.put_object("123456789012", &req, "cpm", "src").unwrap();
+
+        let mut req = make_request(Method::PUT, "/cpm/dst", &[], b"");
+        req.headers
+            .insert("x-amz-copy-source", "cpm/src".parse().unwrap());
+        req.headers
+            .insert("x-amz-metadata-directive", "REPLACE".parse().unwrap());
+        req.headers
+            .insert("x-amz-meta-new-key", "new-val".parse().unwrap());
+        svc.copy_object("123456789012", &req, "cpm", "dst").unwrap();
+
+        let req = make_request(Method::HEAD, "/cpm/dst", &[], b"");
+        let resp = svc.head_object("123456789012", &req, "cpm", "dst").unwrap();
+        assert!(resp
+            .headers
+            .get("x-amz-meta-new-key")
+            .is_some_and(|v| v == "new-val"));
+        // Original metadata should NOT be present
+        assert!(resp.headers.get("x-amz-meta-original").is_none());
+    }
+
+    // ── Large list with pagination (max-keys) ──
+
+    #[test]
+    fn list_objects_v2_with_max_keys() {
+        let svc = make_service();
+        seed_bucket(&svc, "pg");
+
+        for i in 0..5 {
+            let key = format!("k{i}");
+            let req = make_request(Method::PUT, &format!("/pg/{key}"), &[], b"x");
+            svc.put_object("123456789012", &req, "pg", &key).unwrap();
+        }
+
+        let req = make_request(
+            Method::GET,
+            "/pg",
+            &[("list-type", "2"), ("max-keys", "2")],
+            b"",
+        );
+        let resp = svc.list_objects_v2("123456789012", &req, "pg").unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("<IsTruncated>true</IsTruncated>"));
+        assert!(body.contains("<MaxKeys>2</MaxKeys>"));
+    }
 }
