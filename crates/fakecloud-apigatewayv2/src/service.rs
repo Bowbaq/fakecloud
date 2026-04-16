@@ -2486,4 +2486,354 @@ mod tests {
         assert!(id.starts_with("api"));
         assert_eq!(id.len(), 13); // "api" + 10 hex chars
     }
+
+    // ── execute_api coverage ──
+
+    #[tokio::test]
+    async fn execute_api_stage_not_found() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+        let req = make_request(Method::GET, "/prod/pets", "");
+        let err = svc.handle(req).await;
+        assert!(err.is_err());
+    }
+
+    #[tokio::test]
+    async fn execute_api_mock_integration_returns_ok() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+        let api_id = create_api(&svc);
+
+        // Create integration
+        let body = serde_json::json!({"integrationType": "MOCK"});
+        let req = make_request(
+            Method::POST,
+            &format!("/v2/apis/{api_id}/integrations"),
+            &body.to_string(),
+        );
+        let resp = svc.handle(req).await.unwrap();
+        let integration_id = body_json(&resp)["integrationId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // Create route
+        let body = serde_json::json!({
+            "routeKey": "GET /pets",
+            "target": format!("integrations/{integration_id}")
+        });
+        let req = make_request(
+            Method::POST,
+            &format!("/v2/apis/{api_id}/routes"),
+            &body.to_string(),
+        );
+        svc.handle(req).await.unwrap();
+
+        // Create stage
+        let body = serde_json::json!({"stageName": "prod"});
+        let req = make_request(
+            Method::POST,
+            &format!("/v2/apis/{api_id}/stages"),
+            &body.to_string(),
+        );
+        svc.handle(req).await.unwrap();
+
+        // Execute
+        let req = make_request(Method::GET, "/prod/pets", "");
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, http::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn execute_api_no_route_matches_returns_not_found() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+        let api_id = create_api(&svc);
+
+        // Create stage but no routes
+        let body = serde_json::json!({"stageName": "dev"});
+        let req = make_request(
+            Method::POST,
+            &format!("/v2/apis/{api_id}/stages"),
+            &body.to_string(),
+        );
+        svc.handle(req).await.unwrap();
+
+        let req = make_request(Method::GET, "/dev/nowhere", "");
+        let err = svc.handle(req).await;
+        assert!(err.is_err());
+    }
+
+    #[tokio::test]
+    async fn execute_api_route_no_integration_fails() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+        let api_id = create_api(&svc);
+
+        // Create route with no target
+        let body = serde_json::json!({"routeKey": "GET /x"});
+        let req = make_request(
+            Method::POST,
+            &format!("/v2/apis/{api_id}/routes"),
+            &body.to_string(),
+        );
+        svc.handle(req).await.unwrap();
+
+        // Create stage
+        let body = serde_json::json!({"stageName": "st"});
+        let req = make_request(
+            Method::POST,
+            &format!("/v2/apis/{api_id}/stages"),
+            &body.to_string(),
+        );
+        svc.handle(req).await.unwrap();
+
+        let req = make_request(Method::GET, "/st/x", "");
+        let err = svc.handle(req).await;
+        assert!(err.is_err());
+    }
+
+    #[tokio::test]
+    async fn execute_api_empty_path_errors() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+        let req = make_request(Method::GET, "/", "");
+        // No path segments -> NotFoundException
+        let err = svc.handle(req).await;
+        assert!(err.is_err());
+    }
+
+    #[tokio::test]
+    async fn execute_api_unsupported_integration_type() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+        let api_id = create_api(&svc);
+
+        let body = serde_json::json!({"integrationType": "UNKNOWN_TYPE"});
+        let req = make_request(
+            Method::POST,
+            &format!("/v2/apis/{api_id}/integrations"),
+            &body.to_string(),
+        );
+        let resp = svc.handle(req).await.unwrap();
+        let integration_id = body_json(&resp)["integrationId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let body = serde_json::json!({
+            "routeKey": "GET /x",
+            "target": format!("integrations/{integration_id}")
+        });
+        let req = make_request(
+            Method::POST,
+            &format!("/v2/apis/{api_id}/routes"),
+            &body.to_string(),
+        );
+        svc.handle(req).await.unwrap();
+
+        let body = serde_json::json!({"stageName": "unsup"});
+        let req = make_request(
+            Method::POST,
+            &format!("/v2/apis/{api_id}/stages"),
+            &body.to_string(),
+        );
+        svc.handle(req).await.unwrap();
+
+        let req = make_request(Method::GET, "/unsup/x", "");
+        let err = svc.handle(req).await;
+        assert!(err.is_err());
+    }
+
+    // ── Update operations ──
+
+    #[tokio::test]
+    async fn update_api_updates_name_and_description() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+        let api_id = create_api(&svc);
+
+        let body = serde_json::json!({"name": "new-name", "description": "updated"});
+        let req = make_request(
+            Method::PATCH,
+            &format!("/v2/apis/{api_id}"),
+            &body.to_string(),
+        );
+        let resp = svc.handle(req).await.unwrap();
+        let b = body_json(&resp);
+        assert_eq!(b["name"], "new-name");
+        assert_eq!(b["description"], "updated");
+    }
+
+    #[tokio::test]
+    async fn update_route_updates_fields() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+        let api_id = create_api(&svc);
+
+        let body = serde_json::json!({"routeKey": "GET /a"});
+        let req = make_request(
+            Method::POST,
+            &format!("/v2/apis/{api_id}/routes"),
+            &body.to_string(),
+        );
+        let resp = svc.handle(req).await.unwrap();
+        let route_id = body_json(&resp)["routeId"].as_str().unwrap().to_string();
+
+        let body = serde_json::json!({"routeKey": "GET /b"});
+        let req = make_request(
+            Method::PATCH,
+            &format!("/v2/apis/{api_id}/routes/{route_id}"),
+            &body.to_string(),
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(body_json(&resp)["routeKey"], "GET /b");
+    }
+
+    #[tokio::test]
+    async fn update_integration_updates_timeout() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+        let api_id = create_api(&svc);
+
+        let body = serde_json::json!({"integrationType": "MOCK"});
+        let req = make_request(
+            Method::POST,
+            &format!("/v2/apis/{api_id}/integrations"),
+            &body.to_string(),
+        );
+        let resp = svc.handle(req).await.unwrap();
+        let iid = body_json(&resp)["integrationId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let body = serde_json::json!({"timeoutInMillis": 5000});
+        let req = make_request(
+            Method::PATCH,
+            &format!("/v2/apis/{api_id}/integrations/{iid}"),
+            &body.to_string(),
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(body_json(&resp)["timeoutInMillis"], 5000);
+    }
+
+    #[tokio::test]
+    async fn update_stage_updates_description() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+        let api_id = create_api(&svc);
+
+        let body = serde_json::json!({"stageName": "st1"});
+        let req = make_request(
+            Method::POST,
+            &format!("/v2/apis/{api_id}/stages"),
+            &body.to_string(),
+        );
+        svc.handle(req).await.unwrap();
+
+        let body = serde_json::json!({"description": "updated"});
+        let req = make_request(
+            Method::PATCH,
+            &format!("/v2/apis/{api_id}/stages/st1"),
+            &body.to_string(),
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(body_json(&resp)["description"], "updated");
+    }
+
+    #[tokio::test]
+    async fn update_authorizer_updates_name() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+        let api_id = create_api(&svc);
+
+        let body = serde_json::json!({
+            "authorizerType": "JWT",
+            "name": "original",
+            "identitySource": ["$request.header.Authorization"],
+            "jwtConfiguration": {
+                "audience": ["client-id"],
+                "issuer": "https://example.com"
+            }
+        });
+        let req = make_request(
+            Method::POST,
+            &format!("/v2/apis/{api_id}/authorizers"),
+            &body.to_string(),
+        );
+        let resp = svc.handle(req).await.unwrap();
+        let aid = body_json(&resp)["authorizerId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let body = serde_json::json!({"name": "renamed"});
+        let req = make_request(
+            Method::PATCH,
+            &format!("/v2/apis/{api_id}/authorizers/{aid}"),
+            &body.to_string(),
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(body_json(&resp)["name"], "renamed");
+    }
+
+    // ── Error branches on update of nonexistent resources ──
+
+    #[tokio::test]
+    async fn update_nonexistent_api_errors() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+        let body = serde_json::json!({"name": "new"});
+        let req = make_request(Method::PATCH, "/v2/apis/abc123", &body.to_string());
+        assert!(svc.handle(req).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn delete_nonexistent_integration_errors() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+        let api_id = create_api(&svc);
+        let req = make_request(
+            Method::DELETE,
+            &format!("/v2/apis/{api_id}/integrations/ghost"),
+            "",
+        );
+        assert!(svc.handle(req).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn delete_nonexistent_route_errors() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+        let api_id = create_api(&svc);
+        let req = make_request(
+            Method::DELETE,
+            &format!("/v2/apis/{api_id}/routes/ghost"),
+            "",
+        );
+        assert!(svc.handle(req).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn get_nonexistent_stage_errors() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+        let api_id = create_api(&svc);
+        let req = make_request(Method::GET, &format!("/v2/apis/{api_id}/stages/ghost"), "");
+        assert!(svc.handle(req).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn create_deployment_for_nonexistent_api_errors() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+        let body = serde_json::json!({});
+        let req = make_request(
+            Method::POST,
+            "/v2/apis/ghost/deployments",
+            &body.to_string(),
+        );
+        assert!(svc.handle(req).await.is_err());
+    }
 }
