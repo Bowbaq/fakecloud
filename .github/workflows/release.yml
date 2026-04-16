@@ -330,8 +330,8 @@ jobs:
           git remote add php-mirror https://x-access-token:${MIRROR_TOKEN}@github.com/faiscadev/fakecloud-php.git
           git push php-mirror "${SHA}:refs/heads/main" --force
 
-          # Create version tag on mirror
-          git tag "v${TAG}" "${SHA}"
+          # Create version tag on mirror (-f because v${TAG} exists in this checkout)
+          git tag -f "v${TAG}" "${SHA}"
           git push php-mirror "v${TAG}" --force
         env:
           MIRROR_TOKEN: ${{ secrets.PHP_MIRROR_TOKEN }}
