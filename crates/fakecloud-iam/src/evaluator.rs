@@ -817,6 +817,69 @@ fn collect_role_policies(
     }
 }
 
+/// Look up the permission-boundary policy document attached to
+/// `principal`, if any.
+///
+/// Returns:
+/// - `None` — the principal has no boundary set, OR the principal is
+///   exempt from boundary evaluation (account root, service-linked
+///   role, or an unhandled principal type like a federated user). The
+///   caller should treat this as "boundary layer absent"
+///   (pass-through) when calling [`evaluate_with_gates`].
+/// - `Some(vec![])` — a boundary ARN is set but does not resolve to
+///   a known managed policy (dangling ARN, or the user/role was found
+///   but its boundary points at a deleted policy). The caller must
+///   treat this as **deny-all** — matching AWS's behavior when a
+///   permission boundary is deleted, the principal can no longer
+///   perform any action until the boundary is re-attached or removed.
+///   Emits a `fakecloud::iam::audit` debug log.
+/// - `Some(vec![doc])` — the boundary resolves to a policy document.
+///
+/// Service-linked roles are detected by the `AWSServiceRoleFor` name
+/// prefix (AWS rejects attaching boundaries to SLRs at the API layer
+/// anyway; this is defense-in-depth).
+pub fn collect_boundary_policies(
+    state: &IamState,
+    principal: &Principal,
+) -> Option<Vec<PolicyDocument>> {
+    if principal.is_root() {
+        return None;
+    }
+    let boundary_arn = match principal.principal_type {
+        PrincipalType::User => {
+            let user_name = user_name_from_arn(&principal.arn)?;
+            let user = state.users.get(user_name)?;
+            user.permissions_boundary.clone()?
+        }
+        PrincipalType::AssumedRole => {
+            let role_name = role_name_from_assumed_role_arn(&principal.arn)?;
+            if role_name.starts_with("AWSServiceRoleFor") {
+                // Service-linked roles are exempt from boundary
+                // evaluation — AWS rejects attaching one at the API
+                // layer, but if state has been force-injected we
+                // still bypass to match documented semantics.
+                return None;
+            }
+            let role = state.roles.get(role_name)?;
+            role.permissions_boundary.clone()?
+        }
+        // No boundary story for root / federated / unknown.
+        _ => return None,
+    };
+    match managed_policy_default_document(state, &boundary_arn) {
+        Some(doc) => Some(vec![PolicyDocument::parse(&doc)]),
+        None => {
+            tracing::debug!(
+                target: "fakecloud::iam::audit",
+                principal_arn = %principal.arn,
+                boundary_arn = %boundary_arn,
+                "permission boundary ARN does not resolve to a known managed policy; denying all actions"
+            );
+            Some(Vec::new())
+        }
+    }
+}
+
 fn managed_policy_default_document(state: &IamState, arn: &str) -> Option<String> {
     let policy = state.policies.get(arn)?;
     policy

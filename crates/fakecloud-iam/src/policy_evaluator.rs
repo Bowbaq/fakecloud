@@ -38,14 +38,20 @@ impl IamPolicyEvaluator for IamPolicyEvaluatorImpl {
         context: &ConditionContext,
     ) -> IamDecision {
         let state = self.state.read();
-        let policies = evaluator::collect_identity_policies(&state, principal);
+        let identity_policies = evaluator::collect_identity_policies(&state, principal);
+        let boundary = evaluator::collect_boundary_policies(&state, principal);
         let request = EvalRequest {
             principal,
             action: action.action_string(),
             resource: action.resource.clone(),
             context: context.clone(),
         };
-        decision_to_core(evaluator::evaluate(&policies, &request))
+        decision_to_core(evaluator::evaluate_with_gates(
+            &identity_policies,
+            boundary.as_deref(),
+            None,
+            &request,
+        ))
     }
 
     fn evaluate_with_resource_policy(
@@ -58,6 +64,7 @@ impl IamPolicyEvaluator for IamPolicyEvaluatorImpl {
     ) -> IamDecision {
         let state = self.state.read();
         let identity_policies = evaluator::collect_identity_policies(&state, principal);
+        let boundary = evaluator::collect_boundary_policies(&state, principal);
         let request = EvalRequest {
             principal,
             action: action.action_string(),
@@ -65,8 +72,10 @@ impl IamPolicyEvaluator for IamPolicyEvaluatorImpl {
             context: context.clone(),
         };
         let resource_policy = resource_policy_json.map(evaluator::PolicyDocument::parse);
-        decision_to_core(evaluator::evaluate_with_resource_policy(
+        decision_to_core(evaluator::evaluate_with_resource_policy_and_gates(
             &identity_policies,
+            boundary.as_deref(),
+            None,
             resource_policy.as_ref(),
             &request,
             resource_account_id,
@@ -85,7 +94,7 @@ fn decision_to_core(decision: Decision) -> IamDecision {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{IamAccessKey, IamState, IamUser};
+    use crate::state::{IamAccessKey, IamPolicy, IamState, IamUser, PolicyVersion};
     use chrono::Utc;
     use fakecloud_core::auth::PrincipalType;
     use parking_lot::RwLock;
@@ -176,6 +185,198 @@ mod tests {
         assert_eq!(
             eval.evaluate(&principal(), &action, &ConditionContext::default()),
             IamDecision::ExplicitDeny
+        );
+    }
+
+    fn insert_managed_policy(state: &mut IamState, arn: &str, document: &str) {
+        state.policies.insert(
+            arn.to_string(),
+            IamPolicy {
+                policy_name: arn.rsplit('/').next().unwrap_or("p").to_string(),
+                policy_id: "ANPATEST".into(),
+                arn: arn.to_string(),
+                path: "/".into(),
+                description: String::new(),
+                created_at: Utc::now(),
+                tags: Vec::new(),
+                default_version_id: "v1".into(),
+                versions: vec![PolicyVersion {
+                    version_id: "v1".into(),
+                    document: document.to_string(),
+                    is_default: true,
+                    created_at: Utc::now(),
+                }],
+                next_version_num: 2,
+                attachment_count: 1,
+            },
+        );
+    }
+
+    fn s3_get_object_action() -> IamAction {
+        IamAction {
+            service: "s3",
+            action: "GetObject",
+            resource: "arn:aws:s3:::bucket/key".into(),
+        }
+    }
+
+    fn s3_put_object_action() -> IamAction {
+        IamAction {
+            service: "s3",
+            action: "PutObject",
+            resource: "arn:aws:s3:::bucket/key".into(),
+        }
+    }
+
+    #[test]
+    fn boundary_caps_identity_allow_all() {
+        // alice has a catch-all Allow inline policy but her boundary
+        // only permits s3:GetObject → PutObject must be implicit-deny.
+        let state = setup();
+        {
+            let mut s = state.write();
+            s.user_inline_policies.insert(
+                "alice".into(),
+                std::collections::HashMap::from([(
+                    "AllowAll".into(),
+                    r#"{"Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}"#.into(),
+                )]),
+            );
+            let boundary_arn = "arn:aws:iam::123456789012:policy/BoundaryReadOnly";
+            insert_managed_policy(
+                &mut s,
+                boundary_arn,
+                r#"{"Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"*"}]}"#,
+            );
+            s.users.get_mut("alice").unwrap().permissions_boundary = Some(boundary_arn.to_string());
+        }
+        let eval = IamPolicyEvaluatorImpl::new(state);
+        assert_eq!(
+            eval.evaluate(
+                &principal(),
+                &s3_get_object_action(),
+                &ConditionContext::default()
+            ),
+            IamDecision::Allow
+        );
+        assert_eq!(
+            eval.evaluate(
+                &principal(),
+                &s3_put_object_action(),
+                &ConditionContext::default()
+            ),
+            IamDecision::ImplicitDeny
+        );
+    }
+
+    #[test]
+    fn boundary_explicit_deny_overrides_identity_allow() {
+        let state = setup();
+        {
+            let mut s = state.write();
+            s.user_inline_policies.insert(
+                "alice".into(),
+                std::collections::HashMap::from([(
+                    "AllowAll".into(),
+                    r#"{"Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}"#.into(),
+                )]),
+            );
+            let boundary_arn = "arn:aws:iam::123456789012:policy/BoundaryDenyPut";
+            insert_managed_policy(
+                &mut s,
+                boundary_arn,
+                r#"{"Statement":[{"Effect":"Deny","Action":"s3:PutObject","Resource":"*"}]}"#,
+            );
+            s.users.get_mut("alice").unwrap().permissions_boundary = Some(boundary_arn.to_string());
+        }
+        let eval = IamPolicyEvaluatorImpl::new(state);
+        assert_eq!(
+            eval.evaluate(
+                &principal(),
+                &s3_put_object_action(),
+                &ConditionContext::default()
+            ),
+            IamDecision::ExplicitDeny
+        );
+    }
+
+    #[test]
+    fn dangling_boundary_arn_denies_all_actions() {
+        // Boundary ARN set but the managed policy was deleted (or
+        // never existed). Must deny every action, matching AWS.
+        let state = setup();
+        {
+            let mut s = state.write();
+            s.user_inline_policies.insert(
+                "alice".into(),
+                std::collections::HashMap::from([(
+                    "AllowAll".into(),
+                    r#"{"Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}"#.into(),
+                )]),
+            );
+            s.users.get_mut("alice").unwrap().permissions_boundary =
+                Some("arn:aws:iam::123456789012:policy/DoesNotExist".into());
+        }
+        let eval = IamPolicyEvaluatorImpl::new(state);
+        assert_eq!(
+            eval.evaluate(
+                &principal(),
+                &s3_get_object_action(),
+                &ConditionContext::default()
+            ),
+            IamDecision::ImplicitDeny
+        );
+    }
+
+    #[test]
+    fn service_linked_role_bypasses_boundary() {
+        // Even if state is force-injected with a boundary on an SLR,
+        // the evaluator must not apply it — AWS exempts SLRs.
+        let state = setup();
+        {
+            use crate::state::IamRole;
+            let mut s = state.write();
+            s.roles.insert(
+                "AWSServiceRoleForLambda".into(),
+                IamRole {
+                    role_name: "AWSServiceRoleForLambda".into(),
+                    role_id: "AROASLR".into(),
+                    arn: "arn:aws:iam::123456789012:role/aws-service-role/lambda.amazonaws.com/AWSServiceRoleForLambda".into(),
+                    path: "/aws-service-role/lambda.amazonaws.com/".into(),
+                    assume_role_policy_document: "{}".into(),
+                    description: None,
+                    created_at: Utc::now(),
+                    max_session_duration: 3600,
+                    tags: Vec::new(),
+                    permissions_boundary: Some(
+                        "arn:aws:iam::123456789012:policy/ShouldBeIgnored".into(),
+                    ),
+                },
+            );
+            s.role_inline_policies.insert(
+                "AWSServiceRoleForLambda".into(),
+                std::collections::HashMap::from([(
+                    "AllowAll".into(),
+                    r#"{"Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}"#.into(),
+                )]),
+            );
+        }
+        let principal = Principal {
+            arn: "arn:aws:sts::123456789012:assumed-role/AWSServiceRoleForLambda/session1"
+                .to_string(),
+            user_id: "AROASLR:session1".into(),
+            account_id: "123456789012".into(),
+            principal_type: PrincipalType::AssumedRole,
+            source_identity: None,
+        };
+        let eval = IamPolicyEvaluatorImpl::new(state);
+        assert_eq!(
+            eval.evaluate(
+                &principal,
+                &s3_get_object_action(),
+                &ConditionContext::default()
+            ),
+            IamDecision::Allow
         );
     }
 

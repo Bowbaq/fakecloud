@@ -114,6 +114,8 @@ fn is_mutating_action(action: &str) -> bool {
             | "DetachUserPolicy"
             | "PutUserPolicy"
             | "DeleteUserPolicy"
+            | "PutUserPermissionsBoundary"
+            | "DeleteUserPermissionsBoundary"
             | "CreateGroup"
             | "DeleteGroup"
             | "UpdateGroup"
@@ -267,6 +269,8 @@ impl AwsService for IamService {
             "GetUserPolicy" => self.get_user_policy(&req),
             "DeleteUserPolicy" => self.delete_user_policy(&req),
             "ListUserPolicies" => self.list_user_policies(&req),
+            "PutUserPermissionsBoundary" => self.put_user_permissions_boundary(&req),
+            "DeleteUserPermissionsBoundary" => self.delete_user_permissions_boundary(&req),
 
             // Groups
             "CreateGroup" => self.create_group(&req),
@@ -483,6 +487,8 @@ fn iam_action_resource(
         "GetUserPolicy",
         "DeleteUserPolicy",
         "ListUserPolicies",
+        "PutUserPermissionsBoundary",
+        "DeleteUserPermissionsBoundary",
         "AddUserToGroup",
         "RemoveUserFromGroup",
         "ListGroupsForUser",
@@ -745,6 +751,8 @@ const SUPPORTED_ACTIONS: &[&str] = &[
     "GetUserPolicy",
     "DeleteUserPolicy",
     "ListUserPolicies",
+    "PutUserPermissionsBoundary",
+    "DeleteUserPermissionsBoundary",
     "CreateGroup",
     "GetGroup",
     "DeleteGroup",
