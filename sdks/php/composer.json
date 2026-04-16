@@ -16,7 +16,11 @@
     "autoload": {
         "psr-4": {
             "FakeCloud\\": "src/"
-        }
+        },
+        "files": [
+            "src/Types.php",
+            "src/FakeCloud.php"
+        ]
     },
     "autoload-dev": {
         "psr-4": {
