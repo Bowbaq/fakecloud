@@ -3704,4 +3704,161 @@ mod tests {
         let req = make_request("GetParameter", json!({"Name": "/gpnv:99"}));
         expect_err_code(svc.get_parameter(&req), "ParameterVersionNotFound");
     }
+
+    // ── documents.rs error branches ──
+
+    #[test]
+    fn create_document_missing_name_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "CreateDocument",
+            json!({"Content": r#"{"schemaVersion":"2.2","mainSteps":[]}"#}),
+        );
+        expect_err_code(svc.create_document(&req), "ValidationException");
+    }
+
+    #[test]
+    fn create_document_missing_content_errors() {
+        let svc = make_service();
+        let req = make_request("CreateDocument", json!({"Name": "doc1"}));
+        expect_err_code(svc.create_document(&req), "ValidationException");
+    }
+
+    #[test]
+    fn describe_document_not_found_branch() {
+        let svc = make_service();
+        let req = make_request("DescribeDocument", json!({"Name": "ghost"}));
+        assert!(svc.describe_document(&req).is_err());
+    }
+
+    #[test]
+    fn update_document_default_version_not_found() {
+        let svc = make_service();
+        let req = make_request(
+            "UpdateDocumentDefaultVersion",
+            json!({"Name": "ghost", "DocumentVersion": "1"}),
+        );
+        assert!(svc.update_document_default_version(&req).is_err());
+    }
+
+    #[test]
+    fn list_document_versions_not_found() {
+        let svc = make_service();
+        let req = make_request("ListDocumentVersions", json!({"Name": "ghost"}));
+        assert!(svc.list_document_versions(&req).is_err());
+    }
+
+    #[test]
+    fn describe_document_permission_not_found() {
+        let svc = make_service();
+        let req = make_request(
+            "DescribeDocumentPermission",
+            json!({"Name": "ghost", "PermissionType": "Share"}),
+        );
+        assert!(svc.describe_document_permission(&req).is_err());
+    }
+
+    // ── associations.rs error branches ──
+
+    #[test]
+    fn describe_association_not_found() {
+        let svc = make_service();
+        let req = make_request("DescribeAssociation", json!({"AssociationId": "ghost"}));
+        assert!(svc.describe_association(&req).is_err());
+    }
+
+    #[test]
+    fn delete_association_not_found() {
+        let svc = make_service();
+        let req = make_request("DeleteAssociation", json!({"AssociationId": "ghost"}));
+        assert!(svc.delete_association(&req).is_err());
+    }
+
+    #[test]
+    fn update_association_not_found() {
+        let svc = make_service();
+        let req = make_request(
+            "UpdateAssociation",
+            json!({"AssociationId": "ghost", "Name": "AWS-RunShellScript"}),
+        );
+        assert!(svc.update_association(&req).is_err());
+    }
+
+    // ── maintenance.rs error branches ──
+
+    #[test]
+    fn get_maintenance_window_not_found() {
+        let svc = make_service();
+        let req = make_request("GetMaintenanceWindow", json!({"WindowId": "mw-ghost"}));
+        assert!(svc.get_maintenance_window(&req).is_err());
+    }
+
+    #[test]
+    fn delete_maintenance_window_not_found() {
+        let svc = make_service();
+        let req = make_request("DeleteMaintenanceWindow", json!({"WindowId": "mw-ghost"}));
+        assert!(svc.delete_maintenance_window(&req).is_err());
+    }
+
+    #[test]
+    fn update_maintenance_window_not_found() {
+        let svc = make_service();
+        let req = make_request("UpdateMaintenanceWindow", json!({"WindowId": "mw-ghost"}));
+        assert!(svc.update_maintenance_window(&req).is_err());
+    }
+
+    #[test]
+    fn register_target_unknown_window_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "RegisterTargetWithMaintenanceWindow",
+            json!({
+                "WindowId": "mw-ghost",
+                "ResourceType": "INSTANCE",
+                "Targets": [{"Key": "InstanceIds", "Values": ["i-1"]}]
+            }),
+        );
+        assert!(svc.register_target_with_maintenance_window(&req).is_err());
+    }
+
+    #[test]
+    fn register_task_unknown_window_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "RegisterTaskWithMaintenanceWindow",
+            json!({
+                "WindowId": "mw-ghost",
+                "TaskArn": "AWS-RunShellScript",
+                "TaskType": "RUN_COMMAND",
+                "Targets": []
+            }),
+        );
+        assert!(svc.register_task_with_maintenance_window(&req).is_err());
+    }
+
+    // ── patches.rs error branches ──
+
+    #[test]
+    fn get_patch_baseline_not_found() {
+        let svc = make_service();
+        let req = make_request("GetPatchBaseline", json!({"BaselineId": "pb-ghost"}));
+        assert!(svc.get_patch_baseline(&req).is_err());
+    }
+
+    #[test]
+    fn delete_patch_baseline_not_found() {
+        let svc = make_service();
+        let req = make_request("DeletePatchBaseline", json!({"BaselineId": "pb-ghost"}));
+        assert!(svc.delete_patch_baseline(&req).is_err());
+    }
+
+    #[test]
+    fn register_patch_baseline_for_patch_group_with_unknown() {
+        let svc = make_service();
+        let req = make_request(
+            "RegisterPatchBaselineForPatchGroup",
+            json!({"BaselineId": "pb-ghost", "PatchGroup": "prod"}),
+        );
+        assert!(svc.register_patch_baseline_for_patch_group(&req).is_err());
+    }
 }
