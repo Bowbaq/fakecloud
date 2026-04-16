@@ -163,7 +163,9 @@ The resource's owning account is parsed from the ARN; S3 ARNs have an empty acco
 | `"Principal": {"AWS": [...]}` | List form — any entry matches |
 | `"Principal": {"Service": "events.amazonaws.com"}` | Matches an assumed-role principal whose ARN contains the service host (covers EventBridge -> SNS and similar service-linked role scenarios) |
 
-`NotPrincipal` is **not** evaluated — statements carrying it are skipped entirely with a `fakecloud::iam::audit` debug log and never silently grant. `Principal` types other than `AWS` / `Service` (`Federated`, `CanonicalUser`) fall through to "doesn't match" for the same reason.
+`NotPrincipal` is fully evaluated — a statement with `NotPrincipal` applies to all callers **except** those matching any entry in the list (the exact inverse of `Principal`). The classic AWS pattern `Deny` + `NotPrincipal` ("deny everyone except this user") works correctly. `NotPrincipal` entries with unrecognized principal types (`Federated`, `CanonicalUser`) are dropped from the match list; if all entries are unrecognized the statement is skipped with a `fakecloud::iam::audit` debug log and never silently grants.
+
+`Principal` types other than `AWS` / `Service` (`Federated`, `CanonicalUser`) fall through to "doesn't match" for the same reason.
 
 `Condition` blocks on resource-policy statements are evaluated with the same operator set and global condition keys as identity policies — the condition entry points are shared.
 
@@ -210,7 +212,6 @@ Key semantics:
 **Phase 5 — niche cleanup (planned).**
 
 - **KMS key policies.** KMS has a deny-by-default semantic (no policy means nothing is allowed, including the account root) that is materially different from S3 / SNS / Lambda's allow-on-match-or-fall-through, and lands behind its own migration decision before wiring it into the evaluator.
-- **`NotPrincipal`.** The inverse-principal matcher on resource-policy statements. Statements carrying it are currently skipped with a `fakecloud::iam::audit` debug log and never silently grant — the safe-fail semantics are deliberate and part of the no-gaming invariant.
 
 **Will not ship.**
 

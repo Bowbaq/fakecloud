@@ -1507,3 +1507,125 @@ async fn sqs_send_message_attribute_condition_key() {
         "expected AccessDenied for no-attr send, got {err:?}"
     );
 }
+
+// ======================================================================
+// Phase 5: NotPrincipal
+//
+// Drive the evaluator's NotPrincipal path end-to-end via an S3 bucket
+// policy. The classic pattern is Deny + NotPrincipal: deny everyone
+// except a specific user. The named user is exempt from the deny;
+// everyone else is blocked.
+// ======================================================================
+
+#[tokio::test]
+async fn not_principal_deny_exempts_named_user() {
+    // Bucket policy:
+    //   1. Allow * for s3:GetObject (public read)
+    //   2. Deny NotPrincipal alice for s3:GetObject (block everyone except alice)
+    //
+    // Net effect: only alice can GetObject.
+    let server = start_strict().await;
+    let (alice_akid, alice_secret) = bootstrap_user(&server, "np_alice").await;
+    let (bob_akid, bob_secret) = bootstrap_user(&server, "np_bob").await;
+
+    let policy = serde_json::json!({
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "PublicRead",
+                "Effect": "Allow",
+                "Principal": "*",
+                "Action": "s3:GetObject",
+                "Resource": ["arn:aws:s3:::np-bucket/*", "arn:aws:s3:::np-bucket"]
+            },
+            {
+                "Sid": "DenyEveryoneExceptAlice",
+                "Effect": "Deny",
+                "NotPrincipal": {"AWS": "arn:aws:iam::123456789012:user/np_alice"},
+                "Action": "s3:*",
+                "Resource": ["arn:aws:s3:::np-bucket/*", "arn:aws:s3:::np-bucket"]
+            }
+        ]
+    });
+
+    seed_bucket_with_policy(&server, "np-bucket", &policy.to_string()).await;
+
+    // Alice: Deny does NOT apply (she's the NotPrincipal), Allow applies -> success.
+    let alice_cfg = sdk_config_with(&server, &alice_akid, &alice_secret).await;
+    let alice_s3 = aws_sdk_s3::Client::new(&alice_cfg);
+    let resp = alice_s3
+        .get_object()
+        .bucket("np-bucket")
+        .key("readme.md")
+        .send()
+        .await
+        .unwrap();
+    let body = resp.body.collect().await.unwrap().into_bytes();
+    assert_eq!(body.as_ref(), b"hi");
+
+    // Bob: Deny applies (he's NOT the NotPrincipal) -> ExplicitDeny -> AccessDenied.
+    let bob_cfg = sdk_config_with(&server, &bob_akid, &bob_secret).await;
+    let bob_s3 = aws_sdk_s3::Client::new(&bob_cfg);
+    let err = bob_s3
+        .get_object()
+        .bucket("np-bucket")
+        .key("readme.md")
+        .send()
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{err:?}").contains("AccessDenied"),
+        "expected AccessDenied for bob, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn not_principal_allow_grants_only_non_named_user() {
+    // Bucket policy: Allow NotPrincipal for s3:GetObject — grants
+    // access to everyone EXCEPT the named user.
+    let server = start_strict().await;
+    let (alice_akid, alice_secret) = bootstrap_user(&server, "npa_alice").await;
+    let (bob_akid, bob_secret) = bootstrap_user(&server, "npa_bob").await;
+
+    let policy = serde_json::json!({
+        "Version": "2012-10-17",
+        "Statement": [{
+            "Sid": "AllowEveryoneExceptAlice",
+            "Effect": "Allow",
+            "NotPrincipal": {"AWS": "arn:aws:iam::123456789012:user/npa_alice"},
+            "Action": "s3:GetObject",
+            "Resource": ["arn:aws:s3:::npa-bucket/*", "arn:aws:s3:::npa-bucket"]
+        }]
+    });
+
+    seed_bucket_with_policy(&server, "npa-bucket", &policy.to_string()).await;
+
+    // Bob: Allow applies (he's NOT in the NotPrincipal list) -> success.
+    let bob_cfg = sdk_config_with(&server, &bob_akid, &bob_secret).await;
+    let bob_s3 = aws_sdk_s3::Client::new(&bob_cfg);
+    let resp = bob_s3
+        .get_object()
+        .bucket("npa-bucket")
+        .key("readme.md")
+        .send()
+        .await
+        .unwrap();
+    let body = resp.body.collect().await.unwrap().into_bytes();
+    assert_eq!(body.as_ref(), b"hi");
+
+    // Alice: Allow does NOT apply (she IS the NotPrincipal), no other
+    // grants -> ImplicitDeny -> AccessDenied.
+    let alice_cfg = sdk_config_with(&server, &alice_akid, &alice_secret).await;
+    let alice_s3 = aws_sdk_s3::Client::new(&alice_cfg);
+    let err = alice_s3
+        .get_object()
+        .bucket("npa-bucket")
+        .key("readme.md")
+        .send()
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{err:?}").contains("AccessDenied"),
+        "expected AccessDenied for alice, got {err:?}"
+    );
+}
