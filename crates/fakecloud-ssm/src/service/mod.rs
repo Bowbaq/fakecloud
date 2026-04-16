@@ -2542,4 +2542,295 @@ mod tests {
         let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["CommandInvocations"].as_array().unwrap().len(), 1);
     }
+
+    // ── Parameter store handlers ────────────────────────────────────
+    //
+    // (`put_param` defined earlier in this module already uses
+    // `Overwrite: true`, so it's reused here. For tests that need the
+    // non-overwrite path, the `PutParameter` request is built inline.)
+
+    fn put_simple_string(svc: &SsmService, name: &str, value: &str) {
+        let req = make_request(
+            "PutParameter",
+            json!({ "Name": name, "Value": value, "Type": "String" }),
+        );
+        svc.put_parameter(&req).unwrap();
+    }
+
+    fn json_body(resp: AwsResponse) -> Value {
+        serde_json::from_slice(resp.body.expect_bytes()).unwrap()
+    }
+
+    #[test]
+    fn put_parameter_creates_with_version_1() {
+        let svc = make_service();
+        let req = make_request(
+            "PutParameter",
+            json!({ "Name": "/app/db/url", "Value": "postgres://...", "Type": "String" }),
+        );
+        let body = json_body(svc.put_parameter(&req).unwrap());
+        assert_eq!(body["Version"], json!(1));
+    }
+
+    #[test]
+    fn put_parameter_duplicate_without_overwrite_errors() {
+        let svc = make_service();
+        put_simple_string(&svc, "/a", "v1");
+        let req = make_request(
+            "PutParameter",
+            json!({ "Name": "/a", "Value": "v2", "Type": "String" }),
+        );
+        let err = svc.put_parameter(&req).err().expect("expected error");
+        assert_eq!(err.code(), "ParameterAlreadyExists");
+    }
+
+    #[test]
+    fn put_parameter_overwrite_bumps_version() {
+        let svc = make_service();
+        put_simple_string(&svc, "/a", "v1");
+        let req = make_request(
+            "PutParameter",
+            json!({ "Name": "/a", "Value": "v2", "Type": "String", "Overwrite": true }),
+        );
+        let body = json_body(svc.put_parameter(&req).unwrap());
+        assert_eq!(body["Version"], json!(2));
+    }
+
+    #[test]
+    fn get_parameter_returns_latest_version() {
+        let svc = make_service();
+        put_simple_string(&svc, "/a", "v1");
+        let req = make_request("GetParameter", json!({ "Name": "/a" }));
+        let body = json_body(svc.get_parameter(&req).unwrap());
+        assert_eq!(body["Parameter"]["Name"], json!("/a"));
+        assert_eq!(body["Parameter"]["Value"], json!("v1"));
+        assert_eq!(body["Parameter"]["Version"], json!(1));
+    }
+
+    #[test]
+    fn get_parameter_unknown_errors() {
+        let svc = make_service();
+        let req = make_request("GetParameter", json!({ "Name": "/ghost" }));
+        let err = svc.get_parameter(&req).err().expect("expected error");
+        assert_eq!(err.code(), "ParameterNotFound");
+    }
+
+    #[test]
+    fn get_parameter_missing_name_errors() {
+        let svc = make_service();
+        let req = make_request("GetParameter", json!({}));
+        assert!(svc.get_parameter(&req).is_err());
+    }
+
+    #[test]
+    fn get_parameters_returns_found_and_invalid_lists() {
+        let svc = make_service();
+        put_simple_string(&svc, "/a", "v1");
+        put_simple_string(&svc, "/b", "v2");
+        let req = make_request(
+            "GetParameters",
+            json!({ "Names": ["/a", "/b", "/missing"] }),
+        );
+        let body = json_body(svc.get_parameters(&req).unwrap());
+        let params = body["Parameters"].as_array().unwrap();
+        let names: Vec<&str> = params.iter().map(|p| p["Name"].as_str().unwrap()).collect();
+        assert!(names.contains(&"/a"));
+        assert!(names.contains(&"/b"));
+        let invalid = body["InvalidParameters"].as_array().unwrap();
+        assert_eq!(invalid.len(), 1);
+        assert_eq!(invalid[0], json!("/missing"));
+    }
+
+    #[test]
+    fn get_parameters_by_path_filters_prefix() {
+        let svc = make_service();
+        put_simple_string(&svc, "/app/db/url", "u");
+        put_simple_string(&svc, "/app/db/user", "x");
+        put_simple_string(&svc, "/app/cache/host", "h");
+        let req = make_request(
+            "GetParametersByPath",
+            json!({ "Path": "/app/db/", "Recursive": false }),
+        );
+        let body = json_body(svc.get_parameters_by_path(&req).unwrap());
+        let params = body["Parameters"].as_array().unwrap();
+        assert_eq!(params.len(), 2);
+        for p in params {
+            assert!(p["Name"].as_str().unwrap().starts_with("/app/db/"));
+        }
+    }
+
+    #[test]
+    fn get_parameters_by_path_recursive_finds_nested() {
+        let svc = make_service();
+        put_simple_string(&svc, "/app/a/x", "1");
+        put_simple_string(&svc, "/app/b/c/y", "2");
+        let req = make_request(
+            "GetParametersByPath",
+            json!({ "Path": "/app", "Recursive": true }),
+        );
+        let body = json_body(svc.get_parameters_by_path(&req).unwrap());
+        assert_eq!(body["Parameters"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn delete_parameter_removes_entry() {
+        let svc = make_service();
+        put_simple_string(&svc, "/a", "v1");
+        let req = make_request("DeleteParameter", json!({ "Name": "/a" }));
+        svc.delete_parameter(&req).unwrap();
+        let get = svc.get_parameter(&make_request("GetParameter", json!({ "Name": "/a" })));
+        assert!(get.is_err());
+    }
+
+    #[test]
+    fn delete_parameter_unknown_errors() {
+        let svc = make_service();
+        let req = make_request("DeleteParameter", json!({ "Name": "/ghost" }));
+        let err = svc.delete_parameter(&req).err().expect("expected error");
+        assert_eq!(err.code(), "ParameterNotFound");
+    }
+
+    #[test]
+    fn delete_parameters_partitions_into_deleted_and_invalid() {
+        let svc = make_service();
+        put_simple_string(&svc, "/a", "v");
+        put_simple_string(&svc, "/b", "v");
+        let req = make_request(
+            "DeleteParameters",
+            json!({ "Names": ["/a", "/b", "/ghost"] }),
+        );
+        let body = json_body(svc.delete_parameters(&req).unwrap());
+        let deleted: Vec<&str> = body["DeletedParameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        let invalid: Vec<&str> = body["InvalidParameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(deleted.len(), 2);
+        assert_eq!(invalid, vec!["/ghost"]);
+    }
+
+    #[test]
+    fn describe_parameters_lists_all() {
+        let svc = make_service();
+        put_simple_string(&svc, "/a", "v");
+        put_simple_string(&svc, "/b", "v");
+        let req = make_request("DescribeParameters", json!({}));
+        let body = json_body(svc.describe_parameters(&req).unwrap());
+        assert_eq!(body["Parameters"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn get_parameter_history_lists_all_versions_after_overwrite() {
+        let svc = make_service();
+        put_simple_string(&svc, "/a", "v1");
+        let ow = make_request(
+            "PutParameter",
+            json!({ "Name": "/a", "Value": "v2", "Type": "String", "Overwrite": true }),
+        );
+        svc.put_parameter(&ow).unwrap();
+        let req = make_request("GetParameterHistory", json!({ "Name": "/a" }));
+        let body = json_body(svc.get_parameter_history(&req).unwrap());
+        let params = body["Parameters"].as_array().unwrap();
+        assert_eq!(params.len(), 2);
+        let versions: Vec<i64> = params
+            .iter()
+            .map(|p| p["Version"].as_i64().unwrap())
+            .collect();
+        assert!(versions.contains(&1));
+        assert!(versions.contains(&2));
+    }
+
+    #[test]
+    fn get_parameter_history_unknown_errors() {
+        let svc = make_service();
+        let req = make_request("GetParameterHistory", json!({ "Name": "/ghost" }));
+        assert!(svc.get_parameter_history(&req).is_err());
+    }
+
+    #[test]
+    fn label_parameter_version_attaches_label_to_version() {
+        let svc = make_service();
+        put_simple_string(&svc, "/a", "v1");
+        let req = make_request(
+            "LabelParameterVersion",
+            json!({
+                "Name": "/a",
+                "ParameterVersion": 1,
+                "Labels": ["prod"]
+            }),
+        );
+        let body = json_body(svc.label_parameter_version(&req).unwrap());
+        let invalid = body["InvalidLabels"].as_array().unwrap();
+        assert!(invalid.is_empty());
+    }
+
+    #[test]
+    fn unlabel_parameter_version_removes_label() {
+        let svc = make_service();
+        put_simple_string(&svc, "/a", "v1");
+        svc.label_parameter_version(&make_request(
+            "LabelParameterVersion",
+            json!({ "Name": "/a", "ParameterVersion": 1, "Labels": ["prod", "stable"] }),
+        ))
+        .unwrap();
+        let req = make_request(
+            "UnlabelParameterVersion",
+            json!({ "Name": "/a", "ParameterVersion": 1, "Labels": ["prod"] }),
+        );
+        let body = json_body(svc.unlabel_parameter_version(&req).unwrap());
+        let removed = body["RemovedLabels"].as_array().unwrap();
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0], json!("prod"));
+    }
+
+    #[test]
+    fn put_parameter_missing_name_errors() {
+        let svc = make_service();
+        let req = make_request("PutParameter", json!({ "Value": "v", "Type": "String" }));
+        assert!(svc.put_parameter(&req).is_err());
+    }
+
+    #[test]
+    fn put_parameter_invalid_type_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "PutParameter",
+            json!({ "Name": "/a", "Value": "v", "Type": "WatType" }),
+        );
+        assert!(svc.put_parameter(&req).is_err());
+    }
+
+    #[test]
+    fn param_arn_and_rewrite_region_helpers() {
+        let arn = crate::service::parameters::param_arn("us-east-1", "123456789012", "/a/b");
+        assert_eq!(arn, "arn:aws:ssm:us-east-1:123456789012:parameter/a/b");
+        let rewritten = crate::service::parameters::rewrite_arn_region(&arn, "eu-west-1");
+        assert_eq!(
+            rewritten,
+            "arn:aws:ssm:eu-west-1:123456789012:parameter/a/b"
+        );
+    }
+
+    #[test]
+    fn parse_param_selector_extracts_version_and_label() {
+        use crate::service::parameters::ParamSelector;
+        let (name, sel) = crate::service::parameters::parse_param_selector("/a/b:42");
+        assert_eq!(name, "/a/b");
+        assert!(matches!(sel, ParamSelector::Version(42)));
+
+        let (name, sel) = crate::service::parameters::parse_param_selector("/a/b:prod");
+        assert_eq!(name, "/a/b");
+        assert!(matches!(sel, ParamSelector::Label(ref l) if l == "prod"));
+
+        let (name, sel) = crate::service::parameters::parse_param_selector("/a/b");
+        assert_eq!(name, "/a/b");
+        assert!(matches!(sel, ParamSelector::None));
+    }
 }
