@@ -189,7 +189,23 @@ Inline policies passed to `AssumeRole`, `AssumeRoleWithWebIdentity`, `AssumeRole
 - An STS call with no `Policy` / `PolicyArns` produces a credential with no session-policy gate (pass-through), preserving Phase 2 behavior.
 - `GetSessionToken` does not accept a `Policy` parameter per AWS docs, so session policies do not apply to credentials minted by that operation.
 
-**Phase 4 — ABAC (planned).** Tag-based access control: condition keys like `aws:ResourceTag/<k>`, `aws:RequestTag/<k>`, and `aws:TagKeys` that let statements key off resource and request tags. Requires propagating resource tags into the request context before the evaluator runs. Not yet implemented.
+**Phase 4 — ABAC (tag-based conditions).**
+
+Tag-based access control via four condition key families:
+
+| Condition key | Description | Enforced services |
+|---|---|---|
+| `aws:ResourceTag/<key>` | Tags on the target resource | S3, SQS, SNS, IAM |
+| `aws:RequestTag/<key>` | Tags sent in the request (e.g. on CreateQueue, PutObject) | S3, SQS, SNS, IAM |
+| `aws:TagKeys` | List of tag keys in the request (for `ForAllValues`/`ForAnyValue`) | S3, SQS, SNS, IAM |
+| `aws:PrincipalTag/<key>` | Tags on the calling IAM user or assumed role | All enforced services |
+
+Key semantics:
+
+- The condition key prefix (`aws:ResourceTag/`) is matched **case-insensitively** per AWS. The tag key part after the slash (`Environment`) is matched **case-sensitively** — `aws:ResourceTag/Environment` and `aws:ResourceTag/environment` reference different tags.
+- `aws:PrincipalTag/<key>` is populated from the IAM user's or assumed role's tags at credential resolution time.
+- Services that don't implement ABAC yet (Lambda, Step Functions, etc.) gracefully skip tag evaluation with a `fakecloud::iam::audit` debug log. No fake tag values are ever returned.
+- Adding ABAC support to a new service requires implementing two trait methods: `resource_tags_for()` and `request_tags_from()`.
 
 **Phase 5 — niche cleanup (planned).**
 
