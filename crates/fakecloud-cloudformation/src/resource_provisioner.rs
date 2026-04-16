@@ -1146,4 +1146,183 @@ mod tests {
         let sr = result.unwrap();
         assert_eq!(sr.resource_type, "AWS::CloudFormation::CustomResource");
     }
+
+    // ── Resource create/delete lifecycle tests ──
+
+    #[test]
+    fn sqs_queue_create_and_delete() {
+        let prov = make_provisioner();
+        let res = make_resource(
+            "AWS::SQS::Queue",
+            "MyQ",
+            serde_json::json!({"QueueName": "my-q"}),
+        );
+        let sr = prov.create_resource(&res).unwrap();
+        assert!(sr.physical_id.contains("my-q"));
+        assert_eq!(sr.resource_type, "AWS::SQS::Queue");
+        prov.delete_resource(&sr).unwrap();
+    }
+
+    #[test]
+    fn sqs_queue_fifo_with_suffix() {
+        let prov = make_provisioner();
+        let res = make_resource(
+            "AWS::SQS::Queue",
+            "FifoQ",
+            serde_json::json!({"QueueName": "my-fifo.fifo", "FifoQueue": true}),
+        );
+        let sr = prov.create_resource(&res).unwrap();
+        assert!(sr.physical_id.contains(".fifo"));
+    }
+
+    #[test]
+    fn sns_topic_create_and_delete() {
+        let prov = make_provisioner();
+        let res = make_resource(
+            "AWS::SNS::Topic",
+            "MyTopic",
+            serde_json::json!({"TopicName": "t1"}),
+        );
+        let sr = prov.create_resource(&res).unwrap();
+        assert!(sr.physical_id.contains("t1"));
+        prov.delete_resource(&sr).unwrap();
+    }
+
+    #[test]
+    fn ssm_parameter_create_and_delete() {
+        let prov = make_provisioner();
+        let res = make_resource(
+            "AWS::SSM::Parameter",
+            "MyParam",
+            serde_json::json!({
+                "Name": "/my/param",
+                "Type": "String",
+                "Value": "v1"
+            }),
+        );
+        let sr = prov.create_resource(&res).unwrap();
+        assert_eq!(sr.physical_id, "/my/param");
+        prov.delete_resource(&sr).unwrap();
+    }
+
+    #[test]
+    fn iam_role_create_and_delete() {
+        let prov = make_provisioner();
+        let res = make_resource(
+            "AWS::IAM::Role",
+            "MyRole",
+            serde_json::json!({
+                "RoleName": "my-role",
+                "AssumeRolePolicyDocument": {"Version": "2012-10-17", "Statement": []}
+            }),
+        );
+        let sr = prov.create_resource(&res).unwrap();
+        assert!(sr.physical_id.contains("my-role"));
+        prov.delete_resource(&sr).unwrap();
+    }
+
+    #[test]
+    fn iam_policy_create_and_delete() {
+        let prov = make_provisioner();
+        let res = make_resource(
+            "AWS::IAM::Policy",
+            "MyPolicy",
+            serde_json::json!({
+                "PolicyName": "my-policy",
+                "PolicyDocument": {"Version": "2012-10-17", "Statement": []}
+            }),
+        );
+        let sr = prov.create_resource(&res).unwrap();
+        assert!(sr.physical_id.contains("my-policy"));
+        prov.delete_resource(&sr).unwrap();
+    }
+
+    #[test]
+    fn s3_bucket_create_and_delete() {
+        let prov = make_provisioner();
+        let res = make_resource(
+            "AWS::S3::Bucket",
+            "MyBucket",
+            serde_json::json!({"BucketName": "my-bucket"}),
+        );
+        let sr = prov.create_resource(&res).unwrap();
+        assert_eq!(sr.physical_id, "my-bucket");
+        prov.delete_resource(&sr).unwrap();
+    }
+
+    #[test]
+    fn dynamodb_table_create_and_delete() {
+        let prov = make_provisioner();
+        let res = make_resource(
+            "AWS::DynamoDB::Table",
+            "MyTable",
+            serde_json::json!({
+                "TableName": "my-table",
+                "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}],
+                "AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}],
+                "BillingMode": "PAY_PER_REQUEST"
+            }),
+        );
+        let sr = prov.create_resource(&res).unwrap();
+        assert!(sr.physical_id.contains("my-table"));
+        prov.delete_resource(&sr).unwrap();
+    }
+
+    #[test]
+    fn log_group_create_and_delete() {
+        let prov = make_provisioner();
+        let res = make_resource(
+            "AWS::Logs::LogGroup",
+            "MyLogs",
+            serde_json::json!({"LogGroupName": "/app/logs"}),
+        );
+        let sr = prov.create_resource(&res).unwrap();
+        assert!(sr.physical_id.contains("/app/logs"));
+        prov.delete_resource(&sr).unwrap();
+    }
+
+    #[test]
+    fn unsupported_resource_type_fails() {
+        let prov = make_provisioner();
+        let res = make_resource("AWS::NonExistent::Thing", "X", serde_json::json!({}));
+        assert!(prov.create_resource(&res).is_err());
+    }
+
+    #[test]
+    fn iam_role_with_inline_policies() {
+        let prov = make_provisioner();
+        let res = make_resource(
+            "AWS::IAM::Role",
+            "MyRole",
+            serde_json::json!({
+                "RoleName": "role-inline",
+                "AssumeRolePolicyDocument": {"Version": "2012-10-17", "Statement": []},
+                "Policies": [
+                    {
+                        "PolicyName": "inline-1",
+                        "PolicyDocument": {"Version": "2012-10-17", "Statement": []}
+                    }
+                ]
+            }),
+        );
+        let sr = prov.create_resource(&res).unwrap();
+        assert!(sr.physical_id.contains("role-inline"));
+    }
+
+    #[test]
+    fn sqs_queue_auto_name() {
+        let prov = make_provisioner();
+        let res = make_resource("AWS::SQS::Queue", "AutoQ", serde_json::json!({}));
+        let sr = prov.create_resource(&res).unwrap();
+        // Generated queue name should exist
+        assert!(!sr.physical_id.is_empty());
+    }
+
+    #[test]
+    fn sns_topic_auto_name() {
+        let prov = make_provisioner();
+        let res = make_resource("AWS::SNS::Topic", "AutoT", serde_json::json!({}));
+        let sr = prov.create_resource(&res).unwrap();
+        assert!(!sr.physical_id.is_empty());
+    }
 }
