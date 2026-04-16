@@ -10,7 +10,7 @@
 //! `/docs/reference/security` (added in a later batch) for the user-facing
 //! contract.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::net::IpAddr;
 use std::str::FromStr;
@@ -92,6 +92,10 @@ pub struct Principal {
     /// `AssumeRole`'s `SourceIdentity` parameter. Reserved for later
     /// batches that wire session policies and auditing.
     pub source_identity: Option<String>,
+    /// Tags on the calling principal (IAM user or assumed role).
+    /// Populated at credential-resolution time from `IamState`.
+    /// Used for `aws:PrincipalTag/<key>` condition evaluation.
+    pub tags: Option<HashMap<String, String>>,
 }
 
 impl Principal {
@@ -233,8 +237,18 @@ pub struct ConditionContext {
     /// `aws:RequestedRegion` — region extracted from SigV4 / config.
     pub aws_requested_region: Option<String>,
     /// Service-specific keys (`s3:prefix`, `sqs:MessageAttribute`, …).
-    /// Reserved; empty in the initial Phase 2 rollout.
     pub service_keys: BTreeMap<String, Vec<String>>,
+    /// `aws:ResourceTag/<key>` — tags on the target resource.
+    /// Populated by [`crate::service::AwsService::resource_tags_for`].
+    /// `None` means the service doesn't expose resource tags for ABAC.
+    pub resource_tags: Option<HashMap<String, String>>,
+    /// `aws:RequestTag/<key>` — tags sent in the request body/headers.
+    /// Populated by [`crate::service::AwsService::request_tags_from`].
+    /// Also drives `aws:TagKeys` (the list of request tag keys).
+    pub request_tags: Option<HashMap<String, String>>,
+    /// `aws:PrincipalTag/<key>` — tags on the calling IAM user or role.
+    /// Populated from [`Principal::tags`] at dispatch time.
+    pub principal_tags: Option<HashMap<String, String>>,
 }
 
 impl ConditionContext {
@@ -245,6 +259,44 @@ impl ConditionContext {
     pub fn lookup(&self, key: &str) -> Option<Vec<String>> {
         let lower = key.to_ascii_lowercase();
         let one = |s: &str| Some(vec![s.to_string()]);
+
+        // ABAC tag-based keys: case-insensitive prefix, case-sensitive
+        // tag key (the part after the slash). AWS treats "Environment"
+        // and "environment" as distinct tag keys.
+        //
+        // Prefix lengths: "aws:resourcetag/" = 16, "aws:requesttag/" = 15,
+        //                 "aws:principaltag/" = 17
+        if lower.starts_with("aws:resourcetag/") {
+            let tag_key = &key[16..]; // preserve original case
+            return self
+                .resource_tags
+                .as_ref()
+                .and_then(|tags| tags.get(tag_key))
+                .map(|v| vec![v.clone()]);
+        }
+        if lower.starts_with("aws:requesttag/") {
+            let tag_key = &key[15..];
+            return self
+                .request_tags
+                .as_ref()
+                .and_then(|tags| tags.get(tag_key))
+                .map(|v| vec![v.clone()]);
+        }
+        if lower.starts_with("aws:principaltag/") {
+            let tag_key = &key[17..];
+            return self
+                .principal_tags
+                .as_ref()
+                .and_then(|tags| tags.get(tag_key))
+                .map(|v| vec![v.clone()]);
+        }
+        if lower == "aws:tagkeys" {
+            return self
+                .request_tags
+                .as_ref()
+                .map(|tags| tags.keys().cloned().collect());
+        }
+
         match lower.as_str() {
             "aws:username" => self.aws_username.as_deref().and_then(one),
             "aws:userid" => self.aws_userid.as_deref().and_then(one),
@@ -595,6 +647,7 @@ mod tests {
             account_id: "123456789012".to_string(),
             principal_type: PrincipalType::Unknown,
             source_identity: None,
+            tags: None,
         };
         assert!(!p.is_root());
     }
@@ -607,6 +660,7 @@ mod tests {
             account_id: "123456789012".to_string(),
             principal_type: PrincipalType::Root,
             source_identity: None,
+            tags: None,
         };
         assert!(p.is_root());
 
@@ -616,6 +670,7 @@ mod tests {
             account_id: "123456789012".to_string(),
             principal_type: PrincipalType::User,
             source_identity: None,
+            tags: None,
         };
         assert!(!user.is_root());
     }
@@ -631,6 +686,7 @@ mod tests {
                 account_id: "123456789012".into(),
                 principal_type: PrincipalType::User,
                 source_identity: None,
+                tags: None,
             },
             session_policies: Vec::new(),
         };
@@ -767,5 +823,108 @@ mod tests {
             arc.resource_policy("s3", "arn:aws:s3:::b").as_deref(),
             Some("doc")
         );
+    }
+
+    // --- ABAC tag condition key lookup ------------------------------------
+
+    fn abac_context() -> ConditionContext {
+        ConditionContext {
+            resource_tags: Some(
+                [("Environment", "prod"), ("CostCenter", "42")]
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+            ),
+            request_tags: Some(
+                [("Project", "web"), ("Team", "platform")]
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+            ),
+            principal_tags: Some(
+                [("Department", "eng"), ("Role", "developer")]
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+            ),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn lookup_resource_tag_case_sensitive_key() {
+        let ctx = abac_context();
+        assert_eq!(
+            ctx.lookup("aws:ResourceTag/Environment"),
+            Some(vec!["prod".to_string()])
+        );
+        // Different case -> different tag key -> None
+        assert_eq!(ctx.lookup("aws:ResourceTag/environment"), None);
+    }
+
+    #[test]
+    fn lookup_resource_tag_prefix_case_insensitive() {
+        let ctx = abac_context();
+        // Prefix is case-insensitive per AWS
+        assert_eq!(
+            ctx.lookup("AWS:resourcetag/Environment"),
+            Some(vec!["prod".to_string()])
+        );
+        assert_eq!(
+            ctx.lookup("Aws:RESOURCETAG/CostCenter"),
+            Some(vec!["42".to_string()])
+        );
+    }
+
+    #[test]
+    fn lookup_request_tag() {
+        let ctx = abac_context();
+        assert_eq!(
+            ctx.lookup("aws:RequestTag/Project"),
+            Some(vec!["web".to_string()])
+        );
+        assert_eq!(ctx.lookup("aws:RequestTag/project"), None);
+    }
+
+    #[test]
+    fn lookup_principal_tag() {
+        let ctx = abac_context();
+        assert_eq!(
+            ctx.lookup("aws:PrincipalTag/Department"),
+            Some(vec!["eng".to_string()])
+        );
+        assert_eq!(ctx.lookup("aws:PrincipalTag/department"), None);
+    }
+
+    #[test]
+    fn lookup_tag_keys_returns_all_request_tag_keys() {
+        let ctx = abac_context();
+        let mut keys = ctx.lookup("aws:TagKeys").unwrap();
+        keys.sort();
+        assert_eq!(keys, vec!["Project", "Team"]);
+    }
+
+    #[test]
+    fn lookup_tag_keys_case_insensitive() {
+        let ctx = abac_context();
+        assert!(ctx.lookup("AWS:TAGKEYS").is_some());
+        assert!(ctx.lookup("aws:tagkeys").is_some());
+    }
+
+    #[test]
+    fn lookup_tag_none_when_field_not_set() {
+        let ctx = ConditionContext::default();
+        assert_eq!(ctx.lookup("aws:ResourceTag/Foo"), None);
+        assert_eq!(ctx.lookup("aws:RequestTag/Foo"), None);
+        assert_eq!(ctx.lookup("aws:PrincipalTag/Foo"), None);
+        assert_eq!(ctx.lookup("aws:TagKeys"), None);
+    }
+
+    #[test]
+    fn lookup_tag_missing_key_returns_none() {
+        let ctx = abac_context();
+        assert_eq!(ctx.lookup("aws:ResourceTag/NonExistent"), None);
+        assert_eq!(ctx.lookup("aws:RequestTag/NonExistent"), None);
+        assert_eq!(ctx.lookup("aws:PrincipalTag/NonExistent"), None);
     }
 }

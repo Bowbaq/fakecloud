@@ -234,6 +234,22 @@ pub struct SecretLookup {
     /// Session policies from the STS call that minted this credential.
     /// Empty for IAM user access keys.
     pub session_policies: Vec<String>,
+    /// Tags on the principal (IAM user or assumed role) for
+    /// `aws:PrincipalTag/<key>` condition evaluation.
+    pub principal_tags: Option<HashMap<String, String>>,
+}
+
+/// Convert a `Vec<Tag>` to a `HashMap<String, String>`.
+/// Returns `None` when the input is empty (no tags to evaluate).
+pub fn tags_to_hashmap(tags: &[Tag]) -> Option<HashMap<String, String>> {
+    if tags.is_empty() {
+        return None;
+    }
+    Some(
+        tags.iter()
+            .map(|t| (t.key.clone(), t.value.clone()))
+            .collect(),
+    )
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -351,6 +367,7 @@ impl IamState {
                             user_id: user.user_id.clone(),
                             account_id: self.account_id.clone(),
                             session_policies: Vec::new(),
+                            principal_tags: tags_to_hashmap(&user.tags),
                         });
                     }
                 }
@@ -362,6 +379,7 @@ impl IamState {
         let now = Utc::now();
         if let Some(temp) = self.sts_temp_credentials.get(access_key_id) {
             if temp.expiration > now {
+                let principal_tags = self.resolve_role_tags(&temp.principal_arn);
                 return Some(SecretLookup {
                     secret_access_key: temp.secret_access_key.clone(),
                     session_token: Some(temp.session_token.clone()),
@@ -369,6 +387,7 @@ impl IamState {
                     user_id: temp.user_id.clone(),
                     account_id: temp.account_id.clone(),
                     session_policies: temp.session_policies.clone(),
+                    principal_tags,
                 });
             }
             self.sts_temp_credentials.remove(access_key_id);
@@ -391,6 +410,7 @@ impl IamState {
                             user_id: user.user_id.clone(),
                             account_id: self.account_id.clone(),
                             session_policies: Vec::new(),
+                            principal_tags: tags_to_hashmap(&user.tags),
                         });
                     }
                 }
@@ -402,6 +422,7 @@ impl IamState {
         if temp.expiration <= now {
             return None;
         }
+        let principal_tags = self.resolve_role_tags(&temp.principal_arn);
         Some(SecretLookup {
             secret_access_key: temp.secret_access_key.clone(),
             session_token: Some(temp.session_token.clone()),
@@ -409,7 +430,26 @@ impl IamState {
             user_id: temp.user_id.clone(),
             account_id: temp.account_id.clone(),
             session_policies: temp.session_policies.clone(),
+            principal_tags,
         })
+    }
+
+    /// Resolve role tags from an assumed-role principal ARN.
+    /// ARN format: `arn:aws:sts::<account>:assumed-role/<role-name>/<session>`
+    /// Looks up the role by name and returns its tags.
+    fn resolve_role_tags(&self, principal_arn: &str) -> Option<HashMap<String, String>> {
+        // assumed-role ARNs: arn:aws:sts::<account>:assumed-role/<role>/<session>
+        let parts: Vec<&str> = principal_arn.split(':').collect();
+        if parts.len() < 6 {
+            return None;
+        }
+        let resource = parts[5];
+        if let Some(rest) = resource.strip_prefix("assumed-role/") {
+            let role_name = rest.split('/').next()?;
+            let role = self.roles.get(role_name)?;
+            return tags_to_hashmap(&role.tags);
+        }
+        None
     }
 }
 
