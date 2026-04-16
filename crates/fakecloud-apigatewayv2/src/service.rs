@@ -1867,3 +1867,623 @@ fn generate_id(prefix: &str) -> String {
     let uuid = uuid::Uuid::new_v4().to_string().replace('-', "");
     format!("{}{}", prefix, &uuid[..10])
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::ApiGatewayV2State;
+    use bytes::Bytes;
+    use http::{HeaderMap, Method};
+    use parking_lot::RwLock;
+    use serde_json::Value;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    fn make_state() -> SharedApiGatewayV2State {
+        Arc::new(RwLock::new(ApiGatewayV2State::new(
+            "123456789012",
+            "us-east-1",
+        )))
+    }
+
+    fn make_request(method: Method, path: &str, body: &str) -> AwsRequest {
+        let raw_path = path.to_string();
+        let segs: Vec<String> = raw_path
+            .trim_start_matches('/')
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect();
+        AwsRequest {
+            service: "apigateway".to_string(),
+            action: String::new(),
+            region: "us-east-1".to_string(),
+            account_id: "123456789012".to_string(),
+            request_id: "test-id".to_string(),
+            headers: HeaderMap::new(),
+            query_params: HashMap::new(),
+            body: Bytes::from(body.to_string()),
+            path_segments: segs,
+            raw_path,
+            raw_query: String::new(),
+            method,
+            is_query_protocol: false,
+            access_key_id: None,
+            principal: None,
+        }
+    }
+
+    fn body_json(resp: &AwsResponse) -> Value {
+        serde_json::from_slice(resp.body.expect_bytes()).unwrap()
+    }
+
+    fn expect_err(result: Result<AwsResponse, AwsServiceError>) -> AwsServiceError {
+        match result {
+            Err(e) => e,
+            Ok(_) => panic!("expected error, got Ok"),
+        }
+    }
+
+    /// Create an API and return its ID.
+    fn create_api(svc: &ApiGatewayV2Service) -> String {
+        let body = serde_json::json!({"name": "test-api", "protocolType": "HTTP"});
+        let req = make_request(Method::POST, "/v2/apis", &body.to_string());
+        let resp = svc.create_api(&req).unwrap();
+        let b = body_json(&resp);
+        b["apiId"].as_str().unwrap().to_string()
+    }
+
+    // ── resolve_action routing ──
+
+    #[test]
+    fn resolve_action_api_crud() {
+        let req = make_request(Method::POST, "/v2/apis", "{}");
+        let (action, _, _) = ApiGatewayV2Service::resolve_action(&req).unwrap();
+        assert_eq!(action, "CreateApi");
+
+        let req = make_request(Method::GET, "/v2/apis", "");
+        assert_eq!(
+            ApiGatewayV2Service::resolve_action(&req).unwrap().0,
+            "GetApis"
+        );
+
+        let req = make_request(Method::GET, "/v2/apis/abc", "");
+        let (action, api_id, _) = ApiGatewayV2Service::resolve_action(&req).unwrap();
+        assert_eq!(action, "GetApi");
+        assert_eq!(api_id.unwrap(), "abc");
+
+        let req = make_request(Method::PATCH, "/v2/apis/abc", "{}");
+        assert_eq!(
+            ApiGatewayV2Service::resolve_action(&req).unwrap().0,
+            "UpdateApi"
+        );
+
+        let req = make_request(Method::DELETE, "/v2/apis/abc", "");
+        assert_eq!(
+            ApiGatewayV2Service::resolve_action(&req).unwrap().0,
+            "DeleteApi"
+        );
+    }
+
+    #[test]
+    fn resolve_action_routes() {
+        let req = make_request(Method::POST, "/v2/apis/a1/routes", "{}");
+        assert_eq!(
+            ApiGatewayV2Service::resolve_action(&req).unwrap().0,
+            "CreateRoute"
+        );
+
+        let req = make_request(Method::GET, "/v2/apis/a1/routes", "");
+        assert_eq!(
+            ApiGatewayV2Service::resolve_action(&req).unwrap().0,
+            "GetRoutes"
+        );
+
+        let req = make_request(Method::GET, "/v2/apis/a1/routes/r1", "");
+        let (action, _, rid) = ApiGatewayV2Service::resolve_action(&req).unwrap();
+        assert_eq!(action, "GetRoute");
+        assert_eq!(rid.unwrap(), "r1");
+    }
+
+    #[test]
+    fn resolve_action_integrations() {
+        let req = make_request(Method::POST, "/v2/apis/a1/integrations", "{}");
+        assert_eq!(
+            ApiGatewayV2Service::resolve_action(&req).unwrap().0,
+            "CreateIntegration"
+        );
+
+        let req = make_request(Method::GET, "/v2/apis/a1/integrations", "");
+        assert_eq!(
+            ApiGatewayV2Service::resolve_action(&req).unwrap().0,
+            "GetIntegrations"
+        );
+
+        let req = make_request(Method::DELETE, "/v2/apis/a1/integrations/i1", "");
+        assert_eq!(
+            ApiGatewayV2Service::resolve_action(&req).unwrap().0,
+            "DeleteIntegration"
+        );
+    }
+
+    #[test]
+    fn resolve_action_stages() {
+        let req = make_request(Method::POST, "/v2/apis/a1/stages", "{}");
+        assert_eq!(
+            ApiGatewayV2Service::resolve_action(&req).unwrap().0,
+            "CreateStage"
+        );
+
+        let req = make_request(Method::GET, "/v2/apis/a1/stages/prod", "");
+        assert_eq!(
+            ApiGatewayV2Service::resolve_action(&req).unwrap().0,
+            "GetStage"
+        );
+    }
+
+    #[test]
+    fn resolve_action_deployments() {
+        let req = make_request(Method::POST, "/v2/apis/a1/deployments", "{}");
+        assert_eq!(
+            ApiGatewayV2Service::resolve_action(&req).unwrap().0,
+            "CreateDeployment"
+        );
+
+        let req = make_request(Method::GET, "/v2/apis/a1/deployments/d1", "");
+        assert_eq!(
+            ApiGatewayV2Service::resolve_action(&req).unwrap().0,
+            "GetDeployment"
+        );
+    }
+
+    #[test]
+    fn resolve_action_authorizers() {
+        let req = make_request(Method::POST, "/v2/apis/a1/authorizers", "{}");
+        assert_eq!(
+            ApiGatewayV2Service::resolve_action(&req).unwrap().0,
+            "CreateAuthorizer"
+        );
+
+        let req = make_request(Method::PATCH, "/v2/apis/a1/authorizers/au1", "{}");
+        assert_eq!(
+            ApiGatewayV2Service::resolve_action(&req).unwrap().0,
+            "UpdateAuthorizer"
+        );
+    }
+
+    #[test]
+    fn resolve_action_unknown_returns_none() {
+        let req = make_request(Method::POST, "/v1/something", "{}");
+        assert!(ApiGatewayV2Service::resolve_action(&req).is_none());
+
+        let req = make_request(Method::PUT, "/v2/apis/a1/routes/r1", "{}");
+        assert!(ApiGatewayV2Service::resolve_action(&req).is_none());
+    }
+
+    // ── API CRUD ──
+
+    #[tokio::test]
+    async fn api_create_get_list_update_delete() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+
+        // Create
+        let body = serde_json::json!({"name": "my-api", "protocolType": "HTTP"});
+        let req = make_request(Method::POST, "/v2/apis", &body.to_string());
+        let resp = svc.handle(req).await.unwrap();
+        let b = body_json(&resp);
+        let api_id = b["apiId"].as_str().unwrap().to_string();
+        assert_eq!(b["name"], "my-api");
+        assert_eq!(b["protocolType"], "HTTP");
+        assert!(b["apiEndpoint"].as_str().is_some());
+
+        // Get
+        let req = make_request(Method::GET, &format!("/v2/apis/{api_id}"), "");
+        let resp = svc.handle(req).await.unwrap();
+        let b = body_json(&resp);
+        assert_eq!(b["name"], "my-api");
+
+        // List
+        let req = make_request(Method::GET, "/v2/apis", "");
+        let resp = svc.handle(req).await.unwrap();
+        let b = body_json(&resp);
+        assert_eq!(b["items"].as_array().unwrap().len(), 1);
+
+        // Update
+        let body = serde_json::json!({"name": "updated-api", "description": "desc"});
+        let req = make_request(
+            Method::PATCH,
+            &format!("/v2/apis/{api_id}"),
+            &body.to_string(),
+        );
+        let resp = svc.handle(req).await.unwrap();
+        let b = body_json(&resp);
+        assert_eq!(b["name"], "updated-api");
+        assert_eq!(b["description"], "desc");
+
+        // Delete
+        let req = make_request(Method::DELETE, &format!("/v2/apis/{api_id}"), "");
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::NO_CONTENT);
+
+        // Get should fail
+        let req = make_request(Method::GET, &format!("/v2/apis/{api_id}"), "");
+        let err = expect_err(svc.handle(req).await);
+        assert!(err.to_string().contains("NotFoundException"));
+    }
+
+    #[tokio::test]
+    async fn create_api_requires_name_and_protocol() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+
+        let req = make_request(Method::POST, "/v2/apis", r#"{"protocolType": "HTTP"}"#);
+        assert!(svc.handle(req).await.is_err());
+
+        let req = make_request(Method::POST, "/v2/apis", r#"{"name": "test"}"#);
+        assert!(svc.handle(req).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn create_api_unsupported_protocol() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+
+        let body = serde_json::json!({"name": "ws", "protocolType": "WEBSOCKET"});
+        let req = make_request(Method::POST, "/v2/apis", &body.to_string());
+        let err = expect_err(svc.handle(req).await);
+        assert!(err.to_string().contains("BadRequestException"));
+    }
+
+    // ── Route CRUD ──
+
+    #[tokio::test]
+    async fn route_crud_lifecycle() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+        let api_id = create_api(&svc);
+
+        // Create route
+        let body = serde_json::json!({"routeKey": "GET /items"});
+        let req = make_request(
+            Method::POST,
+            &format!("/v2/apis/{api_id}/routes"),
+            &body.to_string(),
+        );
+        let resp = svc.handle(req).await.unwrap();
+        let b = body_json(&resp);
+        let route_id = b["routeId"].as_str().unwrap().to_string();
+        assert_eq!(b["routeKey"], "GET /items");
+
+        // Get route
+        let req = make_request(
+            Method::GET,
+            &format!("/v2/apis/{api_id}/routes/{route_id}"),
+            "",
+        );
+        let resp = svc.handle(req).await.unwrap();
+        let b = body_json(&resp);
+        assert_eq!(b["routeKey"], "GET /items");
+
+        // List routes
+        let req = make_request(Method::GET, &format!("/v2/apis/{api_id}/routes"), "");
+        let resp = svc.handle(req).await.unwrap();
+        let b = body_json(&resp);
+        assert_eq!(b["items"].as_array().unwrap().len(), 1);
+
+        // Update route
+        let body = serde_json::json!({"routeKey": "POST /items"});
+        let req = make_request(
+            Method::PATCH,
+            &format!("/v2/apis/{api_id}/routes/{route_id}"),
+            &body.to_string(),
+        );
+        let resp = svc.handle(req).await.unwrap();
+        let b = body_json(&resp);
+        assert_eq!(b["routeKey"], "POST /items");
+
+        // Delete route
+        let req = make_request(
+            Method::DELETE,
+            &format!("/v2/apis/{api_id}/routes/{route_id}"),
+            "",
+        );
+        svc.handle(req).await.unwrap();
+
+        // Get should fail
+        let req = make_request(
+            Method::GET,
+            &format!("/v2/apis/{api_id}/routes/{route_id}"),
+            "",
+        );
+        assert!(svc.handle(req).await.is_err());
+    }
+
+    // ── Integration CRUD ──
+
+    #[tokio::test]
+    async fn integration_crud_lifecycle() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+        let api_id = create_api(&svc);
+
+        // Create integration
+        let body = serde_json::json!({
+            "integrationType": "HTTP_PROXY",
+            "integrationUri": "https://example.com",
+            "integrationMethod": "GET",
+            "payloadFormatVersion": "1.0",
+        });
+        let req = make_request(
+            Method::POST,
+            &format!("/v2/apis/{api_id}/integrations"),
+            &body.to_string(),
+        );
+        let resp = svc.handle(req).await.unwrap();
+        let b = body_json(&resp);
+        let int_id = b["integrationId"].as_str().unwrap().to_string();
+        assert_eq!(b["integrationType"], "HTTP_PROXY");
+
+        // Get
+        let req = make_request(
+            Method::GET,
+            &format!("/v2/apis/{api_id}/integrations/{int_id}"),
+            "",
+        );
+        let resp = svc.handle(req).await.unwrap();
+        let b = body_json(&resp);
+        assert_eq!(b["integrationUri"], "https://example.com");
+
+        // List
+        let req = make_request(Method::GET, &format!("/v2/apis/{api_id}/integrations"), "");
+        let resp = svc.handle(req).await.unwrap();
+        let b = body_json(&resp);
+        assert_eq!(b["items"].as_array().unwrap().len(), 1);
+
+        // Update
+        let body = serde_json::json!({"integrationUri": "https://updated.com"});
+        let req = make_request(
+            Method::PATCH,
+            &format!("/v2/apis/{api_id}/integrations/{int_id}"),
+            &body.to_string(),
+        );
+        let resp = svc.handle(req).await.unwrap();
+        let b = body_json(&resp);
+        assert_eq!(b["integrationUri"], "https://updated.com");
+
+        // Delete
+        let req = make_request(
+            Method::DELETE,
+            &format!("/v2/apis/{api_id}/integrations/{int_id}"),
+            "",
+        );
+        svc.handle(req).await.unwrap();
+    }
+
+    // ── Stage CRUD ──
+
+    #[tokio::test]
+    async fn stage_crud_lifecycle() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+        let api_id = create_api(&svc);
+
+        // Create stage
+        let body = serde_json::json!({"stageName": "prod"});
+        let req = make_request(
+            Method::POST,
+            &format!("/v2/apis/{api_id}/stages"),
+            &body.to_string(),
+        );
+        let resp = svc.handle(req).await.unwrap();
+        let b = body_json(&resp);
+        assert_eq!(b["stageName"], "prod");
+
+        // Get stage
+        let req = make_request(Method::GET, &format!("/v2/apis/{api_id}/stages/prod"), "");
+        let resp = svc.handle(req).await.unwrap();
+        let b = body_json(&resp);
+        assert_eq!(b["stageName"], "prod");
+
+        // List stages
+        let req = make_request(Method::GET, &format!("/v2/apis/{api_id}/stages"), "");
+        let resp = svc.handle(req).await.unwrap();
+        let b = body_json(&resp);
+        assert_eq!(b["items"].as_array().unwrap().len(), 1);
+
+        // Update stage
+        let body = serde_json::json!({"description": "production"});
+        let req = make_request(
+            Method::PATCH,
+            &format!("/v2/apis/{api_id}/stages/prod"),
+            &body.to_string(),
+        );
+        let resp = svc.handle(req).await.unwrap();
+        let b = body_json(&resp);
+        assert_eq!(b["description"], "production");
+
+        // Delete stage
+        let req = make_request(
+            Method::DELETE,
+            &format!("/v2/apis/{api_id}/stages/prod"),
+            "",
+        );
+        svc.handle(req).await.unwrap();
+
+        // Get should fail
+        let req = make_request(Method::GET, &format!("/v2/apis/{api_id}/stages/prod"), "");
+        assert!(svc.handle(req).await.is_err());
+    }
+
+    // ── Deployment CRUD ──
+
+    #[tokio::test]
+    async fn deployment_crud() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+        let api_id = create_api(&svc);
+
+        // Create deployment
+        let req = make_request(
+            Method::POST,
+            &format!("/v2/apis/{api_id}/deployments"),
+            "{}",
+        );
+        let resp = svc.handle(req).await.unwrap();
+        let b = body_json(&resp);
+        let dep_id = b["deploymentId"].as_str().unwrap().to_string();
+        assert!(dep_id.starts_with("deployment"));
+
+        // Get deployment
+        let req = make_request(
+            Method::GET,
+            &format!("/v2/apis/{api_id}/deployments/{dep_id}"),
+            "",
+        );
+        let resp = svc.handle(req).await.unwrap();
+        let b = body_json(&resp);
+        assert_eq!(b["deploymentId"], dep_id);
+
+        // List deployments
+        let req = make_request(Method::GET, &format!("/v2/apis/{api_id}/deployments"), "");
+        let resp = svc.handle(req).await.unwrap();
+        let b = body_json(&resp);
+        assert_eq!(b["items"].as_array().unwrap().len(), 1);
+    }
+
+    // ── Authorizer CRUD ──
+
+    #[tokio::test]
+    async fn authorizer_crud_lifecycle() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+        let api_id = create_api(&svc);
+
+        // Create authorizer
+        let body = serde_json::json!({
+            "authorizerType": "JWT",
+            "name": "jwt-auth",
+            "identitySource": "$request.header.Authorization",
+            "jwtConfiguration": {
+                "issuer": "https://auth.example.com",
+                "audience": ["my-api"],
+            },
+        });
+        let req = make_request(
+            Method::POST,
+            &format!("/v2/apis/{api_id}/authorizers"),
+            &body.to_string(),
+        );
+        let resp = svc.handle(req).await.unwrap();
+        let b = body_json(&resp);
+        let auth_id = b["authorizerId"].as_str().unwrap().to_string();
+        assert_eq!(b["authorizerType"], "JWT");
+        assert_eq!(b["name"], "jwt-auth");
+
+        // Get
+        let req = make_request(
+            Method::GET,
+            &format!("/v2/apis/{api_id}/authorizers/{auth_id}"),
+            "",
+        );
+        let resp = svc.handle(req).await.unwrap();
+        let b = body_json(&resp);
+        assert_eq!(b["name"], "jwt-auth");
+
+        // List
+        let req = make_request(Method::GET, &format!("/v2/apis/{api_id}/authorizers"), "");
+        let resp = svc.handle(req).await.unwrap();
+        let b = body_json(&resp);
+        assert_eq!(b["items"].as_array().unwrap().len(), 1);
+
+        // Update
+        let body = serde_json::json!({"name": "updated-auth"});
+        let req = make_request(
+            Method::PATCH,
+            &format!("/v2/apis/{api_id}/authorizers/{auth_id}"),
+            &body.to_string(),
+        );
+        let resp = svc.handle(req).await.unwrap();
+        let b = body_json(&resp);
+        assert_eq!(b["name"], "updated-auth");
+
+        // Delete
+        let req = make_request(
+            Method::DELETE,
+            &format!("/v2/apis/{api_id}/authorizers/{auth_id}"),
+            "",
+        );
+        svc.handle(req).await.unwrap();
+
+        // Get should fail
+        let req = make_request(
+            Method::GET,
+            &format!("/v2/apis/{api_id}/authorizers/{auth_id}"),
+            "",
+        );
+        assert!(svc.handle(req).await.is_err());
+    }
+
+    // ── API not found errors ──
+
+    #[tokio::test]
+    async fn operations_on_nonexistent_api() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+
+        let req = make_request(Method::GET, "/v2/apis/nonexistent", "");
+        assert!(svc.handle(req).await.is_err());
+
+        let req = make_request(
+            Method::POST,
+            "/v2/apis/nonexistent/routes",
+            r#"{"routeKey":"GET /"}"#,
+        );
+        assert!(svc.handle(req).await.is_err());
+
+        let req = make_request(Method::GET, "/v2/apis/nonexistent/routes", "");
+        assert!(svc.handle(req).await.is_err());
+    }
+
+    // ── CORS configuration ──
+
+    #[tokio::test]
+    async fn create_api_with_cors() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+
+        let body = serde_json::json!({
+            "name": "cors-api",
+            "protocolType": "HTTP",
+            "corsConfiguration": {
+                "allowOrigins": ["https://example.com"],
+                "allowMethods": ["GET", "POST"],
+                "allowHeaders": ["Content-Type"],
+            },
+        });
+        let req = make_request(Method::POST, "/v2/apis", &body.to_string());
+        let resp = svc.handle(req).await.unwrap();
+        let b = body_json(&resp);
+        assert!(b["corsConfiguration"].is_object());
+    }
+
+    // ── Unknown route ──
+
+    #[tokio::test]
+    async fn unknown_management_route() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+
+        let req = make_request(Method::POST, "/v2/apis/a1/unknown-collection", "{}");
+        assert!(svc.handle(req).await.is_err());
+    }
+
+    // ── generate_id format ──
+
+    #[test]
+    fn generate_id_format() {
+        let id = generate_id("api");
+        assert!(id.starts_with("api"));
+        assert_eq!(id.len(), 13); // "api" + 10 hex chars
+    }
+}
