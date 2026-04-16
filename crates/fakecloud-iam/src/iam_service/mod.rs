@@ -2773,4 +2773,563 @@ mod tests {
         // No last used info yet -- should show N/A
         assert!(body.contains("<ServiceName>N/A</ServiceName>"));
     }
+
+    fn expect_err(result: Result<AwsResponse, AwsServiceError>) -> AwsServiceError {
+        match result {
+            Err(e) => e,
+            Ok(_) => panic!("expected error, got Ok"),
+        }
+    }
+
+    // ── User CRUD ──
+
+    #[test]
+    fn create_get_delete_user() {
+        let svc = make_service();
+
+        let req = make_request("CreateUser", vec![("UserName", "alice")]);
+        let resp = svc.create_user(&req).unwrap();
+        let body = String::from_utf8_lossy(resp.body.expect_bytes()).to_string();
+        assert!(body.contains("<UserName>alice</UserName>"));
+        assert!(body.contains("<Arn>"));
+
+        // Get
+        let req = make_request("GetUser", vec![("UserName", "alice")]);
+        let resp = svc.get_user(&req).unwrap();
+        let body = String::from_utf8_lossy(resp.body.expect_bytes()).to_string();
+        assert!(body.contains("<UserName>alice</UserName>"));
+
+        // Delete
+        let req = make_request("DeleteUser", vec![("UserName", "alice")]);
+        svc.delete_user(&req).unwrap();
+
+        // Get should fail
+        let req = make_request("GetUser", vec![("UserName", "alice")]);
+        let err = expect_err(svc.get_user(&req));
+        assert!(err.to_string().contains("NoSuchEntity"));
+    }
+
+    #[test]
+    fn create_user_duplicate_fails() {
+        let svc = make_service();
+        svc.create_user(&make_request("CreateUser", vec![("UserName", "dup")]))
+            .unwrap();
+
+        let err =
+            expect_err(svc.create_user(&make_request("CreateUser", vec![("UserName", "dup")])));
+        assert!(err.to_string().contains("EntityAlreadyExists"));
+    }
+
+    #[test]
+    fn list_users_basic() {
+        let svc = make_service();
+        svc.create_user(&make_request("CreateUser", vec![("UserName", "u1")]))
+            .unwrap();
+        svc.create_user(&make_request("CreateUser", vec![("UserName", "u2")]))
+            .unwrap();
+
+        let req = make_request("ListUsers", vec![]);
+        let resp = svc.list_users(&req).unwrap();
+        let body = String::from_utf8_lossy(resp.body.expect_bytes()).to_string();
+        assert!(body.contains("<UserName>u1</UserName>"));
+        assert!(body.contains("<UserName>u2</UserName>"));
+    }
+
+    #[test]
+    fn create_user_with_path_and_tags() {
+        let svc = make_service();
+        let req = make_request(
+            "CreateUser",
+            vec![
+                ("UserName", "tagged-user"),
+                ("Path", "/engineering/"),
+                ("Tags.member.1.Key", "team"),
+                ("Tags.member.1.Value", "backend"),
+            ],
+        );
+        let resp = svc.create_user(&req).unwrap();
+        let body = String::from_utf8_lossy(resp.body.expect_bytes()).to_string();
+        assert!(body.contains("/engineering/"));
+    }
+
+    #[test]
+    fn user_permissions_boundary() {
+        let svc = make_service();
+        svc.create_user(&make_request("CreateUser", vec![("UserName", "bounded")]))
+            .unwrap();
+
+        let policy_arn = "arn:aws:iam::123456789012:policy/boundary";
+        let req = make_request(
+            "PutUserPermissionsBoundary",
+            vec![("UserName", "bounded"), ("PermissionsBoundary", policy_arn)],
+        );
+        svc.put_user_permissions_boundary(&req).unwrap();
+
+        let req = make_request("GetUser", vec![("UserName", "bounded")]);
+        let resp = svc.get_user(&req).unwrap();
+        let body = String::from_utf8_lossy(resp.body.expect_bytes()).to_string();
+        assert!(body.contains(policy_arn));
+
+        let req = make_request(
+            "DeleteUserPermissionsBoundary",
+            vec![("UserName", "bounded")],
+        );
+        svc.delete_user_permissions_boundary(&req).unwrap();
+    }
+
+    // ── Role CRUD ──
+
+    #[test]
+    fn create_get_delete_role() {
+        let svc = make_service();
+
+        let trust = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}"#;
+        let req = make_request(
+            "CreateRole",
+            vec![
+                ("RoleName", "test-role"),
+                ("AssumeRolePolicyDocument", trust),
+            ],
+        );
+        let resp = svc.create_role(&req).unwrap();
+        let body = String::from_utf8_lossy(resp.body.expect_bytes()).to_string();
+        assert!(body.contains("<RoleName>test-role</RoleName>"));
+
+        // Get
+        let req = make_request("GetRole", vec![("RoleName", "test-role")]);
+        let resp = svc.get_role(&req).unwrap();
+        let body = String::from_utf8_lossy(resp.body.expect_bytes()).to_string();
+        assert!(body.contains("<RoleName>test-role</RoleName>"));
+
+        // Delete
+        let req = make_request("DeleteRole", vec![("RoleName", "test-role")]);
+        svc.delete_role(&req).unwrap();
+
+        let err =
+            expect_err(svc.get_role(&make_request("GetRole", vec![("RoleName", "test-role")])));
+        assert!(err.to_string().contains("NoSuchEntity"));
+    }
+
+    #[test]
+    fn list_roles_basic() {
+        let svc = make_service();
+        let trust = r#"{"Version":"2012-10-17"}"#;
+        svc.create_role(&make_request(
+            "CreateRole",
+            vec![("RoleName", "r1"), ("AssumeRolePolicyDocument", trust)],
+        ))
+        .unwrap();
+        svc.create_role(&make_request(
+            "CreateRole",
+            vec![("RoleName", "r2"), ("AssumeRolePolicyDocument", trust)],
+        ))
+        .unwrap();
+
+        let resp = svc.list_roles(&make_request("ListRoles", vec![])).unwrap();
+        let body = String::from_utf8_lossy(resp.body.expect_bytes()).to_string();
+        assert!(body.contains("<RoleName>r1</RoleName>"));
+        assert!(body.contains("<RoleName>r2</RoleName>"));
+    }
+
+    #[test]
+    fn role_inline_policy_lifecycle() {
+        let svc = make_service();
+        let trust = r#"{"Version":"2012-10-17"}"#;
+        svc.create_role(&make_request(
+            "CreateRole",
+            vec![("RoleName", "ip-role"), ("AssumeRolePolicyDocument", trust)],
+        ))
+        .unwrap();
+
+        let policy = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:*","Resource":"*"}]}"#;
+        svc.put_role_policy(&make_request(
+            "PutRolePolicy",
+            vec![
+                ("RoleName", "ip-role"),
+                ("PolicyName", "s3-access"),
+                ("PolicyDocument", policy),
+            ],
+        ))
+        .unwrap();
+
+        let resp = svc
+            .get_role_policy(&make_request(
+                "GetRolePolicy",
+                vec![("RoleName", "ip-role"), ("PolicyName", "s3-access")],
+            ))
+            .unwrap();
+        let body = String::from_utf8_lossy(resp.body.expect_bytes()).to_string();
+        assert!(body.contains("<PolicyName>s3-access</PolicyName>"));
+
+        let resp = svc
+            .list_role_policies(&make_request(
+                "ListRolePolicies",
+                vec![("RoleName", "ip-role")],
+            ))
+            .unwrap();
+        let body = String::from_utf8_lossy(resp.body.expect_bytes()).to_string();
+        assert!(body.contains("s3-access"));
+
+        svc.delete_role_policy(&make_request(
+            "DeleteRolePolicy",
+            vec![("RoleName", "ip-role"), ("PolicyName", "s3-access")],
+        ))
+        .unwrap();
+    }
+
+    // ── Policy CRUD ──
+
+    #[test]
+    fn create_get_delete_policy() {
+        let svc = make_service();
+
+        let doc = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"*"}]}"#;
+        let req = make_request(
+            "CreatePolicy",
+            vec![("PolicyName", "test-pol"), ("PolicyDocument", doc)],
+        );
+        let resp = svc.create_policy(&req).unwrap();
+        let body = String::from_utf8_lossy(resp.body.expect_bytes()).to_string();
+        assert!(body.contains("<PolicyName>test-pol</PolicyName>"));
+        let arn = extract_xml_tag(&body, "Arn");
+
+        // Get
+        let resp = svc
+            .get_policy(&make_request("GetPolicy", vec![("PolicyArn", arn)]))
+            .unwrap();
+        let body = String::from_utf8_lossy(resp.body.expect_bytes()).to_string();
+        assert!(body.contains("<PolicyName>test-pol</PolicyName>"));
+
+        // Delete
+        svc.delete_policy(&make_request("DeletePolicy", vec![("PolicyArn", arn)]))
+            .unwrap();
+
+        let err = expect_err(svc.get_policy(&make_request("GetPolicy", vec![("PolicyArn", arn)])));
+        assert!(err.to_string().contains("NoSuchEntity"));
+    }
+
+    #[test]
+    fn list_policies_basic() {
+        let svc = make_service();
+        let doc = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"*"}]}"#;
+        svc.create_policy(&make_request(
+            "CreatePolicy",
+            vec![("PolicyName", "p1"), ("PolicyDocument", doc)],
+        ))
+        .unwrap();
+
+        let resp = svc
+            .list_policies(&make_request("ListPolicies", vec![("Scope", "Local")]))
+            .unwrap();
+        let body = String::from_utf8_lossy(resp.body.expect_bytes()).to_string();
+        assert!(body.contains("<PolicyName>p1</PolicyName>"));
+    }
+
+    // ── Group CRUD ──
+
+    #[test]
+    fn create_get_delete_group() {
+        let svc = make_service();
+
+        svc.create_group(&make_request("CreateGroup", vec![("GroupName", "devs")]))
+            .unwrap();
+
+        let resp = svc
+            .get_group(&make_request("GetGroup", vec![("GroupName", "devs")]))
+            .unwrap();
+        let body = String::from_utf8_lossy(resp.body.expect_bytes()).to_string();
+        assert!(body.contains("<GroupName>devs</GroupName>"));
+
+        svc.delete_group(&make_request("DeleteGroup", vec![("GroupName", "devs")]))
+            .unwrap();
+
+        let err = expect_err(svc.get_group(&make_request("GetGroup", vec![("GroupName", "devs")])));
+        assert!(err.to_string().contains("NoSuchEntity"));
+    }
+
+    #[test]
+    fn group_user_membership() {
+        let svc = make_service();
+        svc.create_group(&make_request("CreateGroup", vec![("GroupName", "team")]))
+            .unwrap();
+        svc.create_user(&make_request("CreateUser", vec![("UserName", "member")]))
+            .unwrap();
+
+        svc.add_user_to_group(&make_request(
+            "AddUserToGroup",
+            vec![("GroupName", "team"), ("UserName", "member")],
+        ))
+        .unwrap();
+
+        let resp = svc
+            .get_group(&make_request("GetGroup", vec![("GroupName", "team")]))
+            .unwrap();
+        let body = String::from_utf8_lossy(resp.body.expect_bytes()).to_string();
+        assert!(body.contains("<UserName>member</UserName>"));
+
+        svc.remove_user_from_group(&make_request(
+            "RemoveUserFromGroup",
+            vec![("GroupName", "team"), ("UserName", "member")],
+        ))
+        .unwrap();
+    }
+
+    #[test]
+    fn list_groups_basic() {
+        let svc = make_service();
+        svc.create_group(&make_request("CreateGroup", vec![("GroupName", "g1")]))
+            .unwrap();
+        svc.create_group(&make_request("CreateGroup", vec![("GroupName", "g2")]))
+            .unwrap();
+
+        let resp = svc
+            .list_groups(&make_request("ListGroups", vec![]))
+            .unwrap();
+        let body = String::from_utf8_lossy(resp.body.expect_bytes()).to_string();
+        assert!(body.contains("g1"));
+        assert!(body.contains("g2"));
+    }
+
+    // ── Instance Profile CRUD ──
+
+    #[test]
+    fn instance_profile_lifecycle() {
+        let svc = make_service();
+
+        svc.create_instance_profile(&make_request(
+            "CreateInstanceProfile",
+            vec![("InstanceProfileName", "web-ip")],
+        ))
+        .unwrap();
+
+        let resp = svc
+            .get_instance_profile(&make_request(
+                "GetInstanceProfile",
+                vec![("InstanceProfileName", "web-ip")],
+            ))
+            .unwrap();
+        let body = String::from_utf8_lossy(resp.body.expect_bytes()).to_string();
+        assert!(body.contains("<InstanceProfileName>web-ip</InstanceProfileName>"));
+
+        // Add role
+        let trust = r#"{"Version":"2012-10-17"}"#;
+        svc.create_role(&make_request(
+            "CreateRole",
+            vec![
+                ("RoleName", "ip-role2"),
+                ("AssumeRolePolicyDocument", trust),
+            ],
+        ))
+        .unwrap();
+        svc.add_role_to_instance_profile(&make_request(
+            "AddRoleToInstanceProfile",
+            vec![("InstanceProfileName", "web-ip"), ("RoleName", "ip-role2")],
+        ))
+        .unwrap();
+
+        // List
+        let resp = svc
+            .list_instance_profiles(&make_request("ListInstanceProfiles", vec![]))
+            .unwrap();
+        let body = String::from_utf8_lossy(resp.body.expect_bytes()).to_string();
+        assert!(body.contains("web-ip"));
+
+        // Remove role and delete
+        svc.remove_role_from_instance_profile(&make_request(
+            "RemoveRoleFromInstanceProfile",
+            vec![("InstanceProfileName", "web-ip"), ("RoleName", "ip-role2")],
+        ))
+        .unwrap();
+        svc.delete_instance_profile(&make_request(
+            "DeleteInstanceProfile",
+            vec![("InstanceProfileName", "web-ip")],
+        ))
+        .unwrap();
+    }
+
+    // ── OIDC Provider CRUD ──
+
+    #[test]
+    fn oidc_provider_lifecycle() {
+        let svc = make_service();
+
+        let req = make_request(
+            "CreateOpenIDConnectProvider",
+            vec![
+                ("Url", "https://oidc.example.com"),
+                (
+                    "ThumbprintList.member.1",
+                    "aabbccddeeff00112233aabbccddeeff00112233",
+                ),
+                ("ClientIDList.member.1", "my-client"),
+            ],
+        );
+        let resp = svc.create_oidc_provider(&req).unwrap();
+        let body = String::from_utf8_lossy(resp.body.expect_bytes()).to_string();
+        let arn = extract_xml_tag(&body, "OpenIDConnectProviderArn");
+
+        let resp = svc
+            .get_oidc_provider(&make_request(
+                "GetOpenIDConnectProvider",
+                vec![("OpenIDConnectProviderArn", arn)],
+            ))
+            .unwrap();
+        let body = String::from_utf8_lossy(resp.body.expect_bytes()).to_string();
+        assert!(body.contains("oidc.example.com"));
+        assert!(body.contains("my-client"));
+
+        let resp = svc
+            .list_oidc_providers(&make_request("ListOpenIDConnectProviders", vec![]))
+            .unwrap();
+        let body = String::from_utf8_lossy(resp.body.expect_bytes()).to_string();
+        assert!(body.contains(arn));
+
+        svc.delete_oidc_provider(&make_request(
+            "DeleteOpenIDConnectProvider",
+            vec![("OpenIDConnectProviderArn", arn)],
+        ))
+        .unwrap();
+    }
+
+    // ── Access Key lifecycle ──
+
+    #[test]
+    fn access_key_create_update_delete() {
+        let svc = make_service();
+        svc.create_user(&make_request("CreateUser", vec![("UserName", "akuser")]))
+            .unwrap();
+
+        let resp = svc
+            .create_access_key(&make_request(
+                "CreateAccessKey",
+                vec![("UserName", "akuser")],
+            ))
+            .unwrap();
+        let body = String::from_utf8_lossy(resp.body.expect_bytes()).to_string();
+        let key_id = extract_xml_tag(&body, "AccessKeyId");
+        assert!(body.contains("<Status>Active</Status>"));
+
+        // Update to Inactive
+        svc.update_access_key(&make_request(
+            "UpdateAccessKey",
+            vec![
+                ("UserName", "akuser"),
+                ("AccessKeyId", key_id),
+                ("Status", "Inactive"),
+            ],
+        ))
+        .unwrap();
+
+        // List and verify
+        let resp = svc
+            .list_access_keys(&make_request(
+                "ListAccessKeys",
+                vec![("UserName", "akuser")],
+            ))
+            .unwrap();
+        let body = String::from_utf8_lossy(resp.body.expect_bytes()).to_string();
+        assert!(body.contains("<Status>Inactive</Status>"));
+
+        // Delete
+        svc.delete_access_key(&make_request(
+            "DeleteAccessKey",
+            vec![("UserName", "akuser"), ("AccessKeyId", key_id)],
+        ))
+        .unwrap();
+
+        let resp = svc
+            .list_access_keys(&make_request(
+                "ListAccessKeys",
+                vec![("UserName", "akuser")],
+            ))
+            .unwrap();
+        let body = String::from_utf8_lossy(resp.body.expect_bytes()).to_string();
+        assert!(!body.contains("<AccessKeyId>"));
+    }
+
+    // ── Tag/Untag User ──
+
+    #[test]
+    fn tag_untag_list_user_tags() {
+        let svc = make_service();
+        svc.create_user(&make_request("CreateUser", vec![("UserName", "tuser")]))
+            .unwrap();
+
+        svc.tag_user(&make_request(
+            "TagUser",
+            vec![
+                ("UserName", "tuser"),
+                ("Tags.member.1.Key", "dept"),
+                ("Tags.member.1.Value", "eng"),
+            ],
+        ))
+        .unwrap();
+
+        let resp = svc
+            .list_user_tags(&make_request("ListUserTags", vec![("UserName", "tuser")]))
+            .unwrap();
+        let body = String::from_utf8_lossy(resp.body.expect_bytes()).to_string();
+        assert!(body.contains("<Key>dept</Key>"));
+        assert!(body.contains("<Value>eng</Value>"));
+
+        svc.untag_user(&make_request(
+            "UntagUser",
+            vec![("UserName", "tuser"), ("TagKeys.member.1", "dept")],
+        ))
+        .unwrap();
+
+        let resp = svc
+            .list_user_tags(&make_request("ListUserTags", vec![("UserName", "tuser")]))
+            .unwrap();
+        let body = String::from_utf8_lossy(resp.body.expect_bytes()).to_string();
+        assert!(!body.contains("<Key>dept</Key>"));
+    }
+
+    // ── Attach/Detach role policy ──
+
+    #[test]
+    fn attach_detach_list_role_policies_managed() {
+        let svc = make_service();
+        let trust = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}"#;
+        svc.create_role(&make_request(
+            "CreateRole",
+            vec![
+                ("RoleName", "pol-role"),
+                ("AssumeRolePolicyDocument", trust),
+            ],
+        ))
+        .unwrap();
+
+        // Create a local policy to attach
+        let doc = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:*","Resource":"*"}]}"#;
+        let resp = svc
+            .create_policy(&make_request(
+                "CreatePolicy",
+                vec![("PolicyName", "role-pol"), ("PolicyDocument", doc)],
+            ))
+            .unwrap();
+        let body = String::from_utf8_lossy(resp.body.expect_bytes()).to_string();
+        let policy_arn = extract_xml_tag(&body, "Arn").to_string();
+
+        svc.attach_role_policy(&make_request(
+            "AttachRolePolicy",
+            vec![("RoleName", "pol-role"), ("PolicyArn", &policy_arn)],
+        ))
+        .unwrap();
+
+        let resp = svc
+            .list_attached_role_policies(&make_request(
+                "ListAttachedRolePolicies",
+                vec![("RoleName", "pol-role")],
+            ))
+            .unwrap();
+        let body = String::from_utf8_lossy(resp.body.expect_bytes()).to_string();
+        assert!(body.contains("role-pol"));
+
+        svc.detach_role_policy(&make_request(
+            "DetachRolePolicy",
+            vec![("RoleName", "pol-role"), ("PolicyArn", &policy_arn)],
+        ))
+        .unwrap();
+    }
 }
