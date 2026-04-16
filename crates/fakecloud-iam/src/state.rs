@@ -209,6 +209,13 @@ pub struct StsTempCredential {
     pub user_id: String,
     pub account_id: String,
     pub expiration: DateTime<Utc>,
+    /// Session policies passed to the STS call that minted this credential.
+    /// Raw JSON policy documents. The `Policy` parameter contributes one
+    /// entry; `PolicyArns` contribute additional entries (resolved to
+    /// documents at mint time). Empty when the STS call carried no
+    /// session policies.
+    #[serde(default)]
+    pub session_policies: Vec<String>,
 }
 
 /// Result of looking up a set of credentials by access key ID.
@@ -224,6 +231,9 @@ pub struct SecretLookup {
     pub principal_arn: String,
     pub user_id: String,
     pub account_id: String,
+    /// Session policies from the STS call that minted this credential.
+    /// Empty for IAM user access keys.
+    pub session_policies: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -340,6 +350,7 @@ impl IamState {
                             principal_arn: user.arn.clone(),
                             user_id: user.user_id.clone(),
                             account_id: self.account_id.clone(),
+                            session_policies: Vec::new(),
                         });
                     }
                 }
@@ -357,6 +368,7 @@ impl IamState {
                     principal_arn: temp.principal_arn.clone(),
                     user_id: temp.user_id.clone(),
                     account_id: temp.account_id.clone(),
+                    session_policies: temp.session_policies.clone(),
                 });
             }
             self.sts_temp_credentials.remove(access_key_id);
@@ -378,6 +390,7 @@ impl IamState {
                             principal_arn: user.arn.clone(),
                             user_id: user.user_id.clone(),
                             account_id: self.account_id.clone(),
+                            session_policies: Vec::new(),
                         });
                     }
                 }
@@ -395,6 +408,7 @@ impl IamState {
             principal_arn: temp.principal_arn.clone(),
             user_id: temp.user_id.clone(),
             account_id: temp.account_id.clone(),
+            session_policies: temp.session_policies.clone(),
         })
     }
 }
@@ -467,6 +481,7 @@ mod tests {
                 user_id: "AROA:session".to_string(),
                 account_id: "123456789012".to_string(),
                 expiration: Utc::now() + chrono::Duration::minutes(30),
+                session_policies: Vec::new(),
             },
         );
         let lookup = state.credential_secret("FSIATEMPKEY").unwrap();
@@ -491,6 +506,7 @@ mod tests {
                 user_id: "id".to_string(),
                 account_id: "123456789012".to_string(),
                 expiration: Utc::now() - chrono::Duration::seconds(1),
+                session_policies: Vec::new(),
             },
         );
         assert!(state.credential_secret("FSIAOLD").is_none());
@@ -510,6 +526,7 @@ mod tests {
                 user_id: "id".to_string(),
                 account_id: "123456789012".to_string(),
                 expiration: Utc::now() - chrono::Duration::seconds(1),
+                session_policies: Vec::new(),
             },
         );
         assert!(state.credential_secret_readonly("FSIAOLD").is_none());

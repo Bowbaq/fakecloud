@@ -49,6 +49,7 @@ impl CredentialResolver for IamCredentialResolver {
                 principal_type,
                 source_identity: None,
             },
+            session_policies: lookup.session_policies,
         })
     }
 }
@@ -125,6 +126,7 @@ mod tests {
                 user_id: "AROA:session".into(),
                 account_id: "123456789012".into(),
                 expiration: Utc::now() + chrono::Duration::minutes(30),
+                session_policies: Vec::new(),
             },
         );
         let resolver = IamCredentialResolver::new(Arc::new(RwLock::new(state)));

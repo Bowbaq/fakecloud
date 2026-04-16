@@ -112,6 +112,9 @@ pub struct ResolvedCredential {
     pub secret_access_key: String,
     pub session_token: Option<String>,
     pub principal: Principal,
+    /// Session policies passed to the STS call that minted this credential.
+    /// Empty for IAM user access keys.
+    pub session_policies: Vec<String>,
 }
 
 impl ResolvedCredential {
@@ -280,40 +283,27 @@ impl ConditionContext {
 pub trait IamPolicyEvaluator: Send + Sync {
     /// Evaluate `action` against the identity policies attached to
     /// `principal`, using `context` for `Condition` block resolution.
+    /// `session_policies` are the raw JSON session-policy documents
+    /// from the STS call that minted the caller's credential (empty
+    /// for IAM user access keys).
     fn evaluate(
         &self,
         principal: &Principal,
         action: &IamAction,
         context: &ConditionContext,
+        session_policies: &[String],
     ) -> IamDecision;
 
-    /// Evaluate `action` against the identity policies attached to
-    /// `principal` **and** an optional resource-based policy attached
-    /// to the target resource. Implements AWS's cross-account
-    /// evaluation semantics:
-    ///
-    /// - Either side returning an explicit `Deny` wins.
-    /// - Same-account (`principal.account_id == resource_account_id`):
-    ///   the request is allowed if the identity policy **or** the
-    ///   resource policy grants it.
-    /// - Cross-account: the request is allowed only if the identity
-    ///   policy **and** the resource policy both grant it.
-    ///
-    /// The default implementation delegates to [`Self::evaluate`] and
-    /// ignores `resource_policy_json` so implementations that don't
-    /// yet understand resource policies keep behaving as they did in
-    /// Phase 1. The real implementation in `fakecloud-iam` overrides
-    /// this.
+    /// Evaluate with resource-policy + session-policy intersection.
     fn evaluate_with_resource_policy(
         &self,
         principal: &Principal,
         action: &IamAction,
         context: &ConditionContext,
-        _resource_policy_json: Option<&str>,
-        _resource_account_id: &str,
-    ) -> IamDecision {
-        self.evaluate(principal, action, context)
-    }
+        resource_policy_json: Option<&str>,
+        resource_account_id: &str,
+        session_policies: &[String],
+    ) -> IamDecision;
 }
 
 /// Abstraction over "given a service + a fully-qualified resource ARN,
@@ -642,6 +632,7 @@ mod tests {
                 principal_type: PrincipalType::User,
                 source_identity: None,
             },
+            session_policies: Vec::new(),
         };
         assert_eq!(rc.principal_arn(), "arn:aws:iam::123456789012:user/alice");
         assert_eq!(rc.user_id(), "AIDAALICE");
