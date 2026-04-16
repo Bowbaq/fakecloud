@@ -5929,4 +5929,309 @@ mod tests {
         let b = body_json(&resp);
         assert_eq!(b["Count"], 3);
     }
+
+    // ── PartiQL operations (batch.rs coverage) ──
+
+    #[test]
+    fn execute_statement_select() {
+        let svc = make_service();
+        create_test_table(&svc);
+
+        let req = make_request(
+            "PutItem",
+            json!({"TableName": "test-table", "Item": {"pk": {"S": "qs1"}, "val": {"S": "hello"}}}),
+        );
+        svc.put_item(&req).unwrap();
+
+        let req = make_request(
+            "ExecuteStatement",
+            json!({"Statement": "SELECT * FROM \"test-table\" WHERE pk='qs1'"}),
+        );
+        let resp = svc.execute_statement(&req).unwrap();
+        let b = body_json(&resp);
+        assert!(!b["Items"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn execute_statement_insert() {
+        let svc = make_service();
+        create_test_table(&svc);
+
+        let req = make_request(
+            "ExecuteStatement",
+            json!({"Statement": "INSERT INTO \"test-table\" VALUE {'pk': 'ins1', 'data': 'val'}"}),
+        );
+        svc.execute_statement(&req).unwrap();
+
+        let req = make_request(
+            "GetItem",
+            json!({"TableName": "test-table", "Key": {"pk": {"S": "ins1"}}}),
+        );
+        let resp = svc.get_item(&req).unwrap();
+        let b = body_json(&resp);
+        assert_eq!(b["Item"]["data"]["S"], "val");
+    }
+
+    #[test]
+    fn batch_execute_statement() {
+        let svc = make_service();
+        create_test_table(&svc);
+
+        let req = make_request(
+            "PutItem",
+            json!({"TableName": "test-table", "Item": {"pk": {"S": "be1"}}}),
+        );
+        svc.put_item(&req).unwrap();
+
+        let req = make_request(
+            "BatchExecuteStatement",
+            json!({
+                "Statements": [
+                    {"Statement": "SELECT * FROM \"test-table\" WHERE pk='be1'"},
+                ]
+            }),
+        );
+        let resp = svc.batch_execute_statement(&req).unwrap();
+        let b = body_json(&resp);
+        assert!(b["Responses"].as_array().is_some());
+    }
+
+    #[test]
+    fn execute_transaction() {
+        let svc = make_service();
+        create_test_table(&svc);
+
+        let req = make_request(
+            "ExecuteTransaction",
+            json!({
+                "TransactStatements": [
+                    {"Statement": "INSERT INTO \"test-table\" VALUE {'pk': 'tx1'}"},
+                    {"Statement": "INSERT INTO \"test-table\" VALUE {'pk': 'tx2'}"},
+                ]
+            }),
+        );
+        svc.execute_transaction(&req).unwrap();
+
+        let req = make_request(
+            "GetItem",
+            json!({"TableName": "test-table", "Key": {"pk": {"S": "tx1"}}}),
+        );
+        let resp = svc.get_item(&req).unwrap();
+        let b = body_json(&resp);
+        assert!(b["Item"].is_object());
+    }
+
+    // ── Batch write with delete ──
+
+    #[test]
+    fn batch_write_with_delete_requests() {
+        let svc = make_service();
+        create_test_table(&svc);
+
+        // Put items first
+        for key in &["bwd1", "bwd2", "bwd3"] {
+            let req = make_request(
+                "PutItem",
+                json!({"TableName": "test-table", "Item": {"pk": {"S": key}}}),
+            );
+            svc.put_item(&req).unwrap();
+        }
+
+        // Batch delete two
+        let req = make_request(
+            "BatchWriteItem",
+            json!({
+                "RequestItems": {
+                    "test-table": [
+                        {"DeleteRequest": {"Key": {"pk": {"S": "bwd1"}}}},
+                        {"DeleteRequest": {"Key": {"pk": {"S": "bwd2"}}}},
+                    ]
+                }
+            }),
+        );
+        svc.batch_write_item(&req).unwrap();
+
+        // bwd3 should still exist
+        let req = make_request(
+            "GetItem",
+            json!({"TableName": "test-table", "Key": {"pk": {"S": "bwd3"}}}),
+        );
+        let resp = svc.get_item(&req).unwrap();
+        let b = body_json(&resp);
+        assert!(b["Item"].is_object());
+
+        // bwd1 should be gone
+        let req = make_request(
+            "GetItem",
+            json!({"TableName": "test-table", "Key": {"pk": {"S": "bwd1"}}}),
+        );
+        let resp = svc.get_item(&req).unwrap();
+        let b = body_json(&resp);
+        assert!(b.get("Item").is_none() || b["Item"].is_null());
+    }
+
+    // ── Query with sort key condition ──
+
+    #[test]
+    fn query_with_sort_key_begins_with() {
+        let svc = make_service();
+        // Table with hash+range
+        let req = make_request(
+            "CreateTable",
+            json!({
+                "TableName": "sk-table",
+                "KeySchema": [
+                    {"AttributeName": "pk", "KeyType": "HASH"},
+                    {"AttributeName": "sk", "KeyType": "RANGE"},
+                ],
+                "AttributeDefinitions": [
+                    {"AttributeName": "pk", "AttributeType": "S"},
+                    {"AttributeName": "sk", "AttributeType": "S"},
+                ],
+                "BillingMode": "PAY_PER_REQUEST",
+            }),
+        );
+        svc.create_table(&req).unwrap();
+
+        for sk in &["order#001", "order#002", "profile#main"] {
+            let req = make_request(
+                "PutItem",
+                json!({"TableName": "sk-table", "Item": {"pk": {"S": "u1"}, "sk": {"S": sk}}}),
+            );
+            svc.put_item(&req).unwrap();
+        }
+
+        let req = make_request(
+            "Query",
+            json!({
+                "TableName": "sk-table",
+                "KeyConditionExpression": "pk = :pk AND begins_with(sk, :prefix)",
+                "ExpressionAttributeValues": {":pk": {"S": "u1"}, ":prefix": {"S": "order#"}},
+            }),
+        );
+        let resp = svc.query(&req).unwrap();
+        let b = body_json(&resp);
+        assert_eq!(b["Count"], 2);
+    }
+
+    // ── Scan with limit ──
+
+    #[test]
+    fn scan_with_limit() {
+        let svc = make_service();
+        create_test_table(&svc);
+
+        for i in 0..10 {
+            let req = make_request(
+                "PutItem",
+                json!({"TableName": "test-table", "Item": {"pk": {"S": format!("lim{i}")}}}),
+            );
+            svc.put_item(&req).unwrap();
+        }
+
+        let req = make_request("Scan", json!({"TableName": "test-table", "Limit": 3}));
+        let resp = svc.scan(&req).unwrap();
+        let b = body_json(&resp);
+        assert_eq!(b["Count"], 3);
+        assert!(b["LastEvaluatedKey"].is_object());
+    }
+
+    // ── Error branches ──
+
+    #[test]
+    fn batch_get_item_table_not_found() {
+        let svc = make_service();
+        let req = make_request(
+            "BatchGetItem",
+            json!({"RequestItems": {"ghost": {"Keys": [{"pk": {"S": "k"}}]}}}),
+        );
+        assert!(svc.batch_get_item(&req).is_err());
+    }
+
+    #[test]
+    fn batch_write_item_table_not_found() {
+        let svc = make_service();
+        let req = make_request(
+            "BatchWriteItem",
+            json!({"RequestItems": {"ghost": [{"PutRequest": {"Item": {"pk": {"S": "k"}}}}]}}),
+        );
+        assert!(svc.batch_write_item(&req).is_err());
+    }
+
+    // ── Global tables ──
+
+    #[test]
+    fn create_and_describe_global_table() {
+        let svc = make_service();
+        create_test_table(&svc);
+
+        let req = make_request(
+            "CreateGlobalTable",
+            json!({
+                "GlobalTableName": "test-table",
+                "ReplicationGroup": [{"RegionName": "us-east-1"}, {"RegionName": "eu-west-1"}],
+            }),
+        );
+        svc.create_global_table(&req).unwrap();
+
+        let req = make_request(
+            "DescribeGlobalTable",
+            json!({"GlobalTableName": "test-table"}),
+        );
+        let resp = svc.describe_global_table(&req).unwrap();
+        let b = body_json(&resp);
+        assert!(b["GlobalTableDescription"].is_object());
+    }
+
+    #[test]
+    fn list_global_tables() {
+        let svc = make_service();
+        let req = make_request("ListGlobalTables", json!({}));
+        let resp = svc.list_global_tables(&req).unwrap();
+        let b = body_json(&resp);
+        assert!(b["GlobalTables"].as_array().is_some());
+    }
+
+    // ── Backup operations ──
+
+    #[test]
+    fn create_and_list_backups() {
+        let svc = make_service();
+        create_test_table(&svc);
+
+        let req = make_request(
+            "CreateBackup",
+            json!({"TableName": "test-table", "BackupName": "bak1"}),
+        );
+        let resp = svc.create_backup(&req).unwrap();
+        let b = body_json(&resp);
+        assert!(b["BackupDetails"]["BackupArn"].as_str().is_some());
+
+        let req = make_request("ListBackups", json!({}));
+        let resp = svc.list_backups(&req).unwrap();
+        let b = body_json(&resp);
+        assert!(!b["BackupSummaries"].as_array().unwrap().is_empty());
+    }
+
+    // ── Import/Export ──
+
+    #[test]
+    fn describe_import_not_found() {
+        let svc = make_service();
+        let req = make_request(
+            "DescribeImport",
+            json!({"ImportArn": "arn:aws:dynamodb:us-east-1:123:table/t/import/ghost"}),
+        );
+        assert!(svc.describe_import(&req).is_err());
+    }
+
+    #[test]
+    fn describe_export_not_found() {
+        let svc = make_service();
+        let req = make_request(
+            "DescribeExport",
+            json!({"ExportArn": "arn:aws:dynamodb:us-east-1:123:table/t/export/ghost"}),
+        );
+        assert!(svc.describe_export(&req).is_err());
+    }
 }
