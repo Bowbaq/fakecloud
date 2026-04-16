@@ -382,9 +382,7 @@ async fn main() {
 
     // Register services
     if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
-        for service in ["elasticache", "bedrock"] {
-            fakecloud_persistence::warn_unsupported(service);
-        }
+        fakecloud_persistence::warn_unsupported("bedrock");
     }
     let mut registry = ServiceRegistry::new();
     let cloudformation_snapshot_store: Option<Arc<dyn fakecloud_persistence::SnapshotStore>> =
@@ -1314,9 +1312,59 @@ async fn main() {
         rds_service = rds_service.with_snapshot_store(store);
     }
     registry.register(Arc::new(rds_service));
+    let elasticache_snapshot_store: Option<Arc<dyn fakecloud_persistence::SnapshotStore>> =
+        if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
+            let data_path = persistence_config
+                .data_path
+                .as_ref()
+                .expect("validated above")
+                .clone();
+            let path = data_path.join("elasticache").join("snapshot.json");
+            let store = fakecloud_persistence::DiskSnapshotStore::new(path);
+            match fakecloud_persistence::SnapshotStore::load(&store) {
+                Ok(Some(bytes)) => {
+                    match serde_json::from_slice::<fakecloud_elasticache::state::ElastiCacheSnapshot>(
+                        &bytes,
+                    ) {
+                        Ok(snapshot) => {
+                            if snapshot.schema_version
+                                != fakecloud_elasticache::state::ELASTICACHE_SNAPSHOT_SCHEMA_VERSION
+                            {
+                                fatal_exit(format_args!(
+                                    "elasticache persistence schema mismatch: on-disk={}, expected={}",
+                                    snapshot.schema_version,
+                                    fakecloud_elasticache::state::ELASTICACHE_SNAPSHOT_SCHEMA_VERSION,
+                                ));
+                            }
+                            let cluster_count = snapshot.state.cache_clusters.len();
+                            *elasticache_state.write() = snapshot.state;
+                            tracing::info!(
+                                clusters = cluster_count,
+                                "loaded elasticache persistence snapshot",
+                            );
+                        }
+                        Err(err) => fatal_exit(format_args!(
+                            "failed to parse elasticache persistence snapshot: {err}"
+                        )),
+                    }
+                }
+                Ok(None) => {
+                    tracing::info!("no elasticache persistence snapshot found; starting empty");
+                }
+                Err(err) => fatal_exit(format_args!(
+                    "failed to read elasticache persistence snapshot: {err}"
+                )),
+            }
+            Some(Arc::new(store) as Arc<dyn fakecloud_persistence::SnapshotStore>)
+        } else {
+            None
+        };
     let mut elasticache_service = ElastiCacheService::new(elasticache_state);
     if let Some(ref rt) = elasticache_runtime {
         elasticache_service = elasticache_service.with_runtime(rt.clone());
+    }
+    if let Some(store) = elasticache_snapshot_store {
+        elasticache_service = elasticache_service.with_snapshot_store(store);
     }
     registry.register(Arc::new(elasticache_service));
     let mut sfn_service = StepFunctionsService::new(stepfunctions_state.clone());
