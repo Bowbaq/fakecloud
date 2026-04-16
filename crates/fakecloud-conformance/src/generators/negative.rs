@@ -59,7 +59,7 @@ pub fn generate(
                     let mut input = build_required_input(model, input_shape_id, overrides);
                     if let Value::Object(ref mut obj) = input {
                         // Use a string shorter than min
-                        let short = "a".repeat((min as usize).saturating_sub(1).max(0));
+                        let short = "a".repeat((min as usize).saturating_sub(1));
                         obj.insert(member.name.clone(), Value::String(short));
                     }
                     variants.push(TestVariant {

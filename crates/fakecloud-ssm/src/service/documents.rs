@@ -132,19 +132,15 @@ fn document_matches_list_filters(
             .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
             .unwrap_or_default();
         match key {
-            "Owner" => {
-                if values.contains(&"Self") && doc.owner != account_id {
-                    return false;
-                }
+            "Owner" if values.contains(&"Self") && doc.owner != account_id => {
+                return false;
             }
             "TargetType" => match &doc.target_type {
                 Some(tt) if values.contains(&tt.as_str()) => {}
                 _ => return false,
             },
-            "Name" => {
-                if !values.contains(&doc.name.as_str()) {
-                    return false;
-                }
+            "Name" if !values.contains(&doc.name.as_str()) => {
+                return false;
             }
             _ => {}
         }
