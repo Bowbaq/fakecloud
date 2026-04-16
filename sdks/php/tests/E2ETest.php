@@ -100,7 +100,8 @@ final class E2ETest extends TestCase
 
     public function testSnsGetMessages(): void
     {
-        $topicArn = $this->awsSns('CreateTopic', ['Name' => 'php-test-topic'])['CreateTopicResponse']['CreateTopicResult']['TopicArn'];
+        $xml = $this->awsSns('CreateTopic', ['Name' => 'php-test-topic']);
+        $topicArn = $this->extractXmlValue($xml, 'TopicArn');
         $this->awsSns('Publish', [
             'TopicArn' => $topicArn,
             'Message' => 'hello sns from php',
@@ -114,7 +115,8 @@ final class E2ETest extends TestCase
 
     public function testSnsPendingConfirmations(): void
     {
-        $topicArn = $this->awsSns('CreateTopic', ['Name' => 'php-confirm-topic'])['CreateTopicResponse']['CreateTopicResult']['TopicArn'];
+        $xml = $this->awsSns('CreateTopic', ['Name' => 'php-confirm-topic']);
+        $topicArn = $this->extractXmlValue($xml, 'TopicArn');
         $this->awsSns('Subscribe', [
             'TopicArn' => $topicArn,
             'Protocol' => 'https',
@@ -288,7 +290,7 @@ final class E2ETest extends TestCase
         return json_decode($result, true) ?: [];
     }
 
-    private function awsSns(string $action, array $params): array
+    private function awsSns(string $action, array $params): string
     {
         $params['Action'] = $action;
         $params['Version'] = '2010-03-31';
@@ -302,10 +304,13 @@ final class E2ETest extends TestCase
         ]);
         $result = curl_exec($ch);
         curl_close($ch);
+        return $result;
+    }
 
-        // SNS returns XML, parse it
-        $xml = simplexml_load_string($result);
-        return json_decode(json_encode($xml), true) ?: [];
+    private function extractXmlValue(string $xml, string $tag): string
+    {
+        preg_match("/<{$tag}>([^<]+)<\/{$tag}>/", $xml, $matches);
+        return $matches[1] ?? '';
     }
 
     private function awsSesV2(string $action, array $params): array
