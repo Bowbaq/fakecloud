@@ -1583,7 +1583,12 @@ impl IamService {
         validate_string_length("userName", &user_name, 1, 64)?;
         let boundary = required_param(&req.query_params, "PermissionsBoundary")?;
 
-        if !boundary.contains(":policy/") {
+        if boundary
+            .parse::<Arn>()
+            .ok()
+            .filter(|arn| arn.service == "iam" && arn.resource.starts_with("policy/"))
+            .is_none()
+        {
             return Err(AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
                 "ValidationError",
