@@ -199,8 +199,8 @@ async fn no_session_policy_unchanged_behavior() {
     )
     .await;
     let iam = IamClient::new(&cfg);
-    let users = iam.list_users().send().await.unwrap();
-    assert!(users.users().is_empty() || true);
+    // Must succeed — the role has Allow-all and no session policy.
+    let _users = iam.list_users().send().await.unwrap();
 }
 
 #[tokio::test]
