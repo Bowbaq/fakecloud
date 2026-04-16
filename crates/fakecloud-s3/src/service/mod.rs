@@ -4843,4 +4843,290 @@ mod tests {
         assert!(body.contains("<IsTruncated>true</IsTruncated>"));
         assert!(body.contains("<MaxKeys>2</MaxKeys>"));
     }
+
+    // ── buckets.rs coverage (list/create/delete/head/location) ──
+
+    #[test]
+    fn list_buckets_empty_account() {
+        let svc = make_service();
+        let req = make_request(Method::GET, "/", &[], b"");
+        let resp = svc.list_buckets("123456789012", &req).unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("<ListAllMyBucketsResult"));
+        assert!(body.contains("<Owner><ID>123456789012</ID>"));
+        assert!(body.contains("<Buckets></Buckets>"));
+    }
+
+    #[test]
+    fn list_buckets_sorted_by_name() {
+        let svc = make_service();
+        seed_bucket(&svc, "zeta");
+        seed_bucket(&svc, "alpha");
+        seed_bucket(&svc, "middle");
+
+        let req = make_request(Method::GET, "/", &[], b"");
+        let resp = svc.list_buckets("123456789012", &req).unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        let a = body.find("alpha").unwrap();
+        let m = body.find("middle").unwrap();
+        let z = body.find("zeta").unwrap();
+        assert!(a < m && m < z, "buckets must be sorted");
+    }
+
+    #[test]
+    fn create_bucket_invalid_name_errors() {
+        let svc = make_service();
+        let req = make_request(Method::PUT, "/AB", &[], b"");
+        assert_aws_err(
+            svc.create_bucket("123456789012", &req, "AB"),
+            "InvalidBucketName",
+        );
+    }
+
+    #[test]
+    fn create_bucket_idempotent_same_region_us_east_1() {
+        let svc = make_service();
+        let req = make_request(Method::PUT, "/idem", &[], b"");
+        svc.create_bucket("123456789012", &req, "idem").unwrap();
+        let resp = svc.create_bucket("123456789012", &req, "idem").unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+    }
+
+    #[test]
+    fn create_bucket_already_owned_other_region() {
+        let svc = make_service();
+        let mut req = make_request(
+            Method::PUT,
+            "/bk1",
+            &[],
+            b"<CreateBucketConfiguration><LocationConstraint>eu-west-1</LocationConstraint></CreateBucketConfiguration>",
+        );
+        req.region = "eu-west-1".to_string();
+        svc.create_bucket("123456789012", &req, "bk1").unwrap();
+        assert_aws_err(
+            svc.create_bucket("123456789012", &req, "bk1"),
+            "BucketAlreadyOwnedByYou",
+        );
+    }
+
+    #[test]
+    fn create_bucket_us_east_1_with_explicit_constraint_invalid() {
+        let svc = make_service();
+        let req = make_request(
+            Method::PUT,
+            "/bk2",
+            &[],
+            b"<CreateBucketConfiguration><LocationConstraint>us-east-1</LocationConstraint></CreateBucketConfiguration>",
+        );
+        assert_aws_err(
+            svc.create_bucket("123456789012", &req, "bk2"),
+            "InvalidLocationConstraint",
+        );
+    }
+
+    #[test]
+    fn create_bucket_constraint_mismatch_region_errors() {
+        let svc = make_service();
+        let mut req = make_request(
+            Method::PUT,
+            "/bk3",
+            &[],
+            b"<CreateBucketConfiguration><LocationConstraint>us-west-2</LocationConstraint></CreateBucketConfiguration>",
+        );
+        req.region = "eu-west-1".to_string();
+        assert_aws_err(
+            svc.create_bucket("123456789012", &req, "bk3"),
+            "IllegalLocationConstraintException",
+        );
+    }
+
+    #[test]
+    fn create_bucket_missing_constraint_in_non_default_region_errors() {
+        let svc = make_service();
+        let mut req = make_request(Method::PUT, "/bk4", &[], b"");
+        req.region = "eu-west-1".to_string();
+        assert_aws_err(
+            svc.create_bucket("123456789012", &req, "bk4"),
+            "IllegalLocationConstraintException",
+        );
+    }
+
+    #[test]
+    fn create_bucket_invalid_region_constraint() {
+        let svc = make_service();
+        let req = make_request(
+            Method::PUT,
+            "/bk5",
+            &[],
+            b"<CreateBucketConfiguration><LocationConstraint>not-a-region</LocationConstraint></CreateBucketConfiguration>",
+        );
+        assert_aws_err(
+            svc.create_bucket("123456789012", &req, "bk5"),
+            "InvalidLocationConstraint",
+        );
+    }
+
+    #[test]
+    fn create_bucket_with_us_east_1_constraint_when_region_not_matching() {
+        let svc = make_service();
+        let mut req = make_request(
+            Method::PUT,
+            "/bk6",
+            &[],
+            b"<CreateBucketConfiguration><LocationConstraint>us-east-1</LocationConstraint></CreateBucketConfiguration>",
+        );
+        req.region = "eu-west-1".to_string();
+        assert_aws_err(
+            svc.create_bucket("123456789012", &req, "bk6"),
+            "IllegalLocationConstraintException",
+        );
+    }
+
+    #[test]
+    fn create_bucket_with_object_lock_enables_versioning() {
+        let svc = make_service();
+        let mut req = make_request(Method::PUT, "/olb", &[], b"");
+        req.headers
+            .insert("x-amz-bucket-object-lock-enabled", "true".parse().unwrap());
+        svc.create_bucket("123456789012", &req, "olb").unwrap();
+        let accts = svc.state.read();
+        let state = accts.get("123456789012").unwrap();
+        let b = state.buckets.get("olb").unwrap();
+        assert_eq!(b.versioning.as_deref(), Some("Enabled"));
+        assert!(b
+            .object_lock_config
+            .as_deref()
+            .unwrap_or("")
+            .contains("ObjectLockEnabled"));
+    }
+
+    #[test]
+    fn create_bucket_with_object_ownership_header() {
+        let svc = make_service();
+        let mut req = make_request(Method::PUT, "/own", &[], b"");
+        req.headers.insert(
+            "x-amz-object-ownership",
+            "BucketOwnerEnforced".parse().unwrap(),
+        );
+        svc.create_bucket("123456789012", &req, "own").unwrap();
+        let accts = svc.state.read();
+        let state = accts.get("123456789012").unwrap();
+        let b = state.buckets.get("own").unwrap();
+        assert!(b
+            .ownership_controls
+            .as_deref()
+            .unwrap_or("")
+            .contains("BucketOwnerEnforced"));
+    }
+
+    #[test]
+    fn create_bucket_with_canned_acl_public_read() {
+        let svc = make_service();
+        let mut req = make_request(Method::PUT, "/prb", &[], b"");
+        req.headers
+            .insert("x-amz-acl", "public-read".parse().unwrap());
+        svc.create_bucket("123456789012", &req, "prb").unwrap();
+        let accts = svc.state.read();
+        let state = accts.get("123456789012").unwrap();
+        let b = state.buckets.get("prb").unwrap();
+        assert!(!b.acl_grants.is_empty());
+    }
+
+    #[test]
+    fn delete_bucket_nonexistent_errors() {
+        let svc = make_service();
+        let req = make_request(Method::DELETE, "/nope", &[], b"");
+        assert_aws_err(
+            svc.delete_bucket("123456789012", &req, "nope"),
+            "NoSuchBucket",
+        );
+    }
+
+    #[test]
+    fn delete_bucket_not_empty_errors() {
+        let svc = make_service();
+        seed_bucket(&svc, "full");
+        seed_object(&svc, "full", "k", b"x");
+        let req = make_request(Method::DELETE, "/full", &[], b"");
+        assert_aws_err(
+            svc.delete_bucket("123456789012", &req, "full"),
+            "BucketNotEmpty",
+        );
+    }
+
+    #[test]
+    fn delete_bucket_with_versions_not_empty_errors() {
+        let svc = make_service();
+        seed_bucket(&svc, "ver");
+        {
+            let mut mas = svc.state.write();
+            let state = mas.default_mut();
+            let b = state.buckets.get_mut("ver").unwrap();
+            b.object_versions.insert(
+                "k".to_string(),
+                vec![S3Object {
+                    key: "k".to_string(),
+                    body: fakecloud_persistence::BodyRef::Memory(Bytes::from_static(b"v")),
+                    content_type: "text/plain".to_string(),
+                    etag: "\"abc\"".to_string(),
+                    size: 1,
+                    last_modified: chrono::Utc::now(),
+                    ..Default::default()
+                }],
+            );
+        }
+        let req = make_request(Method::DELETE, "/ver", &[], b"");
+        assert_aws_err(
+            svc.delete_bucket("123456789012", &req, "ver"),
+            "BucketNotEmpty",
+        );
+    }
+
+    #[test]
+    fn delete_bucket_empty_succeeds() {
+        let svc = make_service();
+        seed_bucket(&svc, "empty");
+        let req = make_request(Method::DELETE, "/empty", &[], b"");
+        let resp = svc.delete_bucket("123456789012", &req, "empty").unwrap();
+        assert_eq!(resp.status, StatusCode::NO_CONTENT);
+    }
+
+    #[test]
+    fn head_bucket_missing_errors() {
+        let svc = make_service();
+        assert_aws_err(svc.head_bucket("123456789012", "nope"), "NoSuchBucket");
+    }
+
+    #[test]
+    fn head_bucket_exists_returns_ok() {
+        let svc = make_service();
+        seed_bucket(&svc, "hb");
+        let resp = svc.head_bucket("123456789012", "hb").unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+    }
+
+    #[test]
+    fn get_bucket_location_us_east_1_returns_empty() {
+        let svc = make_service();
+        seed_bucket(&svc, "loc");
+        let resp = svc.get_bucket_location("123456789012", "loc").unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("<LocationConstraint"));
+        assert!(body.contains("></LocationConstraint>"));
+    }
+
+    #[test]
+    fn get_bucket_location_other_region_returns_region() {
+        let svc = make_service();
+        {
+            let mut mas = svc.state.write();
+            let state = mas.default_mut();
+            state
+                .buckets
+                .insert("eu".to_string(), S3Bucket::new("eu", "eu-west-1", "owner"));
+        }
+        let resp = svc.get_bucket_location("123456789012", "eu").unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains(">eu-west-1<"));
+    }
 }
