@@ -36,9 +36,7 @@
 //!
 //! **Not** implemented (returns implicit deny rather than guessing — these
 //! are tracked for future phases and documented on `/docs/reference/security`):
-//! - `NotPrincipal` (used in resource-based policies)
 //! - Service control policies
-//! - ABAC / tag conditions
 //!
 use std::collections::HashSet;
 
@@ -125,14 +123,16 @@ pub(crate) enum PrincipalPattern {
     /// Statement carried `Principal` naming the accepted principals.
     /// A request is accepted iff it matches at least one entry.
     Principal(Vec<PrincipalRef>),
-    /// Statement carried `NotPrincipal`. Full evaluation semantics for
-    /// `NotPrincipal` are intentionally **not** implemented in this
-    /// batch — they are subtle (cross-account root implications, deny
-    /// interactions) and deserve their own rollout. Statements with
-    /// this variant are skipped entirely at evaluation time with a
-    /// `fakecloud::iam::audit` debug log. Critically we do not fall
-    /// through to "matches everyone" — that would silently grant.
-    NotPrincipalSkipped,
+    /// Statement carried `NotPrincipal` naming the excluded principals.
+    /// A statement with `NotPrincipal` applies to all callers **except**
+    /// those matching any entry in the list — the inverse of `Principal`.
+    /// If the caller matches ANY entry, the statement does NOT apply.
+    /// If the caller matches NONE, the statement applies.
+    ///
+    /// An empty ref list (all entries were unrecognized principal types)
+    /// causes the statement to be skipped with a debug log — we never
+    /// silently grant by falling through to "matches everyone".
+    NotPrincipal(Vec<PrincipalRef>),
 }
 
 /// A single principal reference parsed from a statement's `Principal`
@@ -259,12 +259,8 @@ fn parse_statement(value: &Value) -> Option<ParsedStatement> {
         ResourceMatch::Implicit
     };
     let condition = obj.get("Condition").map(CompiledCondition::parse);
-    let principal = if obj.contains_key("NotPrincipal") {
-        tracing::debug!(
-            target: "fakecloud::iam::audit",
-            "statement has NotPrincipal; skipping (NotPrincipal evaluation is not implemented)"
-        );
-        PrincipalPattern::NotPrincipalSkipped
+    let principal = if let Some(np) = obj.get("NotPrincipal") {
+        PrincipalPattern::NotPrincipal(parse_principal(np))
     } else if let Some(p) = obj.get("Principal") {
         PrincipalPattern::Principal(parse_principal(p))
     } else {
@@ -577,13 +573,19 @@ fn evaluate_inner(
                         continue;
                     }
                 }
-                PrincipalPattern::NotPrincipalSkipped => {
-                    tracing::debug!(
-                        target: "fakecloud::iam::audit",
-                        action = %request.action,
-                        "NotPrincipal is not implemented; statement does not apply"
-                    );
-                    continue;
+                PrincipalPattern::NotPrincipal(refs) => {
+                    if refs.is_empty() {
+                        tracing::debug!(
+                            target: "fakecloud::iam::audit",
+                            action = %request.action,
+                            "NotPrincipal has no recognized principal types; statement does not apply"
+                        );
+                        continue;
+                    }
+                    // NotPrincipal: statement applies when caller does NOT match any entry.
+                    if principal_matches(refs, request.principal) {
+                        continue;
+                    }
                 }
             }
             if !action_matches(&statement.action, &request.action) {
@@ -2015,22 +2017,184 @@ mod tests {
     }
 
     #[test]
-    fn not_principal_statement_is_skipped_never_grants() {
-        // AWS's NotPrincipal semantics are not implemented in this
-        // batch. A statement carrying NotPrincipal must never silently
-        // grant — it's treated as "doesn't apply".
-        let p = principal_in(ACCT_A, "alice");
+    fn not_principal_deny_excludes_named_user() {
+        // NotPrincipal + Deny: deny everyone EXCEPT bob.
+        // Alice is not bob -> deny applies -> ExplicitDeny.
+        let alice = principal_in(ACCT_A, "alice");
+        let resource = json!({
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": "*",
+                    "Action": "s3:GetObject",
+                    "Resource": "*"
+                },
+                {
+                    "Effect": "Deny",
+                    "NotPrincipal": {"AWS": format!("arn:aws:iam::{ACCT_A}:user/bob")},
+                    "Action": "s3:GetObject",
+                    "Resource": "*"
+                }
+            ]
+        });
+        assert_eq!(
+            eval_cross(None, Some(resource.clone()), &alice, ACCT_A),
+            Decision::ExplicitDeny
+        );
+
+        // Bob IS the named principal -> deny does NOT apply -> Allow from first statement.
+        let bob = principal_in(ACCT_A, "bob");
+        assert_eq!(
+            eval_cross(None, Some(resource), &bob, ACCT_A),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn not_principal_allow_excludes_named_user() {
+        // NotPrincipal + Allow: allow everyone EXCEPT bob.
+        // Alice is not bob -> allow applies.
+        let alice = principal_in(ACCT_A, "alice");
         let resource = json!({
             "Statement": [{
                 "Effect": "Allow",
-                "NotPrincipal": {"AWS": "arn:aws:iam::111111111111:user/bob"},
+                "NotPrincipal": {"AWS": format!("arn:aws:iam::{ACCT_A}:user/bob")},
                 "Action": "s3:GetObject",
                 "Resource": "*"
             }]
         });
         assert_eq!(
-            eval_cross(None, Some(resource), &p, ACCT_A),
+            eval_cross(None, Some(resource.clone()), &alice, ACCT_A),
+            Decision::Allow
+        );
+
+        // Bob IS the named principal -> allow does NOT apply -> ImplicitDeny.
+        let bob = principal_in(ACCT_A, "bob");
+        assert_eq!(
+            eval_cross(None, Some(resource), &bob, ACCT_A),
             Decision::ImplicitDeny
+        );
+    }
+
+    #[test]
+    fn not_principal_with_star_never_applies() {
+        // NotPrincipal: "*" matches everyone, so the statement never applies.
+        let alice = principal_in(ACCT_A, "alice");
+        let resource = json!({
+            "Statement": [{
+                "Effect": "Allow",
+                "NotPrincipal": "*",
+                "Action": "s3:GetObject",
+                "Resource": "*"
+            }]
+        });
+        assert_eq!(
+            eval_cross(None, Some(resource), &alice, ACCT_A),
+            Decision::ImplicitDeny
+        );
+    }
+
+    #[test]
+    fn not_principal_with_account_root() {
+        // NotPrincipal names account root. AwsAccountRoot matches
+        // any principal in that account, so alice (in ACCT_A) matches
+        // the NotPrincipal list and the statement does NOT apply.
+        let alice = principal_in(ACCT_A, "alice");
+        let resource = json!({
+            "Statement": [{
+                "Effect": "Allow",
+                "NotPrincipal": {"AWS": format!("arn:aws:iam::{ACCT_A}:root")},
+                "Action": "s3:GetObject",
+                "Resource": "*"
+            }]
+        });
+        assert_eq!(
+            eval_cross(None, Some(resource.clone()), &alice, ACCT_A),
+            Decision::ImplicitDeny
+        );
+
+        // A user in a DIFFERENT account does NOT match ACCT_A root,
+        // so the Deny statement applies. With a Deny+NotPrincipal pattern
+        // this means the cross-account user gets denied.
+        let eve = principal_in(ACCT_B, "eve");
+        let resource_deny = json!({
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": "*",
+                    "Action": "s3:GetObject",
+                    "Resource": "*"
+                },
+                {
+                    "Effect": "Deny",
+                    "NotPrincipal": {"AWS": format!("arn:aws:iam::{ACCT_A}:root")},
+                    "Action": "s3:GetObject",
+                    "Resource": "*"
+                }
+            ]
+        });
+        // Eve (ACCT_B) doesn't match ACCT_A root, so Deny applies.
+        assert_eq!(
+            eval_cross(None, Some(resource_deny.clone()), &eve, ACCT_A),
+            Decision::ExplicitDeny
+        );
+        // Alice (ACCT_A) matches ACCT_A root, so Deny does NOT apply -> Allow.
+        assert_eq!(
+            eval_cross(None, Some(resource_deny), &alice, ACCT_A),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn not_principal_with_unrecognized_type_safe_skips() {
+        // NotPrincipal with only Federated type (unrecognized) ->
+        // empty refs list -> statement skipped safely.
+        let alice = principal_in(ACCT_A, "alice");
+        let resource = json!({
+            "Statement": [{
+                "Effect": "Allow",
+                "NotPrincipal": {"Federated": "cognito-identity.amazonaws.com"},
+                "Action": "s3:GetObject",
+                "Resource": "*"
+            }]
+        });
+        assert_eq!(
+            eval_cross(None, Some(resource), &alice, ACCT_A),
+            Decision::ImplicitDeny
+        );
+    }
+
+    #[test]
+    fn not_principal_with_multiple_entries() {
+        // NotPrincipal with multiple users. Statement applies only
+        // to callers matching NONE of the entries.
+        let alice = principal_in(ACCT_A, "alice");
+        let bob = principal_in(ACCT_A, "bob");
+        let charlie = principal_in(ACCT_A, "charlie");
+        let resource = json!({
+            "Statement": [{
+                "Effect": "Deny",
+                "NotPrincipal": {"AWS": [
+                    format!("arn:aws:iam::{ACCT_A}:user/alice"),
+                    format!("arn:aws:iam::{ACCT_A}:user/bob")
+                ]},
+                "Action": "s3:GetObject",
+                "Resource": "*"
+            }]
+        });
+        // Alice and bob are in the list -> deny does NOT apply
+        assert_eq!(
+            eval_cross(None, Some(resource.clone()), &alice, ACCT_A),
+            Decision::ImplicitDeny
+        );
+        assert_eq!(
+            eval_cross(None, Some(resource.clone()), &bob, ACCT_A),
+            Decision::ImplicitDeny
+        );
+        // Charlie is NOT in the list -> deny applies
+        assert_eq!(
+            eval_cross(None, Some(resource), &charlie, ACCT_A),
+            Decision::ExplicitDeny
         );
     }
 
