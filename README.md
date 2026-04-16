@@ -41,7 +41,7 @@ Other install options (Cargo, Docker, Docker Compose, source) are documented at 
 - **Real cross-service wiring.** EventBridge -> Step Functions, S3 -> Lambda, SES inbound -> S3/SNS/Lambda, and 15+ more integrations actually execute end-to-end.
 - **Real infrastructure for stateful services.** Lambda runs in Docker containers (13 runtimes). RDS runs real Postgres/MySQL/MariaDB. ElastiCache runs real Redis/Valkey.
 - **Single binary.** ~19 MB, ~10 MiB idle memory, ~500ms startup. No Docker required to run fakecloud itself (only to exercise the services that need real containers).
-- **First-party test SDKs** for TypeScript, Python, Go, Java, and Rust. Assert on what your code called without writing raw HTTP.
+- **First-party test SDKs** for TypeScript, Python, Go, PHP, Java, and Rust. Assert on what your code called without writing raw HTTP.
 - **Opt-in SigV4 verification and IAM enforcement.** Off by default so tests just work; turn on `--verify-sigv4` for real cryptographic signature checking and `--iam soft|strict` for identity-policy evaluation (Allow/Deny with Deny precedence, Action/Resource wildcards, user/group/role policies, `Condition` blocks with all 28 AWS operators against global keys like `aws:username` / `aws:SourceIp` / `aws:CurrentTime`, plus resource-based policies for S3 bucket, SNS topic, and Lambda function policies with AWS's cross-account combining semantics) across IAM, STS, SQS, SNS, and S3. See [the security docs](https://fakecloud.dev/docs/reference/security/).
 
 ## Supported services
@@ -86,7 +86,7 @@ Per-service docs and feature matrices: [fakecloud.dev/docs/services](https://fak
 | Startup time        | ~500ms                                             | ~3s                                                                            |
 | Idle memory         | ~10 MiB                                            | ~150 MiB                                                                       |
 | Install size        | ~19 MB binary                                      | ~1 GB Docker image                                                             |
-| Test assertion SDKs | TypeScript, Python, Go, Java, Rust                 | Python, Java                                                                   |
+| Test assertion SDKs | TypeScript, Python, Go, PHP, Java, Rust            | Python, Java                                                                   |
 | Cognito User Pools  | 122 operations                                     | [Paid only](https://docs.localstack.cloud/references/licensing/)               |
 | SES v2              | Full send + templates + DKIM + suppression         | [Paid only](https://docs.localstack.cloud/references/licensing/)               |
 | SES inbound email   | Real receipt rule action execution                 | [Stored but never executed](https://docs.localstack.cloud/user-guide/aws/ses/) |
@@ -106,6 +106,8 @@ Normal AWS SDKs handle your application code. fakecloud's own SDKs let your test
 | TypeScript | `npm install fakecloud`                         |
 | Python     | `pip install fakecloud`                         |
 | Go         | `go get github.com/faiscadev/fakecloud/sdks/go` |
+| PHP        | `composer require fakecloud/fakecloud`          |
+| Java       | `dev.fakecloud:fakecloud` (Maven Central)       |
 | Rust       | `cargo add fakecloud-sdk`                       |
 
 ```ts
@@ -121,7 +123,7 @@ expect(emails).toHaveLength(1);
 await fc.reset();
 ```
 
-Full SDK reference for all four languages: [fakecloud.dev/docs/sdks](https://fakecloud.dev/docs/sdks).
+Full SDK reference for all six languages: [fakecloud.dev/docs/sdks](https://fakecloud.dev/docs/sdks).
 
 ## Use with AI coding tools
 
