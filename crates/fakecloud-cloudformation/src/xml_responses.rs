@@ -261,3 +261,147 @@ pub fn get_template_response(template_body: &str, request_id: &str) -> String {
         request_id = xml_escape(request_id),
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use std::collections::HashMap;
+
+    fn make_stack(name: &str) -> Stack {
+        Stack {
+            name: name.to_string(),
+            stack_id: format!("arn:aws:cloudformation:us-east-1:123456789012:stack/{name}/abc123"),
+            template: "{}".to_string(),
+            status: "CREATE_COMPLETE".to_string(),
+            resources: vec![],
+            parameters: HashMap::new(),
+            tags: HashMap::new(),
+            created_at: Utc::now(),
+            updated_at: None,
+            description: None,
+            notification_arns: vec![],
+        }
+    }
+
+    fn make_resource(logical_id: &str, resource_type: &str) -> StackResource {
+        StackResource {
+            logical_id: logical_id.to_string(),
+            physical_id: format!("phys-{logical_id}"),
+            resource_type: resource_type.to_string(),
+            status: "CREATE_COMPLETE".to_string(),
+            service_token: None,
+        }
+    }
+
+    #[test]
+    fn create_stack_response_contains_stack_id() {
+        let xml = create_stack_response("stack-123", "req-1");
+        assert!(xml.contains("<StackId>stack-123</StackId>"));
+        assert!(xml.contains("<RequestId>req-1</RequestId>"));
+        assert!(xml.contains("CreateStackResponse"));
+    }
+
+    #[test]
+    fn update_stack_response_contains_stack_id() {
+        let xml = update_stack_response("stack-456", "req-2");
+        assert!(xml.contains("<StackId>stack-456</StackId>"));
+        assert!(xml.contains("UpdateStackResponse"));
+    }
+
+    #[test]
+    fn delete_stack_response_format() {
+        let xml = delete_stack_response("req-3");
+        assert!(xml.contains("<RequestId>req-3</RequestId>"));
+        assert!(xml.contains("DeleteStackResponse"));
+    }
+
+    #[test]
+    fn describe_stacks_response_lists_stacks() {
+        let s1 = make_stack("my-stack");
+        let xml = describe_stacks_response(&[s1], "req-4");
+        assert!(xml.contains("<StackName>my-stack</StackName>"));
+        assert!(xml.contains("CREATE_COMPLETE"));
+        assert!(xml.contains("DescribeStacksResponse"));
+    }
+
+    #[test]
+    fn describe_stacks_with_tags_and_params() {
+        let mut stack = make_stack("tagged-stack");
+        stack.tags.insert("env".to_string(), "prod".to_string());
+        stack
+            .parameters
+            .insert("Param1".to_string(), "Value1".to_string());
+        stack.description = Some("My stack desc".to_string());
+
+        let xml = describe_stacks_response(&[stack], "req-5");
+        assert!(xml.contains("<Key>env</Key>"));
+        assert!(xml.contains("<Value>prod</Value>"));
+        assert!(xml.contains("<ParameterKey>Param1</ParameterKey>"));
+        assert!(xml.contains("<Description>My stack desc</Description>"));
+    }
+
+    #[test]
+    fn list_stacks_response_lists_summaries() {
+        let stacks = vec![make_stack("s1"), make_stack("s2")];
+        let xml = list_stacks_response(&stacks, "req-6");
+        assert!(xml.contains("<StackName>s1</StackName>"));
+        assert!(xml.contains("<StackName>s2</StackName>"));
+        assert!(xml.contains("ListStacksResponse"));
+    }
+
+    #[test]
+    fn list_stack_resources_response_format() {
+        let resources = vec![
+            make_resource("MyBucket", "AWS::S3::Bucket"),
+            make_resource("MyTable", "AWS::DynamoDB::Table"),
+        ];
+        let xml = list_stack_resources_response(&resources, "req-7");
+        assert!(xml.contains("<LogicalResourceId>MyBucket</LogicalResourceId>"));
+        assert!(xml.contains("<ResourceType>AWS::S3::Bucket</ResourceType>"));
+        assert!(xml.contains("<LogicalResourceId>MyTable</LogicalResourceId>"));
+        assert!(xml.contains("ListStackResourcesResponse"));
+    }
+
+    #[test]
+    fn describe_stack_resources_response_includes_stack_name() {
+        let resources = vec![make_resource("Fn", "AWS::Lambda::Function")];
+        let xml = describe_stack_resources_response(&resources, "my-stack", "req-8");
+        assert!(xml.contains("<StackName>my-stack</StackName>"));
+        assert!(xml.contains("<LogicalResourceId>Fn</LogicalResourceId>"));
+        assert!(xml.contains("DescribeStackResourcesResponse"));
+    }
+
+    #[test]
+    fn get_template_response_contains_body() {
+        let xml = get_template_response(r#"{"AWSTemplateFormatVersion":"2010-09-09"}"#, "req-9");
+        assert!(xml.contains("AWSTemplateFormatVersion"));
+        assert!(xml.contains("GetTemplateResponse"));
+    }
+
+    #[test]
+    fn xml_escaping_works() {
+        let xml = create_stack_response("stack<>\"&'123", "req");
+        assert!(xml.contains("&lt;"));
+        assert!(xml.contains("&gt;"));
+        assert!(xml.contains("&amp;"));
+    }
+
+    #[test]
+    fn describe_stacks_with_notification_arns() {
+        let mut stack = make_stack("notif-stack");
+        stack
+            .notification_arns
+            .push("arn:aws:sns:us-east-1:123456789012:my-topic".to_string());
+        let xml = describe_stacks_response(&[stack], "req-10");
+        assert!(xml.contains("<NotificationARNs>"));
+        assert!(xml.contains("my-topic"));
+    }
+
+    #[test]
+    fn empty_stacks_produces_valid_xml() {
+        let xml = describe_stacks_response(&[], "req-11");
+        assert!(xml.contains("<Stacks>"));
+        assert!(xml.contains("</Stacks>"));
+    }
+}
