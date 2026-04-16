@@ -477,14 +477,11 @@ export class FakeCloud {
     accountId: string,
     userName: string,
   ): Promise<CreateAdminResponse> {
-    const resp = await fetch(
-      `${this.baseUrl}/_fakecloud/iam/create-admin`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accountId, userName }),
-      },
-    );
+    const resp = await fetch(`${this.baseUrl}/_fakecloud/iam/create-admin`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ accountId, userName }),
+    });
     return parse(resp);
   }
 
