@@ -305,6 +305,31 @@ pub async fn dispatch(
                         );
                         condition_context.service_keys =
                             service.iam_condition_keys_for(&aws_request, &iam_action);
+
+                        // ABAC: populate tag-based condition keys.
+                        // aws:ResourceTag/*
+                        match service.resource_tags_for(&iam_action.resource) {
+                            Some(tags) => condition_context.resource_tags = Some(tags),
+                            None => tracing::debug!(
+                                target: "fakecloud::iam::audit",
+                                service = %detected.service,
+                                resource = %iam_action.resource,
+                                "service does not expose resource tags for ABAC; skipping aws:ResourceTag/* evaluation"
+                            ),
+                        }
+                        // aws:RequestTag/* + aws:TagKeys
+                        match service.request_tags_from(&aws_request, iam_action.action) {
+                            Some(tags) => condition_context.request_tags = Some(tags),
+                            None => tracing::debug!(
+                                target: "fakecloud::iam::audit",
+                                service = %detected.service,
+                                action = %iam_action.action_string(),
+                                "service does not expose request tags for ABAC; skipping aws:RequestTag/* / aws:TagKeys evaluation"
+                            ),
+                        }
+                        // aws:PrincipalTag/*
+                        condition_context.principal_tags = principal.tags.clone();
+
                         // Phase 2: fetch the resource-based policy (if
                         // any) attached to the target resource and
                         // pass it to the evaluator alongside the
@@ -620,6 +645,9 @@ fn build_condition_context(
         aws_secure_transport: Some(secure_transport),
         aws_requested_region: Some(region.to_string()),
         service_keys: Default::default(),
+        resource_tags: None,
+        request_tags: None,
+        principal_tags: None,
     }
 }
 
@@ -691,6 +719,7 @@ mod tests {
             account_id: "123456789012".into(),
             principal_type: PrincipalType::User,
             source_identity: None,
+            tags: None,
         };
         assert_eq!(aws_username_from_principal(&p), Some("alice".into()));
     }
@@ -703,6 +732,7 @@ mod tests {
             account_id: "123456789012".into(),
             principal_type: PrincipalType::AssumedRole,
             source_identity: None,
+            tags: None,
         };
         assert_eq!(aws_username_from_principal(&p), None);
     }
@@ -725,6 +755,7 @@ mod tests {
             account_id: "123456789012".into(),
             principal_type: PrincipalType::User,
             source_identity: None,
+            tags: None,
         };
         let addr: SocketAddr = "10.0.0.1:54321".parse().unwrap();
         let ctx = build_condition_context(&p, Some(addr), "us-east-1", false);

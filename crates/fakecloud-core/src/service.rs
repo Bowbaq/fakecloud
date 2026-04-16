@@ -345,6 +345,41 @@ pub trait AwsService: Send + Sync {
     ) -> BTreeMap<String, Vec<String>> {
         BTreeMap::new()
     }
+
+    /// Return the tags on the resource identified by `resource_arn`.
+    ///
+    /// Called at dispatch time when IAM enforcement is enabled, right
+    /// after [`AwsService::iam_action_for`]. The returned map populates
+    /// `aws:ResourceTag/<key>` condition keys so policies can gate
+    /// access based on the target resource's tags.
+    ///
+    /// Return `None` to signal that this service does not (yet) support
+    /// resource-tag ABAC — dispatch will emit a debug audit log and
+    /// skip `aws:ResourceTag/*` evaluation. Return `Some(empty map)`
+    /// when the resource exists but has no tags.
+    fn resource_tags_for(
+        &self,
+        _resource_arn: &str,
+    ) -> Option<std::collections::HashMap<String, String>> {
+        None
+    }
+
+    /// Extract tags being sent in the request (e.g. on CreateQueue,
+    /// PutObject with `x-amz-tagging`, TagResource).
+    ///
+    /// The returned map populates `aws:RequestTag/<key>` and
+    /// `aws:TagKeys` condition keys. Return `None` when the service
+    /// does not (yet) support request-tag extraction — dispatch skips
+    /// `aws:RequestTag/*` / `aws:TagKeys` evaluation with a debug log.
+    /// Return `Some(empty map)` when the request legitimately carries
+    /// no tags.
+    fn request_tags_from(
+        &self,
+        _request: &AwsRequest,
+        _action: &str,
+    ) -> Option<std::collections::HashMap<String, String>> {
+        None
+    }
 }
 
 #[cfg(test)]

@@ -121,6 +121,7 @@ mod tests {
             account_id: "123456789012".to_string(),
             principal_type: PrincipalType::User,
             source_identity: None,
+            tags: None,
         }
     }
 
@@ -387,6 +388,7 @@ mod tests {
             account_id: "123456789012".into(),
             principal_type: PrincipalType::AssumedRole,
             source_identity: None,
+            tags: None,
         };
         let eval = IamPolicyEvaluatorImpl::new(state);
         assert_eq!(

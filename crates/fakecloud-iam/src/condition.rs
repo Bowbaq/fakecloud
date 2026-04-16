@@ -833,9 +833,11 @@ mod tests {
     #[test]
     fn for_all_values_every_context_must_match() {
         let mut ctx = ctx_user("alice");
-        ctx.service_keys.insert(
-            "aws:tagkeys".to_string(),
-            vec!["env".to_string(), "team".to_string()],
+        ctx.request_tags = Some(
+            [("env", "dev"), ("team", "platform")]
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
         );
         let b = compile(json!({
             "ForAllValues:StringEquals": {
@@ -843,9 +845,11 @@ mod tests {
             }
         }));
         assert!(b.matches(&ctx));
-        ctx.service_keys.insert(
-            "aws:tagkeys".to_string(),
-            vec!["env".to_string(), "rogue".to_string()],
+        ctx.request_tags = Some(
+            [("env", "dev"), ("rogue", "x")]
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
         );
         assert!(!b.matches(&ctx));
     }
@@ -853,9 +857,11 @@ mod tests {
     #[test]
     fn for_any_value_some_context_matches() {
         let mut ctx = ctx_user("alice");
-        ctx.service_keys.insert(
-            "aws:tagkeys".to_string(),
-            vec!["env".to_string(), "rogue".to_string()],
+        ctx.request_tags = Some(
+            [("env", "dev"), ("rogue", "x")]
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
         );
         let b = compile(json!({
             "ForAnyValue:StringEquals": { "aws:TagKeys": "env" }

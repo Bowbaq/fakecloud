@@ -48,6 +48,7 @@ impl CredentialResolver for IamCredentialResolver {
                 account_id: lookup.account_id,
                 principal_type,
                 source_identity: None,
+                tags: lookup.principal_tags,
             },
             session_policies: lookup.session_policies,
         })
@@ -136,5 +137,121 @@ mod tests {
             PrincipalType::AssumedRole
         );
         assert_eq!(resolved.session_token.as_deref(), Some("temp-token"));
+    }
+
+    #[test]
+    fn resolves_iam_user_tags_for_principal() {
+        use crate::state::Tag;
+        let mut state = IamState::new("123456789012");
+        state.users.insert(
+            "bob".to_string(),
+            IamUser {
+                user_name: "bob".into(),
+                user_id: "AIDABOB".into(),
+                arn: "arn:aws:iam::123456789012:user/bob".into(),
+                path: "/".into(),
+                created_at: Utc::now(),
+                tags: vec![
+                    Tag {
+                        key: "Team".into(),
+                        value: "platform".into(),
+                    },
+                    Tag {
+                        key: "Environment".into(),
+                        value: "prod".into(),
+                    },
+                ],
+                permissions_boundary: None,
+            },
+        );
+        state.access_keys.insert(
+            "bob".to_string(),
+            vec![IamAccessKey {
+                access_key_id: "FKIABOB".into(),
+                secret_access_key: "bob-secret".into(),
+                user_name: "bob".into(),
+                status: "Active".into(),
+                created_at: Utc::now(),
+            }],
+        );
+        let resolver = IamCredentialResolver::new(Arc::new(RwLock::new(state)));
+        let resolved = resolver.resolve("FKIABOB").unwrap();
+        let tags = resolved.principal.tags.as_ref().unwrap();
+        assert_eq!(tags.get("Team").map(|s| s.as_str()), Some("platform"));
+        assert_eq!(tags.get("Environment").map(|s| s.as_str()), Some("prod"));
+    }
+
+    #[test]
+    fn resolves_assumed_role_tags_for_principal() {
+        use crate::state::{IamRole, StsTempCredential, Tag};
+        let mut state = IamState::new("123456789012");
+        state.roles.insert(
+            "ops".to_string(),
+            IamRole {
+                role_name: "ops".into(),
+                role_id: "AROAOPS".into(),
+                arn: "arn:aws:iam::123456789012:role/ops".into(),
+                path: "/".into(),
+                assume_role_policy_document: "{}".into(),
+                created_at: Utc::now(),
+                tags: vec![Tag {
+                    key: "Department".into(),
+                    value: "engineering".into(),
+                }],
+                max_session_duration: 3600,
+                permissions_boundary: None,
+                description: None,
+            },
+        );
+        state.sts_temp_credentials.insert(
+            "FSIAOPS".to_string(),
+            StsTempCredential {
+                access_key_id: "FSIAOPS".into(),
+                secret_access_key: "ops-secret".into(),
+                session_token: "ops-token".into(),
+                principal_arn: "arn:aws:sts::123456789012:assumed-role/ops/session".into(),
+                user_id: "AROAOPS:session".into(),
+                account_id: "123456789012".into(),
+                expiration: Utc::now() + chrono::Duration::minutes(30),
+                session_policies: Vec::new(),
+            },
+        );
+        let resolver = IamCredentialResolver::new(Arc::new(RwLock::new(state)));
+        let resolved = resolver.resolve("FSIAOPS").unwrap();
+        let tags = resolved.principal.tags.as_ref().unwrap();
+        assert_eq!(
+            tags.get("Department").map(|s| s.as_str()),
+            Some("engineering")
+        );
+    }
+
+    #[test]
+    fn no_tags_yields_none() {
+        let mut state = IamState::new("123456789012");
+        state.users.insert(
+            "empty".to_string(),
+            IamUser {
+                user_name: "empty".into(),
+                user_id: "AIDAEMPTY".into(),
+                arn: "arn:aws:iam::123456789012:user/empty".into(),
+                path: "/".into(),
+                created_at: Utc::now(),
+                tags: Vec::new(),
+                permissions_boundary: None,
+            },
+        );
+        state.access_keys.insert(
+            "empty".to_string(),
+            vec![IamAccessKey {
+                access_key_id: "FKIAEMPTY".into(),
+                secret_access_key: "s".into(),
+                user_name: "empty".into(),
+                status: "Active".into(),
+                created_at: Utc::now(),
+            }],
+        );
+        let resolver = IamCredentialResolver::new(Arc::new(RwLock::new(state)));
+        let resolved = resolver.resolve("FKIAEMPTY").unwrap();
+        assert!(resolved.principal.tags.is_none());
     }
 }

@@ -925,6 +925,7 @@ mod tests {
             account_id: "123456789012".into(),
             principal_type: PrincipalType::User,
             source_identity: None,
+            tags: None,
         }
     }
 
@@ -1597,6 +1598,7 @@ mod tests {
             account_id: "123456789012".to_string(),
             principal_type: PrincipalType::User,
             source_identity: None,
+            tags: None,
         };
         let docs = collect_identity_policies(&state, &principal);
         assert_eq!(docs.len(), 1, "pathed user's inline policy was missed");
@@ -1731,6 +1733,7 @@ mod tests {
             account_id: "123456789012".into(),
             principal_type: PrincipalType::Root,
             source_identity: None,
+            tags: None,
         };
         // Root short-circuits via Principal::is_root in dispatch; here we
         // just assert collect_identity_policies doesn't synthesize a
@@ -1750,6 +1753,7 @@ mod tests {
             account_id: account.into(),
             principal_type: PrincipalType::User,
             source_identity: None,
+            tags: None,
         }
     }
 
@@ -1760,6 +1764,7 @@ mod tests {
             account_id: account.into(),
             principal_type: PrincipalType::AssumedRole,
             source_identity: None,
+            tags: None,
         }
     }
 
