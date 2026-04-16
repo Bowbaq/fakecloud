@@ -21,11 +21,10 @@ const ACCOUNT_A: &str = "123456789012"; // default account
 const ACCOUNT_B: &str = "222222222222";
 
 async fn start() -> TestServer {
-    TestServer::start_with_env(&[
-        ("FAKECLOUD_IAM", "strict"),
-        ("FAKECLOUD_VERIFY_SIGV4", "true"),
-    ])
-    .await
+    // SigV4 verification is needed so credentials resolve to the correct
+    // account, but IAM enforcement is off — these tests validate isolation,
+    // not authorization. Cross-account IAM enforcement is a separate concern.
+    TestServer::start_with_env(&[("FAKECLOUD_VERIFY_SIGV4", "true")]).await
 }
 
 async fn config_with(server: &TestServer, akid: &str, secret: &str) -> aws_config::SdkConfig {
@@ -57,18 +56,12 @@ async fn config_with_session(
         .await
 }
 
-/// Create a user in the default account with admin permissions, return (akid, secret).
-async fn bootstrap_admin(server: &TestServer, name: &str) -> (String, String) {
+/// Create a user in the default account and return (akid, secret).
+/// IAM enforcement is off, so no policies are needed.
+async fn bootstrap_user_a(server: &TestServer, name: &str) -> (String, String) {
     let root = config_with(server, "test", "test").await;
     let iam = IamClient::new(&root);
     iam.create_user().user_name(name).send().await.unwrap();
-    iam.put_user_policy()
-        .user_name(name)
-        .policy_name("admin")
-        .policy_document(r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}"#)
-        .send()
-        .await
-        .unwrap();
     let ak = iam
         .create_access_key()
         .user_name(name)
@@ -82,33 +75,16 @@ async fn bootstrap_admin(server: &TestServer, name: &str) -> (String, String) {
     )
 }
 
-/// Create a role in account A that can be assumed, then AssumeRole into
-/// account B. Returns (akid, secret, session_token) for account B.
+/// AssumeRole into account B via a cross-account role ARN.
+/// Returns (akid, secret, session_token) for account B.
 async fn assume_into_account_b(server: &TestServer) -> (String, String, String) {
     let root = config_with(server, "test", "test").await;
-    let iam = IamClient::new(&root);
-
-    // Create a role in account B's namespace
     let role_arn = format!("arn:aws:iam::{ACCOUNT_B}:role/cross-account-role");
-    iam.create_role()
-        .role_name("cross-account-role")
-        .assume_role_policy_document(
-            r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":"*","Action":"sts:AssumeRole"}]}"#,
-        )
-        .send()
-        .await
-        .unwrap();
 
-    // Attach admin policy to the role
-    iam.put_role_policy()
-        .role_name("cross-account-role")
-        .policy_name("admin")
-        .policy_document(r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}"#)
-        .send()
-        .await
-        .unwrap();
-
-    // AssumeRole into account B
+    // AssumeRole with account B's role ARN. The role doesn't need to
+    // pre-exist in fakecloud — STS mints temporary credentials for
+    // the target account regardless, matching the emulator's permissive
+    // default behavior (IAM enforcement is off for these tests).
     let sts = StsClient::new(&root);
     let assumed = sts
         .assume_role()
@@ -149,7 +125,7 @@ async fn sqs_queues_isolated_across_accounts() {
     let server = start().await;
 
     // Create admin in account A
-    let (a_akid, a_secret) = bootstrap_admin(&server, "alice").await;
+    let (a_akid, a_secret) = bootstrap_user_a(&server, "alice").await;
     let a_cfg = config_with(&server, &a_akid, &a_secret).await;
     let sqs_a = SqsClient::new(&a_cfg);
 
@@ -197,7 +173,7 @@ async fn sqs_queues_isolated_across_accounts() {
 async fn dynamodb_tables_isolated_across_accounts() {
     let server = start().await;
 
-    let (a_akid, a_secret) = bootstrap_admin(&server, "alice").await;
+    let (a_akid, a_secret) = bootstrap_user_a(&server, "alice").await;
     let a_cfg = config_with(&server, &a_akid, &a_secret).await;
     let ddb_a = DynamoClient::new(&a_cfg);
 
@@ -268,7 +244,7 @@ async fn dynamodb_tables_isolated_across_accounts() {
 async fn s3_buckets_isolated_across_accounts() {
     let server = start().await;
 
-    let (a_akid, a_secret) = bootstrap_admin(&server, "alice").await;
+    let (a_akid, a_secret) = bootstrap_user_a(&server, "alice").await;
     let a_cfg = config_with(&server, &a_akid, &a_secret).await;
     let s3_a = S3Client::new(&a_cfg);
 
