@@ -6234,4 +6234,257 @@ mod tests {
         );
         assert!(svc.describe_export(&req).is_err());
     }
+
+    // ── tables.rs error branches ──
+
+    #[test]
+    fn create_table_missing_name_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "CreateTable",
+            json!({
+                "AttributeDefinitions": [{"AttributeName": "k", "AttributeType": "S"}],
+                "KeySchema": [{"AttributeName": "k", "KeyType": "HASH"}],
+                "BillingMode": "PAY_PER_REQUEST"
+            }),
+        );
+        assert!(svc.create_table(&req).is_err());
+    }
+
+    #[test]
+    fn create_table_duplicate_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "CreateTable",
+            json!({
+                "TableName": "dup",
+                "AttributeDefinitions": [{"AttributeName": "k", "AttributeType": "S"}],
+                "KeySchema": [{"AttributeName": "k", "KeyType": "HASH"}],
+                "BillingMode": "PAY_PER_REQUEST"
+            }),
+        );
+        svc.create_table(&req).unwrap();
+        assert!(svc.create_table(&req).is_err());
+    }
+
+    #[test]
+    fn delete_table_missing_name_errors() {
+        let svc = make_service();
+        let req = make_request("DeleteTable", json!({}));
+        assert!(svc.delete_table(&req).is_err());
+    }
+
+    #[test]
+    fn delete_table_not_found_errors() {
+        let svc = make_service();
+        let req = make_request("DeleteTable", json!({"TableName": "ghost"}));
+        assert!(svc.delete_table(&req).is_err());
+    }
+
+    #[test]
+    fn describe_table_missing_name_errors() {
+        let svc = make_service();
+        let req = make_request("DescribeTable", json!({}));
+        assert!(svc.describe_table(&req).is_err());
+    }
+
+    #[test]
+    fn describe_table_not_found_errors() {
+        let svc = make_service();
+        let req = make_request("DescribeTable", json!({"TableName": "ghost"}));
+        assert!(svc.describe_table(&req).is_err());
+    }
+
+    #[test]
+    fn update_table_missing_name_errors() {
+        let svc = make_service();
+        let req = make_request("UpdateTable", json!({}));
+        assert!(svc.update_table(&req).is_err());
+    }
+
+    #[test]
+    fn update_table_not_found_errors() {
+        let svc = make_service();
+        let req = make_request("UpdateTable", json!({"TableName": "ghost"}));
+        assert!(svc.update_table(&req).is_err());
+    }
+
+    #[test]
+    fn list_tables_pagination() {
+        let svc = make_service();
+        for i in 0..5 {
+            let req = make_request(
+                "CreateTable",
+                json!({
+                    "TableName": format!("pt{i}"),
+                    "AttributeDefinitions": [{"AttributeName": "k", "AttributeType": "S"}],
+                    "KeySchema": [{"AttributeName": "k", "KeyType": "HASH"}],
+                    "BillingMode": "PAY_PER_REQUEST"
+                }),
+            );
+            svc.create_table(&req).unwrap();
+        }
+        let req = make_request("ListTables", json!({"Limit": 2}));
+        let resp = svc.list_tables(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["TableNames"].as_array().unwrap().len(), 2);
+        assert!(body["LastEvaluatedTableName"].is_string());
+    }
+
+    #[test]
+    fn list_tables_start_exclusive() {
+        let svc = make_service();
+        for i in 0..3 {
+            let req = make_request(
+                "CreateTable",
+                json!({
+                    "TableName": format!("pt{i}"),
+                    "AttributeDefinitions": [{"AttributeName": "k", "AttributeType": "S"}],
+                    "KeySchema": [{"AttributeName": "k", "KeyType": "HASH"}],
+                    "BillingMode": "PAY_PER_REQUEST"
+                }),
+            );
+            svc.create_table(&req).unwrap();
+        }
+        let req = make_request("ListTables", json!({"ExclusiveStartTableName": "pt0"}));
+        let resp = svc.list_tables(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        let names = body["TableNames"].as_array().unwrap();
+        assert!(!names.iter().any(|n| n == "pt0"));
+    }
+
+    #[test]
+    fn update_time_to_live_unknown_table_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "UpdateTimeToLive",
+            json!({
+                "TableName": "ghost",
+                "TimeToLiveSpecification": {"Enabled": true, "AttributeName": "ttl"}
+            }),
+        );
+        assert!(svc.update_time_to_live(&req).is_err());
+    }
+
+    #[test]
+    fn describe_time_to_live_unknown_table_errors() {
+        let svc = make_service();
+        let req = make_request("DescribeTimeToLive", json!({"TableName": "ghost"}));
+        assert!(svc.describe_time_to_live(&req).is_err());
+    }
+
+    // ── resource policy ──
+
+    #[test]
+    fn put_resource_policy_missing_policy_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "CreateTable",
+            json!({
+                "TableName": "rp",
+                "AttributeDefinitions": [{"AttributeName": "k", "AttributeType": "S"}],
+                "KeySchema": [{"AttributeName": "k", "KeyType": "HASH"}],
+                "BillingMode": "PAY_PER_REQUEST"
+            }),
+        );
+        svc.create_table(&req).unwrap();
+        let req = make_request(
+            "PutResourcePolicy",
+            json!({"ResourceArn": "arn:aws:dynamodb:us-east-1:123456789012:table/rp"}),
+        );
+        assert!(svc.put_resource_policy(&req).is_err());
+    }
+
+    #[test]
+    fn get_resource_policy_unknown_table_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "GetResourcePolicy",
+            json!({"ResourceArn": "arn:aws:dynamodb:us-east-1:123456789012:table/ghost"}),
+        );
+        assert!(svc.get_resource_policy(&req).is_err());
+    }
+
+    // ── tags ──
+
+    #[test]
+    fn tag_resource_unknown_table_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "TagResource",
+            json!({
+                "ResourceArn": "arn:aws:dynamodb:us-east-1:123456789012:table/ghost",
+                "Tags": [{"Key": "k", "Value": "v"}]
+            }),
+        );
+        assert!(svc.tag_resource(&req).is_err());
+    }
+
+    #[test]
+    fn list_tags_unknown_table_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "ListTagsOfResource",
+            json!({"ResourceArn": "arn:aws:dynamodb:us-east-1:123456789012:table/ghost"}),
+        );
+        assert!(svc.list_tags_of_resource(&req).is_err());
+    }
+
+    // ── backups ──
+
+    #[test]
+    fn create_backup_unknown_table_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "CreateBackup",
+            json!({"TableName": "ghost", "BackupName": "b1"}),
+        );
+        assert!(svc.create_backup(&req).is_err());
+    }
+
+    #[test]
+    fn delete_backup_not_found_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "DeleteBackup",
+            json!({"BackupArn": "arn:aws:dynamodb:us-east-1:123:table/t/backup/ghost"}),
+        );
+        assert!(svc.delete_backup(&req).is_err());
+    }
+
+    #[test]
+    fn describe_backup_not_found_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "DescribeBackup",
+            json!({"BackupArn": "arn:aws:dynamodb:us-east-1:123:table/t/backup/ghost"}),
+        );
+        assert!(svc.describe_backup(&req).is_err());
+    }
+
+    #[test]
+    fn restore_table_from_backup_not_found_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "RestoreTableFromBackup",
+            json!({
+                "TargetTableName": "restored",
+                "BackupArn": "arn:aws:dynamodb:us-east-1:123:table/t/backup/ghost"
+            }),
+        );
+        assert!(svc.restore_table_from_backup(&req).is_err());
+    }
+
+    #[test]
+    fn update_continuous_backups_unknown_table_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "UpdateContinuousBackups",
+            json!({
+                "TableName": "ghost",
+                "PointInTimeRecoverySpecification": {"PointInTimeRecoveryEnabled": true}
+            }),
+        );
+        assert!(svc.update_continuous_backups(&req).is_err());
+    }
 }

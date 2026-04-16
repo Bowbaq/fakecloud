@@ -5799,4 +5799,194 @@ mod tests {
         let req = make_req("AdminUpdateDeviceStatus", &body.to_string());
         svc.admin_update_device_status(&req).unwrap();
     }
+
+    // ── auth.rs additional coverage ──
+
+    #[test]
+    fn admin_initiate_auth_missing_username_errors() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        let body = json!({
+            "UserPoolId": pool_id,
+            "ClientId": client_id,
+            "AuthFlow": "ADMIN_NO_SRP_AUTH",
+            "AuthParameters": {"PASSWORD": "Pass1!"}
+        });
+        let req = make_req("AdminInitiateAuth", &body.to_string());
+        assert!(block_on(svc.admin_initiate_auth(&req)).is_err());
+    }
+
+    #[test]
+    fn admin_initiate_auth_missing_password_errors() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        admin_create_user_helper(&svc, &pool_id, "nopass");
+        let body = json!({
+            "UserPoolId": pool_id,
+            "ClientId": client_id,
+            "AuthFlow": "ADMIN_NO_SRP_AUTH",
+            "AuthParameters": {"USERNAME": "nopass"}
+        });
+        let req = make_req("AdminInitiateAuth", &body.to_string());
+        assert!(block_on(svc.admin_initiate_auth(&req)).is_err());
+    }
+
+    #[test]
+    fn initiate_auth_refresh_token_errors_on_invalid() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        let _ = pool_id;
+        let body = json!({
+            "ClientId": client_id,
+            "AuthFlow": "REFRESH_TOKEN_AUTH",
+            "AuthParameters": {"REFRESH_TOKEN": "bad-token"}
+        });
+        let req = make_req("InitiateAuth", &body.to_string());
+        assert!(block_on(svc.initiate_auth(&req)).is_err());
+    }
+
+    #[test]
+    fn initiate_auth_missing_client_id_errors() {
+        let (svc, _) = make_svc();
+        let body = json!({
+            "AuthFlow": "USER_PASSWORD_AUTH",
+            "AuthParameters": {"USERNAME": "u", "PASSWORD": "p"}
+        });
+        let req = make_req("InitiateAuth", &body.to_string());
+        assert!(block_on(svc.initiate_auth(&req)).is_err());
+    }
+
+    #[test]
+    fn initiate_auth_unknown_client_errors() {
+        let (svc, _) = make_svc();
+        let body = json!({
+            "ClientId": "ghost-client",
+            "AuthFlow": "USER_PASSWORD_AUTH",
+            "AuthParameters": {"USERNAME": "u", "PASSWORD": "p"}
+        });
+        let req = make_req("InitiateAuth", &body.to_string());
+        assert!(block_on(svc.initiate_auth(&req)).is_err());
+    }
+
+    #[test]
+    fn sign_up_missing_username_errors() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        let body = json!({
+            "ClientId": client_id,
+            "Password": "Password1!"
+        });
+        let req = make_req("SignUp", &body.to_string());
+        assert!(block_on(svc.sign_up(&req)).is_err());
+    }
+
+    #[test]
+    fn sign_up_missing_password_errors() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        let body = json!({
+            "ClientId": client_id,
+            "Username": "u"
+        });
+        let req = make_req("SignUp", &body.to_string());
+        assert!(block_on(svc.sign_up(&req)).is_err());
+    }
+
+    #[test]
+    fn sign_up_weak_password_errors() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        let body = json!({
+            "ClientId": client_id,
+            "Username": "weak",
+            "Password": "weak"
+        });
+        let req = make_req("SignUp", &body.to_string());
+        assert!(block_on(svc.sign_up(&req)).is_err());
+    }
+
+    #[test]
+    fn confirm_sign_up_unknown_user_errors() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        let _ = pool_id;
+        let body = json!({
+            "ClientId": client_id,
+            "Username": "ghost",
+            "ConfirmationCode": "123456"
+        });
+        let req = make_req("ConfirmSignUp", &body.to_string());
+        assert!(block_on(svc.confirm_sign_up(&req)).is_err());
+    }
+
+    #[test]
+    fn admin_confirm_sign_up_unknown_user_errors() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Username": "ghost"
+        });
+        let req = make_req("AdminConfirmSignUp", &body.to_string());
+        assert!(block_on(svc.admin_confirm_sign_up(&req)).is_err());
+    }
+
+    #[test]
+    fn admin_reset_user_password_missing_user_errors() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id, "Username": "ghost"});
+        let req = make_req("AdminResetUserPassword", &body.to_string());
+        assert!(svc.admin_reset_user_password(&req).is_err());
+    }
+
+    #[test]
+    fn forgot_password_missing_client_errors() {
+        let (svc, _) = make_svc();
+        let body = json!({"Username": "u"});
+        let req = make_req("ForgotPassword", &body.to_string());
+        assert!(block_on(svc.forgot_password(&req)).is_err());
+    }
+
+    #[test]
+    fn confirm_forgot_password_unknown_user_errors() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        let _ = pool_id;
+        let body = json!({
+            "ClientId": client_id,
+            "Username": "ghost",
+            "ConfirmationCode": "123456",
+            "Password": "NewPass1!"
+        });
+        let req = make_req("ConfirmForgotPassword", &body.to_string());
+        assert!(svc.confirm_forgot_password(&req).is_err());
+    }
+
+    #[test]
+    fn change_password_missing_access_token_errors() {
+        let (svc, _) = make_svc();
+        let body = json!({
+            "PreviousPassword": "p1",
+            "ProposedPassword": "p2"
+        });
+        let req = make_req("ChangePassword", &body.to_string());
+        assert!(svc.change_password(&req).is_err());
+    }
+
+    #[test]
+    fn global_sign_out_missing_token_errors() {
+        let (svc, _) = make_svc();
+        let body = json!({});
+        let req = make_req("GlobalSignOut", &body.to_string());
+        assert!(svc.global_sign_out(&req).is_err());
+    }
 }
