@@ -1981,4 +1981,121 @@ mod tests {
         );
         assert!(svc.get_log_events(&req).is_err());
     }
+
+    // ── deliveries coverage ──
+
+    #[test]
+    fn put_delivery_destination_missing_name_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "PutDeliveryDestination",
+            json!({"deliveryDestinationType": "S3"}),
+        );
+        assert!(svc.put_delivery_destination(&req).is_err());
+    }
+
+    #[test]
+    fn put_delivery_destination_invalid_type_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "PutDeliveryDestination",
+            json!({"name": "d1", "deliveryDestinationType": "BOGUS"}),
+        );
+        assert!(svc.put_delivery_destination(&req).is_err());
+    }
+
+    #[test]
+    fn put_delivery_destination_invalid_output_format_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "PutDeliveryDestination",
+            json!({"name": "d1", "outputFormat": "xml"}),
+        );
+        assert!(svc.put_delivery_destination(&req).is_err());
+    }
+
+    #[test]
+    fn get_delivery_destination_unknown_errors() {
+        let svc = make_service();
+        let req = make_request("GetDeliveryDestination", json!({"name": "ghost"}));
+        assert!(svc.get_delivery_destination(&req).is_err());
+    }
+
+    #[test]
+    fn delete_delivery_destination_unknown_errors() {
+        let svc = make_service();
+        let req = make_request("DeleteDeliveryDestination", json!({"name": "ghost"}));
+        assert!(svc.delete_delivery_destination(&req).is_err());
+    }
+
+    #[test]
+    fn put_delivery_source_missing_name_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "PutDeliverySource",
+            json!({"resourceArn": "arn:aws:logs:us-east-1:123:log-group:g"}),
+        );
+        assert!(svc.put_delivery_source(&req).is_err());
+    }
+
+    #[test]
+    fn get_delivery_source_unknown_errors() {
+        let svc = make_service();
+        let req = make_request("GetDeliverySource", json!({"name": "ghost"}));
+        assert!(svc.get_delivery_source(&req).is_err());
+    }
+
+    #[test]
+    fn delete_delivery_source_unknown_errors() {
+        let svc = make_service();
+        let req = make_request("DeleteDeliverySource", json!({"name": "ghost"}));
+        assert!(svc.delete_delivery_source(&req).is_err());
+    }
+
+    #[test]
+    fn get_delivery_unknown_errors() {
+        let svc = make_service();
+        let req = make_request("GetDelivery", json!({"id": "ghost"}));
+        assert!(svc.get_delivery(&req).is_err());
+    }
+
+    #[test]
+    fn delete_delivery_unknown_errors() {
+        let svc = make_service();
+        let req = make_request("DeleteDelivery", json!({"id": "ghost"}));
+        assert!(svc.delete_delivery(&req).is_err());
+    }
+
+    #[test]
+    fn put_delivery_destination_policy_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "PutDeliveryDestinationPolicy",
+            json!({
+                "deliveryDestinationName": "ghost",
+                "deliveryDestinationPolicy": "{\"Version\":\"2012-10-17\",\"Statement\":[]}"
+            }),
+        );
+        assert!(svc.put_delivery_destination_policy(&req).is_err());
+    }
+
+    #[test]
+    fn get_delivery_destination_policy_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "GetDeliveryDestinationPolicy",
+            json!({"deliveryDestinationName": "ghost"}),
+        );
+        assert!(svc.get_delivery_destination_policy(&req).is_err());
+    }
+
+    #[test]
+    fn delete_delivery_destination_policy_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "DeleteDeliveryDestinationPolicy",
+            json!({"deliveryDestinationName": "ghost"}),
+        );
+        assert!(svc.delete_delivery_destination_policy(&req).is_err());
+    }
 }
