@@ -2589,4 +2589,193 @@ mod tests {
         assert!(state.iterators.contains_key(&token));
         assert!(!state.iterators.contains_key("expired"));
     }
+
+    fn expect_err(result: Result<AwsResponse, AwsServiceError>, code: &str) {
+        match result {
+            Err(e) => assert!(e.to_string().contains(code), "expected {code}, got: {e}"),
+            Ok(_) => panic!("expected error {code}, got Ok"),
+        }
+    }
+
+    // ── Error branch tests ──
+
+    #[test]
+    fn describe_stream_not_found() {
+        let (svc, _) = make_service();
+        expect_err(
+            svc.describe_stream(&request("DescribeStream", json!({"StreamName": "ghost"}))),
+            "ResourceNotFoundException",
+        );
+    }
+
+    #[test]
+    fn delete_stream_not_found() {
+        let (svc, _) = make_service();
+        expect_err(
+            svc.delete_stream(&request("DeleteStream", json!({"StreamName": "ghost"}))),
+            "ResourceNotFoundException",
+        );
+    }
+
+    #[test]
+    fn put_record_stream_not_found() {
+        let (svc, _) = make_service();
+        expect_err(
+            svc.put_record(&request(
+                "PutRecord",
+                json!({
+                    "StreamName": "ghost",
+                    "Data": "aGVsbG8=",
+                    "PartitionKey": "pk",
+                }),
+            )),
+            "ResourceNotFoundException",
+        );
+    }
+
+    #[test]
+    fn put_records_stream_not_found() {
+        let (svc, _) = make_service();
+        expect_err(
+            svc.put_records(&request(
+                "PutRecords",
+                json!({
+                    "StreamName": "ghost",
+                    "Records": [{"Data": "aGVsbG8=", "PartitionKey": "pk"}],
+                }),
+            )),
+            "ResourceNotFoundException",
+        );
+    }
+
+    #[test]
+    fn get_shard_iterator_stream_not_found() {
+        let (svc, _) = make_service();
+        expect_err(
+            svc.get_shard_iterator(&request(
+                "GetShardIterator",
+                json!({
+                    "StreamName": "ghost",
+                    "ShardId": "shardId-000000000000",
+                    "ShardIteratorType": "TRIM_HORIZON",
+                }),
+            )),
+            "ResourceNotFoundException",
+        );
+    }
+
+    #[test]
+    fn add_tags_stream_not_found() {
+        let (svc, _) = make_service();
+        expect_err(
+            svc.add_tags_to_stream(&request(
+                "AddTagsToStream",
+                json!({
+                    "StreamName": "ghost",
+                    "Tags": {"env": "prod"},
+                }),
+            )),
+            "ResourceNotFoundException",
+        );
+    }
+
+    #[test]
+    fn remove_tags_stream_not_found() {
+        let (svc, _) = make_service();
+        expect_err(
+            svc.remove_tags_from_stream(&request(
+                "RemoveTagsFromStream",
+                json!({
+                    "StreamName": "ghost",
+                    "TagKeys": ["env"],
+                }),
+            )),
+            "ResourceNotFoundException",
+        );
+    }
+
+    #[test]
+    fn list_tags_stream_not_found() {
+        let (svc, _) = make_service();
+        expect_err(
+            svc.list_tags_for_stream(&request(
+                "ListTagsForStream",
+                json!({
+                    "StreamName": "ghost",
+                }),
+            )),
+            "ResourceNotFoundException",
+        );
+    }
+
+    #[test]
+    fn increase_retention_stream_not_found() {
+        let (svc, _) = make_service();
+        expect_err(
+            svc.increase_stream_retention_period(&request(
+                "IncreaseStreamRetentionPeriod",
+                json!({
+                    "StreamName": "ghost",
+                    "RetentionPeriodHours": 48,
+                }),
+            )),
+            "ResourceNotFoundException",
+        );
+    }
+
+    #[test]
+    fn decrease_retention_stream_not_found() {
+        let (svc, _) = make_service();
+        expect_err(
+            svc.decrease_stream_retention_period(&request(
+                "DecreaseStreamRetentionPeriod",
+                json!({
+                    "StreamName": "ghost",
+                    "RetentionPeriodHours": 24,
+                }),
+            )),
+            "ResourceNotFoundException",
+        );
+    }
+
+    #[test]
+    fn create_stream_duplicate() {
+        let (svc, _) = make_service();
+        svc.create_stream(&request(
+            "CreateStream",
+            json!({"StreamName": "dup", "ShardCount": 1}),
+        ))
+        .unwrap();
+        expect_err(
+            svc.create_stream(&request(
+                "CreateStream",
+                json!({"StreamName": "dup", "ShardCount": 1}),
+            )),
+            "ResourceInUseException",
+        );
+    }
+
+    #[test]
+    fn describe_stream_summary_not_found() {
+        let (svc, _) = make_service();
+        expect_err(
+            svc.describe_stream_summary(&request(
+                "DescribeStreamSummary",
+                json!({"StreamName": "ghost"}),
+            )),
+            "ResourceNotFoundException",
+        );
+    }
+
+    #[test]
+    fn get_records_invalid_iterator() {
+        let (svc, _) = make_service();
+        expect_err(
+            svc.get_records(&request(
+                "GetRecords",
+                json!({"ShardIterator": "invalid-token"}),
+            )),
+            "ExpiredIteratorException",
+        );
+    }
 }
