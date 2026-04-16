@@ -439,6 +439,38 @@ mod tests {
     }
 
     #[test]
+    fn create_admin_policy_allows_all() {
+        use fakecloud_core::auth::{
+            ConditionContext, IamAction, IamDecision, IamPolicyEvaluator, Principal, PrincipalType,
+        };
+        let iam: fakecloud_iam::state::SharedIamState = Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
+        let resp = super::create_admin_in_account(&iam, "222222222222", "admin");
+
+        let evaluator = fakecloud_iam::policy_evaluator::IamPolicyEvaluatorImpl::new(iam.clone());
+        let principal = Principal {
+            arn: resp.arn.clone(),
+            user_id: "AIDATEST".to_string(),
+            account_id: "222222222222".to_string(),
+            principal_type: PrincipalType::User,
+            source_identity: None,
+            tags: None,
+        };
+        let action = IamAction {
+            service: "s3",
+            action: "ListBuckets",
+            resource: "*".to_string(),
+        };
+        let decision = evaluator.evaluate(&principal, &action, &ConditionContext::default(), &[]);
+        assert_eq!(
+            decision,
+            IamDecision::Allow,
+            "admin policy should Allow */*"
+        );
+    }
+
+    #[test]
     fn create_admin_credentials_resolve() {
         let iam: fakecloud_iam::state::SharedIamState = Arc::new(parking_lot::RwLock::new(
             fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),

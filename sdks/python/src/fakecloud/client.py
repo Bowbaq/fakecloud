@@ -5,7 +5,6 @@ from __future__ import annotations
 import httpx
 
 from fakecloud.types import (
-    CreateAdminResponse,
     ApiGatewayV2RequestsResponse,
     AuthEventsResponse,
     BedrockFaultRule,
@@ -19,6 +18,7 @@ from fakecloud.types import (
     ConfirmSubscriptionResponse,
     ConfirmUserRequest,
     ConfirmUserResponse,
+    CreateAdminResponse,
     ElastiCacheClustersResponse,
     ElastiCacheReplicationGroupsResponse,
     ElastiCacheServerlessCachesResponse,
@@ -769,7 +769,9 @@ class FakeCloud:
         _check(resp)
         return ResetServiceResponse.from_dict(resp.json())
 
-    async def create_admin(self, account_id: str, user_name: str) -> CreateAdminResponse:
+    async def create_admin(
+        self, account_id: str, user_name: str
+    ) -> CreateAdminResponse:
         """Create an IAM admin user in a specific account."""
         resp = await self._client.post(
             f"{self._base}/_fakecloud/iam/create-admin",
@@ -883,7 +885,9 @@ class FakeCloudSync:
         _check(resp)
         return ResetServiceResponse.from_dict(resp.json())
 
-    def create_admin(self, account_id: str, user_name: str) -> CreateAdminResponse:
+    def create_admin(
+        self, account_id: str, user_name: str
+    ) -> CreateAdminResponse:
         """Create an IAM admin user in a specific account."""
         resp = self._client.post(
             f"{self._base}/_fakecloud/iam/create-admin",
