@@ -30,10 +30,10 @@ fakecloud parses SigV4 headers for routing and stores IAM policies without evalu
 
 ```bash
 FAKECLOUD_VERIFY_SIGV4=true    # real cryptographic signature verification
-FAKECLOUD_IAM=soft|strict      # Phase 1 identity-policy evaluation
+FAKECLOUD_IAM=soft|strict      # identity + condition + resource-policy evaluation
 ```
 
-Phase 1 evaluation covers `Allow` / `Deny` with Deny precedence, `Action` / `NotAction` / `Resource` / `NotResource` with wildcards, and identity policies attached via user/group/role. It does **not** cover `Condition` blocks, resource-based policies (bucket policies, topic policies, etc.), permission boundaries, SCPs, session policies, or ABAC tag conditions — those are Phase 2 and explicitly skipped during evaluation. See [SigV4 verification and IAM enforcement](@/docs/reference/security.md) for the full scope, enforced-service list, and the reserved `test`/`test` root-bypass convention.
+Evaluation covers `Allow` / `Deny` with Deny precedence, `Action` / `NotAction` / `Resource` / `NotResource` with wildcards, identity policies attached via user/group/role, `Condition` blocks with all 28 AWS operators against global keys plus service-specific keys for S3/SNS/Lambda/SQS, and resource-based policies for S3 bucket policies, SNS topic policies, and Lambda function policies (with AWS's cross-account combining semantics). It does **not** yet cover permission boundaries, session policies passed to `AssumeRole`, ABAC tag conditions (`aws:ResourceTag` / `aws:RequestTag` / `aws:TagKeys`), KMS key policies, or `NotPrincipal` on resource policies — statements carrying `NotPrincipal` are skipped and never silently grant. SCPs are out of scope for fakecloud's single-account model. See [SigV4 verification and IAM enforcement](@/docs/reference/security.md) for the full scope, enforced-service list, and the reserved `test`/`test` root-bypass convention.
 
 ## Everything else is in scope
 
