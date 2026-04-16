@@ -6487,4 +6487,127 @@ mod tests {
         );
         assert!(svc.update_continuous_backups(&req).is_err());
     }
+
+    // ── items.rs: put_item error branches ──
+
+    #[test]
+    fn put_item_unknown_table_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "PutItem",
+            json!({
+                "TableName": "ghost",
+                "Item": {"k": {"S": "v"}}
+            }),
+        );
+        assert!(svc.put_item(&req).is_err());
+    }
+
+    #[test]
+    fn put_item_missing_key_attribute_errors() {
+        let svc = make_service();
+        svc.create_table(&make_request(
+            "CreateTable",
+            json!({
+                "TableName": "pmk",
+                "AttributeDefinitions": [{"AttributeName": "k", "AttributeType": "S"}],
+                "KeySchema": [{"AttributeName": "k", "KeyType": "HASH"}],
+                "BillingMode": "PAY_PER_REQUEST"
+            }),
+        ))
+        .unwrap();
+        let req = make_request(
+            "PutItem",
+            json!({
+                "TableName": "pmk",
+                "Item": {"other": {"S": "v"}}
+            }),
+        );
+        assert!(svc.put_item(&req).is_err());
+    }
+
+    #[test]
+    fn get_item_unknown_table_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "GetItem",
+            json!({"TableName": "ghost", "Key": {"k": {"S": "1"}}}),
+        );
+        assert!(svc.get_item(&req).is_err());
+    }
+
+    #[test]
+    fn delete_item_unknown_table_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "DeleteItem",
+            json!({"TableName": "ghost", "Key": {"k": {"S": "1"}}}),
+        );
+        assert!(svc.delete_item(&req).is_err());
+    }
+
+    #[test]
+    fn update_item_unknown_table_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "UpdateItem",
+            json!({
+                "TableName": "ghost",
+                "Key": {"k": {"S": "1"}},
+                "UpdateExpression": "SET x = :v",
+                "ExpressionAttributeValues": {":v": {"S": "val"}}
+            }),
+        );
+        assert!(svc.update_item(&req).is_err());
+    }
+
+    #[test]
+    fn query_unknown_table_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "Query",
+            json!({
+                "TableName": "ghost",
+                "KeyConditionExpression": "k = :v",
+                "ExpressionAttributeValues": {":v": {"S": "x"}}
+            }),
+        );
+        assert!(svc.query(&req).is_err());
+    }
+
+    #[test]
+    fn scan_unknown_table_errors() {
+        let svc = make_service();
+        let req = make_request("Scan", json!({"TableName": "ghost"}));
+        assert!(svc.scan(&req).is_err());
+    }
+
+    #[test]
+    fn scan_with_limit_returns_ok() {
+        let svc = make_service();
+        svc.create_table(&make_request(
+            "CreateTable",
+            json!({
+                "TableName": "slt",
+                "AttributeDefinitions": [{"AttributeName": "k", "AttributeType": "S"}],
+                "KeySchema": [{"AttributeName": "k", "KeyType": "HASH"}],
+                "BillingMode": "PAY_PER_REQUEST"
+            }),
+        ))
+        .unwrap();
+        for i in 0..5 {
+            svc.put_item(&make_request(
+                "PutItem",
+                json!({
+                    "TableName": "slt",
+                    "Item": {"k": {"S": format!("key-{i}")}}
+                }),
+            ))
+            .unwrap();
+        }
+        let req = make_request("Scan", json!({"TableName": "slt", "Limit": 2}));
+        let resp = svc.scan(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["Count"], 2);
+    }
 }
