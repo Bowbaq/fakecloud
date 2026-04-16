@@ -137,7 +137,7 @@ impl Router {
             .collect();
 
         // Sort by priority (highest first)
-        parsed_routes.sort_by(|a, b| b.1.priority.cmp(&a.1.priority));
+        parsed_routes.sort_by_key(|r| std::cmp::Reverse(r.1.priority));
 
         Self {
             routes: parsed_routes,

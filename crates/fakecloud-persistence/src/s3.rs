@@ -659,7 +659,7 @@ impl S3Store for DiskS3Store {
                         }
                     }
                     if !versioned.is_empty() {
-                        versioned.sort_by_key(|a| a.meta.last_modified);
+                        versioned.sort_by_key(|v| v.meta.last_modified);
                         if let Some(key) = key_name {
                             // Reconcile snap.objects with the newest version:
                             // a trailing delete marker hides any prior null or

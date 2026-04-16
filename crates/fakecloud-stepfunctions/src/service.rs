@@ -524,7 +524,7 @@ impl StepFunctionsService {
             .collect();
 
         // Sort by start date descending (most recent first)
-        executions.sort_by(|a, b| b.start_date.cmp(&a.start_date));
+        executions.sort_by_key(|e| std::cmp::Reverse(e.start_date));
 
         let items: Vec<Value> = executions
             .iter()

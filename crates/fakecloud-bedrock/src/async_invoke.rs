@@ -124,7 +124,7 @@ pub fn list_async_invokes(
             }
         })
         .collect();
-    items.sort_by(|a, b| b.submit_time.cmp(&a.submit_time)); // Descending by default
+    items.sort_by_key(|i| std::cmp::Reverse(i.submit_time));
 
     let start = if let Some(token) = next_token {
         items

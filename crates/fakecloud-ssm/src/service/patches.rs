@@ -102,22 +102,19 @@ impl SsmService {
                             .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
                             .unwrap_or_default();
                         match key {
-                            "NAME_PREFIX" => {
-                                if !values.iter().any(|v| pb.name.starts_with(v)) {
+                            "NAME_PREFIX"
+                                if !values.iter().any(|v| pb.name.starts_with(v)) => {
                                     return false;
                                 }
-                            }
-                            "OWNER" => {
+                            "OWNER"
                                 // We don't track owner, but "Self" means user-created
-                                if values.contains(&"AWS") {
+                                if values.contains(&"AWS") => {
                                     return false;
                                 }
-                            }
-                            "OPERATING_SYSTEM" => {
-                                if !values.contains(&pb.operating_system.as_str()) {
+                            "OPERATING_SYSTEM"
+                                if !values.contains(&pb.operating_system.as_str()) => {
                                     return false;
                                 }
-                            }
                             _ => {}
                         }
                     }
@@ -383,10 +380,10 @@ impl SsmService {
                             .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
                             .unwrap_or_default();
                         match key {
-                            "NAME_PREFIX" => {
-                                if !values.iter().any(|v| pg.patch_group.starts_with(v)) {
-                                    return false;
-                                }
+                            "NAME_PREFIX"
+                                if !values.iter().any(|v| pg.patch_group.starts_with(v)) =>
+                            {
+                                return false;
                             }
                             "OPERATING_SYSTEM" => {
                                 if let Some(pb) = state.patch_baselines.get(&pg.baseline_id) {

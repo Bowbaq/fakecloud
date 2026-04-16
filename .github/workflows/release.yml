@@ -297,6 +297,45 @@ jobs:
           ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.MAVEN_SIGNING_KEY }}
           ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.MAVEN_SIGNING_PASSWORD }}
 
+  publish-packagist:
+    name: Publish Packagist
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify tag matches composer.json version
+        working-directory: sdks/php
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          VERSION=$(php -r "echo json_decode(file_get_contents('composer.json'))->version ?? 'none';")
+          # composer.json version field is optional — skip check if absent
+          if [ "$VERSION" != "none" ] && [ "$TAG" != "$VERSION" ]; then
+            echo "::error::Tag v${TAG} does not match composer.json version ${VERSION}"
+            exit 1
+          fi
+
+      - name: Split and push to mirror repo
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Split sdks/php/ into its own branch with rewritten history
+          SHA=$(git subtree split --prefix=sdks/php)
+
+          # Push to mirror repo
+          git remote add php-mirror https://x-access-token:${MIRROR_TOKEN}@github.com/faiscadev/fakecloud-php.git
+          git push php-mirror "${SHA}:refs/heads/main" --force
+
+          # Create version tag on mirror (-f because v${TAG} exists in this checkout)
+          git tag -f "v${TAG}" "${SHA}"
+          git push php-mirror "v${TAG}" --force
+        env:
+          MIRROR_TOKEN: ${{ secrets.PHP_MIRROR_TOKEN }}
+
   publish-go:
     name: Publish Go module
     needs: check

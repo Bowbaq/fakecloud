@@ -644,10 +644,8 @@ fn validate_date_condition_values(val: &Value) -> Result<(), String> {
 
         for (_key, value) in inner {
             match value {
-                Value::String(s) => {
-                    if !is_valid_date_value(s) {
-                        return Err("The policy failed legacy parsing".to_string());
-                    }
+                Value::String(s) if !is_valid_date_value(s) => {
+                    return Err("The policy failed legacy parsing".to_string());
                 }
                 Value::Number(n) => {
                     // Check if the number is too large (> i64::MAX)
