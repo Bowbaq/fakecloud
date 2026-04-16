@@ -5,17 +5,42 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use chrono::Utc;
 use http::StatusCode;
+use tokio::sync::Mutex as AsyncMutex;
 
 use fakecloud_aws::xml::xml_escape;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
+use fakecloud_persistence::SnapshotStore;
 
 use crate::runtime::{RdsRuntime, RuntimeError};
 use crate::state::{
     default_engine_versions, default_orderable_options, DbInstance, DbParameterGroup, DbSnapshot,
-    DbSubnetGroup, EngineVersionInfo, OrderableDbInstanceOption, RdsTag, SharedRdsState,
+    DbSubnetGroup, EngineVersionInfo, OrderableDbInstanceOption, RdsSnapshot, RdsTag,
+    SharedRdsState, RDS_SNAPSHOT_SCHEMA_VERSION,
 };
 
 const RDS_NS: &str = "http://rds.amazonaws.com/doc/2014-10-31/";
+
+fn is_mutating_action(action: &str) -> bool {
+    matches!(
+        action,
+        "AddTagsToResource"
+            | "CreateDBInstance"
+            | "CreateDBInstanceReadReplica"
+            | "CreateDBParameterGroup"
+            | "CreateDBSnapshot"
+            | "CreateDBSubnetGroup"
+            | "DeleteDBInstance"
+            | "DeleteDBParameterGroup"
+            | "DeleteDBSnapshot"
+            | "DeleteDBSubnetGroup"
+            | "ModifyDBInstance"
+            | "ModifyDBParameterGroup"
+            | "ModifyDBSubnetGroup"
+            | "RebootDBInstance"
+            | "RemoveTagsFromResource"
+            | "RestoreDBInstanceFromDBSnapshot"
+    )
+}
 const SUPPORTED_ACTIONS: &[&str] = &[
     "AddTagsToResource",
     "CreateDBInstance",
@@ -45,6 +70,8 @@ const SUPPORTED_ACTIONS: &[&str] = &[
 pub struct RdsService {
     state: SharedRdsState,
     runtime: Option<Arc<RdsRuntime>>,
+    snapshot_store: Option<Arc<dyn SnapshotStore>>,
+    snapshot_lock: Arc<AsyncMutex<()>>,
 }
 
 impl RdsService {
@@ -52,12 +79,41 @@ impl RdsService {
         Self {
             state,
             runtime: None,
+            snapshot_store: None,
+            snapshot_lock: Arc::new(AsyncMutex::new(())),
         }
     }
 
     pub fn with_runtime(mut self, runtime: Arc<RdsRuntime>) -> Self {
         self.runtime = Some(runtime);
         self
+    }
+
+    pub fn with_snapshot_store(mut self, store: Arc<dyn SnapshotStore>) -> Self {
+        self.snapshot_store = Some(store);
+        self
+    }
+
+    async fn save_snapshot(&self) {
+        let Some(store) = self.snapshot_store.clone() else {
+            return;
+        };
+        let _guard = self.snapshot_lock.lock().await;
+        let snapshot = RdsSnapshot {
+            schema_version: RDS_SNAPSHOT_SCHEMA_VERSION,
+            state: self.state.read().clone(),
+        };
+        let join = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            let bytes = serde_json::to_vec(&snapshot)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+            store.save(&bytes)
+        })
+        .await;
+        match join {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => tracing::error!(%err, "failed to write rds snapshot"),
+            Err(err) => tracing::error!(%err, "rds snapshot task panicked"),
+        }
     }
 
     /// Return the runtime or a ``ServiceUnavailable`` error if it was not configured.
@@ -83,7 +139,8 @@ impl AwsService for RdsService {
     }
 
     async fn handle(&self, request: AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        match request.action.as_str() {
+        let mutates = is_mutating_action(request.action.as_str());
+        let result = match request.action.as_str() {
             "AddTagsToResource" => self.add_tags_to_resource(&request),
             "CreateDBInstance" => self.create_db_instance(&request).await,
             "CreateDBInstanceReadReplica" => self.create_db_instance_read_replica(&request).await,
@@ -115,7 +172,11 @@ impl AwsService for RdsService {
                 self.service_name(),
                 &request.action,
             )),
+        };
+        if mutates && matches!(result.as_ref(), Ok(resp) if resp.status.is_success()) {
+            self.save_snapshot().await;
         }
+        result
     }
 
     fn supported_actions(&self) -> &[&str] {

@@ -20,7 +20,7 @@ pub const SUPPORTED_INSTANCE_CLASSES: &[&str] = &[
     "db.m5.large",
 ];
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct DbInstance {
     pub db_instance_identifier: String,
     pub db_instance_arn: String,
@@ -53,7 +53,7 @@ pub struct DbInstance {
     pub pending_modified_values: Option<PendingModifiedValues>,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct PendingModifiedValues {
     pub db_instance_class: Option<String>,
     pub allocated_storage: Option<i32>,
@@ -121,13 +121,13 @@ impl fmt::Debug for DbInstance {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RdsTag {
     pub key: String,
     pub value: String,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct DbSnapshot {
     pub db_snapshot_identifier: String,
     pub db_snapshot_arn: String,
@@ -170,7 +170,7 @@ impl fmt::Debug for DbSnapshot {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RdsState {
     pub account_id: String,
     pub region: String,
@@ -202,7 +202,7 @@ pub struct OrderableDbInstanceOption {
     pub max_storage_size: i32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DbSubnetGroup {
     pub db_subnet_group_name: String,
     pub db_subnet_group_arn: String,
@@ -213,7 +213,7 @@ pub struct DbSubnetGroup {
     pub tags: Vec<RdsTag>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DbParameterGroup {
     pub db_parameter_group_name: String,
     pub db_parameter_group_arn: String,
@@ -462,6 +462,14 @@ pub fn default_parameter_groups(
     }
 
     groups
+}
+
+pub const RDS_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RdsSnapshot {
+    pub schema_version: u32,
+    pub state: RdsState,
 }
 
 #[cfg(test)]

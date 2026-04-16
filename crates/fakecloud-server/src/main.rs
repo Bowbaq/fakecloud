@@ -382,7 +382,7 @@ async fn main() {
 
     // Register services
     if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
-        for service in ["rds", "elasticache", "bedrock"] {
+        for service in ["elasticache", "bedrock"] {
             fakecloud_persistence::warn_unsupported(service);
         }
     }
@@ -1261,9 +1261,57 @@ async fn main() {
         kinesis_service = kinesis_service.with_snapshot_store(store);
     }
     registry.register(Arc::new(kinesis_service));
+    let rds_snapshot_store: Option<Arc<dyn fakecloud_persistence::SnapshotStore>> =
+        if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
+            let data_path = persistence_config
+                .data_path
+                .as_ref()
+                .expect("validated above")
+                .clone();
+            let path = data_path.join("rds").join("snapshot.json");
+            let store = fakecloud_persistence::DiskSnapshotStore::new(path);
+            match fakecloud_persistence::SnapshotStore::load(&store) {
+                Ok(Some(bytes)) => {
+                    match serde_json::from_slice::<fakecloud_rds::state::RdsSnapshot>(&bytes) {
+                        Ok(snapshot) => {
+                            if snapshot.schema_version
+                                != fakecloud_rds::state::RDS_SNAPSHOT_SCHEMA_VERSION
+                            {
+                                fatal_exit(format_args!(
+                                    "rds persistence schema mismatch: on-disk={}, expected={}",
+                                    snapshot.schema_version,
+                                    fakecloud_rds::state::RDS_SNAPSHOT_SCHEMA_VERSION,
+                                ));
+                            }
+                            let instance_count = snapshot.state.instances.len();
+                            *rds_state.write() = snapshot.state;
+                            tracing::info!(
+                                instances = instance_count,
+                                "loaded rds persistence snapshot",
+                            );
+                        }
+                        Err(err) => fatal_exit(format_args!(
+                            "failed to parse rds persistence snapshot: {err}"
+                        )),
+                    }
+                }
+                Ok(None) => {
+                    tracing::info!("no rds persistence snapshot found; starting empty");
+                }
+                Err(err) => fatal_exit(format_args!(
+                    "failed to read rds persistence snapshot: {err}"
+                )),
+            }
+            Some(Arc::new(store) as Arc<dyn fakecloud_persistence::SnapshotStore>)
+        } else {
+            None
+        };
     let mut rds_service = RdsService::new(rds_state);
     if let Some(ref rt) = rds_runtime {
         rds_service = rds_service.with_runtime(rt.clone());
+    }
+    if let Some(store) = rds_snapshot_store {
+        rds_service = rds_service.with_snapshot_store(store);
     }
     registry.register(Arc::new(rds_service));
     let mut elasticache_service = ElastiCacheService::new(elasticache_state);
