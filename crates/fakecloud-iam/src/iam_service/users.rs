@@ -1574,4 +1574,57 @@ impl IamService {
         );
         Ok(AwsResponse::xml(StatusCode::OK, xml))
     }
+
+    pub(super) fn put_user_permissions_boundary(
+        &self,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let user_name = required_param(&req.query_params, "UserName")?;
+        validate_string_length("userName", &user_name, 1, 64)?;
+        let boundary = required_param(&req.query_params, "PermissionsBoundary")?;
+
+        if boundary
+            .parse::<Arn>()
+            .ok()
+            .filter(|arn| arn.service == "iam" && arn.resource.starts_with("policy/"))
+            .is_none()
+        {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "ValidationError",
+                format!("Value ({boundary}) for parameter PermissionsBoundary is invalid."),
+            ));
+        }
+
+        let mut state = self.state.write();
+        let user = state.users.get_mut(&user_name).ok_or_else(|| {
+            AwsServiceError::aws_error(
+                StatusCode::NOT_FOUND,
+                "NoSuchEntity",
+                format!("User {user_name} not found"),
+            )
+        })?;
+        user.permissions_boundary = Some(boundary);
+        let xml = empty_response("PutUserPermissionsBoundary", &req.request_id);
+        Ok(AwsResponse::xml(StatusCode::OK, xml))
+    }
+
+    pub(super) fn delete_user_permissions_boundary(
+        &self,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let user_name = required_param(&req.query_params, "UserName")?;
+        validate_string_length("userName", &user_name, 1, 64)?;
+        let mut state = self.state.write();
+        let user = state.users.get_mut(&user_name).ok_or_else(|| {
+            AwsServiceError::aws_error(
+                StatusCode::NOT_FOUND,
+                "NoSuchEntity",
+                format!("User {user_name} not found"),
+            )
+        })?;
+        user.permissions_boundary = None;
+        let xml = empty_response("DeleteUserPermissionsBoundary", &req.request_id);
+        Ok(AwsResponse::xml(StatusCode::OK, xml))
+    }
 }
