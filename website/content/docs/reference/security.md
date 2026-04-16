@@ -173,10 +173,21 @@ Ongoing coverage work:
 
 - Service-specific condition keys for services / operations beyond the ones listed in the table above. The hook is `AwsService::iam_condition_keys_for`; extending coverage is additive and requires no signature changes.
 
-**Phase 3 — policy gates (planned).** These sit alongside the main evaluation path and constrain what an otherwise-valid Allow can grant.
+### Permission boundaries
 
-- **Permission boundaries.** A managed policy attached to a user or role that caps the maximum permissions that identity can ever be granted — even by an explicit Allow. Not yet evaluated.
-- **Session policies passed to `AssumeRole`.** Inline policies handed to the STS call that further restrict the resulting temporary credentials below the role's own policies. Stored but not yet evaluated.
+A managed policy attached to a user or role that caps the maximum permissions that identity can ever be granted. The effective permissions of a user with a boundary are the **intersection** of identity policies and the boundary: both must allow, and an explicit Deny in either layer wins.
+
+- Attached via `PutUserPermissionsBoundary` / `PutRolePermissionsBoundary`, removed via `DeleteUserPermissionsBoundary` / `DeleteRolePermissionsBoundary`.
+- **Dangling boundary ARN** (the managed policy was deleted while still attached): the principal can perform no action until the boundary is removed or re-created — matches AWS behavior. Logged to `fakecloud::iam::audit` at debug level.
+- **Bypass rules:** the account root and service-linked roles (role name starts with `AWSServiceRoleFor`) are exempt from boundary evaluation. Within `evaluate_with_resource_policy`, the boundary gates only the identity side — same-account resource-policy grants stand on their own.
+
+### Session policies
+
+Inline policies passed to `AssumeRole`, `AssumeRoleWithWebIdentity`, `AssumeRoleWithSAML`, or `GetFederationToken` via the `Policy` parameter (and `PolicyArns`) that further restrict the resulting temporary credentials below the role's own policies.
+
+- Session policies are persisted on the STS temporary credential and evaluated as a third intersection layer: effective permission = **identity ∩ boundary ∩ session**. Each layer is evaluated independently; an explicit Deny in any layer wins.
+- An STS call with no `Policy` / `PolicyArns` produces a credential with no session-policy gate (pass-through), preserving Phase 2 behavior.
+- `GetSessionToken` does not accept a `Policy` parameter per AWS docs, so session policies do not apply to credentials minted by that operation.
 
 **Phase 4 — ABAC (planned).** Tag-based access control: condition keys like `aws:ResourceTag/<k>`, `aws:RequestTag/<k>`, and `aws:TagKeys` that let statements key off resource and request tags. Requires propagating resource tags into the request context before the evaluator runs. Not yet implemented.
 
