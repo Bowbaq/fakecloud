@@ -897,6 +897,10 @@ fn validate_arn(arn: &str) -> Result<(), AwsServiceError> {
 ///
 /// This is the public entry point used by `StepFunctionsDeliveryImpl` in the server crate.
 /// It mirrors the logic from `StartExecution` but without the AWS request/response wrapper.
+/// Start a Step Functions execution from a cross-service delivery (e.g. EventBridge).
+///
+/// This is the public entry point used by `StepFunctionsDeliveryImpl` in the server crate.
+/// It mirrors the logic from `StartExecution` but without the AWS request/response wrapper.
 pub fn start_execution_from_delivery(
     state: &SharedStepFunctionsState,
     delivery: &Option<Arc<DeliveryBus>>,
@@ -965,4 +969,674 @@ pub fn start_execution_from_delivery(
         )
         .await;
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::StepFunctionsState;
+    use http::{HeaderMap, Method};
+    use parking_lot::RwLock;
+    use serde_json::Value;
+    use std::sync::Arc;
+
+    fn make_state() -> SharedStepFunctionsState {
+        Arc::new(RwLock::new(StepFunctionsState::new(
+            "123456789012",
+            "us-east-1",
+        )))
+    }
+
+    fn make_request(action: &str, body: &str) -> AwsRequest {
+        AwsRequest {
+            service: "states".to_string(),
+            action: action.to_string(),
+            region: "us-east-1".to_string(),
+            account_id: "123456789012".to_string(),
+            request_id: "test-id".to_string(),
+            headers: HeaderMap::new(),
+            query_params: HashMap::new(),
+            body: body.as_bytes().to_vec().into(),
+            path_segments: vec![],
+            raw_path: "/".to_string(),
+            raw_query: String::new(),
+            method: Method::POST,
+            is_query_protocol: false,
+            access_key_id: None,
+            principal: None,
+        }
+    }
+
+    fn body_json(resp: &AwsResponse) -> Value {
+        serde_json::from_slice(resp.body.expect_bytes()).unwrap()
+    }
+
+    fn expect_err(result: Result<AwsResponse, AwsServiceError>) -> AwsServiceError {
+        match result {
+            Err(e) => e,
+            Ok(_) => panic!("expected error, got Ok"),
+        }
+    }
+
+    const VALID_DEF: &str = r#"{"StartAt":"Pass","States":{"Pass":{"Type":"Pass","End":true}}}"#;
+
+    fn create_sm(svc: &StepFunctionsService, name: &str) -> String {
+        let body = json!({
+            "name": name,
+            "definition": VALID_DEF,
+            "roleArn": "arn:aws:iam::123456789012:role/test",
+        });
+        let req = make_request("CreateStateMachine", &body.to_string());
+        let resp = svc.create_state_machine(&req).unwrap();
+        let b = body_json(&resp);
+        b["stateMachineArn"].as_str().unwrap().to_string()
+    }
+
+    // ── CreateStateMachine ──
+
+    #[test]
+    fn create_state_machine_basic() {
+        let svc = StepFunctionsService::new(make_state());
+        let arn = create_sm(&svc, "test-sm");
+        assert!(arn.contains("test-sm"));
+    }
+
+    #[test]
+    fn create_state_machine_with_express_type() {
+        let svc = StepFunctionsService::new(make_state());
+        let body = json!({
+            "name": "express-sm",
+            "definition": VALID_DEF,
+            "roleArn": "arn:aws:iam::123456789012:role/r",
+            "type": "EXPRESS",
+        });
+        let req = make_request("CreateStateMachine", &body.to_string());
+        let resp = svc.create_state_machine(&req).unwrap();
+        let b = body_json(&resp);
+        assert!(b["stateMachineArn"].as_str().is_some());
+    }
+
+    #[test]
+    fn create_state_machine_duplicate_fails() {
+        let svc = StepFunctionsService::new(make_state());
+        create_sm(&svc, "dup-sm");
+        let body = json!({
+            "name": "dup-sm",
+            "definition": VALID_DEF,
+            "roleArn": "arn:aws:iam::123456789012:role/r",
+        });
+        let req = make_request("CreateStateMachine", &body.to_string());
+        let err = expect_err(svc.create_state_machine(&req));
+        assert!(err.to_string().contains("StateMachineAlreadyExists"));
+    }
+
+    #[test]
+    fn create_state_machine_missing_name() {
+        let svc = StepFunctionsService::new(make_state());
+        let body = json!({
+            "definition": VALID_DEF,
+            "roleArn": "arn:aws:iam::123456789012:role/r",
+        });
+        let req = make_request("CreateStateMachine", &body.to_string());
+        assert!(svc.create_state_machine(&req).is_err());
+    }
+
+    #[test]
+    fn create_state_machine_invalid_definition() {
+        let svc = StepFunctionsService::new(make_state());
+        let body = json!({
+            "name": "bad-def",
+            "definition": "not json",
+            "roleArn": "arn:aws:iam::123456789012:role/r",
+        });
+        let req = make_request("CreateStateMachine", &body.to_string());
+        let err = expect_err(svc.create_state_machine(&req));
+        assert!(err.to_string().contains("InvalidDefinition"));
+    }
+
+    #[test]
+    fn create_state_machine_definition_missing_start_at() {
+        let svc = StepFunctionsService::new(make_state());
+        let body = json!({
+            "name": "no-start",
+            "definition": r#"{"States":{"S":{"Type":"Pass","End":true}}}"#,
+            "roleArn": "arn:aws:iam::123456789012:role/r",
+        });
+        let req = make_request("CreateStateMachine", &body.to_string());
+        let err = expect_err(svc.create_state_machine(&req));
+        assert!(err.to_string().contains("InvalidDefinition"));
+    }
+
+    #[test]
+    fn create_state_machine_definition_missing_states() {
+        let svc = StepFunctionsService::new(make_state());
+        let body = json!({
+            "name": "no-states",
+            "definition": r#"{"StartAt":"S"}"#,
+            "roleArn": "arn:aws:iam::123456789012:role/r",
+        });
+        let req = make_request("CreateStateMachine", &body.to_string());
+        let err = expect_err(svc.create_state_machine(&req));
+        assert!(err.to_string().contains("InvalidDefinition"));
+    }
+
+    #[test]
+    fn create_state_machine_definition_start_at_not_in_states() {
+        let svc = StepFunctionsService::new(make_state());
+        let body = json!({
+            "name": "bad-start",
+            "definition": r#"{"StartAt":"Missing","States":{"S":{"Type":"Pass","End":true}}}"#,
+            "roleArn": "arn:aws:iam::123456789012:role/r",
+        });
+        let req = make_request("CreateStateMachine", &body.to_string());
+        let err = expect_err(svc.create_state_machine(&req));
+        assert!(err.to_string().contains("MISSING_TRANSITION_TARGET"));
+    }
+
+    #[test]
+    fn create_state_machine_invalid_type() {
+        let svc = StepFunctionsService::new(make_state());
+        let body = json!({
+            "name": "bad-type",
+            "definition": VALID_DEF,
+            "roleArn": "arn:aws:iam::123456789012:role/r",
+            "type": "INVALID",
+        });
+        let req = make_request("CreateStateMachine", &body.to_string());
+        assert!(svc.create_state_machine(&req).is_err());
+    }
+
+    #[test]
+    fn create_state_machine_invalid_arn() {
+        let svc = StepFunctionsService::new(make_state());
+        let body = json!({
+            "name": "bad-arn",
+            "definition": VALID_DEF,
+            "roleArn": "not-an-arn",
+        });
+        let req = make_request("CreateStateMachine", &body.to_string());
+        let err = expect_err(svc.create_state_machine(&req));
+        assert!(err.to_string().contains("InvalidArn"));
+    }
+
+    #[test]
+    fn create_state_machine_invalid_name() {
+        let svc = StepFunctionsService::new(make_state());
+        let body = json!({
+            "name": "has spaces!",
+            "definition": VALID_DEF,
+            "roleArn": "arn:aws:iam::123456789012:role/r",
+        });
+        let req = make_request("CreateStateMachine", &body.to_string());
+        let err = expect_err(svc.create_state_machine(&req));
+        assert!(err.to_string().contains("InvalidName"));
+    }
+
+    #[test]
+    fn create_state_machine_name_too_long() {
+        let svc = StepFunctionsService::new(make_state());
+        let long_name = "a".repeat(81);
+        let body = json!({
+            "name": long_name,
+            "definition": VALID_DEF,
+            "roleArn": "arn:aws:iam::123456789012:role/r",
+        });
+        let req = make_request("CreateStateMachine", &body.to_string());
+        let err = expect_err(svc.create_state_machine(&req));
+        assert!(err.to_string().contains("InvalidName"));
+    }
+
+    // ── DescribeStateMachine ──
+
+    #[test]
+    fn describe_state_machine_found() {
+        let svc = StepFunctionsService::new(make_state());
+        let arn = create_sm(&svc, "desc-sm");
+
+        let req = make_request(
+            "DescribeStateMachine",
+            &json!({"stateMachineArn": arn}).to_string(),
+        );
+        let resp = svc.describe_state_machine(&req).unwrap();
+        let b = body_json(&resp);
+        assert_eq!(b["name"], "desc-sm");
+        assert_eq!(b["status"], "ACTIVE");
+        assert!(b["definition"].as_str().is_some());
+    }
+
+    #[test]
+    fn describe_state_machine_not_found() {
+        let svc = StepFunctionsService::new(make_state());
+        let req = make_request(
+            "DescribeStateMachine",
+            &json!({"stateMachineArn": "arn:aws:states:us-east-1:123456789012:stateMachine:nope"})
+                .to_string(),
+        );
+        let err = expect_err(svc.describe_state_machine(&req));
+        assert!(err.to_string().contains("StateMachineDoesNotExist"));
+    }
+
+    // ── ListStateMachines ──
+
+    #[test]
+    fn list_state_machines_empty() {
+        let svc = StepFunctionsService::new(make_state());
+        let req = make_request("ListStateMachines", "{}");
+        let resp = svc.list_state_machines(&req).unwrap();
+        let b = body_json(&resp);
+        assert!(b["stateMachines"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn list_state_machines_returns_created() {
+        let svc = StepFunctionsService::new(make_state());
+        create_sm(&svc, "sm-1");
+        create_sm(&svc, "sm-2");
+
+        let req = make_request("ListStateMachines", "{}");
+        let resp = svc.list_state_machines(&req).unwrap();
+        let b = body_json(&resp);
+        assert_eq!(b["stateMachines"].as_array().unwrap().len(), 2);
+    }
+
+    // ── DeleteStateMachine ──
+
+    #[test]
+    fn delete_state_machine() {
+        let svc = StepFunctionsService::new(make_state());
+        let arn = create_sm(&svc, "del-sm");
+
+        let req = make_request(
+            "DeleteStateMachine",
+            &json!({"stateMachineArn": arn}).to_string(),
+        );
+        svc.delete_state_machine(&req).unwrap();
+
+        // Describe should fail
+        let req = make_request(
+            "DescribeStateMachine",
+            &json!({"stateMachineArn": arn}).to_string(),
+        );
+        assert!(svc.describe_state_machine(&req).is_err());
+    }
+
+    #[test]
+    fn delete_state_machine_nonexistent_succeeds() {
+        let svc = StepFunctionsService::new(make_state());
+        let req = make_request(
+            "DeleteStateMachine",
+            &json!({"stateMachineArn": "arn:aws:states:us-east-1:123456789012:stateMachine:nope"})
+                .to_string(),
+        );
+        // AWS returns success even for nonexistent
+        svc.delete_state_machine(&req).unwrap();
+    }
+
+    // ── UpdateStateMachine ──
+
+    #[test]
+    fn update_state_machine() {
+        let svc = StepFunctionsService::new(make_state());
+        let arn = create_sm(&svc, "upd-sm");
+
+        let new_def = r#"{"StartAt":"NewPass","States":{"NewPass":{"Type":"Pass","End":true}}}"#;
+        let body = json!({
+            "stateMachineArn": arn,
+            "definition": new_def,
+            "description": "updated",
+        });
+        let req = make_request("UpdateStateMachine", &body.to_string());
+        let resp = svc.update_state_machine(&req).unwrap();
+        let b = body_json(&resp);
+        assert!(b["updateDate"].as_f64().is_some());
+
+        // Verify
+        let req = make_request(
+            "DescribeStateMachine",
+            &json!({"stateMachineArn": arn}).to_string(),
+        );
+        let resp = svc.describe_state_machine(&req).unwrap();
+        let b = body_json(&resp);
+        assert!(b["definition"].as_str().unwrap().contains("NewPass"));
+        assert_eq!(b["description"], "updated");
+    }
+
+    #[test]
+    fn update_state_machine_not_found() {
+        let svc = StepFunctionsService::new(make_state());
+        let body = json!({
+            "stateMachineArn": "arn:aws:states:us-east-1:123456789012:stateMachine:nope",
+            "definition": VALID_DEF,
+        });
+        let req = make_request("UpdateStateMachine", &body.to_string());
+        let err = expect_err(svc.update_state_machine(&req));
+        assert!(err.to_string().contains("StateMachineDoesNotExist"));
+    }
+
+    // ── StartExecution ──
+
+    #[tokio::test]
+    async fn start_execution_basic() {
+        let svc = StepFunctionsService::new(make_state());
+        let arn = create_sm(&svc, "exec-sm");
+
+        let body = json!({
+            "stateMachineArn": arn,
+            "input": r#"{"key":"value"}"#,
+        });
+        let req = make_request("StartExecution", &body.to_string());
+        let resp = svc.start_execution(&req).unwrap();
+        let b = body_json(&resp);
+        assert!(b["executionArn"].as_str().is_some());
+        assert!(b["startDate"].as_f64().is_some());
+    }
+
+    #[tokio::test]
+    async fn start_execution_with_name() {
+        let svc = StepFunctionsService::new(make_state());
+        let arn = create_sm(&svc, "named-exec");
+
+        let body = json!({
+            "stateMachineArn": arn,
+            "name": "my-execution",
+        });
+        let req = make_request("StartExecution", &body.to_string());
+        let resp = svc.start_execution(&req).unwrap();
+        let b = body_json(&resp);
+        assert!(b["executionArn"].as_str().unwrap().contains("my-execution"));
+    }
+
+    #[tokio::test]
+    async fn start_execution_sm_not_found() {
+        let svc = StepFunctionsService::new(make_state());
+        let body = json!({
+            "stateMachineArn": "arn:aws:states:us-east-1:123456789012:stateMachine:nope",
+        });
+        let req = make_request("StartExecution", &body.to_string());
+        let err = expect_err(svc.start_execution(&req));
+        assert!(err.to_string().contains("StateMachineDoesNotExist"));
+    }
+
+    #[tokio::test]
+    async fn start_execution_invalid_input() {
+        let svc = StepFunctionsService::new(make_state());
+        let arn = create_sm(&svc, "bad-input");
+
+        let body = json!({
+            "stateMachineArn": arn,
+            "input": "not json",
+        });
+        let req = make_request("StartExecution", &body.to_string());
+        let err = expect_err(svc.start_execution(&req));
+        assert!(err.to_string().contains("InvalidExecutionInput"));
+    }
+
+    #[tokio::test]
+    async fn start_execution_duplicate_name() {
+        let svc = StepFunctionsService::new(make_state());
+        let arn = create_sm(&svc, "dup-exec");
+
+        let body = json!({
+            "stateMachineArn": arn,
+            "name": "same-name",
+        });
+        let req = make_request("StartExecution", &body.to_string());
+        svc.start_execution(&req).unwrap();
+
+        let req = make_request("StartExecution", &body.to_string());
+        let err = expect_err(svc.start_execution(&req));
+        assert!(err.to_string().contains("ExecutionAlreadyExists"));
+    }
+
+    // ── DescribeExecution ──
+
+    #[tokio::test]
+    async fn describe_execution_found() {
+        let svc = StepFunctionsService::new(make_state());
+        let sm_arn = create_sm(&svc, "desc-exec");
+
+        let body = json!({"stateMachineArn": sm_arn, "name": "e1"});
+        let req = make_request("StartExecution", &body.to_string());
+        let resp = svc.start_execution(&req).unwrap();
+        let exec_arn = body_json(&resp)["executionArn"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let req = make_request(
+            "DescribeExecution",
+            &json!({"executionArn": exec_arn}).to_string(),
+        );
+        let resp = svc.describe_execution(&req).unwrap();
+        let b = body_json(&resp);
+        assert_eq!(b["name"], "e1");
+        assert_eq!(b["status"], "RUNNING");
+    }
+
+    #[tokio::test]
+    async fn describe_execution_not_found() {
+        let svc = StepFunctionsService::new(make_state());
+        let req = make_request(
+            "DescribeExecution",
+            &json!({"executionArn": "arn:aws:states:us-east-1:123456789012:execution:sm:nope"})
+                .to_string(),
+        );
+        let err = expect_err(svc.describe_execution(&req));
+        assert!(err.to_string().contains("ExecutionDoesNotExist"));
+    }
+
+    // ── StopExecution ──
+
+    #[tokio::test]
+    async fn stop_execution() {
+        let svc = StepFunctionsService::new(make_state());
+        let sm_arn = create_sm(&svc, "stop-sm");
+
+        let body = json!({"stateMachineArn": sm_arn, "name": "stop-e"});
+        let req = make_request("StartExecution", &body.to_string());
+        let resp = svc.start_execution(&req).unwrap();
+        let exec_arn = body_json(&resp)["executionArn"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let body = json!({
+            "executionArn": exec_arn,
+            "error": "UserAborted",
+            "cause": "test stop",
+        });
+        let req = make_request("StopExecution", &body.to_string());
+        let resp = svc.stop_execution(&req).unwrap();
+        let b = body_json(&resp);
+        assert!(b["stopDate"].as_f64().is_some());
+
+        // Verify aborted
+        let req = make_request(
+            "DescribeExecution",
+            &json!({"executionArn": exec_arn}).to_string(),
+        );
+        let resp = svc.describe_execution(&req).unwrap();
+        let b = body_json(&resp);
+        assert_eq!(b["status"], "ABORTED");
+        assert_eq!(b["error"], "UserAborted");
+    }
+
+    #[tokio::test]
+    async fn stop_execution_not_found() {
+        let svc = StepFunctionsService::new(make_state());
+        let req = make_request(
+            "StopExecution",
+            &json!({"executionArn": "arn:aws:states:us-east-1:123456789012:execution:sm:nope"})
+                .to_string(),
+        );
+        let err = expect_err(svc.stop_execution(&req));
+        assert!(err.to_string().contains("ExecutionDoesNotExist"));
+    }
+
+    // ── ListExecutions ──
+
+    #[tokio::test]
+    async fn list_executions() {
+        let svc = StepFunctionsService::new(make_state());
+        let sm_arn = create_sm(&svc, "list-exec");
+
+        for i in 0..3 {
+            let body = json!({"stateMachineArn": sm_arn, "name": format!("e{i}")});
+            let req = make_request("StartExecution", &body.to_string());
+            svc.start_execution(&req).unwrap();
+        }
+
+        let req = make_request(
+            "ListExecutions",
+            &json!({"stateMachineArn": sm_arn}).to_string(),
+        );
+        let resp = svc.list_executions(&req).unwrap();
+        let b = body_json(&resp);
+        assert_eq!(b["executions"].as_array().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn list_executions_sm_not_found() {
+        let svc = StepFunctionsService::new(make_state());
+        let req = make_request(
+            "ListExecutions",
+            &json!({"stateMachineArn": "arn:aws:states:us-east-1:123456789012:stateMachine:nope"})
+                .to_string(),
+        );
+        let err = expect_err(svc.list_executions(&req));
+        assert!(err.to_string().contains("StateMachineDoesNotExist"));
+    }
+
+    // ── GetExecutionHistory ──
+
+    #[tokio::test]
+    async fn get_execution_history_not_found() {
+        let svc = StepFunctionsService::new(make_state());
+        let req = make_request(
+            "GetExecutionHistory",
+            &json!({"executionArn": "arn:aws:states:us-east-1:123456789012:execution:sm:nope"})
+                .to_string(),
+        );
+        let err = expect_err(svc.get_execution_history(&req));
+        assert!(err.to_string().contains("ExecutionDoesNotExist"));
+    }
+
+    // ── DescribeStateMachineForExecution ──
+
+    #[tokio::test]
+    async fn describe_sm_for_execution() {
+        let svc = StepFunctionsService::new(make_state());
+        let sm_arn = create_sm(&svc, "sm-for-exec");
+
+        let body = json!({"stateMachineArn": sm_arn, "name": "e1"});
+        let req = make_request("StartExecution", &body.to_string());
+        let resp = svc.start_execution(&req).unwrap();
+        let exec_arn = body_json(&resp)["executionArn"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let req = make_request(
+            "DescribeStateMachineForExecution",
+            &json!({"executionArn": exec_arn}).to_string(),
+        );
+        let resp = svc.describe_state_machine_for_execution(&req).unwrap();
+        let b = body_json(&resp);
+        assert_eq!(b["name"], "sm-for-exec");
+    }
+
+    // ── Tags ──
+
+    #[test]
+    fn tag_untag_list_tags() {
+        let svc = StepFunctionsService::new(make_state());
+        let arn = create_sm(&svc, "tagged-sm");
+
+        // Tag
+        let body = json!({
+            "resourceArn": arn,
+            "tags": [{"key": "env", "value": "prod"}],
+        });
+        let req = make_request("TagResource", &body.to_string());
+        svc.tag_resource(&req).unwrap();
+
+        // List
+        let req = make_request(
+            "ListTagsForResource",
+            &json!({"resourceArn": arn}).to_string(),
+        );
+        let resp = svc.list_tags_for_resource(&req).unwrap();
+        let b = body_json(&resp);
+        let tags = b["tags"].as_array().unwrap();
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0]["key"], "env");
+
+        // Untag
+        let body = json!({
+            "resourceArn": arn,
+            "tagKeys": ["env"],
+        });
+        let req = make_request("UntagResource", &body.to_string());
+        svc.untag_resource(&req).unwrap();
+
+        // Verify empty
+        let req = make_request(
+            "ListTagsForResource",
+            &json!({"resourceArn": arn}).to_string(),
+        );
+        let resp = svc.list_tags_for_resource(&req).unwrap();
+        let b = body_json(&resp);
+        assert!(b["tags"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn tag_resource_not_found() {
+        let svc = StepFunctionsService::new(make_state());
+        let body = json!({
+            "resourceArn": "arn:aws:states:us-east-1:123456789012:stateMachine:nope",
+            "tags": [{"key": "k", "value": "v"}],
+        });
+        let req = make_request("TagResource", &body.to_string());
+        let err = expect_err(svc.tag_resource(&req));
+        assert!(err.to_string().contains("ResourceNotFound"));
+    }
+
+    // ── Helper function tests ──
+
+    #[test]
+    fn test_validate_name() {
+        assert!(validate_name("valid-name").is_ok());
+        assert!(validate_name("under_score").is_ok());
+        assert!(validate_name("").is_err());
+        assert!(validate_name("has spaces").is_err());
+        assert!(validate_name(&"a".repeat(81)).is_err());
+    }
+
+    #[test]
+    fn test_validate_definition() {
+        assert!(validate_definition(VALID_DEF).is_ok());
+        assert!(validate_definition("not json").is_err());
+        assert!(validate_definition(r#"{"States":{}}"#).is_err()); // missing StartAt
+        assert!(validate_definition(r#"{"StartAt":"S"}"#).is_err()); // missing States
+    }
+
+    #[test]
+    fn test_validate_arn() {
+        assert!(validate_arn("arn:aws:states:us-east-1:123:sm:test").is_ok());
+        assert!(validate_arn("not-an-arn").is_err());
+    }
+
+    #[test]
+    fn test_camel_to_details_key() {
+        assert_eq!(camel_to_details_key("PassStateEntered"), "passStateEntered");
+        assert_eq!(camel_to_details_key(""), "");
+    }
+
+    #[test]
+    fn test_is_mutating_action() {
+        assert!(is_mutating_action("CreateStateMachine"));
+        assert!(is_mutating_action("StartExecution"));
+        assert!(!is_mutating_action("DescribeStateMachine"));
+        assert!(!is_mutating_action("ListStateMachines"));
+    }
 }
