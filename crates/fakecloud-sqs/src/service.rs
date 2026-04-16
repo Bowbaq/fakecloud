@@ -4392,4 +4392,144 @@ mod tests {
         assert_eq!(urls.len(), 1);
         assert!(urls[0].as_str().unwrap().contains("src-q"));
     }
+
+    // ── Error branch tests ──
+
+    #[test]
+    fn get_queue_url_not_found() {
+        let svc = make_service();
+        let req = make_request("GetQueueUrl", json!({"QueueName": "ghost"}));
+        let err = expect_err(svc.get_queue_url(&req));
+        assert_eq!(err.code(), "QueueDoesNotExist");
+    }
+
+    #[test]
+    fn delete_queue_not_found() {
+        let svc = make_service();
+        let req = make_request(
+            "DeleteQueue",
+            json!({"QueueUrl": "http://localhost/123/ghost"}),
+        );
+        let err = expect_err(svc.delete_queue(&req));
+        assert_eq!(err.code(), "QueueDoesNotExist");
+    }
+
+    #[test]
+    fn send_message_queue_not_found() {
+        let svc = make_service();
+        let req = make_request(
+            "SendMessage",
+            json!({"QueueUrl": "http://localhost/123/ghost", "MessageBody": "hi"}),
+        );
+        let err = expect_err(svc.send_message(&req));
+        assert_eq!(err.code(), "QueueDoesNotExist");
+    }
+
+    #[tokio::test]
+    async fn receive_message_queue_not_found() {
+        let svc = make_service();
+        let req = make_request(
+            "ReceiveMessage",
+            json!({"QueueUrl": "http://localhost/123/ghost"}),
+        );
+        let err = expect_err(svc.receive_message(&req).await);
+        assert_eq!(err.code(), "QueueDoesNotExist");
+    }
+
+    #[test]
+    fn get_queue_attributes_not_found() {
+        let svc = make_service();
+        let req = make_request(
+            "GetQueueAttributes",
+            json!({"QueueUrl": "http://localhost/123/ghost", "AttributeNames": ["All"]}),
+        );
+        let err = expect_err(svc.get_queue_attributes(&req));
+        assert_eq!(err.code(), "QueueDoesNotExist");
+    }
+
+    #[test]
+    fn set_queue_attributes_not_found() {
+        let svc = make_service();
+        let req = make_request(
+            "SetQueueAttributes",
+            json!({"QueueUrl": "http://localhost/123/ghost", "Attributes": {"VisibilityTimeout": "30"}}),
+        );
+        let err = expect_err(svc.set_queue_attributes(&req));
+        assert_eq!(err.code(), "QueueDoesNotExist");
+    }
+
+    #[test]
+    fn purge_queue_not_found() {
+        let svc = make_service();
+        let req = make_request(
+            "PurgeQueue",
+            json!({"QueueUrl": "http://localhost/123/ghost"}),
+        );
+        let err = expect_err(svc.purge_queue(&req));
+        assert_eq!(err.code(), "QueueDoesNotExist");
+    }
+
+    #[test]
+    fn tag_queue_not_found() {
+        let svc = make_service();
+        let req = make_request(
+            "TagQueue",
+            json!({"QueueUrl": "http://localhost/123/ghost", "Tags": {"k": "v"}}),
+        );
+        let err = expect_err(svc.tag_queue(&req));
+        assert_eq!(err.code(), "QueueDoesNotExist");
+    }
+
+    #[test]
+    fn untag_queue_not_found() {
+        let svc = make_service();
+        let req = make_request(
+            "UntagQueue",
+            json!({"QueueUrl": "http://localhost/123/ghost", "TagKeys": ["k"]}),
+        );
+        let err = expect_err(svc.untag_queue(&req));
+        assert_eq!(err.code(), "QueueDoesNotExist");
+    }
+
+    #[test]
+    fn list_queue_tags_not_found() {
+        let svc = make_service();
+        let req = make_request(
+            "ListQueueTags",
+            json!({"QueueUrl": "http://localhost/123/ghost"}),
+        );
+        let err = expect_err(svc.list_queue_tags(&req));
+        assert_eq!(err.code(), "QueueDoesNotExist");
+    }
+
+    #[test]
+    fn change_message_visibility_not_found() {
+        let svc = make_service();
+        let req = make_request(
+            "ChangeMessageVisibility",
+            json!({"QueueUrl": "http://localhost/123/ghost", "ReceiptHandle": "rh", "VisibilityTimeout": 30}),
+        );
+        let err = expect_err(svc.change_message_visibility(&req));
+        assert_eq!(err.code(), "QueueDoesNotExist");
+    }
+
+    #[test]
+    fn delete_message_queue_not_found() {
+        let svc = make_service();
+        let req = make_request(
+            "DeleteMessage",
+            json!({"QueueUrl": "http://localhost/123/ghost", "ReceiptHandle": "rh"}),
+        );
+        let err = expect_err(svc.delete_message(&req));
+        assert_eq!(err.code(), "QueueDoesNotExist");
+    }
+
+    #[test]
+    fn send_message_missing_body() {
+        let svc = make_service();
+        let url = create_queue(&svc, "mb-q");
+        let req = make_request("SendMessage", json!({"QueueUrl": url}));
+        let err = expect_err(svc.send_message(&req));
+        assert_eq!(err.code(), "MissingParameter");
+    }
 }
