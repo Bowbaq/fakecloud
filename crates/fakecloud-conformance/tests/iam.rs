@@ -305,6 +305,36 @@ async fn iam_role_permissions_boundary() {
         .unwrap();
 }
 
+#[test_action("iam", "PutUserPermissionsBoundary", checksum = "af86aeea")]
+#[test_action("iam", "DeleteUserPermissionsBoundary", checksum = "91c97dd6")]
+#[tokio::test]
+async fn iam_user_permissions_boundary() {
+    let server = TestServer::start().await;
+    let client = server.iam_client().await;
+
+    client
+        .create_user()
+        .user_name("conf-upb")
+        .send()
+        .await
+        .unwrap();
+
+    client
+        .put_user_permissions_boundary()
+        .user_name("conf-upb")
+        .permissions_boundary("arn:aws:iam::aws:policy/PowerUserAccess")
+        .send()
+        .await
+        .unwrap();
+
+    client
+        .delete_user_permissions_boundary()
+        .user_name("conf-upb")
+        .send()
+        .await
+        .unwrap();
+}
+
 // ==========================================================================
 // Policies
 // ==========================================================================
