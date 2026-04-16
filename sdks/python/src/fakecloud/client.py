@@ -885,9 +885,7 @@ class FakeCloudSync:
         _check(resp)
         return ResetServiceResponse.from_dict(resp.json())
 
-    def create_admin(
-        self, account_id: str, user_name: str
-    ) -> CreateAdminResponse:
+    def create_admin(self, account_id: str, user_name: str) -> CreateAdminResponse:
         """Create an IAM admin user in a specific account."""
         resp = self._client.post(
             f"{self._base}/_fakecloud/iam/create-admin",

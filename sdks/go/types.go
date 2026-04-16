@@ -54,16 +54,16 @@ type RDSInstancesResponse struct {
 // ── ElastiCache ────────────────────────────────────────────────────
 
 type ElastiCacheCluster struct {
-	CacheClusterID       string  `json:"cacheClusterId"`
-	CacheClusterStatus   string  `json:"cacheClusterStatus"`
-	Engine               string  `json:"engine"`
-	EngineVersion        string  `json:"engineVersion"`
-	CacheNodeType        string  `json:"cacheNodeType"`
-	NumCacheNodes        int32   `json:"numCacheNodes"`
-	ReplicationGroupID   *string `json:"replicationGroupId"`
-	Port                 *int32  `json:"port"`
-	HostPort             *uint16 `json:"hostPort"`
-	ContainerID          *string `json:"containerId"`
+	CacheClusterID     string  `json:"cacheClusterId"`
+	CacheClusterStatus string  `json:"cacheClusterStatus"`
+	Engine             string  `json:"engine"`
+	EngineVersion      string  `json:"engineVersion"`
+	CacheNodeType      string  `json:"cacheNodeType"`
+	NumCacheNodes      int32   `json:"numCacheNodes"`
+	ReplicationGroupID *string `json:"replicationGroupId"`
+	Port               *int32  `json:"port"`
+	HostPort           *uint16 `json:"hostPort"`
+	ContainerID        *string `json:"containerId"`
 }
 
 type ElastiCacheClustersResponse struct {
@@ -437,10 +437,10 @@ type StepFunctionsExecutionsResponse struct {
 
 // BedrockInvocation represents a recorded Bedrock model invocation.
 type BedrockInvocation struct {
-	ModelID   string  `json:"modelId"`
-	Input     string  `json:"input"`
-	Output    string  `json:"output"`
-	Timestamp string  `json:"timestamp"`
+	ModelID   string `json:"modelId"`
+	Input     string `json:"input"`
+	Output    string `json:"output"`
+	Timestamp string `json:"timestamp"`
 	// Error is non-nil for calls that were faulted via QueueFault.
 	Error *string `json:"error"`
 }
