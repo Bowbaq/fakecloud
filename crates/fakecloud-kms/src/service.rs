@@ -5343,4 +5343,222 @@ mod tests {
             .unwrap();
         assert_eq!(decoded.len(), 32);
     }
+
+    // ── missing params / unknown key error branches ──
+
+    #[test]
+    fn encrypt_missing_key_id_errors() {
+        let svc = make_service();
+        let req = make_request("Encrypt", json!({"Plaintext": "aGVsbG8="}));
+        assert!(svc.encrypt(&req).is_err());
+    }
+
+    #[test]
+    fn encrypt_unknown_key_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "Encrypt",
+            json!({"KeyId": "00000000-0000-0000-0000-000000000000", "Plaintext": "aGVsbG8="}),
+        );
+        assert!(svc.encrypt(&req).is_err());
+    }
+
+    #[test]
+    fn decrypt_invalid_ciphertext_errors() {
+        let svc = make_service();
+        let req = make_request("Decrypt", json!({"CiphertextBlob": "not-base64!!!"}));
+        assert!(svc.decrypt(&req).is_err());
+    }
+
+    #[test]
+    fn generate_data_key_missing_key_errors() {
+        let svc = make_service();
+        let req = make_request("GenerateDataKey", json!({"KeySpec": "AES_256"}));
+        assert!(svc.generate_data_key(&req).is_err());
+    }
+
+    #[test]
+    fn generate_data_key_without_plaintext_missing_key_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "GenerateDataKeyWithoutPlaintext",
+            json!({"KeySpec": "AES_256"}),
+        );
+        assert!(svc.generate_data_key_without_plaintext(&req).is_err());
+    }
+
+    #[test]
+    fn generate_random_too_many_bytes_errors() {
+        let svc = make_service();
+        let req = make_request("GenerateRandom", json!({"NumberOfBytes": 2048}));
+        assert!(svc.generate_random(&req).is_err());
+    }
+
+    #[test]
+    fn generate_random_zero_bytes_errors() {
+        let svc = make_service();
+        let req = make_request("GenerateRandom", json!({"NumberOfBytes": 0}));
+        assert!(svc.generate_random(&req).is_err());
+    }
+
+    #[test]
+    fn schedule_key_deletion_missing_key_errors() {
+        let svc = make_service();
+        let req = make_request("ScheduleKeyDeletion", json!({}));
+        assert!(svc.schedule_key_deletion(&req).is_err());
+    }
+
+    #[test]
+    fn cancel_key_deletion_unknown_key_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "CancelKeyDeletion",
+            json!({"KeyId": "00000000-0000-0000-0000-000000000000"}),
+        );
+        assert!(svc.cancel_key_deletion(&req).is_err());
+    }
+
+    #[test]
+    fn tag_resource_unknown_key_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "TagResource",
+            json!({
+                "KeyId": "00000000-0000-0000-0000-000000000000",
+                "Tags": [{"TagKey": "k", "TagValue": "v"}]
+            }),
+        );
+        assert!(svc.tag_resource(&req).is_err());
+    }
+
+    #[test]
+    fn untag_resource_unknown_key_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "UntagResource",
+            json!({
+                "KeyId": "00000000-0000-0000-0000-000000000000",
+                "TagKeys": ["k"]
+            }),
+        );
+        assert!(svc.untag_resource(&req).is_err());
+    }
+
+    #[test]
+    fn get_key_policy_unknown_key_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "GetKeyPolicy",
+            json!({"KeyId": "00000000-0000-0000-0000-000000000000"}),
+        );
+        assert!(svc.get_key_policy(&req).is_err());
+    }
+
+    #[test]
+    fn put_key_policy_unknown_key_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "PutKeyPolicy",
+            json!({
+                "KeyId": "00000000-0000-0000-0000-000000000000",
+                "Policy": "{}"
+            }),
+        );
+        assert!(svc.put_key_policy(&req).is_err());
+    }
+
+    #[test]
+    fn sign_missing_message_errors() {
+        let svc = make_service();
+        let req = make_request("Sign", json!({"KeyId": "00000000"}));
+        assert!(svc.sign(&req).is_err());
+    }
+
+    #[test]
+    fn verify_missing_signature_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "Verify",
+            json!({"KeyId": "00000000", "Message": "aGVsbG8="}),
+        );
+        assert!(svc.verify(&req).is_err());
+    }
+
+    #[test]
+    fn rotate_key_on_demand_missing_key_errors() {
+        let svc = make_service();
+        let req = make_request("RotateKeyOnDemand", json!({}));
+        assert!(svc.rotate_key_on_demand(&req).is_err());
+    }
+
+    #[test]
+    fn generate_mac_missing_message_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "GenerateMac",
+            json!({"KeyId": "x", "MacAlgorithm": "HMAC_SHA_256"}),
+        );
+        assert!(svc.generate_mac(&req).is_err());
+    }
+
+    #[test]
+    fn verify_mac_missing_message_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "VerifyMac",
+            json!({"KeyId": "x", "MacAlgorithm": "HMAC_SHA_256", "Mac": "abc"}),
+        );
+        assert!(svc.verify_mac(&req).is_err());
+    }
+
+    #[test]
+    fn replicate_key_missing_key_id_errors() {
+        let svc = make_service();
+        let req = make_request("ReplicateKey", json!({"ReplicaRegion": "eu-west-1"}));
+        assert!(svc.replicate_key(&req).is_err());
+    }
+
+    #[test]
+    fn replicate_key_unknown_key_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "ReplicateKey",
+            json!({
+                "KeyId": "00000000-0000-0000-0000-000000000000",
+                "ReplicaRegion": "eu-west-1"
+            }),
+        );
+        assert!(svc.replicate_key(&req).is_err());
+    }
+
+    #[test]
+    fn derive_shared_secret_missing_key_errors() {
+        let svc = make_service();
+        let req = make_request("DeriveSharedSecret", json!({}));
+        assert!(svc.derive_shared_secret(&req).is_err());
+    }
+
+    #[test]
+    fn generate_data_key_pair_missing_key_errors() {
+        let svc = make_service();
+        let req = make_request("GenerateDataKeyPair", json!({"KeyPairSpec": "RSA_2048"}));
+        assert!(svc.generate_data_key_pair(&req).is_err());
+    }
+
+    #[test]
+    fn generate_data_key_pair_without_plaintext_missing_key_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "GenerateDataKeyPairWithoutPlaintext",
+            json!({"KeyPairSpec": "RSA_2048"}),
+        );
+        assert!(svc.generate_data_key_pair_without_plaintext(&req).is_err());
+    }
+
+    #[test]
+    fn import_key_material_missing_key_errors() {
+        let svc = make_service();
+        let req = make_request("ImportKeyMaterial", json!({}));
+        assert!(svc.import_key_material(&req).is_err());
+    }
 }

@@ -2528,4 +2528,221 @@ mod tests {
         assert_eq!(exec.status, ExecutionStatus::Succeeded);
         assert!(exec.error.is_none());
     }
+
+    // ── Pass state with ResultPath ──
+
+    #[test]
+    fn pass_state_result_path_merges_into_input() {
+        let state = make_state();
+        let arn = arn_for("result-path");
+        let def = json!({
+            "StartAt": "P",
+            "States": {
+                "P": {"Type": "Pass", "Result": {"x": 2}, "ResultPath": "$.data", "End": true}
+            }
+        });
+        drive(&state, &arn, def, Some(r#"{"a":1}"#));
+        let output = read_exec(&state, &arn, |e| e.output.clone().unwrap_or_default());
+        let v: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(v["a"], 1);
+        assert_eq!(v["data"]["x"], 2);
+    }
+
+    // ── Choice with many operators ──
+
+    #[test]
+    fn choice_string_greater_than_equals() {
+        let state = make_state();
+        let arn = arn_for("choice-sgte");
+        let def = json!({
+            "StartAt": "C",
+            "States": {
+                "C": {
+                    "Type": "Choice",
+                    "Choices": [
+                        {"Variable": "$.val", "StringGreaterThanEquals": "apple", "Next": "End"}
+                    ],
+                    "Default": "Fail"
+                },
+                "End": {"Type": "Pass", "End": true},
+                "Fail": {"Type": "Fail"}
+            }
+        });
+        drive(&state, &arn, def, Some(r#"{"val":"banana"}"#));
+        let status = read_exec(&state, &arn, |e| e.status);
+        assert_eq!(status, ExecutionStatus::Succeeded);
+    }
+
+    #[test]
+    fn choice_is_present_and_is_null() {
+        let state = make_state();
+        let arn = arn_for("choice-ispres");
+        let def = json!({
+            "StartAt": "C",
+            "States": {
+                "C": {
+                    "Type": "Choice",
+                    "Choices": [
+                        {"Variable": "$.foo", "IsPresent": true, "Next": "End"}
+                    ],
+                    "Default": "Fail"
+                },
+                "End": {"Type": "Pass", "End": true},
+                "Fail": {"Type": "Fail"}
+            }
+        });
+        drive(&state, &arn, def, Some(r#"{"foo":null}"#));
+        assert_eq!(
+            read_exec(&state, &arn, |e| e.status),
+            ExecutionStatus::Succeeded
+        );
+    }
+
+    #[test]
+    fn choice_or_short_circuits() {
+        let state = make_state();
+        let arn = arn_for("choice-or");
+        let def = json!({
+            "StartAt": "C",
+            "States": {
+                "C": {
+                    "Type": "Choice",
+                    "Choices": [{
+                        "Or": [
+                            {"Variable": "$.x", "NumericEquals": 99},
+                            {"Variable": "$.y", "StringEquals": "b"}
+                        ],
+                        "Next": "End"
+                    }],
+                    "Default": "Fail"
+                },
+                "End": {"Type": "Pass", "End": true},
+                "Fail": {"Type": "Fail"}
+            }
+        });
+        drive(&state, &arn, def, Some(r#"{"x":1,"y":"b"}"#));
+        assert_eq!(
+            read_exec(&state, &arn, |e| e.status),
+            ExecutionStatus::Succeeded
+        );
+    }
+
+    #[test]
+    fn choice_not_negates() {
+        let state = make_state();
+        let arn = arn_for("choice-not");
+        let def = json!({
+            "StartAt": "C",
+            "States": {
+                "C": {
+                    "Type": "Choice",
+                    "Choices": [{
+                        "Not": {"Variable": "$.x", "NumericEquals": 99},
+                        "Next": "End"
+                    }],
+                    "Default": "Fail"
+                },
+                "End": {"Type": "Pass", "End": true},
+                "Fail": {"Type": "Fail"}
+            }
+        });
+        drive(&state, &arn, def, Some(r#"{"x":1}"#));
+        assert_eq!(
+            read_exec(&state, &arn, |e| e.status),
+            ExecutionStatus::Succeeded
+        );
+    }
+
+    #[test]
+    fn choice_boolean_equals() {
+        let state = make_state();
+        let arn = arn_for("choice-bool");
+        let def = json!({
+            "StartAt": "C",
+            "States": {
+                "C": {
+                    "Type": "Choice",
+                    "Choices": [
+                        {"Variable": "$.ok", "BooleanEquals": true, "Next": "End"}
+                    ],
+                    "Default": "Fail"
+                },
+                "End": {"Type": "Pass", "End": true},
+                "Fail": {"Type": "Fail"}
+            }
+        });
+        drive(&state, &arn, def, Some(r#"{"ok":true}"#));
+        assert_eq!(
+            read_exec(&state, &arn, |e| e.status),
+            ExecutionStatus::Succeeded
+        );
+    }
+
+    // ── Wait with SecondsPath ──
+
+    #[test]
+    fn wait_seconds_path_uses_input_value() {
+        let state = make_state();
+        let arn = arn_for("wait-sp");
+        let def = json!({
+            "StartAt": "W",
+            "States": {
+                "W": {"Type": "Wait", "SecondsPath": "$.wait", "End": true}
+            }
+        });
+        drive(&state, &arn, def, Some(r#"{"wait":0}"#));
+        assert_eq!(
+            read_exec(&state, &arn, |e| e.status),
+            ExecutionStatus::Succeeded
+        );
+    }
+
+    // ── Map state with empty input array ──
+
+    #[test]
+    fn map_state_empty_array_succeeds() {
+        let state = make_state();
+        let arn = arn_for("map-empty");
+        let def = json!({
+            "StartAt": "M",
+            "States": {
+                "M": {
+                    "Type": "Map",
+                    "ItemsPath": "$.items",
+                    "ItemProcessor": {
+                        "StartAt": "P",
+                        "States": {
+                            "P": {"Type": "Pass", "End": true}
+                        }
+                    },
+                    "End": true
+                }
+            }
+        });
+        drive(&state, &arn, def, Some(r#"{"items":[]}"#));
+        assert_eq!(
+            read_exec(&state, &arn, |e| e.status),
+            ExecutionStatus::Succeeded
+        );
+    }
+
+    // ── Fail state with Error + Cause ──
+
+    #[test]
+    fn fail_state_with_explicit_error_and_cause() {
+        let state = make_state();
+        let arn = arn_for("fail-fields");
+        create_execution(&state, &arn, None);
+        let def = json!({
+            "StartAt": "F",
+            "States": {
+                "F": {"Type": "Fail", "Error": "MyError", "Cause": "my cause"}
+            }
+        });
+        drive(&state, &arn, def, None);
+        let status = read_exec(&state, &arn, |e| e.status);
+        assert_eq!(status, ExecutionStatus::Failed);
+        let err = read_exec(&state, &arn, |e| e.error.clone().unwrap_or_default());
+        assert_eq!(err, "MyError");
+    }
 }
