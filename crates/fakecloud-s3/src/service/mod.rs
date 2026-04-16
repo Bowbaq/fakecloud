@@ -4107,12 +4107,16 @@ mod tests {
 
         // PUT through handler (not seed_object)
         let req = make_request(Method::PUT, "/hp/test.txt", &[], b"hello world");
-        let resp = svc.put_object(&req, "hp", "test.txt").unwrap();
+        let resp = svc
+            .put_object("123456789012", &req, "hp", "test.txt")
+            .unwrap();
         assert_eq!(resp.status, StatusCode::OK);
 
         // GET back
         let req = make_request(Method::GET, "/hp/test.txt", &[], b"");
-        let resp = svc.get_object(&req, "hp", "test.txt").unwrap();
+        let resp = svc
+            .get_object("123456789012", &req, "hp", "test.txt")
+            .unwrap();
         assert_eq!(resp.body.expect_bytes(), b"hello world");
     }
 
@@ -4124,10 +4128,13 @@ mod tests {
         let mut req = make_request(Method::PUT, "/ct/doc.json", &[], b"{\"key\":\"val\"}");
         req.headers
             .insert("content-type", "application/json".parse().unwrap());
-        svc.put_object(&req, "ct", "doc.json").unwrap();
+        svc.put_object("123456789012", &req, "ct", "doc.json")
+            .unwrap();
 
         let req = make_request(Method::GET, "/ct/doc.json", &[], b"");
-        let resp = svc.get_object(&req, "ct", "doc.json").unwrap();
+        let resp = svc
+            .get_object("123456789012", &req, "ct", "doc.json")
+            .unwrap();
         assert_eq!(resp.content_type, "application/json");
     }
 
@@ -4141,10 +4148,12 @@ mod tests {
             .insert("x-amz-meta-color", "blue".parse().unwrap());
         req.headers
             .insert("x-amz-meta-size", "large".parse().unwrap());
-        svc.put_object(&req, "meta", "obj").unwrap();
+        svc.put_object("123456789012", &req, "meta", "obj").unwrap();
 
         let req = make_request(Method::HEAD, "/meta/obj", &[], b"");
-        let resp = svc.head_object(&req, "meta", "obj").unwrap();
+        let resp = svc
+            .head_object("123456789012", &req, "meta", "obj")
+            .unwrap();
         assert!(resp
             .headers
             .get("x-amz-meta-color")
@@ -4157,7 +4166,9 @@ mod tests {
         seed_bucket(&svc, "etag");
 
         let req = make_request(Method::PUT, "/etag/f.txt", &[], b"content");
-        let resp = svc.put_object(&req, "etag", "f.txt").unwrap();
+        let resp = svc
+            .put_object("123456789012", &req, "etag", "f.txt")
+            .unwrap();
         assert!(resp.headers.get("etag").is_some());
     }
 
@@ -4167,10 +4178,13 @@ mod tests {
         seed_bucket(&svc, "head");
 
         let req = make_request(Method::PUT, "/head/f.txt", &[], b"12345");
-        svc.put_object(&req, "head", "f.txt").unwrap();
+        svc.put_object("123456789012", &req, "head", "f.txt")
+            .unwrap();
 
         let req = make_request(Method::HEAD, "/head/f.txt", &[], b"");
-        let resp = svc.head_object(&req, "head", "f.txt").unwrap();
+        let resp = svc
+            .head_object("123456789012", &req, "head", "f.txt")
+            .unwrap();
         assert_eq!(
             resp.headers
                 .get("content-length")
@@ -4187,13 +4201,18 @@ mod tests {
         seed_bucket(&svc, "del");
 
         let req = make_request(Method::PUT, "/del/rm.txt", &[], b"bye");
-        svc.put_object(&req, "del", "rm.txt").unwrap();
+        svc.put_object("123456789012", &req, "del", "rm.txt")
+            .unwrap();
 
         let req = make_request(Method::DELETE, "/del/rm.txt", &[], b"");
-        svc.delete_object(&req, "del", "rm.txt").unwrap();
+        svc.delete_object("123456789012", &req, "del", "rm.txt")
+            .unwrap();
 
         let req = make_request(Method::GET, "/del/rm.txt", &[], b"");
-        assert_aws_err(svc.get_object(&req, "del", "rm.txt"), "NoSuchKey");
+        assert_aws_err(
+            svc.get_object("123456789012", &req, "del", "rm.txt"),
+            "NoSuchKey",
+        );
     }
 
     #[test]
@@ -4203,15 +4222,19 @@ mod tests {
         seed_bucket(&svc, "cpdst");
 
         let req = make_request(Method::PUT, "/cpsrc/orig.txt", &[], b"original");
-        svc.put_object(&req, "cpsrc", "orig.txt").unwrap();
+        svc.put_object("123456789012", &req, "cpsrc", "orig.txt")
+            .unwrap();
 
         let mut req = make_request(Method::PUT, "/cpdst/copy.txt", &[], b"");
         req.headers
             .insert("x-amz-copy-source", "cpsrc/orig.txt".parse().unwrap());
-        svc.copy_object(&req, "cpdst", "copy.txt").unwrap();
+        svc.copy_object("123456789012", &req, "cpdst", "copy.txt")
+            .unwrap();
 
         let req = make_request(Method::GET, "/cpdst/copy.txt", &[], b"");
-        let resp = svc.get_object(&req, "cpdst", "copy.txt").unwrap();
+        let resp = svc
+            .get_object("123456789012", &req, "cpdst", "copy.txt")
+            .unwrap();
         assert_eq!(resp.body.expect_bytes(), b"original");
     }
 
@@ -4221,15 +4244,19 @@ mod tests {
         seed_bucket(&svc, "same");
 
         let req = make_request(Method::PUT, "/same/a.txt", &[], b"aaa");
-        svc.put_object(&req, "same", "a.txt").unwrap();
+        svc.put_object("123456789012", &req, "same", "a.txt")
+            .unwrap();
 
         let mut req = make_request(Method::PUT, "/same/b.txt", &[], b"");
         req.headers
             .insert("x-amz-copy-source", "same/a.txt".parse().unwrap());
-        svc.copy_object(&req, "same", "b.txt").unwrap();
+        svc.copy_object("123456789012", &req, "same", "b.txt")
+            .unwrap();
 
         let req = make_request(Method::GET, "/same/b.txt", &[], b"");
-        let resp = svc.get_object(&req, "same", "b.txt").unwrap();
+        let resp = svc
+            .get_object("123456789012", &req, "same", "b.txt")
+            .unwrap();
         assert_eq!(resp.body.expect_bytes(), b"aaa");
     }
 
@@ -4241,11 +4268,11 @@ mod tests {
         for i in 0..3 {
             let key = format!("file{i}.txt");
             let req = make_request(Method::PUT, &format!("/lsv2/{key}"), &[], b"data");
-            svc.put_object(&req, "lsv2", &key).unwrap();
+            svc.put_object("123456789012", &req, "lsv2", &key).unwrap();
         }
 
         let req = make_request(Method::GET, "/lsv2", &[("list-type", "2")], b"");
-        let resp = svc.list_objects_v2(&req, "lsv2").unwrap();
+        let resp = svc.list_objects_v2("123456789012", &req, "lsv2").unwrap();
         let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
         assert!(body.contains("<KeyCount>3</KeyCount>"));
     }
@@ -4257,7 +4284,7 @@ mod tests {
 
         for key in &["docs/a.txt", "docs/b.txt", "images/c.png"] {
             let req = make_request(Method::PUT, &format!("/pfx/{key}"), &[], b"x");
-            svc.put_object(&req, "pfx", key).unwrap();
+            svc.put_object("123456789012", &req, "pfx", key).unwrap();
         }
 
         let req = make_request(
@@ -4266,7 +4293,7 @@ mod tests {
             &[("list-type", "2"), ("prefix", "docs/")],
             b"",
         );
-        let resp = svc.list_objects_v2(&req, "pfx").unwrap();
+        let resp = svc.list_objects_v2("123456789012", &req, "pfx").unwrap();
         let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
         assert!(body.contains("<KeyCount>2</KeyCount>"));
     }
@@ -4278,7 +4305,7 @@ mod tests {
 
         for key in &["a/1.txt", "a/2.txt", "b/3.txt", "root.txt"] {
             let req = make_request(Method::PUT, &format!("/dlm/{key}"), &[], b"x");
-            svc.put_object(&req, "dlm", key).unwrap();
+            svc.put_object("123456789012", &req, "dlm", key).unwrap();
         }
 
         let req = make_request(
@@ -4287,7 +4314,7 @@ mod tests {
             &[("list-type", "2"), ("delimiter", "/")],
             b"",
         );
-        let resp = svc.list_objects_v2(&req, "dlm").unwrap();
+        let resp = svc.list_objects_v2("123456789012", &req, "dlm").unwrap();
         let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
         // Should have common prefixes a/ and b/
         assert!(body.contains("<CommonPrefixes>"));
@@ -4301,10 +4328,11 @@ mod tests {
         seed_bucket(&svc, "lsv1");
 
         let req = make_request(Method::PUT, "/lsv1/test.txt", &[], b"data");
-        svc.put_object(&req, "lsv1", "test.txt").unwrap();
+        svc.put_object("123456789012", &req, "lsv1", "test.txt")
+            .unwrap();
 
         let req = make_request(Method::GET, "/lsv1", &[], b"");
-        let resp = svc.list_objects_v1(&req, "lsv1").unwrap();
+        let resp = svc.list_objects_v1("123456789012", &req, "lsv1").unwrap();
         let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
         assert!(body.contains("<Key>test.txt</Key>"));
     }
@@ -4317,18 +4345,19 @@ mod tests {
         for i in 0..3 {
             let key = format!("d{i}.txt");
             let req = make_request(Method::PUT, &format!("/bdel/{key}"), &[], b"x");
-            svc.put_object(&req, "bdel", &key).unwrap();
+            svc.put_object("123456789012", &req, "bdel", &key).unwrap();
         }
 
         let delete_xml = b"<Delete><Object><Key>d0.txt</Key></Object><Object><Key>d1.txt</Key></Object></Delete>";
         let req = make_request(Method::POST, "/bdel", &[("delete", "")], delete_xml);
-        let resp = svc.delete_objects(&req, "bdel").unwrap();
+        let resp = svc.delete_objects("123456789012", &req, "bdel").unwrap();
         let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
         assert!(body.contains("<Deleted>"));
 
         // d2.txt should still exist
         let req = make_request(Method::GET, "/bdel/d2.txt", &[], b"");
-        svc.get_object(&req, "bdel", "d2.txt").unwrap();
+        svc.get_object("123456789012", &req, "bdel", "d2.txt")
+            .unwrap();
     }
 
     #[test]
@@ -4337,13 +4366,13 @@ mod tests {
         seed_bucket(&svc, "ow");
 
         let req = make_request(Method::PUT, "/ow/f.txt", &[], b"version1");
-        svc.put_object(&req, "ow", "f.txt").unwrap();
+        svc.put_object("123456789012", &req, "ow", "f.txt").unwrap();
 
         let req = make_request(Method::PUT, "/ow/f.txt", &[], b"version2");
-        svc.put_object(&req, "ow", "f.txt").unwrap();
+        svc.put_object("123456789012", &req, "ow", "f.txt").unwrap();
 
         let req = make_request(Method::GET, "/ow/f.txt", &[], b"");
-        let resp = svc.get_object(&req, "ow", "f.txt").unwrap();
+        let resp = svc.get_object("123456789012", &req, "ow", "f.txt").unwrap();
         assert_eq!(resp.body.expect_bytes(), b"version2");
     }
 
@@ -4353,14 +4382,17 @@ mod tests {
         seed_bucket(&svc, "attr");
 
         let req = make_request(Method::PUT, "/attr/f.txt", &[], b"content");
-        svc.put_object(&req, "attr", "f.txt").unwrap();
+        svc.put_object("123456789012", &req, "attr", "f.txt")
+            .unwrap();
 
         let mut req = make_request(Method::GET, "/attr/f.txt", &[], b"");
         req.headers.insert(
             "x-amz-object-attributes",
             "ETag,ObjectSize".parse().unwrap(),
         );
-        let resp = svc.get_object_attributes(&req, "attr", "f.txt").unwrap();
+        let resp = svc
+            .get_object_attributes("123456789012", &req, "attr", "f.txt")
+            .unwrap();
         let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
         assert!(body.contains("<ObjectSize>"));
     }
@@ -4374,7 +4406,9 @@ mod tests {
 
         // Create
         let req = make_request(Method::POST, "/mp/big.bin", &[("uploads", "")], b"");
-        let resp = svc.create_multipart_upload(&req, "mp", "big.bin").unwrap();
+        let resp = svc
+            .create_multipart_upload("123456789012", &req, "mp", "big.bin")
+            .unwrap();
         let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
         let uid_start = body.find("<UploadId>").unwrap() + 10;
         let uid_end = body.find("</UploadId>").unwrap();
@@ -4384,7 +4418,7 @@ mod tests {
         let big_data = vec![b'A'; 5 * 1024 * 1024 + 1];
         let req = make_request(Method::PUT, "/mp/big.bin", &[], &big_data);
         let resp = svc
-            .upload_part(&req, "mp", "big.bin", upload_id, 1)
+            .upload_part("123456789012", &req, "mp", "big.bin", upload_id, 1)
             .unwrap();
         let etag1 = resp
             .headers
@@ -4397,7 +4431,7 @@ mod tests {
         // Upload part 2 (last part can be any size)
         let req = make_request(Method::PUT, "/mp/big.bin", &[], b"part2-data");
         let resp = svc
-            .upload_part(&req, "mp", "big.bin", upload_id, 2)
+            .upload_part("123456789012", &req, "mp", "big.bin", upload_id, 2)
             .unwrap();
         let etag2 = resp
             .headers
@@ -4409,7 +4443,9 @@ mod tests {
 
         // List parts
         let req = make_request(Method::GET, "/mp/big.bin", &[], b"");
-        let resp = svc.list_parts(&req, "mp", "big.bin", upload_id).unwrap();
+        let resp = svc
+            .list_parts("123456789012", &req, "mp", "big.bin", upload_id)
+            .unwrap();
         let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
         assert!(body.contains("<Part>"));
 
@@ -4418,12 +4454,14 @@ mod tests {
             "<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{etag1}</ETag></Part><Part><PartNumber>2</PartNumber><ETag>{etag2}</ETag></Part></CompleteMultipartUpload>"
         );
         let req = make_request(Method::POST, "/mp/big.bin", &[], complete_xml.as_bytes());
-        svc.complete_multipart_upload(&req, "mp", "big.bin", upload_id)
+        svc.complete_multipart_upload("123456789012", &req, "mp", "big.bin", upload_id)
             .unwrap();
 
         // Verify object exists
         let req = make_request(Method::GET, "/mp/big.bin", &[], b"");
-        let resp = svc.get_object(&req, "mp", "big.bin").unwrap();
+        let resp = svc
+            .get_object("123456789012", &req, "mp", "big.bin")
+            .unwrap();
         let body = resp.body.expect_bytes();
         // First part is 5MB+1 of 'A', second is "part2-data"
         assert!(body.len() > 5 * 1024 * 1024);
@@ -4436,20 +4474,20 @@ mod tests {
 
         let req = make_request(Method::POST, "/mpa/abort.bin", &[("uploads", "")], b"");
         let resp = svc
-            .create_multipart_upload(&req, "mpa", "abort.bin")
+            .create_multipart_upload("123456789012", &req, "mpa", "abort.bin")
             .unwrap();
         let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
         let uid_start = body.find("<UploadId>").unwrap() + 10;
         let uid_end = body.find("</UploadId>").unwrap();
         let upload_id = body[uid_start..uid_end].to_string();
 
-        svc.abort_multipart_upload("mpa", "abort.bin", &upload_id)
+        svc.abort_multipart_upload("123456789012", "mpa", "abort.bin", &upload_id)
             .unwrap();
 
         // Upload should be gone
         let req = make_request(Method::GET, "/mpa/abort.bin", &[], b"");
         assert_aws_err(
-            svc.list_parts(&req, "mpa", "abort.bin", &upload_id),
+            svc.list_parts("123456789012", &req, "mpa", "abort.bin", &upload_id),
             "NoSuchUpload",
         );
     }
@@ -4460,9 +4498,10 @@ mod tests {
         seed_bucket(&svc, "mpl");
 
         let req = make_request(Method::POST, "/mpl/f1.bin", &[("uploads", "")], b"");
-        svc.create_multipart_upload(&req, "mpl", "f1.bin").unwrap();
+        svc.create_multipart_upload("123456789012", &req, "mpl", "f1.bin")
+            .unwrap();
 
-        let resp = svc.list_multipart_uploads("mpl").unwrap();
+        let resp = svc.list_multipart_uploads("123456789012", "mpl").unwrap();
         let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
         assert!(body.contains("<Upload>"));
         assert!(body.contains("f1.bin"));
@@ -4481,9 +4520,10 @@ mod tests {
             &[("versioning", "")],
             b"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>",
         );
-        svc.put_bucket_versioning(&req, "ver").unwrap();
+        svc.put_bucket_versioning("123456789012", &req, "ver")
+            .unwrap();
 
-        let resp = svc.get_bucket_versioning("ver").unwrap();
+        let resp = svc.get_bucket_versioning("123456789012", "ver").unwrap();
         let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
         assert!(body.contains("Enabled"));
     }
@@ -4495,9 +4535,10 @@ mod tests {
 
         let xml = b"<LifecycleConfiguration><Rule><ID>expire</ID><Filter><Prefix></Prefix></Filter><Status>Enabled</Status><Expiration><Days>30</Days></Expiration></Rule></LifecycleConfiguration>";
         let req = make_request(Method::PUT, "/lc", &[("lifecycle", "")], xml);
-        svc.put_bucket_lifecycle(&req, "lc").unwrap();
+        svc.put_bucket_lifecycle("123456789012", &req, "lc")
+            .unwrap();
 
-        let resp = svc.get_bucket_lifecycle("lc").unwrap();
+        let resp = svc.get_bucket_lifecycle("123456789012", "lc").unwrap();
         let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
         assert!(body.contains("<Rule>"));
     }
@@ -4509,9 +4550,12 @@ mod tests {
 
         let xml = b"<NotificationConfiguration></NotificationConfiguration>";
         let req = make_request(Method::PUT, "/notif", &[("notification", "")], xml);
-        svc.put_bucket_notification(&req, "notif").unwrap();
+        svc.put_bucket_notification("123456789012", &req, "notif")
+            .unwrap();
 
-        let resp = svc.get_bucket_notification("notif").unwrap();
+        let resp = svc
+            .get_bucket_notification("123456789012", "notif")
+            .unwrap();
         let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
         assert!(body.contains("NotificationConfiguration"));
     }
@@ -4523,13 +4567,14 @@ mod tests {
 
         let xml = b"<ServerSideEncryptionConfiguration><Rule><ApplyServerSideEncryptionByDefault><SSEAlgorithm>AES256</SSEAlgorithm></ApplyServerSideEncryptionByDefault></Rule></ServerSideEncryptionConfiguration>";
         let req = make_request(Method::PUT, "/enc", &[("encryption", "")], xml);
-        svc.put_bucket_encryption(&req, "enc").unwrap();
+        svc.put_bucket_encryption("123456789012", &req, "enc")
+            .unwrap();
 
-        let resp = svc.get_bucket_encryption("enc").unwrap();
+        let resp = svc.get_bucket_encryption("123456789012", "enc").unwrap();
         let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
         assert!(body.contains("AES256"));
 
-        svc.delete_bucket_encryption("enc").unwrap();
+        svc.delete_bucket_encryption("123456789012", "enc").unwrap();
     }
 
     #[test]
@@ -4539,9 +4584,10 @@ mod tests {
 
         let xml = b"<BucketLoggingStatus><LoggingEnabled><TargetBucket>logging-b</TargetBucket><TargetPrefix>logs/</TargetPrefix></LoggingEnabled></BucketLoggingStatus>";
         let req = make_request(Method::PUT, "/logging-b", &[("logging", "")], xml);
-        svc.put_bucket_logging(&req, "logging-b").unwrap();
+        svc.put_bucket_logging("123456789012", &req, "logging-b")
+            .unwrap();
 
-        let resp = svc.get_bucket_logging("logging-b").unwrap();
+        let resp = svc.get_bucket_logging("123456789012", "logging-b").unwrap();
         let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
         assert!(body.contains("LoggingEnabled"));
     }
