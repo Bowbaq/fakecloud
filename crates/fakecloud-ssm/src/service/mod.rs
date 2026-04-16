@@ -3239,4 +3239,209 @@ mod tests {
         let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["TagList"].as_array().unwrap().len(), 1);
     }
+
+    // ── Parameter deep coverage ──
+
+    #[test]
+    fn describe_parameters_with_filters() {
+        let svc = make_service();
+        for name in &["/app/db-host", "/app/db-port", "/other/key"] {
+            svc.put_parameter(&make_request(
+                "PutParameter",
+                json!({"Name": name, "Value": "v", "Type": "String"}),
+            ))
+            .unwrap();
+        }
+
+        // Filter by path
+        let req = make_request(
+            "DescribeParameters",
+            json!({"ParameterFilters": [{"Key": "Name", "Option": "BeginsWith", "Values": ["/app/"]}]}),
+        );
+        let resp = svc.describe_parameters(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["Parameters"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn describe_parameters_empty() {
+        let svc = make_service();
+        let req = make_request("DescribeParameters", json!({}));
+        let resp = svc.describe_parameters(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(body["Parameters"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn get_parameters_by_path_recursive() {
+        let svc = make_service();
+        for name in &["/a/b/c", "/a/b/d", "/a/e"] {
+            svc.put_parameter(&make_request(
+                "PutParameter",
+                json!({"Name": name, "Value": "v", "Type": "String"}),
+            ))
+            .unwrap();
+        }
+
+        // Non-recursive: only direct children of /a
+        let req = make_request(
+            "GetParametersByPath",
+            json!({"Path": "/a", "Recursive": false}),
+        );
+        let resp = svc.get_parameters_by_path(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["Parameters"].as_array().unwrap().len(), 1); // only /a/e
+
+        // Recursive: all under /a
+        let req = make_request(
+            "GetParametersByPath",
+            json!({"Path": "/a", "Recursive": true}),
+        );
+        let resp = svc.get_parameters_by_path(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["Parameters"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn label_unlabel_and_get_by_label() {
+        let svc = make_service();
+        svc.put_parameter(&make_request(
+            "PutParameter",
+            json!({"Name": "/labeled", "Value": "v1", "Type": "String"}),
+        ))
+        .unwrap();
+
+        // Label version 1
+        let req = make_request(
+            "LabelParameterVersion",
+            json!({"Name": "/labeled", "Labels": ["prod"], "ParameterVersion": 1}),
+        );
+        svc.label_parameter_version(&req).unwrap();
+
+        // Get by label
+        let req = make_request("GetParameter", json!({"Name": "/labeled:prod"}));
+        let resp = svc.get_parameter(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["Parameter"]["Value"], "v1");
+
+        // Unlabel
+        let req = make_request(
+            "UnlabelParameterVersion",
+            json!({"Name": "/labeled", "Labels": ["prod"], "ParameterVersion": 1}),
+        );
+        svc.unlabel_parameter_version(&req).unwrap();
+    }
+
+    #[test]
+    fn get_parameter_by_version() {
+        let svc = make_service();
+        svc.put_parameter(&make_request(
+            "PutParameter",
+            json!({"Name": "/ver-param", "Value": "v1", "Type": "String"}),
+        ))
+        .unwrap();
+        svc.put_parameter(&make_request(
+            "PutParameter",
+            json!({"Name": "/ver-param", "Value": "v2", "Type": "String", "Overwrite": true}),
+        ))
+        .unwrap();
+
+        // Get version 1
+        let req = make_request("GetParameter", json!({"Name": "/ver-param:1"}));
+        let resp = svc.get_parameter(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["Parameter"]["Value"], "v1");
+
+        // Get latest (version 2)
+        let req = make_request("GetParameter", json!({"Name": "/ver-param"}));
+        let resp = svc.get_parameter(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["Parameter"]["Value"], "v2");
+    }
+
+    #[test]
+    fn get_parameter_history_with_versions() {
+        let svc = make_service();
+        svc.put_parameter(&make_request(
+            "PutParameter",
+            json!({"Name": "/hist", "Value": "v1", "Type": "String"}),
+        ))
+        .unwrap();
+        svc.put_parameter(&make_request(
+            "PutParameter",
+            json!({"Name": "/hist", "Value": "v2", "Type": "String", "Overwrite": true}),
+        ))
+        .unwrap();
+
+        let req = make_request("GetParameterHistory", json!({"Name": "/hist"}));
+        let resp = svc.get_parameter_history(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        let history = body["Parameters"].as_array().unwrap();
+        assert_eq!(history.len(), 2);
+    }
+
+    #[test]
+    fn put_parameter_secure_string() {
+        let svc = make_service();
+        let req = make_request(
+            "PutParameter",
+            json!({"Name": "/secure", "Value": "secret", "Type": "SecureString"}),
+        );
+        svc.put_parameter(&req).unwrap();
+
+        let req = make_request(
+            "GetParameter",
+            json!({"Name": "/secure", "WithDecryption": true}),
+        );
+        let resp = svc.get_parameter(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["Parameter"]["Type"], "SecureString");
+    }
+
+    #[test]
+    fn put_parameter_string_list() {
+        let svc = make_service();
+        let req = make_request(
+            "PutParameter",
+            json!({"Name": "/list", "Value": "a,b,c", "Type": "StringList"}),
+        );
+        svc.put_parameter(&req).unwrap();
+
+        let req = make_request("GetParameter", json!({"Name": "/list"}));
+        let resp = svc.get_parameter(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["Parameter"]["Value"], "a,b,c");
+    }
+
+    #[test]
+    fn get_parameters_mixed_found_and_missing() {
+        let svc = make_service();
+        svc.put_parameter(&make_request(
+            "PutParameter",
+            json!({"Name": "/exists", "Value": "v", "Type": "String"}),
+        ))
+        .unwrap();
+
+        let req = make_request("GetParameters", json!({"Names": ["/exists", "/missing"]}));
+        let resp = svc.get_parameters(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["Parameters"].as_array().unwrap().len(), 1);
+        assert_eq!(body["InvalidParameters"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn delete_parameters_mixed() {
+        let svc = make_service();
+        svc.put_parameter(&make_request(
+            "PutParameter",
+            json!({"Name": "/del-mix", "Value": "v", "Type": "String"}),
+        ))
+        .unwrap();
+
+        let req = make_request("DeleteParameters", json!({"Names": ["/del-mix", "/ghost"]}));
+        let resp = svc.delete_parameters(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["DeletedParameters"].as_array().unwrap().len(), 1);
+        assert_eq!(body["InvalidParameters"].as_array().unwrap().len(), 1);
+    }
 }

@@ -5590,4 +5590,213 @@ mod tests {
         let err = expect_err(block_on(svc.initiate_auth(&req)));
         assert_eq!(err.code(), "NotAuthorizedException");
     }
+
+    // ── Helper: auth and get token ──
+
+    fn auth_get_token(
+        svc: &CognitoService,
+        pool_id: &str,
+        client_id: &str,
+        username: &str,
+        password: &str,
+    ) -> String {
+        let body = json!({
+            "UserPoolId": pool_id,
+            "ClientId": client_id,
+            "AuthFlow": "ADMIN_NO_SRP_AUTH",
+            "AuthParameters": {"USERNAME": username, "PASSWORD": password},
+        });
+        let resp =
+            block_on(svc.admin_initiate_auth(&make_req("AdminInitiateAuth", &body.to_string())))
+                .unwrap();
+        let b = resp_json(&resp);
+        b["AuthenticationResult"]["AccessToken"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    // ── cognito/misc.rs coverage ──
+
+    #[test]
+    fn revoke_token_invalid() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+
+        let body = json!({"Token": "invalid-refresh-token", "ClientId": client_id});
+        let req = make_req("RevokeToken", &body.to_string());
+        // RevokeToken should handle gracefully
+        let _ = svc.revoke_token(&req);
+    }
+
+    #[test]
+    fn get_tokens_from_refresh_token_invalid() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+
+        let body = json!({
+            "ClientId": client_id,
+            "AuthFlow": "REFRESH_TOKEN_AUTH",
+            "AuthParameters": {"REFRESH_TOKEN": "invalid-token"},
+        });
+        let req = make_req("InitiateAuth", &body.to_string());
+        let err = expect_err(block_on(svc.initiate_auth(&req)));
+        assert_eq!(err.code(), "NotAuthorizedException");
+    }
+
+    #[test]
+    fn get_csv_header() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+
+        let body = json!({"UserPoolId": pool_id});
+        let req = make_req("GetCSVHeader", &body.to_string());
+        let resp = svc.get_csv_header(&req).unwrap();
+        let b = resp_json(&resp);
+        assert!(b["CSVHeader"].as_array().is_some());
+        assert!(b["UserPoolId"].as_str().is_some());
+    }
+
+    #[test]
+    fn start_and_stop_user_import_job() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+
+        // Create import job
+        let body = json!({
+            "UserPoolId": pool_id,
+            "JobName": "import-1",
+            "CloudWatchLogsRoleArn": "arn:aws:iam::123456789012:role/CognitoImport",
+        });
+        let req = make_req("CreateUserImportJob", &body.to_string());
+        let resp = svc.create_user_import_job(&req).unwrap();
+        let b = resp_json(&resp);
+        let job_id = b["UserImportJob"]["JobId"].as_str().unwrap().to_string();
+
+        // Start
+        let body = json!({"UserPoolId": pool_id, "JobId": job_id});
+        let req = make_req("StartUserImportJob", &body.to_string());
+        svc.start_user_import_job(&req).unwrap();
+
+        // Stop
+        let body = json!({"UserPoolId": pool_id, "JobId": job_id});
+        let req = make_req("StopUserImportJob", &body.to_string());
+        svc.stop_user_import_job(&req).unwrap();
+    }
+
+    #[test]
+    fn confirm_device_and_list() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        admin_create_user_helper(&svc, &pool_id, "devuser");
+        set_user_password(&svc, &pool_id, "devuser", "Password1!");
+        let token = auth_get_token(&svc, &pool_id, &client_id, "devuser", "Password1!");
+
+        // ConfirmDevice
+        let body = json!({
+            "AccessToken": token,
+            "DeviceKey": "us-east-1_device-abc",
+            "DeviceName": "My Phone",
+        });
+        let req = make_req("ConfirmDevice", &body.to_string());
+        svc.confirm_device(&req).unwrap();
+
+        // ListDevices
+        let body = json!({"AccessToken": token});
+        let req = make_req("ListDevices", &body.to_string());
+        let resp = svc.list_devices(&req).unwrap();
+        let b = resp_json(&resp);
+        assert!(!b["Devices"].as_array().unwrap().is_empty());
+
+        // GetDevice
+        let body = json!({"AccessToken": token, "DeviceKey": "us-east-1_device-abc"});
+        let req = make_req("GetDevice", &body.to_string());
+        let resp = svc.get_device(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["Device"]["DeviceKey"], "us-east-1_device-abc");
+
+        // UpdateDeviceStatus
+        let body = json!({
+            "AccessToken": token,
+            "DeviceKey": "us-east-1_device-abc",
+            "DeviceRememberedStatus": "remembered",
+        });
+        let req = make_req("UpdateDeviceStatus", &body.to_string());
+        svc.update_device_status(&req).unwrap();
+
+        // ForgetDevice
+        let body = json!({"AccessToken": token, "DeviceKey": "us-east-1_device-abc"});
+        let req = make_req("ForgetDevice", &body.to_string());
+        svc.forget_device(&req).unwrap();
+    }
+
+    #[test]
+    fn update_user_pool_domain() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+
+        svc.create_user_pool_domain(&make_req(
+            "CreateUserPoolDomain",
+            &json!({"UserPoolId": pool_id, "Domain": "upd-domain"}).to_string(),
+        ))
+        .unwrap();
+
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Domain": "upd-domain",
+            "CustomDomainConfig": {"CertificateArn": "arn:aws:acm:us-east-1:123:cert/abc"},
+        });
+        let req = make_req("UpdateUserPoolDomain", &body.to_string());
+        svc.update_user_pool_domain(&req).unwrap();
+    }
+
+    #[test]
+    fn device_operations_invalid_token() {
+        let (svc, _) = make_svc();
+
+        let body = json!({"AccessToken": "bad", "DeviceKey": "dk"});
+        let req = make_req("GetDevice", &body.to_string());
+        let err = expect_err(svc.get_device(&req));
+        assert_eq!(err.code(), "NotAuthorizedException");
+
+        let body = json!({"AccessToken": "bad"});
+        let req = make_req("ListDevices", &body.to_string());
+        let err = expect_err(svc.list_devices(&req));
+        assert_eq!(err.code(), "NotAuthorizedException");
+
+        let body = json!({"AccessToken": "bad", "DeviceKey": "dk"});
+        let req = make_req("ForgetDevice", &body.to_string());
+        let err = expect_err(svc.forget_device(&req));
+        assert_eq!(err.code(), "NotAuthorizedException");
+    }
+
+    #[test]
+    fn admin_update_device_status() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        admin_create_user_helper(&svc, &pool_id, "admdev");
+        set_user_password(&svc, &pool_id, "admdev", "Password1!");
+        let token = auth_get_token(&svc, &pool_id, &client_id, "admdev", "Password1!");
+
+        // Confirm a device first
+        svc.confirm_device(&make_req(
+            "ConfirmDevice",
+            &json!({"AccessToken": token, "DeviceKey": "dk-1"}).to_string(),
+        ))
+        .unwrap();
+
+        // AdminUpdateDeviceStatus
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Username": "admdev",
+            "DeviceKey": "dk-1",
+            "DeviceRememberedStatus": "not_remembered",
+        });
+        let req = make_req("AdminUpdateDeviceStatus", &body.to_string());
+        svc.admin_update_device_status(&req).unwrap();
+    }
 }
