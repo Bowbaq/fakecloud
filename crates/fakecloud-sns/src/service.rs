@@ -5927,4 +5927,374 @@ mod tests {
         );
         svc.set_subscription_attributes(&req).unwrap();
     }
+
+    // ── publish error branches ──
+
+    #[test]
+    fn publish_missing_message_errors() {
+        let (svc, _) = make_sns();
+        svc.create_topic(&sns_request("CreateTopic", vec![("Name", "t")]))
+            .unwrap();
+        let req = sns_request(
+            "Publish",
+            vec![("TopicArn", "arn:aws:sns:us-east-1:123456789012:t")],
+        );
+        assert!(svc.publish(&req).is_err());
+    }
+
+    #[test]
+    fn publish_message_too_long_errors() {
+        let (svc, _) = make_sns();
+        svc.create_topic(&sns_request("CreateTopic", vec![("Name", "t")]))
+            .unwrap();
+        let big = "x".repeat(262145);
+        let req = sns_request(
+            "Publish",
+            vec![
+                ("TopicArn", "arn:aws:sns:us-east-1:123456789012:t"),
+                ("Message", &big),
+            ],
+        );
+        assert!(svc.publish(&req).is_err());
+    }
+
+    #[test]
+    fn publish_message_structure_invalid_json_errors() {
+        let (svc, _) = make_sns();
+        svc.create_topic(&sns_request("CreateTopic", vec![("Name", "t")]))
+            .unwrap();
+        let req = sns_request(
+            "Publish",
+            vec![
+                ("TopicArn", "arn:aws:sns:us-east-1:123456789012:t"),
+                ("Message", "not json"),
+                ("MessageStructure", "json"),
+            ],
+        );
+        assert!(svc.publish(&req).is_err());
+    }
+
+    #[test]
+    fn publish_message_structure_json_missing_default_errors() {
+        let (svc, _) = make_sns();
+        svc.create_topic(&sns_request("CreateTopic", vec![("Name", "t")]))
+            .unwrap();
+        let req = sns_request(
+            "Publish",
+            vec![
+                ("TopicArn", "arn:aws:sns:us-east-1:123456789012:t"),
+                ("Message", r#"{"email":"only"}"#),
+                ("MessageStructure", "json"),
+            ],
+        );
+        assert!(svc.publish(&req).is_err());
+    }
+
+    #[test]
+    fn publish_message_structure_json_uses_protocol_specific() {
+        let (svc, _) = make_sns();
+        let r = svc
+            .create_topic(&sns_request("CreateTopic", vec![("Name", "struc")]))
+            .unwrap();
+        let body = String::from_utf8(r.body.expect_bytes().to_vec()).unwrap();
+        let arn_start = body.find("<TopicArn>").unwrap() + 10;
+        let arn_end = body.find("</TopicArn>").unwrap();
+        let arn = body[arn_start..arn_end].to_string();
+
+        let req = sns_request(
+            "Publish",
+            vec![
+                ("TopicArn", &arn),
+                ("Message", r#"{"default":"hi","sqs":"for sqs"}"#),
+                ("MessageStructure", "json"),
+            ],
+        );
+        svc.publish(&req).unwrap();
+    }
+
+    #[test]
+    fn publish_non_fifo_with_dedup_id_errors() {
+        let (svc, _) = make_sns();
+        svc.create_topic(&sns_request("CreateTopic", vec![("Name", "s")]))
+            .unwrap();
+        let req = sns_request(
+            "Publish",
+            vec![
+                ("TopicArn", "arn:aws:sns:us-east-1:123456789012:s"),
+                ("Message", "hi"),
+                ("MessageDeduplicationId", "d1"),
+            ],
+        );
+        assert!(svc.publish(&req).is_err());
+    }
+
+    #[test]
+    fn publish_fifo_without_dedup_errors() {
+        let (svc, _) = make_sns();
+        svc.create_topic(&sns_request(
+            "CreateTopic",
+            vec![
+                ("Name", "ff.fifo"),
+                ("Attributes.entry.1.key", "FifoTopic"),
+                ("Attributes.entry.1.value", "true"),
+            ],
+        ))
+        .unwrap();
+        let req = sns_request(
+            "Publish",
+            vec![
+                ("TopicArn", "arn:aws:sns:us-east-1:123456789012:ff.fifo"),
+                ("Message", "m"),
+                ("MessageGroupId", "g1"),
+            ],
+        );
+        assert!(svc.publish(&req).is_err());
+    }
+
+    #[test]
+    fn publish_fifo_with_content_based_dedup_works() {
+        let (svc, _) = make_sns();
+        svc.create_topic(&sns_request(
+            "CreateTopic",
+            vec![
+                ("Name", "cb.fifo"),
+                ("Attributes.entry.1.key", "FifoTopic"),
+                ("Attributes.entry.1.value", "true"),
+                ("Attributes.entry.2.key", "ContentBasedDeduplication"),
+                ("Attributes.entry.2.value", "true"),
+            ],
+        ))
+        .unwrap();
+        let req = sns_request(
+            "Publish",
+            vec![
+                ("TopicArn", "arn:aws:sns:us-east-1:123456789012:cb.fifo"),
+                ("Message", "m"),
+                ("MessageGroupId", "g1"),
+            ],
+        );
+        svc.publish(&req).unwrap();
+    }
+
+    // ── platform endpoint publish/delete ──
+
+    #[test]
+    fn publish_to_unknown_platform_endpoint_errors() {
+        let (svc, _) = make_sns();
+        let req = sns_request(
+            "Publish",
+            vec![
+                (
+                    "TargetArn",
+                    "arn:aws:sns:us-east-1:123456789012:endpoint/GCM/app/abc",
+                ),
+                ("Message", "hi"),
+            ],
+        );
+        assert!(svc.publish(&req).is_err());
+    }
+
+    #[test]
+    fn delete_endpoint_unknown_is_idempotent() {
+        let (svc, _) = make_sns();
+        let req = sns_request(
+            "DeleteEndpoint",
+            vec![(
+                "EndpointArn",
+                "arn:aws:sns:us-east-1:123456789012:endpoint/GCM/app/ghost",
+            )],
+        );
+        svc.delete_endpoint(&req).unwrap();
+    }
+
+    #[test]
+    fn delete_platform_application_unknown_is_ok() {
+        let (svc, _) = make_sns();
+        let req = sns_request(
+            "DeletePlatformApplication",
+            vec![(
+                "PlatformApplicationArn",
+                "arn:aws:sns:us-east-1:123456789012:app/GCM/ghost",
+            )],
+        );
+        svc.delete_platform_application(&req).unwrap();
+    }
+
+    #[test]
+    fn set_endpoint_attributes_unknown_errors() {
+        let (svc, _) = make_sns();
+        let req = sns_request(
+            "SetEndpointAttributes",
+            vec![
+                (
+                    "EndpointArn",
+                    "arn:aws:sns:us-east-1:123456789012:endpoint/GCM/app/missing",
+                ),
+                ("Attributes.entry.1.key", "Enabled"),
+                ("Attributes.entry.1.value", "false"),
+            ],
+        );
+        assert!(svc.set_endpoint_attributes(&req).is_err());
+    }
+
+    // ── SMS attributes ──
+
+    #[test]
+    fn set_sms_attributes_stores_value() {
+        let (svc, _) = make_sns();
+        let req = sns_request(
+            "SetSMSAttributes",
+            vec![
+                ("attributes.entry.1.key", "DefaultSenderID"),
+                ("attributes.entry.1.value", "MyCorp"),
+            ],
+        );
+        svc.set_sms_attributes(&req).unwrap();
+        let req = sns_request("GetSMSAttributes", vec![]);
+        let resp = svc.get_sms_attributes(&req).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
+        assert!(body.contains("MyCorp"));
+    }
+
+    #[test]
+    fn opt_in_phone_number_and_check() {
+        let (svc, _) = make_sns();
+        let _ = svc.check_if_phone_number_is_opted_out(&sns_request(
+            "CheckIfPhoneNumberIsOptedOut",
+            vec![("phoneNumber", "+15555555555")],
+        ));
+        let _ = svc.opt_in_phone_number(&sns_request(
+            "OptInPhoneNumber",
+            vec![("phoneNumber", "+15555555555")],
+        ));
+        svc.list_phone_numbers_opted_out(&sns_request("ListPhoneNumbersOptedOut", vec![]))
+            .unwrap();
+    }
+
+    // ── subscription attribute filter policy validation ──
+
+    #[test]
+    fn set_subscription_attributes_raw_message_delivery() {
+        let (svc, _) = make_sns();
+        let r = svc
+            .create_topic(&sns_request("CreateTopic", vec![("Name", "rmd")]))
+            .unwrap();
+        let body = String::from_utf8(r.body.expect_bytes().to_vec()).unwrap();
+        let arn_start = body.find("<TopicArn>").unwrap() + 10;
+        let arn_end = body.find("</TopicArn>").unwrap();
+        let arn = body[arn_start..arn_end].to_string();
+
+        let req = sns_request(
+            "Subscribe",
+            vec![
+                ("TopicArn", &arn),
+                ("Protocol", "sqs"),
+                ("Endpoint", "arn:aws:sqs:us-east-1:123456789012:q"),
+                ("ReturnSubscriptionArn", "true"),
+            ],
+        );
+        let r = svc.subscribe(&req).unwrap();
+        let body = String::from_utf8(r.body.expect_bytes().to_vec()).unwrap();
+        let sub_arn = body[body.find("<SubscriptionArn>").unwrap() + 17
+            ..body.find("</SubscriptionArn>").unwrap()]
+            .to_string();
+
+        let req = sns_request(
+            "SetSubscriptionAttributes",
+            vec![
+                ("SubscriptionArn", &sub_arn),
+                ("AttributeName", "RawMessageDelivery"),
+                ("AttributeValue", "true"),
+            ],
+        );
+        svc.set_subscription_attributes(&req).unwrap();
+    }
+
+    // ── list topics pagination ──
+
+    #[test]
+    fn list_topics_pagination_token() {
+        let (svc, _) = make_sns();
+        for i in 0..120 {
+            let name = format!("t{i}");
+            svc.create_topic(&sns_request("CreateTopic", vec![("Name", &name)]))
+                .unwrap();
+        }
+        let req = sns_request("ListTopics", vec![]);
+        let resp = svc.list_topics(&req).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
+        assert!(body.contains("<NextToken>"));
+    }
+
+    // ── invalid topic name branches ──
+
+    #[test]
+    fn create_topic_empty_name_errors() {
+        let (svc, _) = make_sns();
+        assert!(svc
+            .create_topic(&sns_request("CreateTopic", vec![("Name", "")]))
+            .is_err());
+    }
+
+    #[test]
+    fn create_topic_too_long_name_errors() {
+        let (svc, _) = make_sns();
+        let name = "x".repeat(257);
+        assert!(svc
+            .create_topic(&sns_request("CreateTopic", vec![("Name", &name)]))
+            .is_err());
+    }
+
+    #[test]
+    fn create_topic_fifo_without_suffix_errors() {
+        let (svc, _) = make_sns();
+        assert!(svc
+            .create_topic(&sns_request(
+                "CreateTopic",
+                vec![
+                    ("Name", "plain"),
+                    ("Attributes.entry.1.key", "FifoTopic"),
+                    ("Attributes.entry.1.value", "true"),
+                ]
+            ))
+            .is_err());
+    }
+
+    #[test]
+    fn create_topic_non_fifo_with_fifo_suffix_errors() {
+        let (svc, _) = make_sns();
+        assert!(svc
+            .create_topic(&sns_request("CreateTopic", vec![("Name", "bad.fifo")]))
+            .is_err());
+    }
+
+    // ── subscribe protocol validation ──
+
+    #[test]
+    fn subscribe_missing_protocol_errors() {
+        let (svc, _) = make_sns();
+        svc.create_topic(&sns_request("CreateTopic", vec![("Name", "t")]))
+            .unwrap();
+        let req = sns_request(
+            "Subscribe",
+            vec![("TopicArn", "arn:aws:sns:us-east-1:123456789012:t")],
+        );
+        assert!(svc.subscribe(&req).is_err());
+    }
+
+    // ── get_topic_attributes wrong region ──
+
+    #[test]
+    fn get_topic_attributes_returns_policy() {
+        let (svc, _) = make_sns();
+        svc.create_topic(&sns_request("CreateTopic", vec![("Name", "pol")]))
+            .unwrap();
+        let req = sns_request(
+            "GetTopicAttributes",
+            vec![("TopicArn", "arn:aws:sns:us-east-1:123456789012:pol")],
+        );
+        let resp = svc.get_topic_attributes(&req).unwrap();
+        let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
+        assert!(body.contains("Policy"));
+    }
 }
