@@ -2876,60 +2876,11 @@ async fn main() {
                 move |axum::Json(body): axum::Json<types::CreateAdminRequest>| {
                     let iam = iam.clone();
                     async move {
-                        let mut accounts = iam.write();
-                        let state = accounts.get_or_create(&body.account_id);
-
-                        let user_id = format!(
-                            "AIDA{}",
-                            &uuid::Uuid::new_v4().to_string().replace('-', "").to_uppercase()[..16]
-                        );
-                        let arn = format!(
-                            "arn:aws:iam::{}:user/{}",
-                            body.account_id, body.user_name
-                        );
-                        let akid = format!(
-                            "FKIA{}",
-                            &uuid::Uuid::new_v4().to_string().replace('-', "").to_uppercase()[..20]
-                        );
-                        let secret = uuid::Uuid::new_v4().to_string();
-
-                        state.users.insert(
-                            body.user_name.clone(),
-                            fakecloud_iam::state::IamUser {
-                                user_name: body.user_name.clone(),
-                                user_id: user_id.clone(),
-                                arn: arn.clone(),
-                                path: "/".to_string(),
-                                created_at: chrono::Utc::now(),
-                                tags: Vec::new(),
-                                permissions_boundary: None,
-                            },
-                        );
-                        state.access_keys.insert(
-                            body.user_name.clone(),
-                            vec![fakecloud_iam::state::IamAccessKey {
-                                access_key_id: akid.clone(),
-                                secret_access_key: secret.clone(),
-                                user_name: body.user_name.clone(),
-                                status: "Active".to_string(),
-                                created_at: chrono::Utc::now(),
-                            }],
-                        );
-                        // Admin policy: allow everything
-                        state.user_inline_policies.insert(
-                            body.user_name.clone(),
-                            std::collections::HashMap::from([(
-                                "fakecloud-admin".to_string(),
-                                r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}"#.to_string(),
-                            )]),
-                        );
-
-                        axum::Json(types::CreateAdminResponse {
-                            access_key_id: akid,
-                            secret_access_key: secret,
-                            account_id: body.account_id,
-                            arn,
-                        })
+                        axum::Json(reset::create_admin_in_account(
+                            &iam,
+                            &body.account_id,
+                            &body.user_name,
+                        ))
                     }
                 }
             }),

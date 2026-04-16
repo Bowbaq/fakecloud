@@ -182,6 +182,77 @@ impl ResetState {
     }
 }
 
+/// Bootstrap an IAM admin user in a specific account. Creates the user,
+/// access key, and an inline admin policy (`Allow */*`) in the target
+/// account's IAM state. Returns the credentials so the caller can sign
+/// requests as that user.
+///
+/// This solves the multi-account bootstrap problem: the `test*` root
+/// bypass only targets the default account, so there's no way to create
+/// credentials for a non-default account via the normal AWS API.
+pub(crate) fn create_admin_in_account(
+    iam: &fakecloud_iam::state::SharedIamState,
+    account_id: &str,
+    user_name: &str,
+) -> types::CreateAdminResponse {
+    let mut accounts = iam.write();
+    let state = accounts.get_or_create(account_id);
+
+    let user_id = format!(
+        "AIDA{}",
+        &uuid::Uuid::new_v4()
+            .to_string()
+            .replace('-', "")
+            .to_uppercase()[..16]
+    );
+    let arn = format!("arn:aws:iam::{}:user/{}", account_id, user_name);
+    let akid = format!(
+        "FKIA{}",
+        &uuid::Uuid::new_v4()
+            .to_string()
+            .replace('-', "")
+            .to_uppercase()[..20]
+    );
+    let secret = uuid::Uuid::new_v4().to_string();
+
+    state.users.insert(
+        user_name.to_string(),
+        fakecloud_iam::state::IamUser {
+            user_name: user_name.to_string(),
+            user_id,
+            arn: arn.clone(),
+            path: "/".to_string(),
+            created_at: chrono::Utc::now(),
+            tags: Vec::new(),
+            permissions_boundary: None,
+        },
+    );
+    state.access_keys.insert(
+        user_name.to_string(),
+        vec![fakecloud_iam::state::IamAccessKey {
+            access_key_id: akid.clone(),
+            secret_access_key: secret.clone(),
+            user_name: user_name.to_string(),
+            status: "Active".to_string(),
+            created_at: chrono::Utc::now(),
+        }],
+    );
+    state.user_inline_policies.insert(
+        user_name.to_string(),
+        std::collections::HashMap::from([(
+            "fakecloud-admin".to_string(),
+            r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}"#.to_string(),
+        )]),
+    );
+
+    types::CreateAdminResponse {
+        access_key_id: akid,
+        secret_access_key: secret,
+        account_id: account_id.to_string(),
+        arn,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -326,5 +397,61 @@ mod tests {
         state.reset_service("rds").expect("reset rds");
 
         assert!(state.rds.read().instances.is_empty());
+    }
+
+    #[test]
+    fn create_admin_in_default_account() {
+        let iam: fakecloud_iam::state::SharedIamState = Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
+        let resp = super::create_admin_in_account(&iam, "123456789012", "admin");
+        assert_eq!(resp.account_id, "123456789012");
+        assert!(resp.access_key_id.starts_with("FKIA"));
+        assert!(resp.arn.contains("123456789012"));
+        assert!(resp.arn.contains("admin"));
+
+        // Verify state was populated
+        let accounts = iam.read();
+        let state = accounts.get("123456789012").unwrap();
+        assert!(state.users.contains_key("admin"));
+        assert!(state.access_keys.contains_key("admin"));
+        assert!(state.user_inline_policies.contains_key("admin"));
+    }
+
+    #[test]
+    fn create_admin_in_new_account() {
+        let iam: fakecloud_iam::state::SharedIamState = Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
+        let resp = super::create_admin_in_account(&iam, "999999999999", "bob");
+        assert_eq!(resp.account_id, "999999999999");
+        assert!(resp.arn.contains("999999999999"));
+
+        // New account was created
+        let accounts = iam.read();
+        assert!(accounts.get("999999999999").is_some());
+        let state = accounts.get("999999999999").unwrap();
+        assert!(state.users.contains_key("bob"));
+
+        // Default account untouched
+        let default = accounts.get("123456789012").unwrap();
+        assert!(default.users.is_empty());
+    }
+
+    #[test]
+    fn create_admin_credentials_resolve() {
+        let iam: fakecloud_iam::state::SharedIamState = Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
+        let resp = super::create_admin_in_account(&iam, "222222222222", "alice");
+
+        // Verify the credential resolver can find this key
+        let mut accounts = iam.write();
+        let state = accounts.get_or_create("222222222222");
+        let lookup = state.credential_secret(&resp.access_key_id);
+        assert!(lookup.is_some());
+        let lookup = lookup.unwrap();
+        assert_eq!(lookup.account_id, "222222222222");
+        assert_eq!(lookup.secret_access_key, resp.secret_access_key);
     }
 }
