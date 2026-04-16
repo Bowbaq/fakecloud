@@ -6160,4 +6160,183 @@ mod tests {
         let xml = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
         assert!(xml.contains("GlobalReplicationGroups"));
     }
+
+    // ── user missing/invalid fields ──
+
+    #[test]
+    fn create_user_missing_user_id_errors() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+        let req = request("CreateUser", &[("UserName", "u"), ("Engine", "redis")]);
+        assert!(svc.create_user(&req).is_err());
+    }
+
+    #[test]
+    fn create_user_missing_engine_errors() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+        let req = request("CreateUser", &[("UserId", "u1"), ("UserName", "u")]);
+        assert!(svc.create_user(&req).is_err());
+    }
+
+    #[test]
+    fn delete_user_group_not_found_is_error() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+        let req = request("DeleteUserGroup", &[("UserGroupId", "ghost")]);
+        assert!(svc.delete_user_group(&req).is_err());
+    }
+
+    // ── cache cluster error paths ──
+
+    #[test]
+    fn describe_cache_clusters_invalid_marker_returns_error() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+        // no clusters, marker for a nonexistent cluster - returns empty list
+        let req = request("DescribeCacheClusters", &[]);
+        let resp = svc.describe_cache_clusters(&req).unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("DescribeCacheClustersResult"));
+    }
+
+    #[tokio::test]
+    async fn delete_cache_cluster_missing_id_errors() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+        let req = request("DeleteCacheCluster", &[]);
+        assert!(svc.delete_cache_cluster(&req).await.is_err());
+    }
+
+    #[test]
+    fn add_tags_missing_arn_errors() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+        let req = request("AddTagsToResource", &[("Tags.Tag.1.Key", "k")]);
+        assert!(svc.add_tags_to_resource(&req).is_err());
+    }
+
+    #[test]
+    fn list_tags_missing_arn_errors() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+        let req = request("ListTagsForResource", &[]);
+        assert!(svc.list_tags_for_resource(&req).is_err());
+    }
+
+    #[test]
+    fn remove_tags_missing_arn_errors() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+        let req = request("RemoveTagsFromResource", &[("TagKeys.member.1", "k")]);
+        assert!(svc.remove_tags_from_resource(&req).is_err());
+    }
+
+    // ── replication group error paths ──
+
+    #[tokio::test]
+    async fn create_replication_group_missing_id_errors() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+        let req = request(
+            "CreateReplicationGroup",
+            &[("ReplicationGroupDescription", "desc")],
+        );
+        assert!(svc.create_replication_group(&req).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn create_replication_group_missing_description_errors() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+        let req = request("CreateReplicationGroup", &[("ReplicationGroupId", "rg")]);
+        assert!(svc.create_replication_group(&req).await.is_err());
+    }
+
+    // ── cache subnet group ──
+
+    #[test]
+    fn create_cache_subnet_group_missing_id_errors() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+        let req = request(
+            "CreateCacheSubnetGroup",
+            &[
+                ("CacheSubnetGroupDescription", "d"),
+                ("SubnetIds.SubnetIdentifier.1", "subnet-a"),
+            ],
+        );
+        assert!(svc.create_cache_subnet_group(&req).is_err());
+    }
+
+    #[test]
+    fn create_cache_subnet_group_duplicate_errors() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+        let params = &[
+            ("CacheSubnetGroupName", "sg"),
+            ("CacheSubnetGroupDescription", "d"),
+            ("SubnetIds.SubnetIdentifier.1", "subnet-a"),
+        ];
+        let req = request("CreateCacheSubnetGroup", params);
+        svc.create_cache_subnet_group(&req).unwrap();
+        let req = request("CreateCacheSubnetGroup", params);
+        assert!(svc.create_cache_subnet_group(&req).is_err());
+    }
+
+    // ── snapshot error paths ──
+
+    #[test]
+    fn describe_snapshots_empty_returns_ok() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+        let req = request("DescribeSnapshots", &[]);
+        let resp = svc.describe_snapshots(&req).unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("DescribeSnapshotsResult"));
+    }
+
+    // ── serverless cache ──
+
+    #[tokio::test]
+    async fn create_serverless_cache_missing_name_errors() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+        let req = request("CreateServerlessCache", &[("Engine", "redis")]);
+        assert!(svc.create_serverless_cache(&req).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn delete_serverless_cache_missing_name_errors() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+        let req = request("DeleteServerlessCache", &[]);
+        assert!(svc.delete_serverless_cache(&req).await.is_err());
+    }
+
+    // ── global replication group missing fields ──
+
+    #[test]
+    fn create_global_replication_group_missing_id_errors() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+        let req = request("CreateGlobalReplicationGroup", &[]);
+        assert!(svc.create_global_replication_group(&req).is_err());
+    }
 }
