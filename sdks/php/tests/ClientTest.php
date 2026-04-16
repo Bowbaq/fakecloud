@@ -136,7 +136,7 @@ final class ClientTest extends TestCase
             ],
         ]);
         $this->assertCount(1, $resp->invocations);
-        $this->assertSame('my-fn', basename($resp->invocations[0]->functionArn));
+        $this->assertStringEndsWith(':my-fn', $resp->invocations[0]->functionArn);
     }
 
     public function testWarmContainersResponseFromArray(): void
