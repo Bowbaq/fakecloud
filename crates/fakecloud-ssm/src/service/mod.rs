@@ -3125,4 +3125,118 @@ mod tests {
         );
         expect_err_code(svc.update_ops_item(&req), "OpsItemNotFoundException");
     }
+
+    // ── Tag operations (tags.rs - 0% coverage) ──
+
+    #[test]
+    fn add_and_list_tags_for_parameter() {
+        let svc = make_service();
+        let req = make_request(
+            "PutParameter",
+            json!({"Name": "/tagged/param", "Value": "v", "Type": "String"}),
+        );
+        svc.put_parameter(&req).unwrap();
+
+        let req = make_request(
+            "AddTagsToResource",
+            json!({
+                "ResourceType": "Parameter",
+                "ResourceId": "/tagged/param",
+                "Tags": [{"Key": "env", "Value": "prod"}, {"Key": "team", "Value": "be"}],
+            }),
+        );
+        svc.add_tags_to_resource(&req).unwrap();
+
+        let req = make_request(
+            "ListTagsForResource",
+            json!({"ResourceType": "Parameter", "ResourceId": "/tagged/param"}),
+        );
+        let resp = svc.list_tags_for_resource(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["TagList"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn remove_tags_from_parameter() {
+        let svc = make_service();
+        let req = make_request(
+            "PutParameter",
+            json!({"Name": "/rm-tag", "Value": "v", "Type": "String"}),
+        );
+        svc.put_parameter(&req).unwrap();
+
+        svc.add_tags_to_resource(&make_request(
+            "AddTagsToResource",
+            json!({
+                "ResourceType": "Parameter",
+                "ResourceId": "/rm-tag",
+                "Tags": [{"Key": "env", "Value": "prod"}],
+            }),
+        ))
+        .unwrap();
+
+        svc.remove_tags_from_resource(&make_request(
+            "RemoveTagsFromResource",
+            json!({"ResourceType": "Parameter", "ResourceId": "/rm-tag", "TagKeys": ["env"]}),
+        ))
+        .unwrap();
+
+        let resp = svc
+            .list_tags_for_resource(&make_request(
+                "ListTagsForResource",
+                json!({"ResourceType": "Parameter", "ResourceId": "/rm-tag"}),
+            ))
+            .unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(body["TagList"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn tags_invalid_resource_type() {
+        let svc = make_service();
+        expect_err_code(
+            svc.add_tags_to_resource(&make_request(
+                "AddTagsToResource",
+                json!({"ResourceType": "Bogus", "ResourceId": "x", "Tags": [{"Key": "k", "Value": "v"}]}),
+            )),
+            "InvalidResourceType",
+        );
+    }
+
+    #[test]
+    fn tags_invalid_resource_id() {
+        let svc = make_service();
+        expect_err_code(
+            svc.add_tags_to_resource(&make_request(
+                "AddTagsToResource",
+                json!({"ResourceType": "Parameter", "ResourceId": "/nonexistent", "Tags": [{"Key": "k", "Value": "v"}]}),
+            )),
+            "InvalidResourceId",
+        );
+    }
+
+    #[test]
+    fn tags_on_document() {
+        let svc = make_service();
+        svc.create_document(&make_request(
+            "CreateDocument",
+            json!({"Name": "TagDoc", "Content": "{\"schemaVersion\":\"2.2\",\"mainSteps\":[]}", "DocumentType": "Command"}),
+        ))
+        .unwrap();
+
+        svc.add_tags_to_resource(&make_request(
+            "AddTagsToResource",
+            json!({"ResourceType": "Document", "ResourceId": "TagDoc", "Tags": [{"Key": "p", "Value": "t"}]}),
+        ))
+        .unwrap();
+
+        let resp = svc
+            .list_tags_for_resource(&make_request(
+                "ListTagsForResource",
+                json!({"ResourceType": "Document", "ResourceId": "TagDoc"}),
+            ))
+            .unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["TagList"].as_array().unwrap().len(), 1);
+    }
 }
