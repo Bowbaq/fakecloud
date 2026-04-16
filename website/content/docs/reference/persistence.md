@@ -34,6 +34,7 @@ FAKECLOUD_STORAGE_MODE=persistent FAKECLOUD_DATA_PATH=/var/lib/fakecloud fakeclo
 - **DynamoDB** — tables, items, indexes, streams metadata.
 - **Kinesis** — streams, shards, records.
 - **SES** — identities, configuration sets, templates, contact lists and contacts, tags, suppression list, event destinations, identity policies, dedicated IP pools, tenants, receipt rule sets / rules / filters, account settings.
+- **API Gateway v2** — HTTP APIs, routes, integrations, stages, deployments, authorizers.
 - **Every other service** emits `persistence not yet supported, running in-memory` at startup and continues to operate exactly as in memory mode. Your tests don't break — you just don't get cross-restart durability for those services yet.
 
 ## Version compatibility

@@ -1981,6 +1981,7 @@ dependencies = [
  "bytes",
  "chrono",
  "fakecloud-core",
+ "fakecloud-persistence",
  "http 1.4.0",
  "parking_lot",
  "reqwest",

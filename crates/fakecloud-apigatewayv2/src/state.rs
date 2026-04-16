@@ -5,17 +5,34 @@ use std::sync::Arc;
 
 pub type SharedApiGatewayV2State = Arc<parking_lot::RwLock<ApiGatewayV2State>>;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiGatewayV2State {
     pub account_id: String,
     pub region: String,
+    #[serde(default)]
     pub apis: HashMap<String, HttpApi>,
-    pub routes: HashMap<String, HashMap<String, Route>>, // api-id -> (route-id -> Route)
-    pub integrations: HashMap<String, HashMap<String, Integration>>, // api-id -> (integration-id -> Integration)
-    pub stages: HashMap<String, HashMap<String, Stage>>, // api-id -> (stage-name -> Stage)
-    pub deployments: HashMap<String, HashMap<String, Deployment>>, // api-id -> (deployment-id -> Deployment)
-    pub authorizers: HashMap<String, HashMap<String, Authorizer>>, // api-id -> (authorizer-id -> Authorizer)
-    pub request_history: Vec<ApiRequest>, // For /_fakecloud/apigatewayv2/requests
+    #[serde(default)]
+    pub routes: HashMap<String, HashMap<String, Route>>,
+    #[serde(default)]
+    pub integrations: HashMap<String, HashMap<String, Integration>>,
+    #[serde(default)]
+    pub stages: HashMap<String, HashMap<String, Stage>>,
+    #[serde(default)]
+    pub deployments: HashMap<String, HashMap<String, Deployment>>,
+    #[serde(default)]
+    pub authorizers: HashMap<String, HashMap<String, Authorizer>>,
+    /// Introspection-only buffer backing `/_fakecloud/apigatewayv2/requests`.
+    /// Intentionally not persisted across restarts.
+    #[serde(default, skip_serializing)]
+    pub request_history: Vec<ApiRequest>,
+}
+
+pub const APIGATEWAYV2_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApiGatewayV2Snapshot {
+    pub schema_version: u32,
+    pub state: ApiGatewayV2State,
 }
 
 impl ApiGatewayV2State {
