@@ -2778,4 +2778,170 @@ mod tests {
             "ExpiredIteratorException",
         );
     }
+
+    // ── missing params ──
+
+    #[test]
+    fn describe_stream_missing_name_errors() {
+        let (svc, _) = make_service();
+        assert!(svc
+            .describe_stream(&request("DescribeStream", json!({})))
+            .is_err());
+    }
+
+    #[test]
+    fn describe_stream_summary_missing_name_errors() {
+        let (svc, _) = make_service();
+        assert!(svc
+            .describe_stream_summary(&request("DescribeStreamSummary", json!({})))
+            .is_err());
+    }
+
+    #[test]
+    fn delete_stream_missing_name_errors() {
+        let (svc, _) = make_service();
+        assert!(svc
+            .delete_stream(&request("DeleteStream", json!({})))
+            .is_err());
+    }
+
+    #[test]
+    fn get_shard_iterator_missing_stream_errors() {
+        let (svc, _) = make_service();
+        assert!(svc
+            .get_shard_iterator(&request(
+                "GetShardIterator",
+                json!({"ShardId": "shardId-000000000000", "ShardIteratorType": "TRIM_HORIZON"})
+            ))
+            .is_err());
+    }
+
+    #[test]
+    fn put_record_missing_stream_errors() {
+        let (svc, _) = make_service();
+        assert!(svc
+            .put_record(&request(
+                "PutRecord",
+                json!({"Data": "aGVsbG8=", "PartitionKey": "k"})
+            ))
+            .is_err());
+    }
+
+    #[test]
+    fn start_stream_encryption_missing_stream_errors() {
+        let (svc, _) = make_service();
+        assert!(svc
+            .start_stream_encryption(&request(
+                "StartStreamEncryption",
+                json!({"EncryptionType": "KMS", "KeyId": "alias/aws/kinesis"})
+            ))
+            .is_err());
+    }
+
+    #[test]
+    fn stop_stream_encryption_missing_stream_errors() {
+        let (svc, _) = make_service();
+        assert!(svc
+            .stop_stream_encryption(&request(
+                "StopStreamEncryption",
+                json!({"EncryptionType": "KMS", "KeyId": "alias/aws/kinesis"})
+            ))
+            .is_err());
+    }
+
+    #[test]
+    fn start_stream_encryption_unknown_stream_errors() {
+        let (svc, _) = make_service();
+        assert!(svc
+            .start_stream_encryption(&request(
+                "StartStreamEncryption",
+                json!({
+                    "StreamName": "ghost",
+                    "EncryptionType": "KMS",
+                    "KeyId": "alias/aws/kinesis"
+                })
+            ))
+            .is_err());
+    }
+
+    #[test]
+    fn enable_enhanced_monitoring_unknown_stream_errors() {
+        let (svc, _) = make_service();
+        assert!(svc
+            .enable_enhanced_monitoring(&request(
+                "EnableEnhancedMonitoring",
+                json!({"StreamName": "ghost", "ShardLevelMetrics": ["IncomingBytes"]})
+            ))
+            .is_err());
+    }
+
+    #[test]
+    fn disable_enhanced_monitoring_unknown_stream_errors() {
+        let (svc, _) = make_service();
+        assert!(svc
+            .disable_enhanced_monitoring(&request(
+                "DisableEnhancedMonitoring",
+                json!({"StreamName": "ghost", "ShardLevelMetrics": ["IncomingBytes"]})
+            ))
+            .is_err());
+    }
+
+    #[test]
+    fn put_resource_policy_missing_errors() {
+        let (svc, _) = make_service();
+        assert!(svc
+            .put_resource_policy(&request("PutResourcePolicy", json!({})))
+            .is_err());
+    }
+
+    #[test]
+    fn delete_resource_policy_missing_errors() {
+        let (svc, _) = make_service();
+        assert!(svc
+            .delete_resource_policy(&request("DeleteResourcePolicy", json!({})))
+            .is_err());
+    }
+
+    #[test]
+    fn update_retention_below_minimum_errors() {
+        let (svc, _) = make_service();
+        create_stream_action(&svc, "retlow", 1);
+        assert!(svc
+            .increase_stream_retention_period(&request(
+                "IncreaseStreamRetentionPeriod",
+                json!({"StreamName": "retlow", "RetentionPeriodHours": 10})
+            ))
+            .is_err());
+    }
+
+    #[test]
+    fn list_streams_empty_returns_zero() {
+        let (svc, _) = make_service();
+        let resp = svc
+            .list_streams(&request("ListStreams", json!({})))
+            .unwrap();
+        let body = json_response(resp);
+        assert!(body["StreamNames"].as_array().unwrap().is_empty());
+        assert_eq!(body["HasMoreStreams"], false);
+    }
+
+    #[test]
+    fn create_stream_missing_name_errors() {
+        let (svc, _) = make_service();
+        assert!(svc
+            .create_stream(&request("CreateStream", json!({})))
+            .is_err());
+    }
+
+    #[test]
+    fn assert_code_kinesis_ok_panics_test() {
+        assert_code_kinesis::<()>(
+            Err(AwsServiceError::aws_error(
+                http::StatusCode::BAD_REQUEST,
+                "X",
+                "msg",
+            )),
+            "X",
+        );
+    }
 }
