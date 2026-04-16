@@ -987,4 +987,147 @@ mod tests {
             sub.physical_id
         );
     }
+
+    // ── Service error paths ──
+
+    #[test]
+    fn create_stack_missing_name_errors() {
+        let svc = make_service();
+        let mut params = HashMap::new();
+        params.insert("TemplateBody".to_string(), "{}".to_string());
+        let req = make_request("CreateStack", params);
+        assert!(svc.create_stack(&req).is_err());
+    }
+
+    #[test]
+    fn create_stack_missing_template_errors() {
+        let svc = make_service();
+        let mut params = HashMap::new();
+        params.insert("StackName".to_string(), "s".to_string());
+        let req = make_request("CreateStack", params);
+        assert!(svc.create_stack(&req).is_err());
+    }
+
+    #[test]
+    fn create_stack_duplicate_errors() {
+        let svc = make_service();
+        let mut params = HashMap::new();
+        params.insert("StackName".to_string(), "dup".to_string());
+        params.insert(
+            "TemplateBody".to_string(),
+            r#"{"Resources":{"Q":{"Type":"AWS::SQS::Queue","Properties":{"QueueName":"dq"}}}}"#
+                .to_string(),
+        );
+        let req = make_request("CreateStack", params.clone());
+        svc.create_stack(&req).unwrap();
+        let req = make_request("CreateStack", params);
+        assert!(svc.create_stack(&req).is_err());
+    }
+
+    #[test]
+    fn create_stack_invalid_template_errors() {
+        let svc = make_service();
+        let mut params = HashMap::new();
+        params.insert("StackName".to_string(), "bad".to_string());
+        params.insert("TemplateBody".to_string(), "not json".to_string());
+        let req = make_request("CreateStack", params);
+        assert!(svc.create_stack(&req).is_err());
+    }
+
+    #[test]
+    fn delete_stack_unknown_is_noop() {
+        let svc = make_service();
+        let mut params = HashMap::new();
+        params.insert("StackName".to_string(), "ghost".to_string());
+        let req = make_request("DeleteStack", params);
+        assert!(svc.delete_stack(&req).is_ok());
+    }
+
+    #[test]
+    fn describe_stacks_nonexistent_errors() {
+        let svc = make_service();
+        let mut params = HashMap::new();
+        params.insert("StackName".to_string(), "ghost".to_string());
+        let req = make_request("DescribeStacks", params);
+        assert!(svc.describe_stacks(&req).is_err());
+    }
+
+    #[test]
+    fn describe_stacks_empty_returns_all() {
+        let svc = make_service();
+        let req = make_request("DescribeStacks", HashMap::new());
+        let resp = svc.describe_stacks(&req).unwrap();
+        let b = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(b.contains("DescribeStacksResult"));
+    }
+
+    #[test]
+    fn list_stacks_empty_returns_ok() {
+        let svc = make_service();
+        let req = make_request("ListStacks", HashMap::new());
+        let resp = svc.list_stacks(&req).unwrap();
+        let b = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(b.contains("ListStacksResult"));
+    }
+
+    #[test]
+    fn list_stack_resources_missing_name_errors() {
+        let svc = make_service();
+        let req = make_request("ListStackResources", HashMap::new());
+        assert!(svc.list_stack_resources(&req).is_err());
+    }
+
+    #[test]
+    fn list_stack_resources_unknown_stack_errors() {
+        let svc = make_service();
+        let mut params = HashMap::new();
+        params.insert("StackName".to_string(), "ghost".to_string());
+        let req = make_request("ListStackResources", params);
+        assert!(svc.list_stack_resources(&req).is_err());
+    }
+
+    #[test]
+    fn describe_stack_resources_missing_name_errors() {
+        let svc = make_service();
+        let req = make_request("DescribeStackResources", HashMap::new());
+        assert!(svc.describe_stack_resources(&req).is_err());
+    }
+
+    #[test]
+    fn get_template_missing_name_errors() {
+        let svc = make_service();
+        let req = make_request("GetTemplate", HashMap::new());
+        assert!(svc.get_template(&req).is_err());
+    }
+
+    #[test]
+    fn get_template_unknown_stack_errors() {
+        let svc = make_service();
+        let mut params = HashMap::new();
+        params.insert("StackName".to_string(), "ghost".to_string());
+        let req = make_request("GetTemplate", params);
+        assert!(svc.get_template(&req).is_err());
+    }
+
+    #[test]
+    fn update_stack_missing_name_errors() {
+        let svc = make_service();
+        let mut params = HashMap::new();
+        params.insert("TemplateBody".to_string(), "{}".to_string());
+        let req = make_request("UpdateStack", params);
+        assert!(svc.update_stack(&req).is_err());
+    }
+
+    #[test]
+    fn update_stack_unknown_stack_errors() {
+        let svc = make_service();
+        let mut params = HashMap::new();
+        params.insert("StackName".to_string(), "ghost".to_string());
+        params.insert(
+            "TemplateBody".to_string(),
+            r#"{"Resources":{}}"#.to_string(),
+        );
+        let req = make_request("UpdateStack", params);
+        assert!(svc.update_stack(&req).is_err());
+    }
 }

@@ -409,4 +409,46 @@ Resources:
             Value::String("Topic is arn:aws:sns:us-east-1:123456789012:my-topic".to_string())
         );
     }
+
+    // ── error paths ──
+
+    #[test]
+    fn parse_template_invalid_json_errors() {
+        let params = HashMap::new();
+        let result = parse_template("{not-json}", &params);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_template_missing_resources_errors() {
+        let params = HashMap::new();
+        let result = parse_template(r#"{"Description":"no resources"}"#, &params);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_template_resources_not_object_errors() {
+        let params = HashMap::new();
+        let result = parse_template(r#"{"Resources": []}"#, &params);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_template_missing_type_errors() {
+        let params = HashMap::new();
+        let result = parse_template(r#"{"Resources":{"R":{"Properties":{}}}}"#, &params);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_template_with_description() {
+        let params = HashMap::new();
+        let parsed = parse_template(
+            r#"{"Description":"My template","Resources":{"R":{"Type":"AWS::SQS::Queue"}}}"#,
+            &params,
+        )
+        .unwrap();
+        assert_eq!(parsed.description.as_deref(), Some("My template"));
+        assert_eq!(parsed.resources.len(), 1);
+    }
 }
