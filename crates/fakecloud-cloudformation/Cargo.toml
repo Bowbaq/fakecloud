@@ -10,6 +10,7 @@ version.workspace = true
 [dependencies]
 fakecloud-aws = { workspace = true }
 fakecloud-core = { workspace = true }
+fakecloud-persistence = { workspace = true }
 fakecloud-sqs = { workspace = true }
 fakecloud-sns = { workspace = true }
 fakecloud-ssm = { workspace = true }

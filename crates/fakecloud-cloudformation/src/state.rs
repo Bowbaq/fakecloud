@@ -1,9 +1,10 @@
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StackResource {
     pub logical_id: String,
     pub physical_id: String,
@@ -13,7 +14,7 @@ pub struct StackResource {
     pub service_token: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Stack {
     pub name: String,
     pub stack_id: String,
@@ -28,9 +29,11 @@ pub struct Stack {
     pub notification_arns: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CloudFormationState {
     pub account_id: String,
     pub region: String,
+    #[serde(default)]
     pub stacks: HashMap<String, Stack>,
 }
 
@@ -49,3 +52,11 @@ impl CloudFormationState {
 }
 
 pub type SharedCloudFormationState = Arc<RwLock<CloudFormationState>>;
+
+pub const CLOUDFORMATION_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CloudFormationSnapshot {
+    pub schema_version: u32,
+    pub state: CloudFormationState,
+}
