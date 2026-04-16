@@ -4237,7 +4237,7 @@ mod tests {
     }
 
     #[test]
-    fn add_permission_rejects_empty_actions() {
+    fn add_permission_empty_actions_rejected() {
         let svc = make_service();
         let url = create_queue_url(&svc, "perm-q2");
         let req = make_request(
@@ -4569,5 +4569,291 @@ mod tests {
         let req = make_request("SendMessage", json!({"QueueUrl": url}));
         let err = expect_err(svc.send_message(&req));
         assert_eq!(err.code(), "MissingParameter");
+    }
+
+    // ── FIFO queue lifecycle ──
+
+    #[test]
+    fn fifo_queue_create_and_send_with_group_id() {
+        let svc = make_service();
+        let req = make_request(
+            "CreateQueue",
+            json!({"QueueName": "test.fifo", "Attributes": {"FifoQueue": "true"}}),
+        );
+        let resp = svc.create_queue(&req).unwrap();
+        let b = body_json(resp);
+        let url = b["QueueUrl"].as_str().unwrap().to_string();
+
+        let req = make_request(
+            "SendMessage",
+            json!({
+                "QueueUrl": url,
+                "MessageBody": "hi",
+                "MessageGroupId": "g1",
+                "MessageDeduplicationId": "d1",
+            }),
+        );
+        svc.send_message(&req).unwrap();
+    }
+
+    #[test]
+    fn fifo_queue_send_without_group_id_fails() {
+        let svc = make_service();
+        let req = make_request(
+            "CreateQueue",
+            json!({"QueueName": "fifo2.fifo", "Attributes": {"FifoQueue": "true"}}),
+        );
+        let resp = svc.create_queue(&req).unwrap();
+        let b = body_json(resp);
+        let url = b["QueueUrl"].as_str().unwrap().to_string();
+
+        let req = make_request("SendMessage", json!({"QueueUrl": url, "MessageBody": "hi"}));
+        assert!(svc.send_message(&req).is_err());
+    }
+
+    // ── Send message batch ──
+
+    #[test]
+    fn send_message_batch_happy_path() {
+        let svc = make_service();
+        let url = create_queue(&svc, "batch-q");
+
+        let req = make_request(
+            "SendMessageBatch",
+            json!({
+                "QueueUrl": url,
+                "Entries": [
+                    {"Id": "1", "MessageBody": "msg1"},
+                    {"Id": "2", "MessageBody": "msg2"},
+                    {"Id": "3", "MessageBody": "msg3"},
+                ]
+            }),
+        );
+        let resp = svc.send_message_batch(&req).unwrap();
+        let b = body_json(resp);
+        assert_eq!(b["Successful"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn send_message_batch_queue_not_found() {
+        let svc = make_service();
+        let req = make_request(
+            "SendMessageBatch",
+            json!({
+                "QueueUrl": "http://localhost/123/ghost",
+                "Entries": [{"Id": "1", "MessageBody": "msg"}]
+            }),
+        );
+        assert!(svc.send_message_batch(&req).is_err());
+    }
+
+    // ── Delete message batch ──
+
+    #[tokio::test]
+    async fn delete_message_batch_removes_messages() {
+        let svc = make_service();
+        let url = create_queue(&svc, "del-batch-q");
+
+        send_msg_simple(&svc, &url, "msg1");
+        send_msg_simple(&svc, &url, "msg2");
+
+        let req = make_request(
+            "ReceiveMessage",
+            json!({"QueueUrl": url, "MaxNumberOfMessages": 10}),
+        );
+        let resp = svc.receive_message(&req).await.unwrap();
+        let b = body_json(resp);
+        let messages = b["Messages"].as_array().unwrap();
+
+        let entries: Vec<Value> = messages
+            .iter()
+            .enumerate()
+            .map(|(i, m)| {
+                json!({"Id": format!("d{i}"), "ReceiptHandle": m["ReceiptHandle"].clone()})
+            })
+            .collect();
+
+        let req = make_request(
+            "DeleteMessageBatch",
+            json!({"QueueUrl": url, "Entries": entries}),
+        );
+        let resp = svc.delete_message_batch(&req).unwrap();
+        let b = body_json(resp);
+        assert_eq!(b["Successful"].as_array().unwrap().len(), 2);
+    }
+
+    // ── Change message visibility batch ──
+
+    #[tokio::test]
+    async fn change_message_visibility_batch_happy() {
+        let svc = make_service();
+        let url = create_queue(&svc, "cmvb-q");
+        send_msg_simple(&svc, &url, "msg1");
+
+        let req = make_request(
+            "ReceiveMessage",
+            json!({"QueueUrl": url, "MaxNumberOfMessages": 1}),
+        );
+        let resp = svc.receive_message(&req).await.unwrap();
+        let b = body_json(resp);
+        let rh = b["Messages"][0]["ReceiptHandle"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let req = make_request(
+            "ChangeMessageVisibilityBatch",
+            json!({
+                "QueueUrl": url,
+                "Entries": [{"Id": "1", "ReceiptHandle": rh, "VisibilityTimeout": 60}]
+            }),
+        );
+        let resp = svc.change_message_visibility_batch(&req).unwrap();
+        let b = body_json(resp);
+        assert_eq!(b["Successful"].as_array().unwrap().len(), 1);
+    }
+
+    // ── Permissions ──
+
+    #[test]
+    fn add_and_remove_permission() {
+        let svc = make_service();
+        let url = create_queue(&svc, "perm-q");
+
+        let req = make_request(
+            "AddPermission",
+            json!({
+                "QueueUrl": url,
+                "Label": "AllowAll",
+                "AWSAccountIds": ["123456789012"],
+                "Actions": ["ReceiveMessage"]
+            }),
+        );
+        svc.add_permission(&req).unwrap();
+
+        let req = make_request(
+            "RemovePermission",
+            json!({"QueueUrl": url, "Label": "AllowAll"}),
+        );
+        svc.remove_permission(&req).unwrap();
+    }
+
+    #[test]
+    fn add_permission_empty_actions_list_errors() {
+        let svc = make_service();
+        let url = create_queue(&svc, "perm-empty-q");
+
+        let req = make_request(
+            "AddPermission",
+            json!({
+                "QueueUrl": url,
+                "Label": "L",
+                "AWSAccountIds": ["123"],
+                "Actions": []
+            }),
+        );
+        assert!(svc.add_permission(&req).is_err());
+    }
+
+    // ── Visibility timeout change ──
+
+    #[tokio::test]
+    async fn change_message_visibility_updates() {
+        let svc = make_service();
+        let url = create_queue(&svc, "cmv-q");
+        send_msg_simple(&svc, &url, "msg1");
+
+        let req = make_request(
+            "ReceiveMessage",
+            json!({"QueueUrl": url, "MaxNumberOfMessages": 1}),
+        );
+        let resp = svc.receive_message(&req).await.unwrap();
+        let b = body_json(resp);
+        let rh = b["Messages"][0]["ReceiptHandle"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let req = make_request(
+            "ChangeMessageVisibility",
+            json!({"QueueUrl": url, "ReceiptHandle": rh, "VisibilityTimeout": 120}),
+        );
+        svc.change_message_visibility(&req).unwrap();
+    }
+
+    // ── Message attributes ──
+
+    #[tokio::test]
+    async fn send_and_receive_message_with_attributes() {
+        let svc = make_service();
+        let url = create_queue(&svc, "attr-q");
+
+        let req = make_request(
+            "SendMessage",
+            json!({
+                "QueueUrl": url,
+                "MessageBody": "hello",
+                "MessageAttributes": {
+                    "color": {"DataType": "String", "StringValue": "blue"},
+                    "count": {"DataType": "Number", "StringValue": "42"}
+                }
+            }),
+        );
+        svc.send_message(&req).unwrap();
+
+        let req = make_request(
+            "ReceiveMessage",
+            json!({
+                "QueueUrl": url,
+                "MessageAttributeNames": ["All"],
+                "MaxNumberOfMessages": 1
+            }),
+        );
+        let resp = svc.receive_message(&req).await.unwrap();
+        let b = body_json(resp);
+        let msg = &b["Messages"][0];
+        assert!(msg["MessageAttributes"].is_object());
+    }
+
+    // ── Delay ──
+
+    #[test]
+    fn send_message_with_delay() {
+        let svc = make_service();
+        let url = create_queue(&svc, "delay-q");
+
+        let req = make_request(
+            "SendMessage",
+            json!({"QueueUrl": url, "MessageBody": "delayed", "DelaySeconds": 10}),
+        );
+        svc.send_message(&req).unwrap();
+    }
+
+    // ── Redrive policy ──
+
+    #[test]
+    fn set_redrive_policy_attribute() {
+        let svc = make_service();
+        let dlq_url = create_queue(&svc, "dlq");
+        let url = create_queue(&svc, "main-q");
+
+        let req = make_request(
+            "GetQueueAttributes",
+            json!({"QueueUrl": dlq_url, "AttributeNames": ["QueueArn"]}),
+        );
+        let resp = svc.get_queue_attributes(&req).unwrap();
+        let b = body_json(resp);
+        let dlq_arn = b["Attributes"]["QueueArn"].as_str().unwrap().to_string();
+
+        let redrive =
+            serde_json::json!({"deadLetterTargetArn": dlq_arn, "maxReceiveCount": 3}).to_string();
+        let req = make_request(
+            "SetQueueAttributes",
+            json!({
+                "QueueUrl": url,
+                "Attributes": {"RedrivePolicy": redrive}
+            }),
+        );
+        svc.set_queue_attributes(&req).unwrap();
     }
 }
