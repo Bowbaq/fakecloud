@@ -41,7 +41,7 @@ FAKECLOUD_STORAGE_MODE=persistent FAKECLOUD_DATA_PATH=/var/lib/fakecloud fakeclo
 - **Step Functions** — state machines, definitions, executions, execution history events, tags.
 - **RDS** — DB instances (configuration, credentials, tags), DB snapshots (including dump data), subnet groups, parameter groups.
 - **ElastiCache** — cache clusters, replication groups, global replication groups, subnet groups, parameter groups, users, user groups, snapshots, serverless caches and snapshots, reserved cache nodes, tags.
-- **Every other service** emits `persistence not yet supported, running in-memory` at startup and continues to operate exactly as in memory mode. Your tests don't break — you just don't get cross-restart durability for those services yet.
+- **Bedrock** — guardrails, guardrail versions, customization jobs, provisioned throughputs, logging config, async invocations, custom models, deployments, model import/copy/invocation jobs, evaluation jobs, inference profiles, prompt routers, resource policies, marketplace endpoints, foundation model agreements, automated reasoning policies/test cases/workflows, tags. The `/_fakecloud/bedrock/invocations` introspection buffer and simulation config (custom responses, response rules, fault rules) reset on restart.
 
 ## Version compatibility
 

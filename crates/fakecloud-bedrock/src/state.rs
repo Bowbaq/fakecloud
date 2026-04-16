@@ -6,6 +6,63 @@ use parking_lot::RwLock;
 
 pub type SharedBedrockState = Arc<RwLock<BedrockState>>;
 
+pub const BEDROCK_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct BedrockSnapshot {
+    pub schema_version: u32,
+    pub state: BedrockState,
+}
+
+/// Serialize/deserialize `HashMap<(String, String), V>` as `Vec<(String, String, V)>`.
+mod tuple2_map_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::HashMap;
+
+    pub fn serialize<V: Serialize, S: Serializer>(
+        map: &HashMap<(String, String), V>,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
+        let entries: Vec<(&String, &String, &V)> =
+            map.iter().map(|((a, b), v)| (a, b, v)).collect();
+        entries.serialize(s)
+    }
+
+    pub fn deserialize<'de, V: Deserialize<'de>, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<HashMap<(String, String), V>, D::Error> {
+        let entries: Vec<(String, String, V)> = Vec::deserialize(d)?;
+        Ok(entries.into_iter().map(|(a, b, v)| ((a, b), v)).collect())
+    }
+}
+
+/// Serialize/deserialize `HashMap<(String, String, String), V>` as `Vec<(String, String, String, V)>`.
+#[allow(clippy::type_complexity)]
+mod tuple3_map_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::HashMap;
+
+    pub fn serialize<V: Serialize, S: Serializer>(
+        map: &HashMap<(String, String, String), V>,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
+        let entries: Vec<(&String, &String, &String, &V)> =
+            map.iter().map(|((a, b, c), v)| (a, b, c, v)).collect();
+        entries.serialize(s)
+    }
+
+    pub fn deserialize<'de, V: Deserialize<'de>, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<HashMap<(String, String, String), V>, D::Error> {
+        let entries: Vec<(String, String, String, V)> = Vec::deserialize(d)?;
+        Ok(entries
+            .into_iter()
+            .map(|(a, b, c, v)| ((a, b, c), v))
+            .collect())
+    }
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct BedrockState {
     pub account_id: String,
     pub region: String,
@@ -14,6 +71,7 @@ pub struct BedrockState {
     /// Guardrails keyed by guardrail ID.
     pub guardrails: HashMap<String, Guardrail>,
     /// Guardrail versions keyed by (guardrail_id, version).
+    #[serde(with = "tuple2_map_serde")]
     pub guardrail_versions: HashMap<(String, String), GuardrailVersion>,
     /// Model customization jobs keyed by job ARN.
     pub customization_jobs: HashMap<String, CustomizationJob>,
@@ -22,14 +80,16 @@ pub struct BedrockState {
     /// Model invocation logging configuration.
     pub logging_config: Option<LoggingConfig>,
     /// All model invocations recorded for introspection.
+    #[serde(skip)]
     pub invocations: Vec<ModelInvocation>,
     /// Custom responses configured per model ID via simulation endpoint.
+    #[serde(skip)]
     pub custom_responses: HashMap<String, String>,
-    /// Prompt-conditional response rules per model ID. Evaluated in order;
-    /// the first rule whose `prompt_contains` matches wins.
+    /// Prompt-conditional response rules per model ID.
+    #[serde(skip)]
     pub response_rules: HashMap<String, Vec<ResponseRule>>,
-    /// Queued fault-injection rules. Consumed in order; rules with filters
-    /// only trigger when both `model_id` and `operation` match.
+    /// Queued fault-injection rules.
+    #[serde(skip)]
     pub fault_rules: Vec<FaultRule>,
     /// Async invocations keyed by invocation ARN.
     pub async_invocations: HashMap<String, AsyncInvocation>,
@@ -64,12 +124,16 @@ pub struct BedrockState {
     /// Automated reasoning policies keyed by policy ARN.
     pub automated_reasoning_policies: HashMap<String, AutomatedReasoningPolicy>,
     /// Automated reasoning test cases keyed by (policy_arn, test_case_id).
+    #[serde(with = "tuple2_map_serde")]
     pub automated_reasoning_test_cases: HashMap<(String, String), AutomatedReasoningTestCase>,
     /// Automated reasoning build workflows keyed by (policy_arn, workflow_id).
+    #[serde(with = "tuple2_map_serde")]
     pub ar_build_workflows: HashMap<(String, String), AutomatedReasoningBuildWorkflow>,
     /// Automated reasoning test results keyed by (policy_arn, workflow_id, test_case_id).
+    #[serde(with = "tuple3_map_serde")]
     pub ar_test_results: HashMap<(String, String, String), serde_json::Value>,
     /// Automated reasoning annotations keyed by (policy_arn, workflow_id).
+    #[serde(with = "tuple2_map_serde")]
     pub ar_annotations: HashMap<(String, String), serde_json::Value>,
 }
 
@@ -145,7 +209,7 @@ impl BedrockState {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Guardrail {
     pub guardrail_id: String,
     pub guardrail_arn: String,
@@ -164,7 +228,7 @@ pub struct Guardrail {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct GuardrailVersion {
     pub guardrail_id: String,
     pub guardrail_arn: String,
@@ -181,7 +245,7 @@ pub struct GuardrailVersion {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct CustomizationJob {
     pub job_arn: String,
     pub job_name: String,
@@ -196,7 +260,7 @@ pub struct CustomizationJob {
     pub last_modified_at: DateTime<Utc>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProvisionedThroughput {
     pub provisioned_model_id: String,
     pub provisioned_model_arn: String,
@@ -210,7 +274,7 @@ pub struct ProvisionedThroughput {
     pub last_modified_at: DateTime<Utc>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct LoggingConfig {
     pub cloud_watch_config: Option<serde_json::Value>,
     pub s3_config: Option<serde_json::Value>,
@@ -219,7 +283,7 @@ pub struct LoggingConfig {
     pub embedding_data_delivery_enabled: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct ResponseRule {
     /// Substring to look for in the extracted prompt text. `None` or empty
     /// matches any prompt.
@@ -228,7 +292,7 @@ pub struct ResponseRule {
     pub response: String,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct ModelInvocation {
     pub model_id: String,
     pub input: String,
@@ -239,7 +303,7 @@ pub struct ModelInvocation {
     pub error: Option<String>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct FaultRule {
     pub error_type: String,
     pub message: String,
@@ -249,7 +313,7 @@ pub struct FaultRule {
     pub operation: Option<String>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct AsyncInvocation {
     pub invocation_arn: String,
     pub model_arn: String,
@@ -262,7 +326,7 @@ pub struct AsyncInvocation {
     pub end_time: Option<DateTime<Utc>>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct CustomModel {
     pub model_arn: String,
     pub model_name: String,
@@ -273,7 +337,7 @@ pub struct CustomModel {
     pub creation_time: DateTime<Utc>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct CustomModelDeployment {
     pub deployment_arn: String,
     pub deployment_name: String,
@@ -284,7 +348,7 @@ pub struct CustomModelDeployment {
     pub last_updated_at: DateTime<Utc>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct ModelImportJob {
     pub job_arn: String,
     pub job_name: String,
@@ -297,7 +361,7 @@ pub struct ModelImportJob {
     pub last_modified_time: DateTime<Utc>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct ImportedModel {
     pub model_arn: String,
     pub model_name: String,
@@ -306,7 +370,7 @@ pub struct ImportedModel {
     pub creation_time: DateTime<Utc>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct ModelCopyJob {
     pub job_arn: String,
     pub source_model_arn: String,
@@ -316,7 +380,7 @@ pub struct ModelCopyJob {
     pub creation_time: DateTime<Utc>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct ModelInvocationJob {
     pub job_arn: String,
     pub job_name: String,
@@ -330,7 +394,7 @@ pub struct ModelInvocationJob {
     pub end_time: Option<DateTime<Utc>>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct EvaluationJob {
     pub job_arn: String,
     pub job_name: String,
@@ -345,7 +409,7 @@ pub struct EvaluationJob {
     pub last_modified_time: DateTime<Utc>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct InferenceProfile {
     pub inference_profile_arn: String,
     pub inference_profile_name: String,
@@ -357,7 +421,7 @@ pub struct InferenceProfile {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct PromptRouter {
     pub prompt_router_arn: String,
     pub prompt_router_name: String,
@@ -371,7 +435,7 @@ pub struct PromptRouter {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct MarketplaceModelEndpoint {
     pub endpoint_arn: String,
     pub endpoint_name: String,
@@ -382,14 +446,14 @@ pub struct MarketplaceModelEndpoint {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct FoundationModelAgreement {
     pub agreement_id: String,
     pub model_id: String,
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct AutomatedReasoningPolicy {
     pub policy_arn: String,
     pub policy_name: String,
@@ -402,7 +466,7 @@ pub struct AutomatedReasoningPolicy {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct AutomatedReasoningBuildWorkflow {
     pub workflow_id: String,
     pub policy_arn: String,
@@ -412,7 +476,7 @@ pub struct AutomatedReasoningBuildWorkflow {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct AutomatedReasoningTestCase {
     pub test_case_id: String,
     pub policy_arn: String,

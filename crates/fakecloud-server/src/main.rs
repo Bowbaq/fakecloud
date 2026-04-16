@@ -381,9 +381,6 @@ async fn main() {
     };
 
     // Register services
-    if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
-        fakecloud_persistence::warn_unsupported("bedrock");
-    }
     let mut registry = ServiceRegistry::new();
     let cloudformation_snapshot_store: Option<Arc<dyn fakecloud_persistence::SnapshotStore>> =
         if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
@@ -1517,7 +1514,58 @@ async fn main() {
         apigw_service = apigw_service.with_snapshot_store(store);
     }
     registry.register(Arc::new(apigw_service));
-    registry.register(Arc::new(BedrockService::new(bedrock_state.clone())));
+    let bedrock_snapshot_store: Option<Arc<dyn fakecloud_persistence::SnapshotStore>> =
+        if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
+            let data_path = persistence_config
+                .data_path
+                .as_ref()
+                .expect("validated above")
+                .clone();
+            let path = data_path.join("bedrock").join("snapshot.json");
+            let store = fakecloud_persistence::DiskSnapshotStore::new(path);
+            match fakecloud_persistence::SnapshotStore::load(&store) {
+                Ok(Some(bytes)) => {
+                    match serde_json::from_slice::<fakecloud_bedrock::state::BedrockSnapshot>(
+                        &bytes,
+                    ) {
+                        Ok(snapshot) => {
+                            if snapshot.schema_version
+                                != fakecloud_bedrock::state::BEDROCK_SNAPSHOT_SCHEMA_VERSION
+                            {
+                                fatal_exit(format_args!(
+                                    "bedrock persistence schema mismatch: on-disk={}, expected={}",
+                                    snapshot.schema_version,
+                                    fakecloud_bedrock::state::BEDROCK_SNAPSHOT_SCHEMA_VERSION,
+                                ));
+                            }
+                            let guardrail_count = snapshot.state.guardrails.len();
+                            *bedrock_state.write() = snapshot.state;
+                            tracing::info!(
+                                guardrails = guardrail_count,
+                                "loaded bedrock persistence snapshot",
+                            );
+                        }
+                        Err(err) => fatal_exit(format_args!(
+                            "failed to parse bedrock persistence snapshot: {err}"
+                        )),
+                    }
+                }
+                Ok(None) => {
+                    tracing::info!("no bedrock persistence snapshot found; starting empty");
+                }
+                Err(err) => fatal_exit(format_args!(
+                    "failed to read bedrock persistence snapshot: {err}"
+                )),
+            }
+            Some(Arc::new(store) as Arc<dyn fakecloud_persistence::SnapshotStore>)
+        } else {
+            None
+        };
+    let mut bedrock_service = BedrockService::new(bedrock_state.clone());
+    if let Some(store) = bedrock_snapshot_store {
+        bedrock_service = bedrock_service.with_snapshot_store(store);
+    }
+    registry.register(Arc::new(bedrock_service));
 
     // Spawn background tasks
     let lifecycle_processor = fakecloud_s3::lifecycle::LifecycleProcessor::new(s3_state.clone());

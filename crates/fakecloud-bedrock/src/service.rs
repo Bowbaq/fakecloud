@@ -1,19 +1,118 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use http::{Method, StatusCode};
 use serde_json::{json, Value};
+use tokio::sync::Mutex as AsyncMutex;
 
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
+use fakecloud_persistence::SnapshotStore;
 
 use crate::models;
-use crate::state::SharedBedrockState;
+use crate::state::{BedrockSnapshot, SharedBedrockState, BEDROCK_SNAPSHOT_SCHEMA_VERSION};
 
 pub struct BedrockService {
     state: SharedBedrockState,
+    snapshot_store: Option<Arc<dyn SnapshotStore>>,
+    snapshot_lock: Arc<AsyncMutex<()>>,
+}
+
+fn is_read_only_action(action: &str) -> bool {
+    matches!(
+        action,
+        "ListFoundationModels"
+            | "GetFoundationModel"
+            | "ListTagsForResource"
+            | "GetGuardrail"
+            | "ListGuardrails"
+            | "GetCustomModel"
+            | "ListCustomModels"
+            | "GetCustomModelDeployment"
+            | "ListCustomModelDeployments"
+            | "GetModelImportJob"
+            | "ListModelImportJobs"
+            | "GetImportedModel"
+            | "ListImportedModels"
+            | "GetModelCopyJob"
+            | "ListModelCopyJobs"
+            | "GetModelInvocationJob"
+            | "ListModelInvocationJobs"
+            | "GetEvaluationJob"
+            | "ListEvaluationJobs"
+            | "GetInferenceProfile"
+            | "ListInferenceProfiles"
+            | "GetPromptRouter"
+            | "ListPromptRouters"
+            | "GetResourcePolicy"
+            | "GetMarketplaceModelEndpoint"
+            | "ListMarketplaceModelEndpoints"
+            | "ListFoundationModelAgreementOffers"
+            | "GetFoundationModelAvailability"
+            | "GetUseCaseForModelAccess"
+            | "ListEnforcedGuardrailsConfiguration"
+            | "GetAutomatedReasoningPolicy"
+            | "ListAutomatedReasoningPolicies"
+            | "ExportAutomatedReasoningPolicyVersion"
+            | "GetAutomatedReasoningPolicyTestCase"
+            | "ListAutomatedReasoningPolicyTestCases"
+            | "GetAutomatedReasoningPolicyBuildWorkflow"
+            | "ListAutomatedReasoningPolicyBuildWorkflows"
+            | "GetAutomatedReasoningPolicyBuildWorkflowResultAssets"
+            | "GetAutomatedReasoningPolicyTestResult"
+            | "ListAutomatedReasoningPolicyTestResults"
+            | "GetAutomatedReasoningPolicyAnnotations"
+            | "GetAutomatedReasoningPolicyNextScenario"
+            | "GetModelCustomizationJob"
+            | "ListModelCustomizationJobs"
+            | "GetProvisionedModelThroughput"
+            | "ListProvisionedModelThroughputs"
+            | "GetModelInvocationLoggingConfiguration"
+            | "GetAsyncInvoke"
+            | "ListAsyncInvokes"
+            | "InvokeModel"
+            | "InvokeModelWithResponseStream"
+            | "InvokeModelWithBidirectionalStream"
+            | "Converse"
+            | "ConverseStream"
+            | "CountTokens"
+            | "ApplyGuardrail"
+    )
 }
 
 impl BedrockService {
     pub fn new(state: SharedBedrockState) -> Self {
-        Self { state }
+        Self {
+            state,
+            snapshot_store: None,
+            snapshot_lock: Arc::new(AsyncMutex::new(())),
+        }
+    }
+
+    pub fn with_snapshot_store(mut self, store: Arc<dyn SnapshotStore>) -> Self {
+        self.snapshot_store = Some(store);
+        self
+    }
+
+    async fn save_snapshot(&self) {
+        let Some(store) = self.snapshot_store.clone() else {
+            return;
+        };
+        let _guard = self.snapshot_lock.lock().await;
+        let snapshot = BedrockSnapshot {
+            schema_version: BEDROCK_SNAPSHOT_SCHEMA_VERSION,
+            state: self.state.read().clone(),
+        };
+        let join = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            let bytes = serde_json::to_vec(&snapshot)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+            store.save(&bytes)
+        })
+        .await;
+        match join {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => tracing::error!(%err, "failed to write bedrock snapshot"),
+            Err(err) => tracing::error!(%err, "bedrock snapshot task panicked"),
+        }
     }
 
     fn resolve_action(req: &AwsRequest) -> Option<(&str, Option<String>, Option<String>)> {
@@ -751,9 +850,10 @@ impl AwsService for BedrockService {
                 action: format!("{} {}", req.method, req.raw_path),
             })?;
 
+        let mutates = !is_read_only_action(action);
         let body = req.json_body();
 
-        match action {
+        let result = match action {
             "ListFoundationModels" => self.list_foundation_models(&req),
             "GetFoundationModel" => {
                 self.get_foundation_model(&req, &resource_id.unwrap_or_default())
@@ -1361,7 +1461,11 @@ impl AwsService for BedrockService {
                 service: "bedrock".to_string(),
                 action: action.to_string(),
             }),
+        };
+        if mutates && matches!(result.as_ref(), Ok(resp) if resp.status.is_success()) {
+            self.save_snapshot().await;
         }
+        result
     }
 
     fn supported_actions(&self) -> &[&str] {
