@@ -2249,6 +2249,13 @@ mod tests {
         )))
     }
 
+    fn expect_err(result: Result<AwsResponse, AwsServiceError>) -> AwsServiceError {
+        match result {
+            Err(e) => e,
+            Ok(_) => panic!("expected error, got Ok"),
+        }
+    }
+
     fn make_request(action: &str, body: &str) -> AwsRequest {
         AwsRequest {
             service: "secretsmanager".to_string(),
@@ -3126,5 +3133,1260 @@ mod tests {
         let errors = resp_body["Errors"].as_array().unwrap();
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0]["ErrorCode"], "InvalidRequestException");
+    }
+
+    // ── CreateSecret idempotency ──
+
+    #[tokio::test]
+    async fn create_secret_idempotent_same_value() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        let token = "a".repeat(32);
+        let body = serde_json::json!({
+            "Name": "idem",
+            "SecretString": "val",
+            "ClientRequestToken": token,
+        });
+        let req = make_request("CreateSecret", &body.to_string());
+        svc.handle(req).await.unwrap();
+
+        // Same token + same value -> success (idempotent)
+        let req = make_request("CreateSecret", &body.to_string());
+        let resp = svc.handle(req).await.unwrap();
+        let b: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(b["Name"], "idem");
+        assert_eq!(b["VersionId"], token);
+    }
+
+    #[tokio::test]
+    async fn create_secret_idempotent_conflict() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        let token = "a".repeat(32);
+        let body = serde_json::json!({
+            "Name": "conflict",
+            "SecretString": "val1",
+            "ClientRequestToken": token,
+        });
+        let req = make_request("CreateSecret", &body.to_string());
+        svc.handle(req).await.unwrap();
+
+        // Same token + different value -> ResourceExistsException
+        let body2 = serde_json::json!({
+            "Name": "conflict",
+            "SecretString": "val2",
+            "ClientRequestToken": token,
+        });
+        let req = make_request("CreateSecret", &body2.to_string());
+        let err = expect_err(svc.handle(req).await);
+        assert!(err.to_string().contains("ResourceExistsException"));
+    }
+
+    #[tokio::test]
+    async fn create_secret_duplicate_name_no_token() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        let req = make_request("CreateSecret", r#"{"Name": "dup", "SecretString": "v1"}"#);
+        svc.handle(req).await.unwrap();
+
+        let req = make_request("CreateSecret", r#"{"Name": "dup", "SecretString": "v2"}"#);
+        let err = expect_err(svc.handle(req).await);
+        assert!(err.to_string().contains("ResourceExistsException"));
+    }
+
+    #[tokio::test]
+    async fn create_secret_with_tags_and_description() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        let body = serde_json::json!({
+            "Name": "full-secret",
+            "SecretString": "v",
+            "Description": "my secret desc",
+            "KmsKeyId": "alias/my-key",
+            "Tags": [{"Key": "env", "Value": "staging"}],
+        });
+        let req = make_request("CreateSecret", &body.to_string());
+        svc.handle(req).await.unwrap();
+
+        let req = make_request("DescribeSecret", r#"{"SecretId": "full-secret"}"#);
+        let resp = svc.handle(req).await.unwrap();
+        let b: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(b["Description"], "my secret desc");
+        assert_eq!(b["KmsKeyId"], "alias/my-key");
+        assert_eq!(b["Tags"][0]["Key"], "env");
+    }
+
+    // ── PutSecretValue edge cases ──
+
+    #[tokio::test]
+    async fn put_secret_value_requires_value() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        let req = make_request(
+            "CreateSecret",
+            r#"{"Name": "novalue", "SecretString": "v"}"#,
+        );
+        svc.handle(req).await.unwrap();
+
+        let req = make_request("PutSecretValue", r#"{"SecretId": "novalue"}"#);
+        let err = expect_err(svc.handle(req).await);
+        assert!(err.to_string().contains("InvalidRequestException"));
+    }
+
+    #[tokio::test]
+    async fn put_secret_value_not_found() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        let req = make_request(
+            "PutSecretValue",
+            r#"{"SecretId": "ghost", "SecretString": "v"}"#,
+        );
+        let err = expect_err(svc.handle(req).await);
+        assert!(err.to_string().contains("ResourceNotFoundException"));
+    }
+
+    #[tokio::test]
+    async fn put_secret_value_on_deleted_secret() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        let req = make_request(
+            "CreateSecret",
+            r#"{"Name": "del-put", "SecretString": "v"}"#,
+        );
+        svc.handle(req).await.unwrap();
+        let req = make_request("DeleteSecret", r#"{"SecretId": "del-put"}"#);
+        svc.handle(req).await.unwrap();
+
+        let req = make_request(
+            "PutSecretValue",
+            r#"{"SecretId": "del-put", "SecretString": "v2"}"#,
+        );
+        let err = expect_err(svc.handle(req).await);
+        assert!(err.to_string().contains("InvalidRequestException"));
+    }
+
+    #[tokio::test]
+    async fn put_secret_value_idempotent_match() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        let req = make_request(
+            "CreateSecret",
+            r#"{"Name": "put-idem", "SecretString": "original"}"#,
+        );
+        svc.handle(req).await.unwrap();
+
+        let token = "b".repeat(32);
+        let body = serde_json::json!({
+            "SecretId": "put-idem",
+            "SecretString": "new-val",
+            "ClientRequestToken": token,
+        });
+        let req = make_request("PutSecretValue", &body.to_string());
+        svc.handle(req).await.unwrap();
+
+        // Same token + same value -> idempotent success
+        let req = make_request("PutSecretValue", &body.to_string());
+        let resp = svc.handle(req).await.unwrap();
+        let b: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(b["VersionId"], token);
+    }
+
+    #[tokio::test]
+    async fn put_secret_value_idempotent_conflict() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        let req = make_request(
+            "CreateSecret",
+            r#"{"Name": "put-conflict", "SecretString": "original"}"#,
+        );
+        svc.handle(req).await.unwrap();
+
+        let token = "c".repeat(32);
+        let body = serde_json::json!({
+            "SecretId": "put-conflict",
+            "SecretString": "val-a",
+            "ClientRequestToken": token,
+        });
+        let req = make_request("PutSecretValue", &body.to_string());
+        svc.handle(req).await.unwrap();
+
+        // Same token + different value -> conflict
+        let body2 = serde_json::json!({
+            "SecretId": "put-conflict",
+            "SecretString": "val-b",
+            "ClientRequestToken": token,
+        });
+        let req = make_request("PutSecretValue", &body2.to_string());
+        let err = expect_err(svc.handle(req).await);
+        assert!(err.to_string().contains("ResourceExistsException"));
+    }
+
+    #[tokio::test]
+    async fn put_secret_value_with_custom_stages() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state.clone());
+
+        let req = make_request(
+            "CreateSecret",
+            r#"{"Name": "staged", "SecretString": "v1"}"#,
+        );
+        svc.handle(req).await.unwrap();
+
+        let body = serde_json::json!({
+            "SecretId": "staged",
+            "SecretString": "v2",
+            "VersionStages": ["AWSCURRENT", "MYAPP_V2"],
+        });
+        let req = make_request("PutSecretValue", &body.to_string());
+        let resp = svc.handle(req).await.unwrap();
+        let b: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        let stages = b["VersionStages"].as_array().unwrap();
+        assert!(stages.iter().any(|s| s == "MYAPP_V2"));
+    }
+
+    // ── UpdateSecret edge cases ──
+
+    #[tokio::test]
+    async fn update_secret_not_found() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        let body = serde_json::json!({
+            "SecretId": "ghost",
+            "Description": "new",
+        });
+        let req = make_request("UpdateSecret", &body.to_string());
+        let err = expect_err(svc.handle(req).await);
+        assert!(err.to_string().contains("ResourceNotFoundException"));
+    }
+
+    #[tokio::test]
+    async fn update_secret_on_deleted() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        let req = make_request(
+            "CreateSecret",
+            r#"{"Name": "upd-del", "SecretString": "v"}"#,
+        );
+        svc.handle(req).await.unwrap();
+        let req = make_request("DeleteSecret", r#"{"SecretId": "upd-del"}"#);
+        svc.handle(req).await.unwrap();
+
+        let body = serde_json::json!({
+            "SecretId": "upd-del",
+            "Description": "new",
+        });
+        let req = make_request("UpdateSecret", &body.to_string());
+        let err = expect_err(svc.handle(req).await);
+        assert!(err.to_string().contains("InvalidRequestException"));
+    }
+
+    #[tokio::test]
+    async fn update_secret_idempotent_match() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        let req = make_request(
+            "CreateSecret",
+            r#"{"Name": "upd-idem", "SecretString": "orig"}"#,
+        );
+        svc.handle(req).await.unwrap();
+
+        let token = "d".repeat(32);
+        let body = serde_json::json!({
+            "SecretId": "upd-idem",
+            "SecretString": "new-val",
+            "ClientRequestToken": token,
+        });
+        let req = make_request("UpdateSecret", &body.to_string());
+        svc.handle(req).await.unwrap();
+
+        // Repeat -> idempotent
+        let req = make_request("UpdateSecret", &body.to_string());
+        let resp = svc.handle(req).await.unwrap();
+        let b: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(b["VersionId"], token);
+    }
+
+    // ── DeleteSecret edge cases ──
+
+    #[tokio::test]
+    async fn delete_secret_force() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state.clone());
+
+        let req = make_request(
+            "CreateSecret",
+            r#"{"Name": "force-del", "SecretString": "v"}"#,
+        );
+        svc.handle(req).await.unwrap();
+
+        let body = serde_json::json!({
+            "SecretId": "force-del",
+            "ForceDeleteWithoutRecovery": true,
+        });
+        let req = make_request("DeleteSecret", &body.to_string());
+        let resp = svc.handle(req).await.unwrap();
+        let b: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(b["Name"], "force-del");
+
+        // Secret should be gone entirely
+        let s = state.read();
+        assert!(!s.secrets.contains_key("force-del"));
+    }
+
+    #[tokio::test]
+    async fn delete_secret_force_nonexistent() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        let body = serde_json::json!({
+            "SecretId": "not-here",
+            "ForceDeleteWithoutRecovery": true,
+        });
+        let req = make_request("DeleteSecret", &body.to_string());
+        let resp = svc.handle(req).await.unwrap();
+        let b: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(b["Name"], "not-here");
+    }
+
+    #[tokio::test]
+    async fn delete_secret_recovery_window() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        let req = make_request(
+            "CreateSecret",
+            r#"{"Name": "rec-win", "SecretString": "v"}"#,
+        );
+        svc.handle(req).await.unwrap();
+
+        let body = serde_json::json!({
+            "SecretId": "rec-win",
+            "RecoveryWindowInDays": 7,
+        });
+        let req = make_request("DeleteSecret", &body.to_string());
+        let resp = svc.handle(req).await.unwrap();
+        let b: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(b["DeletionDate"].as_f64().is_some());
+    }
+
+    #[tokio::test]
+    async fn delete_secret_invalid_recovery_window() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        let req = make_request(
+            "CreateSecret",
+            r#"{"Name": "bad-win", "SecretString": "v"}"#,
+        );
+        svc.handle(req).await.unwrap();
+
+        // Too short
+        let body = serde_json::json!({
+            "SecretId": "bad-win",
+            "RecoveryWindowInDays": 3,
+        });
+        let req = make_request("DeleteSecret", &body.to_string());
+        let err = expect_err(svc.handle(req).await);
+        assert!(err.to_string().contains("InvalidParameterException"));
+
+        // Too long
+        let body = serde_json::json!({
+            "SecretId": "bad-win",
+            "RecoveryWindowInDays": 31,
+        });
+        let req = make_request("DeleteSecret", &body.to_string());
+        let err = expect_err(svc.handle(req).await);
+        assert!(err.to_string().contains("InvalidParameterException"));
+    }
+
+    #[tokio::test]
+    async fn delete_secret_force_and_recovery_conflict() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        let req = make_request("CreateSecret", r#"{"Name": "both", "SecretString": "v"}"#);
+        svc.handle(req).await.unwrap();
+
+        let body = serde_json::json!({
+            "SecretId": "both",
+            "ForceDeleteWithoutRecovery": true,
+            "RecoveryWindowInDays": 7,
+        });
+        let req = make_request("DeleteSecret", &body.to_string());
+        let err = expect_err(svc.handle(req).await);
+        assert!(err.to_string().contains("InvalidParameterException"));
+    }
+
+    #[tokio::test]
+    async fn delete_already_deleted_secret() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        let req = make_request(
+            "CreateSecret",
+            r#"{"Name": "dbl-del", "SecretString": "v"}"#,
+        );
+        svc.handle(req).await.unwrap();
+
+        let req = make_request("DeleteSecret", r#"{"SecretId": "dbl-del"}"#);
+        svc.handle(req).await.unwrap();
+
+        let req = make_request("DeleteSecret", r#"{"SecretId": "dbl-del"}"#);
+        let err = expect_err(svc.handle(req).await);
+        assert!(err.to_string().contains("InvalidRequestException"));
+    }
+
+    // ── GetSecretValue edge cases ──
+
+    #[tokio::test]
+    async fn get_secret_value_by_version_id() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state.clone());
+
+        let req = make_request(
+            "CreateSecret",
+            r#"{"Name": "ver-get", "SecretString": "v1"}"#,
+        );
+        svc.handle(req).await.unwrap();
+
+        let v1_id = {
+            let s = state.read();
+            s.secrets
+                .get("ver-get")
+                .unwrap()
+                .current_version_id
+                .clone()
+                .unwrap()
+        };
+
+        let req = make_request(
+            "PutSecretValue",
+            r#"{"SecretId": "ver-get", "SecretString": "v2"}"#,
+        );
+        svc.handle(req).await.unwrap();
+
+        // Get old version by ID
+        let body = serde_json::json!({
+            "SecretId": "ver-get",
+            "VersionId": v1_id,
+            "VersionStage": "AWSPREVIOUS",
+        });
+        let req = make_request("GetSecretValue", &body.to_string());
+        let resp = svc.handle(req).await.unwrap();
+        let b: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(b["SecretString"], "v1");
+    }
+
+    #[tokio::test]
+    async fn get_secret_value_version_stage_mismatch() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state.clone());
+
+        let req = make_request(
+            "CreateSecret",
+            r#"{"Name": "mismatch", "SecretString": "v1"}"#,
+        );
+        svc.handle(req).await.unwrap();
+
+        let vid = {
+            let s = state.read();
+            s.secrets
+                .get("mismatch")
+                .unwrap()
+                .current_version_id
+                .clone()
+                .unwrap()
+        };
+
+        // Request with VersionId but wrong stage
+        let body = serde_json::json!({
+            "SecretId": "mismatch",
+            "VersionId": vid,
+            "VersionStage": "AWSPREVIOUS",
+        });
+        let req = make_request("GetSecretValue", &body.to_string());
+        let err = expect_err(svc.handle(req).await);
+        assert!(err.to_string().contains("ResourceNotFoundException"));
+    }
+
+    #[tokio::test]
+    async fn get_secret_value_not_found() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        let req = make_request("GetSecretValue", r#"{"SecretId": "nope"}"#);
+        let err = expect_err(svc.handle(req).await);
+        assert!(err.to_string().contains("ResourceNotFoundException"));
+    }
+
+    #[tokio::test]
+    async fn get_secret_value_no_versions() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        let req = make_request("CreateSecret", r#"{"Name": "empty-ver"}"#);
+        svc.handle(req).await.unwrap();
+
+        let req = make_request("GetSecretValue", r#"{"SecretId": "empty-ver"}"#);
+        let err = expect_err(svc.handle(req).await);
+        assert!(err.to_string().contains("ResourceNotFoundException"));
+    }
+
+    #[tokio::test]
+    async fn get_secret_value_with_binary() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        // SecretBinary is base64 encoded
+        let body = serde_json::json!({
+            "Name": "bin-secret",
+            "SecretBinary": "SGVsbG8=",  // "Hello" in base64
+        });
+        let req = make_request("CreateSecret", &body.to_string());
+        svc.handle(req).await.unwrap();
+
+        let req = make_request("GetSecretValue", r#"{"SecretId": "bin-secret"}"#);
+        let resp = svc.handle(req).await.unwrap();
+        let b: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(b.get("SecretBinary").is_some());
+        assert!(b.get("SecretString").is_none());
+    }
+
+    // ── ListSecrets with filters ──
+
+    #[tokio::test]
+    async fn list_secrets_filter_by_name() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        for name in &["prod/db", "prod/api", "staging/db"] {
+            let body = serde_json::json!({"Name": name, "SecretString": "v"});
+            let req = make_request("CreateSecret", &body.to_string());
+            svc.handle(req).await.unwrap();
+        }
+
+        let body = serde_json::json!({
+            "Filters": [{"Key": "name", "Values": ["prod/"]}]
+        });
+        let req = make_request("ListSecrets", &body.to_string());
+        let resp = svc.handle(req).await.unwrap();
+        let b: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(b["SecretList"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn list_secrets_filter_by_tag_key() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        let body = serde_json::json!({
+            "Name": "tagged-s",
+            "SecretString": "v",
+            "Tags": [{"Key": "team", "Value": "backend"}],
+        });
+        let req = make_request("CreateSecret", &body.to_string());
+        svc.handle(req).await.unwrap();
+
+        let body = serde_json::json!({"Name": "untagged-s", "SecretString": "v"});
+        let req = make_request("CreateSecret", &body.to_string());
+        svc.handle(req).await.unwrap();
+
+        let body = serde_json::json!({
+            "Filters": [{"Key": "tag-key", "Values": ["team"]}]
+        });
+        let req = make_request("ListSecrets", &body.to_string());
+        let resp = svc.handle(req).await.unwrap();
+        let b: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(b["SecretList"].as_array().unwrap().len(), 1);
+        assert_eq!(b["SecretList"][0]["Name"], "tagged-s");
+    }
+
+    #[tokio::test]
+    async fn list_secrets_filter_by_description() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        let body = serde_json::json!({
+            "Name": "desc-match",
+            "SecretString": "v",
+            "Description": "Database credentials for production",
+        });
+        let req = make_request("CreateSecret", &body.to_string());
+        svc.handle(req).await.unwrap();
+
+        let body = serde_json::json!({"Name": "no-desc", "SecretString": "v"});
+        let req = make_request("CreateSecret", &body.to_string());
+        svc.handle(req).await.unwrap();
+
+        let body = serde_json::json!({
+            "Filters": [{"Key": "description", "Values": ["Database"]}]
+        });
+        let req = make_request("ListSecrets", &body.to_string());
+        let resp = svc.handle(req).await.unwrap();
+        let b: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(b["SecretList"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn list_secrets_include_planned_deletion() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        let req = make_request("CreateSecret", r#"{"Name": "alive", "SecretString": "v"}"#);
+        svc.handle(req).await.unwrap();
+
+        let req = make_request("CreateSecret", r#"{"Name": "doomed", "SecretString": "v"}"#);
+        svc.handle(req).await.unwrap();
+        let req = make_request("DeleteSecret", r#"{"SecretId": "doomed"}"#);
+        svc.handle(req).await.unwrap();
+
+        // Without IncludePlannedDeletion
+        let req = make_request("ListSecrets", "{}");
+        let resp = svc.handle(req).await.unwrap();
+        let b: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(b["SecretList"].as_array().unwrap().len(), 1);
+
+        // With IncludePlannedDeletion
+        let body = serde_json::json!({"IncludePlannedDeletion": true});
+        let req = make_request("ListSecrets", &body.to_string());
+        let resp = svc.handle(req).await.unwrap();
+        let b: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(b["SecretList"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn list_secrets_pagination() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        for i in 0..5 {
+            let body = serde_json::json!({
+                "Name": format!("page-{i}"),
+                "SecretString": "v",
+            });
+            let req = make_request("CreateSecret", &body.to_string());
+            svc.handle(req).await.unwrap();
+        }
+
+        let body = serde_json::json!({"MaxResults": 2});
+        let req = make_request("ListSecrets", &body.to_string());
+        let resp = svc.handle(req).await.unwrap();
+        let b: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(b["SecretList"].as_array().unwrap().len(), 2);
+        assert!(b["NextToken"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn list_secrets_invalid_filter_key() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        let body = serde_json::json!({
+            "Filters": [{"Key": "bogus", "Values": ["x"]}]
+        });
+        let req = make_request("ListSecrets", &body.to_string());
+        let err = expect_err(svc.handle(req).await);
+        assert!(err.to_string().contains("ValidationException"));
+    }
+
+    #[tokio::test]
+    async fn list_secrets_empty_filter_values() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        let body = serde_json::json!({
+            "Filters": [{"Key": "name", "Values": []}]
+        });
+        let req = make_request("ListSecrets", &body.to_string());
+        let err = expect_err(svc.handle(req).await);
+        assert!(err.to_string().contains("InvalidParameterException"));
+    }
+
+    // ── ListSecretVersionIds ──
+
+    #[tokio::test]
+    async fn list_secret_version_ids() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        let req = make_request(
+            "CreateSecret",
+            r#"{"Name": "multi-ver", "SecretString": "v1"}"#,
+        );
+        svc.handle(req).await.unwrap();
+
+        let req = make_request(
+            "PutSecretValue",
+            r#"{"SecretId": "multi-ver", "SecretString": "v2"}"#,
+        );
+        svc.handle(req).await.unwrap();
+
+        let req = make_request("ListSecretVersionIds", r#"{"SecretId": "multi-ver"}"#);
+        let resp = svc.handle(req).await.unwrap();
+        let b: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(b["Name"], "multi-ver");
+        assert_eq!(b["Versions"].as_array().unwrap().len(), 2);
+    }
+
+    // ── DescribeSecret with rotation info ──
+
+    #[tokio::test]
+    async fn describe_secret_with_rotation_and_next_date() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        let req = make_request(
+            "CreateSecret",
+            r#"{"Name": "rot-desc", "SecretString": "pw"}"#,
+        );
+        svc.handle(req).await.unwrap();
+
+        let token = "e".repeat(32);
+        let body = serde_json::json!({
+            "SecretId": "rot-desc",
+            "RotationRules": {"AutomaticallyAfterDays": 14},
+            "ClientRequestToken": token,
+        });
+        let req = make_request("RotateSecret", &body.to_string());
+        svc.handle(req).await.unwrap();
+
+        let req = make_request("DescribeSecret", r#"{"SecretId": "rot-desc"}"#);
+        let resp = svc.handle(req).await.unwrap();
+        let b: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(b["RotationEnabled"], true);
+        assert!(b["LastRotatedDate"].as_f64().is_some());
+        assert!(b["NextRotationDate"].as_f64().is_some());
+        assert_eq!(b["RotationRules"]["AutomaticallyAfterDays"], 14);
+    }
+
+    #[tokio::test]
+    async fn describe_secret_deleted_shows_deletion_date() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        let req = make_request(
+            "CreateSecret",
+            r#"{"Name": "del-desc", "SecretString": "v"}"#,
+        );
+        svc.handle(req).await.unwrap();
+        let req = make_request("DeleteSecret", r#"{"SecretId": "del-desc"}"#);
+        svc.handle(req).await.unwrap();
+
+        let req = make_request("DescribeSecret", r#"{"SecretId": "del-desc"}"#);
+        let resp = svc.handle(req).await.unwrap();
+        let b: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(b["DeletedDate"].as_f64().is_some());
+    }
+
+    // ── BatchGetSecretValue edge cases ──
+
+    #[tokio::test]
+    async fn batch_get_secret_value_both_list_and_filters() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        let body = serde_json::json!({
+            "SecretIdList": ["a"],
+            "Filters": [{"Key": "name", "Values": ["a"]}],
+        });
+        let req = make_request("BatchGetSecretValue", &body.to_string());
+        let err = expect_err(svc.handle(req).await);
+        assert!(err.to_string().contains("InvalidParameterException"));
+    }
+
+    #[tokio::test]
+    async fn batch_get_secret_value_max_results_without_filters() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        let body = serde_json::json!({
+            "SecretIdList": ["a"],
+            "MaxResults": 10,
+        });
+        let req = make_request("BatchGetSecretValue", &body.to_string());
+        let err = expect_err(svc.handle(req).await);
+        assert!(err.to_string().contains("InvalidParameterException"));
+    }
+
+    #[tokio::test]
+    async fn batch_get_secret_value_with_filters() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        for name in &["batch-f-a", "batch-f-b", "other-c"] {
+            let body = serde_json::json!({"Name": name, "SecretString": "v"});
+            let req = make_request("CreateSecret", &body.to_string());
+            svc.handle(req).await.unwrap();
+        }
+
+        let body = serde_json::json!({
+            "Filters": [{"Key": "name", "Values": ["batch-f"]}],
+        });
+        let req = make_request("BatchGetSecretValue", &body.to_string());
+        let resp = svc.handle(req).await.unwrap();
+        let b: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(b["SecretValues"].as_array().unwrap().len(), 2);
+    }
+
+    // ── RotateSecret validation ──
+
+    #[tokio::test]
+    async fn rotate_secret_invalid_token_length() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        let req = make_request(
+            "CreateSecret",
+            r#"{"Name": "rot-val", "SecretString": "v"}"#,
+        );
+        svc.handle(req).await.unwrap();
+
+        let body = serde_json::json!({
+            "SecretId": "rot-val",
+            "ClientRequestToken": "short",
+        });
+        let req = make_request("RotateSecret", &body.to_string());
+        let err = expect_err(svc.handle(req).await);
+        assert!(err.to_string().contains("InvalidParameterException"));
+    }
+
+    #[tokio::test]
+    async fn rotate_secret_invalid_rules() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        let req = make_request(
+            "CreateSecret",
+            r#"{"Name": "rot-rules", "SecretString": "v"}"#,
+        );
+        svc.handle(req).await.unwrap();
+
+        let body = serde_json::json!({
+            "SecretId": "rot-rules",
+            "RotationRules": {"AutomaticallyAfterDays": 0},
+        });
+        let req = make_request("RotateSecret", &body.to_string());
+        let err = expect_err(svc.handle(req).await);
+        assert!(err.to_string().contains("InvalidParameterException"));
+    }
+
+    #[tokio::test]
+    async fn rotate_secret_on_deleted() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        let req = make_request(
+            "CreateSecret",
+            r#"{"Name": "rot-del", "SecretString": "v"}"#,
+        );
+        svc.handle(req).await.unwrap();
+        let req = make_request("DeleteSecret", r#"{"SecretId": "rot-del"}"#);
+        svc.handle(req).await.unwrap();
+
+        let body = serde_json::json!({"SecretId": "rot-del"});
+        let req = make_request("RotateSecret", &body.to_string());
+        let err = expect_err(svc.handle(req).await);
+        assert!(err.to_string().contains("InvalidRequestException"));
+    }
+
+    // ── CancelRotateSecret on deleted ──
+
+    #[tokio::test]
+    async fn cancel_rotate_on_deleted() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        let req = make_request("CreateSecret", r#"{"Name": "cr-del", "SecretString": "v"}"#);
+        svc.handle(req).await.unwrap();
+        let req = make_request("DeleteSecret", r#"{"SecretId": "cr-del"}"#);
+        svc.handle(req).await.unwrap();
+
+        let req = make_request("CancelRotateSecret", r#"{"SecretId": "cr-del"}"#);
+        let err = expect_err(svc.handle(req).await);
+        assert!(err.to_string().contains("InvalidRequestException"));
+    }
+
+    // ── UpdateSecretVersionStage edge cases ──
+
+    #[tokio::test]
+    async fn update_version_stage_missing_remove_from() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state.clone());
+
+        let req = make_request(
+            "CreateSecret",
+            r#"{"Name": "stage-err", "SecretString": "v1"}"#,
+        );
+        svc.handle(req).await.unwrap();
+
+        let req = make_request(
+            "PutSecretValue",
+            r#"{"SecretId": "stage-err", "SecretString": "v2"}"#,
+        );
+        svc.handle(req).await.unwrap();
+
+        let new_vid = {
+            let s = state.read();
+            let secret = s.secrets.get("stage-err").unwrap();
+            secret
+                .versions
+                .iter()
+                .find(|(_, v)| v.stages.contains(&"AWSPREVIOUS".to_string()))
+                .map(|(id, _)| id.clone())
+                .unwrap()
+        };
+
+        // Move AWSCURRENT without RemoveFromVersionId -> error
+        let body = serde_json::json!({
+            "SecretId": "stage-err",
+            "VersionStage": "AWSCURRENT",
+            "MoveToVersionId": new_vid,
+        });
+        let req = make_request("UpdateSecretVersionStage", &body.to_string());
+        let err = expect_err(svc.handle(req).await);
+        assert!(err.to_string().contains("InvalidParameterException"));
+    }
+
+    // ── Find secret by ARN ──
+
+    #[tokio::test]
+    async fn find_secret_by_arn() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        let req = make_request(
+            "CreateSecret",
+            r#"{"Name": "arn-lookup", "SecretString": "v"}"#,
+        );
+        let resp = svc.handle(req).await.unwrap();
+        let b: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        let arn = b["ARN"].as_str().unwrap();
+
+        // Lookup by full ARN
+        let body = serde_json::json!({"SecretId": arn});
+        let req = make_request("GetSecretValue", &body.to_string());
+        let resp = svc.handle(req).await.unwrap();
+        let b: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(b["SecretString"], "v");
+    }
+
+    #[tokio::test]
+    async fn find_secret_by_partial_arn() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        let req = make_request(
+            "CreateSecret",
+            r#"{"Name": "partial-arn", "SecretString": "v"}"#,
+        );
+        svc.handle(req).await.unwrap();
+
+        // Partial ARN (without the random suffix)
+        let partial = "arn:aws:secretsmanager:us-east-1:123456789012:secret:partial-arn";
+        let body = serde_json::json!({"SecretId": partial});
+        let req = make_request("GetSecretValue", &body.to_string());
+        let resp = svc.handle(req).await.unwrap();
+        let b: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(b["SecretString"], "v");
+    }
+
+    // ── ValidateResourcePolicy edge cases ──
+
+    #[tokio::test]
+    async fn validate_resource_policy_with_secret_id() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        let req = make_request(
+            "CreateSecret",
+            r#"{"Name": "pol-val", "SecretString": "v"}"#,
+        );
+        svc.handle(req).await.unwrap();
+
+        let body = serde_json::json!({
+            "SecretId": "pol-val",
+            "ResourcePolicy": r#"{"Version":"2012-10-17","Statement":[]}"#,
+        });
+        let req = make_request("ValidateResourcePolicy", &body.to_string());
+        let resp = svc.handle(req).await.unwrap();
+        let b: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(b["PolicyValidationPassed"], true);
+    }
+
+    #[tokio::test]
+    async fn validate_resource_policy_nonexistent_secret() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        let body = serde_json::json!({
+            "SecretId": "ghost",
+            "ResourcePolicy": r#"{"Version":"2012-10-17","Statement":[]}"#,
+        });
+        let req = make_request("ValidateResourcePolicy", &body.to_string());
+        let err = expect_err(svc.handle(req).await);
+        assert!(err.to_string().contains("ResourceNotFoundException"));
+    }
+
+    // ── Tag operations edge cases ──
+
+    #[tokio::test]
+    async fn tag_resource_updates_existing_tag() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        let body = serde_json::json!({
+            "Name": "tag-upd",
+            "SecretString": "v",
+            "Tags": [{"Key": "env", "Value": "dev"}],
+        });
+        let req = make_request("CreateSecret", &body.to_string());
+        svc.handle(req).await.unwrap();
+
+        // Update existing tag value
+        let body = serde_json::json!({
+            "SecretId": "tag-upd",
+            "Tags": [{"Key": "env", "Value": "prod"}],
+        });
+        let req = make_request("TagResource", &body.to_string());
+        svc.handle(req).await.unwrap();
+
+        let req = make_request("DescribeSecret", r#"{"SecretId": "tag-upd"}"#);
+        let resp = svc.handle(req).await.unwrap();
+        let b: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        let tags = b["Tags"].as_array().unwrap();
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0]["Value"], "prod");
+    }
+
+    // ── Unsupported action ──
+
+    #[tokio::test]
+    async fn unsupported_action_returns_error() {
+        let state = make_state();
+        let svc = SecretsManagerService::new(state);
+
+        let req = make_request("BogusAction", "{}");
+        let err = expect_err(svc.handle(req).await);
+        assert!(err.to_string().contains("BogusAction"));
+    }
+
+    // ── Helper function tests ──
+
+    #[test]
+    fn test_split_words_basic() {
+        assert_eq!(split_words("hello"), vec!["hello"]);
+        assert_eq!(split_words("HelloWorld"), vec!["Hello", "World"]);
+        assert_eq!(split_words("my/secret/name"), vec!["my", "secret", "name"]);
+        assert_eq!(split_words("my-secret-name"), vec!["my", "secret", "name"]);
+        assert_eq!(split_words("my_secret_name"), vec!["my", "secret", "name"]);
+    }
+
+    #[test]
+    fn test_split_words_multiple_delimiters() {
+        // Multiple different special chars -> don't split
+        assert_eq!(split_words("my/secret-name"), vec!["my/secret-name"]);
+    }
+
+    #[test]
+    fn test_split_words_with_spaces() {
+        let words = split_words("hello world");
+        assert_eq!(words, vec!["hello", "world"]);
+    }
+
+    #[test]
+    fn test_match_pattern_prefix() {
+        assert!(match_pattern("prod", "production", true, true));
+        assert!(!match_pattern("Prod", "production", true, true));
+        assert!(match_pattern("Prod", "production", true, false));
+    }
+
+    #[test]
+    fn test_match_pattern_word() {
+        assert!(match_pattern("hello", "HelloWorld", false, false));
+        assert!(match_pattern("world", "HelloWorld", false, false));
+    }
+
+    #[test]
+    fn test_matcher_negation() {
+        // Negated: "!prod" matches strings that DON'T match "prod"
+        assert!(matcher(&["!prod"], &["staging"], true, true));
+    }
+
+    #[test]
+    fn test_base64_roundtrip() {
+        let data = b"Hello, World!";
+        let encoded = base64_encode(data);
+        let decoded = base64_decode(&encoded).unwrap();
+        assert_eq!(&decoded, data);
+    }
+
+    #[test]
+    fn test_base64_decode_invalid() {
+        // Invalid base64 char
+        assert!(base64_decode("!!!").is_none());
+    }
+
+    #[test]
+    fn test_check_version_idempotency() {
+        let mut versions = HashMap::new();
+        versions.insert(
+            "v1".to_string(),
+            SecretVersion {
+                version_id: "v1".to_string(),
+                secret_string: Some("hello".to_string()),
+                secret_binary: None,
+                stages: vec!["AWSCURRENT".to_string()],
+                created_at: Utc::now(),
+            },
+        );
+
+        // Not found
+        assert!(matches!(
+            check_secret_version_idempotency(&versions, "v2", &Some("x".to_string()), &None),
+            VersionIdempotency::NotFound
+        ));
+
+        // Match
+        assert!(matches!(
+            check_secret_version_idempotency(&versions, "v1", &Some("hello".to_string()), &None),
+            VersionIdempotency::Match
+        ));
+
+        // Conflict
+        assert!(matches!(
+            check_secret_version_idempotency(
+                &versions,
+                "v1",
+                &Some("different".to_string()),
+                &None
+            ),
+            VersionIdempotency::Conflict
+        ));
+    }
+
+    #[test]
+    fn test_is_mutating_action() {
+        assert!(is_mutating_action("CreateSecret"));
+        assert!(is_mutating_action("DeleteSecret"));
+        assert!(is_mutating_action("TagResource"));
+        assert!(!is_mutating_action("GetSecretValue"));
+        assert!(!is_mutating_action("ListSecrets"));
+        assert!(!is_mutating_action("DescribeSecret"));
+    }
+
+    #[test]
+    fn test_parse_tags_empty() {
+        let val = serde_json::json!(null);
+        assert_eq!(parse_tags(&val), vec![]);
+    }
+
+    #[test]
+    fn test_tags_to_json_roundtrip() {
+        let tags = vec![
+            ("k1".to_string(), "v1".to_string()),
+            ("k2".to_string(), "v2".to_string()),
+        ];
+        let json = tags_to_json(&tags);
+        assert_eq!(json.len(), 2);
+        assert_eq!(json[0]["Key"], "k1");
+        assert_eq!(json[1]["Value"], "v2");
+    }
+
+    #[test]
+    fn test_filter_name_prefix() {
+        let secret = Secret {
+            name: "prod/database".to_string(),
+            arn: "arn".to_string(),
+            description: None,
+            kms_key_id: None,
+            versions: HashMap::new(),
+            current_version_id: None,
+            tags: vec![],
+            tags_ever_set: false,
+            deleted: false,
+            deletion_date: None,
+            created_at: Utc::now(),
+            last_changed_at: Utc::now(),
+            last_accessed_at: None,
+            rotation_enabled: None,
+            rotation_lambda_arn: None,
+            rotation_rules: None,
+            last_rotated_at: None,
+            resource_policy: None,
+        };
+        assert!(filter_name(&secret, &["prod/"]));
+        assert!(!filter_name(&secret, &["staging/"]));
+    }
+
+    #[test]
+    fn test_filter_tag_value() {
+        let secret = Secret {
+            name: "s".to_string(),
+            arn: "arn".to_string(),
+            description: None,
+            kms_key_id: None,
+            versions: HashMap::new(),
+            current_version_id: None,
+            tags: vec![("env".to_string(), "production".to_string())],
+            tags_ever_set: true,
+            deleted: false,
+            deletion_date: None,
+            created_at: Utc::now(),
+            last_changed_at: Utc::now(),
+            last_accessed_at: None,
+            rotation_enabled: None,
+            rotation_lambda_arn: None,
+            rotation_rules: None,
+            last_rotated_at: None,
+            resource_policy: None,
+        };
+        assert!(filter_tag_value(&secret, &["prod"]));
+        assert!(!filter_tag_value(&secret, &["staging"]));
+    }
+
+    #[test]
+    fn test_filter_all_searches_name_desc_tags() {
+        let secret = Secret {
+            name: "my-secret".to_string(),
+            arn: "arn".to_string(),
+            description: Some("important database".to_string()),
+            kms_key_id: None,
+            versions: HashMap::new(),
+            current_version_id: None,
+            tags: vec![("team".to_string(), "backend".to_string())],
+            tags_ever_set: true,
+            deleted: false,
+            deletion_date: None,
+            created_at: Utc::now(),
+            last_changed_at: Utc::now(),
+            last_accessed_at: None,
+            rotation_enabled: None,
+            rotation_lambda_arn: None,
+            rotation_rules: None,
+            last_rotated_at: None,
+            resource_policy: None,
+        };
+        // Matches name
+        assert!(filter_all(&secret, &["my"]));
+        // Matches description
+        assert!(filter_all(&secret, &["database"]));
+        // Matches tag key
+        assert!(filter_all(&secret, &["team"]));
+        // Matches tag value
+        assert!(filter_all(&secret, &["backend"]));
+        // No match
+        assert!(!filter_all(&secret, &["zzzz"]));
     }
 }
