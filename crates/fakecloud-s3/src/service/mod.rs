@@ -3766,4 +3766,125 @@ mod tests {
         let svc = make_service();
         assert_aws_err(svc.get_bucket_website("nope"), "NoSuchBucket");
     }
+
+    // ── Object lock (lock.rs - 0% coverage) ──
+
+    #[test]
+    fn put_and_get_object_retention() {
+        let svc = make_service();
+        seed_bucket(&svc, "lock-b");
+        seed_object(&svc, "lock-b", "retained.txt", b"data");
+
+        let body = b"<Retention><Mode>GOVERNANCE</Mode><RetainUntilDate>2030-01-01T00:00:00Z</RetainUntilDate></Retention>";
+        let req = make_request(
+            Method::PUT,
+            "/lock-b/retained.txt",
+            &[("retention", "")],
+            body,
+        );
+        svc.put_object_retention(&req, "lock-b", "retained.txt")
+            .unwrap();
+
+        let req = make_request(
+            Method::GET,
+            "/lock-b/retained.txt",
+            &[("retention", "")],
+            b"",
+        );
+        let resp = svc
+            .get_object_retention(&req, "lock-b", "retained.txt")
+            .unwrap();
+        let body_str = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body_str.contains("GOVERNANCE"));
+    }
+
+    #[test]
+    fn get_object_retention_nonexistent_bucket() {
+        let svc = make_service();
+        let req = make_request(Method::GET, "/nope/key", &[("retention", "")], b"");
+        assert_aws_err(
+            svc.get_object_retention(&req, "nope", "key"),
+            "NoSuchBucket",
+        );
+    }
+
+    #[test]
+    fn get_object_retention_nonexistent_key() {
+        let svc = make_service();
+        seed_bucket(&svc, "lock-b2");
+        let req = make_request(Method::GET, "/lock-b2/missing", &[("retention", "")], b"");
+        assert_aws_err(
+            svc.get_object_retention(&req, "lock-b2", "missing"),
+            "NoSuchKey",
+        );
+    }
+
+    #[test]
+    fn put_and_get_object_legal_hold() {
+        let svc = make_service();
+        seed_bucket(&svc, "hold-b");
+        seed_object(&svc, "hold-b", "held.txt", b"data");
+
+        let body = b"<LegalHold><Status>ON</Status></LegalHold>";
+        let req = make_request(Method::PUT, "/hold-b/held.txt", &[("legal-hold", "")], body);
+        svc.put_object_legal_hold(&req, "hold-b", "held.txt")
+            .unwrap();
+
+        let req = make_request(Method::GET, "/hold-b/held.txt", &[("legal-hold", "")], b"");
+        let resp = svc
+            .get_object_legal_hold(&req, "hold-b", "held.txt")
+            .unwrap();
+        let body_str = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body_str.contains("ON"));
+    }
+
+    #[test]
+    fn get_object_legal_hold_nonexistent() {
+        let svc = make_service();
+        let req = make_request(Method::GET, "/nope/key", &[("legal-hold", "")], b"");
+        assert_aws_err(
+            svc.get_object_legal_hold(&req, "nope", "key"),
+            "NoSuchBucket",
+        );
+    }
+
+    // ── Object ACL (acl.rs - 0% coverage) ──
+
+    #[test]
+    fn get_object_acl_default() {
+        let svc = make_service();
+        seed_bucket(&svc, "acl-b");
+        seed_object(&svc, "acl-b", "file.txt", b"data");
+
+        let req = make_request(Method::GET, "/acl-b/file.txt", &[("acl", "")], b"");
+        let resp = svc.get_object_acl(&req, "acl-b", "file.txt").unwrap();
+        let body_str = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body_str.contains("AccessControlPolicy"));
+    }
+
+    #[test]
+    fn get_object_acl_nonexistent_bucket() {
+        let svc = make_service();
+        let req = make_request(Method::GET, "/nope/key", &[("acl", "")], b"");
+        assert_aws_err(svc.get_object_acl(&req, "nope", "key"), "NoSuchBucket");
+    }
+
+    #[test]
+    fn get_object_acl_nonexistent_key() {
+        let svc = make_service();
+        seed_bucket(&svc, "acl-b2");
+        let req = make_request(Method::GET, "/acl-b2/missing", &[("acl", "")], b"");
+        assert_aws_err(svc.get_object_acl(&req, "acl-b2", "missing"), "NoSuchKey");
+    }
+
+    #[test]
+    fn put_object_acl() {
+        let svc = make_service();
+        seed_bucket(&svc, "acl-put-b");
+        seed_object(&svc, "acl-put-b", "file.txt", b"data");
+
+        let acl_xml = b"<AccessControlPolicy><Owner><ID>owner</ID></Owner><AccessControlList><Grant><Grantee xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:type=\"CanonicalUser\"><ID>owner</ID></Grantee><Permission>FULL_CONTROL</Permission></Grant></AccessControlList></AccessControlPolicy>";
+        let req = make_request(Method::PUT, "/acl-put-b/file.txt", &[("acl", "")], acl_xml);
+        svc.put_object_acl(&req, "acl-put-b", "file.txt").unwrap();
+    }
 }
