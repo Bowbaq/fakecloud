@@ -1,0 +1,29 @@
+{
+    "name": "fakecloud/fakecloud",
+    "description": "PHP client SDK for fakecloud — a local AWS cloud emulator",
+    "type": "library",
+    "license": "AGPL-3.0-or-later",
+    "homepage": "https://github.com/faiscadev/fakecloud",
+    "keywords": ["fakecloud", "aws", "testing", "mock", "emulator", "localstack"],
+    "require": {
+        "php": ">=8.1",
+        "ext-curl": "*",
+        "ext-json": "*"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^10.0 || ^11.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "FakeCloud\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "FakeCloud\\Tests\\": "tests/"
+        }
+    },
+    "config": {
+        "sort-packages": true
+    }
+}
