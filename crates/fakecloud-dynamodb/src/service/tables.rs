@@ -1201,11 +1201,12 @@ impl DynamoDbService {
             // Verify the target bucket exists before touching the store —
             // otherwise we would orphan artifacts on disk under a bucket
             // directory that no in-memory bucket references.
+            let s3_acct_id = req.account_id.as_str();
             if !s3_state
                 .read()
-                .default_ref()
-                .buckets
-                .contains_key(s3_bucket)
+                .get(s3_acct_id)
+                .map(|s| s.buckets.contains_key(s3_bucket))
+                .unwrap_or(false)
             {
                 export_failed = true;
                 failure_code = "S3NoSuchBucket";
@@ -1250,7 +1251,7 @@ impl DynamoDbService {
                 match body_ref_result {
                     Ok(body_ref) => {
                         let mut s3 = s3_state.write();
-                        let s3_acct = s3.default_mut();
+                        let s3_acct = s3.get_or_create(s3_acct_id);
                         if let Some(bucket) = s3_acct.buckets.get_mut(s3_bucket) {
                             let obj = fakecloud_s3::state::S3Object {
                                 key: s3_key.clone(),
@@ -1433,7 +1434,14 @@ impl DynamoDbService {
         let mut processed_size_bytes: i64 = 0;
         if let Some(ref s3_state) = self.s3_state {
             let s3_mas = s3_state.read();
-            let s3 = s3_mas.default_ref();
+            let s3_acct_id = req.account_id.as_str();
+            let s3 = s3_mas.get(s3_acct_id).ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "ImportConflictException",
+                    format!("S3 bucket does not exist: {s3_bucket}"),
+                )
+            })?;
             let bucket = s3.buckets.get(s3_bucket).ok_or_else(|| {
                 AwsServiceError::aws_error(
                     StatusCode::BAD_REQUEST,

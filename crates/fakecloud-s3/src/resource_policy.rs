@@ -48,8 +48,9 @@ impl ResourcePolicyProvider for S3ResourcePolicyProvider {
             return None;
         }
         let bucket_name = parse_bucket_name(resource_arn)?;
-        let __mas = self.state.read();
-        let state = __mas.default_ref();
+        let mas = self.state.read();
+        let acct = mas.find_account(|s| s.buckets.contains_key(bucket_name))?;
+        let state = mas.get(acct)?;
         state
             .buckets
             .get(bucket_name)

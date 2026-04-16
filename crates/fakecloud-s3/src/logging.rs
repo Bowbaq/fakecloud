@@ -79,28 +79,31 @@ pub fn maybe_write_access_log(
     request: &AccessLogRequest<'_>,
 ) {
     // Read logging config from the source bucket
-    let logging_config_xml = {
+    let (logging_config_xml, bucket_owner) = {
         let mas = state.read();
-        let _empty_s3 = crate::state::S3State::new("", "");
-        let st = mas.default_ref();
-        st.buckets
+        let acct = match mas.find_account(|s| s.buckets.contains_key(source_bucket)) {
+            Some(a) => a,
+            None => return,
+        };
+        let st = match mas.get(acct) {
+            Some(s) => s,
+            None => return,
+        };
+        let config_xml = st
+            .buckets
             .get(source_bucket)
-            .and_then(|b| b.logging_config.clone())
+            .and_then(|b| b.logging_config.clone());
+        let owner = st
+            .buckets
+            .get(source_bucket)
+            .map(|b| b.acl_owner_id.clone())
+            .unwrap_or_else(|| "unknown".to_string());
+        (config_xml, owner)
     };
 
     let config = match logging_config_xml.and_then(|xml| parse_logging_config(&xml)) {
         Some(c) => c,
         None => return,
-    };
-
-    let bucket_owner = {
-        let mas = state.read();
-        let _empty_s3 = crate::state::S3State::new("", "");
-        let st = mas.default_ref();
-        st.buckets
-            .get(source_bucket)
-            .map(|b| b.acl_owner_id.clone())
-            .unwrap_or_else(|| "unknown".to_string())
     };
 
     let entry = format_access_log_entry(&bucket_owner, source_bucket, request);
@@ -130,10 +133,24 @@ pub fn maybe_write_access_log(
     let meta = object_meta_snapshot(&log_object);
     {
         let mut mas = state.write();
-        let st = mas.default_mut();
-        if let Some(target) = st.buckets.get_mut(&config.target_bucket) {
-            target.objects.insert(log_key.clone(), log_object);
+        let target_acct = mas
+            .find_account(|s| s.buckets.contains_key(&config.target_bucket))
+            .map(|a| a.to_string());
+        let inserted = if let Some(acct) = target_acct {
+            if let Some(st) = mas.get_mut(&acct) {
+                if let Some(target) = st.buckets.get_mut(&config.target_bucket) {
+                    target.objects.insert(log_key.clone(), log_object);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
         } else {
+            false
+        };
+        if !inserted {
             return;
         }
     }

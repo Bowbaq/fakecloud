@@ -14,10 +14,9 @@ use super::{
 impl S3Service {
     pub(super) fn list_buckets(
         &self,
-        _account_id: &str,
-        req: &AwsRequest,
+        account_id: &str,
+        _req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let account_id = req.account_id.as_str();
         let accts = self.state.read();
         let __empty = crate::state::S3State::new(account_id, "us-east-1");
         let state = accts.get(account_id).unwrap_or(&__empty);
@@ -37,7 +36,7 @@ impl S3Service {
              <Owner><ID>{account}</ID><DisplayName>{account}</DisplayName></Owner>\
              <Buckets>{buckets_xml}</Buckets>\
              </ListAllMyBucketsResult>",
-            account = req.account_id,
+            account = account_id,
         );
         Ok(s3_xml(StatusCode::OK, body))
     }
