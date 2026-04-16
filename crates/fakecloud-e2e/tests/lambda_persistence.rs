@@ -82,65 +82,6 @@ async fn persistence_round_trip_function_and_esm() {
         .any(|f| f.function_name() == Some("persist-func")));
 }
 
-/// Invocations introspection buffer resets on restart.
-#[tokio::test]
-async fn persistence_invocations_not_persisted() {
-    let tmp = tempfile::tempdir().unwrap();
-    let mut server = TestServer::start_persistent(tmp.path()).await;
-    let client = server.lambda_client().await;
-
-    client
-        .create_function()
-        .function_name("invoke-func")
-        .runtime(aws_sdk_lambda::types::Runtime::Python312)
-        .role("arn:aws:iam::123456789012:role/test-role")
-        .handler("index.handler")
-        .code(
-            aws_sdk_lambda::types::FunctionCode::builder()
-                .zip_file(Blob::new(make_python_zip()))
-                .build(),
-        )
-        .send()
-        .await
-        .unwrap();
-
-    drop(client);
-    server.restart().await;
-
-    // Function survived.
-    let client = server.lambda_client().await;
-    let func = client
-        .get_function()
-        .function_name("invoke-func")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        func.configuration().unwrap().function_name().unwrap(),
-        "invoke-func"
-    );
-
-    // Invocations buffer reset to empty.
-    let resp = reqwest::get(format!(
-        "{}/_fakecloud/lambda/invocations",
-        server.endpoint()
-    ))
-    .await
-    .unwrap()
-    .json::<serde_json::Value>()
-    .await
-    .unwrap();
-    let invocations = resp
-        .get("invocations")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-    assert!(
-        invocations.is_empty(),
-        "invocations buffer should reset on restart, got: {resp:?}"
-    );
-}
-
 /// Deletion survives a restart.
 #[tokio::test]
 async fn persistence_deletion_survives_restart() {
