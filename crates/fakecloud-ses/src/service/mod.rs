@@ -10,15 +10,23 @@ mod templates;
 use async_trait::async_trait;
 use http::{Method, StatusCode};
 use serde_json::{json, Value};
+use std::sync::Arc;
+use tokio::sync::Mutex as AsyncMutex;
 
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
+use fakecloud_persistence::SnapshotStore;
 
 use crate::fanout::SesDeliveryContext;
-use crate::state::{EventDestination, SharedSesState, Topic, TopicPreference};
+use crate::state::{
+    EventDestination, SesSnapshot, SharedSesState, Topic, TopicPreference,
+    SES_SNAPSHOT_SCHEMA_VERSION,
+};
 
 pub struct SesV2Service {
     state: SharedSesState,
     delivery_ctx: Option<SesDeliveryContext>,
+    snapshot_store: Option<Arc<dyn SnapshotStore>>,
+    snapshot_lock: Arc<AsyncMutex<()>>,
 }
 
 impl SesV2Service {
@@ -26,6 +34,8 @@ impl SesV2Service {
         Self {
             state,
             delivery_ctx: None,
+            snapshot_store: None,
+            snapshot_lock: Arc::new(AsyncMutex::new(())),
         }
     }
 
@@ -33,6 +43,36 @@ impl SesV2Service {
     pub fn with_delivery(mut self, ctx: SesDeliveryContext) -> Self {
         self.delivery_ctx = Some(ctx);
         self
+    }
+
+    pub fn with_snapshot_store(mut self, store: Arc<dyn SnapshotStore>) -> Self {
+        self.snapshot_store = Some(store);
+        self
+    }
+
+    /// Persist current state as a snapshot. Held across the
+    /// clone-serialize-write sequence to prevent stale-last writes,
+    /// with serde + file I/O offloaded to the blocking pool.
+    async fn save_snapshot(&self) {
+        let Some(store) = self.snapshot_store.clone() else {
+            return;
+        };
+        let _guard = self.snapshot_lock.lock().await;
+        let snapshot = SesSnapshot {
+            schema_version: SES_SNAPSHOT_SCHEMA_VERSION,
+            state: self.state.read().clone(),
+        };
+        let join = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            let bytes = serde_json::to_vec(&snapshot)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+            store.save(&bytes)
+        })
+        .await;
+        match join {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => tracing::error!(%err, "failed to write ses snapshot"),
+            Err(err) => tracing::error!(%err, "ses snapshot task panicked"),
+        }
     }
 
     /// Determine the action from the HTTP method and path segments.
@@ -640,6 +680,25 @@ fn event_destination_to_json(dest: &EventDestination) -> Value {
     obj
 }
 
+fn is_mutating_action(action: &str) -> bool {
+    const MUTATING_PREFIXES: &[&str] = &[
+        "Create",
+        "Update",
+        "Delete",
+        "Put",
+        "Tag",
+        "Untag",
+        "Send",
+        "Cancel",
+        "Verify",
+        "Set",
+        "Clone",
+        "Reorder",
+        "BatchUpdate",
+    ];
+    MUTATING_PREFIXES.iter().any(|p| action.starts_with(p))
+}
+
 #[async_trait]
 impl fakecloud_core::service::AwsService for SesV2Service {
     fn service_name(&self) -> &str {
@@ -649,7 +708,12 @@ impl fakecloud_core::service::AwsService for SesV2Service {
     async fn handle(&self, req: AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         // Route v1 Query protocol requests to the v1 module.
         if req.is_query_protocol {
-            return crate::v1::handle_v1_action(&self.state, &req);
+            let mutates = is_mutating_action(req.action.as_str());
+            let result = crate::v1::handle_v1_action(&self.state, &req);
+            if mutates && matches!(result.as_ref(), Ok(resp) if resp.status.is_success()) {
+                self.save_snapshot().await;
+            }
+            return result;
         }
 
         let (action, resource_name, sub_resource) =
@@ -663,8 +727,9 @@ impl fakecloud_core::service::AwsService for SesV2Service {
 
         let res = resource_name.as_deref().unwrap_or("");
         let sub = sub_resource.as_deref().unwrap_or("");
+        let mutates = is_mutating_action(action);
 
-        match action {
+        let result = match action {
             "GetAccount" => self.get_account(),
             "CreateEmailIdentity" => self.create_email_identity(&req),
             "ListEmailIdentities" => self.list_email_identities(),
@@ -807,7 +872,11 @@ impl fakecloud_core::service::AwsService for SesV2Service {
             "UpdateReputationEntityPolicy" => self.update_reputation_entity_policy(res, sub, &req),
             "BatchGetMetricData" => self.batch_get_metric_data(&req),
             _ => Err(AwsServiceError::action_not_implemented("ses", action)),
+        };
+        if mutates && matches!(result.as_ref(), Ok(resp) if resp.status.is_success()) {
+            self.save_snapshot().await;
         }
+        result
     }
 
     fn supported_actions(&self) -> &[&str] {

@@ -23,6 +23,17 @@ FAKECLOUD_STORAGE_MODE=persistent FAKECLOUD_DATA_PATH=/var/lib/fakecloud fakeclo
 ## What's persisted
 
 - **S3** — buckets, objects, versions, delete markers, multipart uploads (resumable across restarts), and every bucket subresource: tags, lifecycle, CORS, policy, notification, logging, website, public access block, object lock, replication, ownership, inventory, encryption, ACL, accelerate. Written to disk on every mutation and reloaded on startup.
+- **SQS** — queues, attributes, tags, in-flight and delayed messages.
+- **SNS** — topics, subscriptions, attributes, tags, platform applications and endpoints, SMS settings.
+- **EventBridge** — event buses, rules, targets, archives, replays, connections.
+- **IAM / STS** — users, groups, roles, policies, instance profiles, access keys.
+- **SSM Parameter Store** — parameters (String/SecureString/StringList), history.
+- **Secrets Manager** — secrets, versions, rotation settings.
+- **CloudWatch Logs** — log groups, streams, and log events.
+- **KMS** — keys, aliases, key policies, grants.
+- **DynamoDB** — tables, items, indexes, streams metadata.
+- **Kinesis** — streams, shards, records.
+- **SES** — identities, configuration sets, templates, contact lists and contacts, tags, suppression list, event destinations, identity policies, dedicated IP pools, tenants, receipt rule sets / rules / filters, account settings.
 - **Every other service** emits `persistence not yet supported, running in-memory` at startup and continues to operate exactly as in memory mode. Your tests don't break — you just don't get cross-restart durability for those services yet.
 
 ## Version compatibility
@@ -37,4 +48,4 @@ Object bodies are streamed straight to disk in persistent mode, not held in RAM.
 
 ## Introspection buffers are not persisted
 
-The `/_fakecloud/s3/notifications` buffer — and every other `/_fakecloud/*` introspection endpoint — is intentionally not persisted. These exist so tests can assert which events fired during the current run, not as a long-term audit log.
+The `/_fakecloud/s3/notifications` buffer — and every other `/_fakecloud/*` introspection endpoint, including `/_fakecloud/ses/emails` and `/_fakecloud/ses/inbound-emails` — is intentionally not persisted. These exist so tests can assert which events fired during the current run, not as a long-term audit log.
