@@ -382,13 +382,7 @@ async fn main() {
 
     // Register services
     if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
-        for service in [
-            "lambda",
-            "rds",
-            "elasticache",
-            "states",
-            "bedrock",
-        ] {
+        for service in ["lambda", "rds", "elasticache", "states", "bedrock"] {
             fakecloud_persistence::warn_unsupported(service);
         }
     }
