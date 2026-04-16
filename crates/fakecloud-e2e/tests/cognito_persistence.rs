@@ -146,6 +146,9 @@ async fn persistence_groups_and_tags() {
 }
 
 /// Auth events introspection buffer does NOT persist across restarts.
+/// We deliberately trigger a failed AdminInitiateAuth so the pre-restart
+/// buffer is non-empty; if we skipped that step this test would pass
+/// trivially even if auth-events were persisted.
 #[tokio::test]
 async fn persistence_auth_events_not_persisted() {
     let tmp = tempfile::tempdir().unwrap();
@@ -160,6 +163,23 @@ async fn persistence_auth_events_not_persisted() {
         .unwrap();
     let pool_id = pool.user_pool().unwrap().id().unwrap().to_string();
 
+    let app_client = client
+        .create_user_pool_client()
+        .user_pool_id(&pool_id)
+        .client_name("events-client")
+        .explicit_auth_flows(
+            aws_sdk_cognitoidentityprovider::types::ExplicitAuthFlowsType::AdminNoSrpAuth,
+        )
+        .send()
+        .await
+        .unwrap();
+    let client_id = app_client
+        .user_pool_client()
+        .unwrap()
+        .client_id()
+        .unwrap()
+        .to_string();
+
     client
         .admin_create_user()
         .user_pool_id(&pool_id)
@@ -167,8 +187,29 @@ async fn persistence_auth_events_not_persisted() {
         .send()
         .await
         .unwrap();
+    client
+        .admin_set_user_password()
+        .user_pool_id(&pool_id)
+        .username("bob")
+        .password("CorrectP@ssw0rd1")
+        .permanent(true)
+        .send()
+        .await
+        .unwrap();
 
-    // Hit the introspection endpoint pre-restart to confirm it's non-empty.
+    // Failed auth attempt — emits a SIGN_IN_FAILURE auth event.
+    let _ = client
+        .admin_initiate_auth()
+        .user_pool_id(&pool_id)
+        .client_id(&client_id)
+        .auth_flow(aws_sdk_cognitoidentityprovider::types::AuthFlowType::AdminNoSrpAuth)
+        .auth_parameters("USERNAME", "bob")
+        .auth_parameters("PASSWORD", "WrongPassword1!")
+        .send()
+        .await;
+
+    // Pre-restart buffer must be non-empty — otherwise the post-restart
+    // assertion is vacuous.
     let pre = reqwest::get(format!(
         "{}/_fakecloud/cognito/auth-events",
         server.endpoint()
@@ -178,7 +219,16 @@ async fn persistence_auth_events_not_persisted() {
     .json::<serde_json::Value>()
     .await
     .unwrap();
-    let _ = pre; // some flows may not push events; we only care about post-restart emptiness
+    let pre_events = pre
+        .get("events")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        !pre_events.is_empty(),
+        "pre-restart auth_events buffer should be non-empty so the \
+         post-restart emptiness assertion is meaningful, got: {pre:?}"
+    );
 
     drop(client);
     server.restart().await;
@@ -205,7 +255,6 @@ async fn persistence_auth_events_not_persisted() {
     .unwrap();
     let events = post
         .get("events")
-        .or_else(|| post.get("auth_events"))
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
