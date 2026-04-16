@@ -1,9 +1,10 @@
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LambdaFunction {
     pub function_name: String,
     pub function_arn: String,
@@ -33,7 +34,7 @@ pub struct LambdaFunction {
     pub policy: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventSourceMapping {
     pub uuid: String,
     pub function_arn: String,
@@ -45,7 +46,7 @@ pub struct EventSourceMapping {
 }
 
 /// A recorded Lambda invocation from cross-service delivery.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LambdaInvocation {
     pub function_arn: String,
     pub payload: String,
@@ -53,12 +54,16 @@ pub struct LambdaInvocation {
     pub source: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LambdaState {
     pub account_id: String,
     pub region: String,
+    #[serde(default)]
     pub functions: HashMap<String, LambdaFunction>,
+    #[serde(default)]
     pub event_source_mappings: HashMap<String, EventSourceMapping>,
-    /// Recorded invocations from cross-service integrations (SQS, EventBridge, etc.)
+    /// Recorded invocations from cross-service integrations — not persisted.
+    #[serde(default, skip)]
     pub invocations: Vec<LambdaInvocation>,
 }
 
@@ -81,3 +86,11 @@ impl LambdaState {
 }
 
 pub type SharedLambdaState = Arc<RwLock<LambdaState>>;
+
+pub const LAMBDA_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LambdaSnapshot {
+    pub schema_version: u32,
+    pub state: LambdaState,
+}
