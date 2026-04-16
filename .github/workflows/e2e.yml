@@ -63,6 +63,18 @@ jobs:
       - uses: taiki-e/install-action@b3bd89dcd46d5f3d508436e1bf794284c155bbcc # nextest
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
+      - name: Free disk space
+        if: startsWith(matrix.name, 'lambda-runtimes-') || matrix.name == 'lambda-container-clis'
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: false
+          swap-storage: true
+
       - name: Install podman
         if: matrix.install_podman
         run: sudo apt-get update && sudo apt-get install -y podman
