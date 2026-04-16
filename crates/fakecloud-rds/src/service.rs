@@ -3708,4 +3708,195 @@ mod tests {
         );
         assert_code(svc.list_tags_for_resource(&req), "DBInstanceNotFound");
     }
+
+    // ── snapshot operations ──
+
+    #[tokio::test]
+    async fn create_db_snapshot_missing_id_errors() {
+        let svc = make_service();
+        let req = request(
+            "CreateDBSnapshot",
+            &[("DBInstanceIdentifier", "nonexistent")],
+        );
+        assert_code(svc.create_db_snapshot(&req).await, "MissingParameter");
+    }
+
+    #[tokio::test]
+    async fn create_db_snapshot_unknown_instance_errors() {
+        let svc = make_service();
+        let req = request(
+            "CreateDBSnapshot",
+            &[
+                ("DBSnapshotIdentifier", "snap1"),
+                ("DBInstanceIdentifier", "ghost"),
+            ],
+        );
+        assert!(svc.create_db_snapshot(&req).await.is_err());
+    }
+
+    // ── delete_db_instance ──
+
+    #[tokio::test]
+    async fn delete_db_instance_missing_id_errors() {
+        let svc = make_service();
+        let req = request("DeleteDBInstance", &[]);
+        assert_code(svc.delete_db_instance(&req).await, "MissingParameter");
+    }
+
+    // ── reboot_db_instance ──
+
+    #[tokio::test]
+    async fn reboot_db_instance_missing_id_errors() {
+        let svc = make_service();
+        let req = request("RebootDBInstance", &[]);
+        assert_code(svc.reboot_db_instance(&req).await, "MissingParameter");
+    }
+
+    // ── create_db_instance validation ──
+
+    #[tokio::test]
+    async fn create_db_instance_missing_id_errors() {
+        let svc = make_service();
+        let req = request(
+            "CreateDBInstance",
+            &[
+                ("Engine", "postgres"),
+                ("DBInstanceClass", "db.t3.micro"),
+                ("AllocatedStorage", "20"),
+                ("MasterUsername", "admin"),
+                ("MasterUserPassword", "secretpass"),
+            ],
+        );
+        assert!(svc.create_db_instance(&req).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn create_db_instance_unsupported_engine_errors() {
+        let svc = make_service();
+        let req = request(
+            "CreateDBInstance",
+            &[
+                ("DBInstanceIdentifier", "db1"),
+                ("Engine", "mongodb"),
+                ("DBInstanceClass", "db.t3.micro"),
+                ("AllocatedStorage", "20"),
+                ("MasterUsername", "admin"),
+                ("MasterUserPassword", "secretpass"),
+            ],
+        );
+        assert!(svc.create_db_instance(&req).await.is_err());
+    }
+
+    // ── restore_db_instance_from_db_snapshot ──
+
+    #[tokio::test]
+    async fn restore_db_instance_missing_ids_errors() {
+        let svc = make_service();
+        let req = request("RestoreDBInstanceFromDBSnapshot", &[]);
+        assert!(svc
+            .restore_db_instance_from_db_snapshot(&req)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn restore_db_instance_unknown_snapshot_errors() {
+        let svc = make_service();
+        let req = request(
+            "RestoreDBInstanceFromDBSnapshot",
+            &[
+                ("DBInstanceIdentifier", "restored"),
+                ("DBSnapshotIdentifier", "missing"),
+            ],
+        );
+        assert!(svc
+            .restore_db_instance_from_db_snapshot(&req)
+            .await
+            .is_err());
+    }
+
+    // ── create_db_instance_read_replica ──
+
+    #[tokio::test]
+    async fn create_read_replica_missing_source_errors() {
+        let svc = make_service();
+        let req = request(
+            "CreateDBInstanceReadReplica",
+            &[("DBInstanceIdentifier", "replica1")],
+        );
+        assert!(svc.create_db_instance_read_replica(&req).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn create_read_replica_unknown_source_errors() {
+        let svc = make_service();
+        let req = request(
+            "CreateDBInstanceReadReplica",
+            &[
+                ("DBInstanceIdentifier", "replica1"),
+                ("SourceDBInstanceIdentifier", "ghost"),
+            ],
+        );
+        assert!(svc.create_db_instance_read_replica(&req).await.is_err());
+    }
+
+    // ── describe_db_snapshots with filters ──
+
+    #[test]
+    fn describe_db_snapshots_by_snapshot_id_only() {
+        let svc = make_service();
+        seed_snapshot(&svc, "s1", "inst1");
+        let req = request("DescribeDBSnapshots", &[("DBSnapshotIdentifier", "s1")]);
+        let resp = svc.describe_db_snapshots(&req).unwrap();
+        let b = body_of(resp);
+        assert!(b.contains("<DBSnapshotIdentifier>s1</DBSnapshotIdentifier>"));
+    }
+
+    #[test]
+    fn describe_db_snapshots_by_instance_id_returns_matching() {
+        let svc = make_service();
+        seed_snapshot(&svc, "s1", "inst1");
+        seed_snapshot(&svc, "s2", "inst2");
+        let req = request("DescribeDBSnapshots", &[("DBInstanceIdentifier", "inst1")]);
+        let resp = svc.describe_db_snapshots(&req).unwrap();
+        let b = body_of(resp);
+        assert!(b.contains("s1"));
+        assert!(!b.contains("<DBSnapshotIdentifier>s2</DBSnapshotIdentifier>"));
+    }
+
+    // ── modify_db_parameter_group ──
+
+    #[test]
+    fn modify_db_parameter_group_missing_name() {
+        let svc = make_service();
+        let req = request("ModifyDBParameterGroup", &[]);
+        assert!(svc.modify_db_parameter_group(&req).is_err());
+    }
+
+    // ── modify_db_subnet_group ──
+
+    #[test]
+    fn modify_db_subnet_group_unknown_errors() {
+        let svc = make_service();
+        let req = request(
+            "ModifyDBSubnetGroup",
+            &[
+                ("DBSubnetGroupName", "ghost"),
+                ("SubnetIds.SubnetIdentifier.1", "subnet-a"),
+                ("SubnetIds.SubnetIdentifier.2", "subnet-b"),
+            ],
+        );
+        assert!(svc.modify_db_subnet_group(&req).is_err());
+    }
+
+    // ── describe_db_instances ──
+
+    #[test]
+    fn describe_db_instances_empty_returns_xml() {
+        let svc = make_service();
+        let req = request("DescribeDBInstances", &[]);
+        let resp = svc.describe_db_instances(&req).unwrap();
+        let b = body_of(resp);
+        assert!(b.contains("DescribeDBInstancesResult"));
+    }
 }
