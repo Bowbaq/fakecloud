@@ -5989,4 +5989,226 @@ mod tests {
         let req = make_req("GlobalSignOut", &body.to_string());
         assert!(svc.global_sign_out(&req).is_err());
     }
+
+    // ── groups.rs error branches ──
+
+    #[test]
+    fn create_group_duplicate_errors_g() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id, "GroupName": "dup"});
+        let req = make_req("CreateGroup", &body.to_string());
+        svc.create_group(&req).unwrap();
+        let req = make_req("CreateGroup", &body.to_string());
+        assert!(svc.create_group(&req).is_err());
+    }
+
+    #[test]
+    fn get_group_not_found_g() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id, "GroupName": "ghost"});
+        let req = make_req("GetGroup", &body.to_string());
+        assert!(svc.get_group(&req).is_err());
+    }
+
+    #[test]
+    fn update_group_not_found_g() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id, "GroupName": "ghost"});
+        let req = make_req("UpdateGroup", &body.to_string());
+        assert!(svc.update_group(&req).is_err());
+    }
+
+    #[test]
+    fn delete_group_not_found_g() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id, "GroupName": "ghost"});
+        let req = make_req("DeleteGroup", &body.to_string());
+        assert!(svc.delete_group(&req).is_err());
+    }
+
+    #[test]
+    fn admin_add_user_to_unknown_group_errors() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "u1");
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Username": "u1",
+            "GroupName": "ghost"
+        });
+        let req = make_req("AdminAddUserToGroup", &body.to_string());
+        assert!(svc.admin_add_user_to_group(&req).is_err());
+    }
+
+    #[test]
+    fn admin_add_unknown_user_to_group_errors() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        svc.create_group(&make_req(
+            "CreateGroup",
+            &json!({"UserPoolId": pool_id, "GroupName": "g1"}).to_string(),
+        ))
+        .unwrap();
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Username": "ghost",
+            "GroupName": "g1"
+        });
+        let req = make_req("AdminAddUserToGroup", &body.to_string());
+        assert!(svc.admin_add_user_to_group(&req).is_err());
+    }
+
+    #[test]
+    fn admin_remove_user_from_group_not_found() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Username": "ghost",
+            "GroupName": "ghost"
+        });
+        let req = make_req("AdminRemoveUserFromGroup", &body.to_string());
+        assert!(svc.admin_remove_user_from_group(&req).is_err());
+    }
+
+    // ── identity_providers.rs ──
+
+    #[test]
+    fn create_identity_provider_duplicate_errors() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({
+            "UserPoolId": pool_id,
+            "ProviderName": "dup",
+            "ProviderType": "Google",
+            "ProviderDetails": {}
+        });
+        svc.create_identity_provider(&make_req("CreateIdentityProvider", &body.to_string()))
+            .unwrap();
+        assert!(svc
+            .create_identity_provider(&make_req("CreateIdentityProvider", &body.to_string()))
+            .is_err());
+    }
+
+    #[test]
+    fn describe_identity_provider_not_found() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id, "ProviderName": "ghost"});
+        let req = make_req("DescribeIdentityProvider", &body.to_string());
+        assert!(svc.describe_identity_provider(&req).is_err());
+    }
+
+    #[test]
+    fn delete_identity_provider_not_found() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id, "ProviderName": "ghost"});
+        let req = make_req("DeleteIdentityProvider", &body.to_string());
+        assert!(svc.delete_identity_provider(&req).is_err());
+    }
+
+    #[test]
+    fn update_identity_provider_not_found() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({
+            "UserPoolId": pool_id,
+            "ProviderName": "ghost",
+            "ProviderDetails": {}
+        });
+        let req = make_req("UpdateIdentityProvider", &body.to_string());
+        assert!(svc.update_identity_provider(&req).is_err());
+    }
+
+    // ── resource_servers.rs ──
+
+    #[test]
+    fn describe_resource_server_not_found() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id, "Identifier": "ghost"});
+        let req = make_req("DescribeResourceServer", &body.to_string());
+        assert!(svc.describe_resource_server(&req).is_err());
+    }
+
+    #[test]
+    fn update_resource_server_not_found() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Identifier": "ghost",
+            "Name": "x",
+            "Scopes": []
+        });
+        let req = make_req("UpdateResourceServer", &body.to_string());
+        assert!(svc.update_resource_server(&req).is_err());
+    }
+
+    #[test]
+    fn delete_resource_server_not_found() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id, "Identifier": "ghost"});
+        let req = make_req("DeleteResourceServer", &body.to_string());
+        assert!(svc.delete_resource_server(&req).is_err());
+    }
+
+    // ── user_pools.rs error branches ──
+
+    #[test]
+    fn describe_user_pool_not_found() {
+        let (svc, _) = make_svc();
+        let body = json!({"UserPoolId": "us-east-1_ghost000"});
+        let req = make_req("DescribeUserPool", &body.to_string());
+        assert!(svc.describe_user_pool(&req).is_err());
+    }
+
+    #[test]
+    fn delete_user_pool_not_found() {
+        let (svc, _) = make_svc();
+        let body = json!({"UserPoolId": "us-east-1_ghost000"});
+        let req = make_req("DeleteUserPool", &body.to_string());
+        assert!(svc.delete_user_pool(&req).is_err());
+    }
+
+    #[test]
+    fn update_user_pool_not_found() {
+        let (svc, _) = make_svc();
+        let body = json!({"UserPoolId": "us-east-1_ghost000"});
+        let req = make_req("UpdateUserPool", &body.to_string());
+        assert!(svc.update_user_pool(&req).is_err());
+    }
+
+    #[test]
+    fn describe_user_pool_client_not_found() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id, "ClientId": "ghost"});
+        let req = make_req("DescribeUserPoolClient", &body.to_string());
+        assert!(svc.describe_user_pool_client(&req).is_err());
+    }
+
+    #[test]
+    fn delete_user_pool_client_not_found() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id, "ClientId": "ghost"});
+        let req = make_req("DeleteUserPoolClient", &body.to_string());
+        assert!(svc.delete_user_pool_client(&req).is_err());
+    }
+
+    #[test]
+    fn update_user_pool_client_not_found() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id, "ClientId": "ghost"});
+        let req = make_req("UpdateUserPoolClient", &body.to_string());
+        assert!(svc.update_user_pool_client(&req).is_err());
+    }
 }
