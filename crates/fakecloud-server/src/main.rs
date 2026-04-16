@@ -382,14 +382,7 @@ async fn main() {
 
     // Register services
     if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
-        for service in [
-            "lambda",
-            "cognito-idp",
-            "rds",
-            "elasticache",
-            "states",
-            "bedrock",
-        ] {
+        for service in ["lambda", "rds", "elasticache", "states", "bedrock"] {
             fakecloud_persistence::warn_unsupported(service);
         }
     }
@@ -1111,9 +1104,62 @@ async fn main() {
     let cognito_delivery_ctx = fakecloud_cognito::triggers::CognitoDeliveryContext {
         delivery_bus: delivery_for_cognito,
     };
-    registry.register(Arc::new(
-        CognitoService::new(cognito_state.clone()).with_delivery(cognito_delivery_ctx),
-    ));
+    let cognito_snapshot_store: Option<Arc<dyn fakecloud_persistence::SnapshotStore>> =
+        if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
+            let data_path = persistence_config
+                .data_path
+                .as_ref()
+                .expect("validated above")
+                .clone();
+            let path = data_path.join("cognito-idp").join("snapshot.json");
+            let store = fakecloud_persistence::DiskSnapshotStore::new(path);
+            match fakecloud_persistence::SnapshotStore::load(&store) {
+                Ok(Some(bytes)) => {
+                    match serde_json::from_slice::<fakecloud_cognito::state::CognitoSnapshot>(
+                        &bytes,
+                    ) {
+                        Ok(snapshot) => {
+                            if snapshot.schema_version
+                                != fakecloud_cognito::state::COGNITO_SNAPSHOT_SCHEMA_VERSION
+                            {
+                                fatal_exit(format_args!(
+                                    "cognito persistence schema mismatch: on-disk={}, expected={}",
+                                    snapshot.schema_version,
+                                    fakecloud_cognito::state::COGNITO_SNAPSHOT_SCHEMA_VERSION,
+                                ));
+                            }
+                            let pool_count = snapshot.state.user_pools.len();
+                            let user_count: usize =
+                                snapshot.state.users.values().map(|u| u.len()).sum();
+                            *cognito_state.write() = snapshot.state;
+                            tracing::info!(
+                                user_pools = pool_count,
+                                users = user_count,
+                                "loaded cognito persistence snapshot",
+                            );
+                        }
+                        Err(err) => fatal_exit(format_args!(
+                            "failed to parse cognito persistence snapshot: {err}"
+                        )),
+                    }
+                }
+                Ok(None) => {
+                    tracing::info!("no cognito persistence snapshot found; starting empty");
+                }
+                Err(err) => fatal_exit(format_args!(
+                    "failed to read cognito persistence snapshot: {err}"
+                )),
+            }
+            Some(Arc::new(store) as Arc<dyn fakecloud_persistence::SnapshotStore>)
+        } else {
+            None
+        };
+    let mut cognito_service =
+        CognitoService::new(cognito_state.clone()).with_delivery(cognito_delivery_ctx);
+    if let Some(store) = cognito_snapshot_store {
+        cognito_service = cognito_service.with_snapshot_store(store);
+    }
+    registry.register(Arc::new(cognito_service));
     let kinesis_snapshot_store: Option<Arc<dyn fakecloud_persistence::SnapshotStore>> =
         if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
             let data_path = persistence_config

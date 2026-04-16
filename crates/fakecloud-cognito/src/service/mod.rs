@@ -11,6 +11,7 @@ mod user_pools;
 mod users;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use base64::Engine;
@@ -18,22 +19,26 @@ use chrono::Utc;
 use http::StatusCode;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use tokio::sync::Mutex as AsyncMutex;
 use uuid::Uuid;
 
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
+use fakecloud_persistence::SnapshotStore;
 
 use crate::state::{
-    AccountRecoverySetting, AdminCreateUserConfig, Device, EmailConfiguration, Group,
-    IdentityProvider, InviteMessageTemplate, PasswordPolicy, RecoveryOption, ResourceServer,
+    AccountRecoverySetting, AdminCreateUserConfig, CognitoSnapshot, Device, EmailConfiguration,
+    Group, IdentityProvider, InviteMessageTemplate, PasswordPolicy, RecoveryOption, ResourceServer,
     ResourceServerScope, SchemaAttribute, SharedCognitoState, SignInPolicy, SmsConfiguration,
     StringAttributeConstraints, TokenValidityUnits, User, UserAttribute, UserImportJob, UserPool,
-    UserPoolClient, UserPoolDomain, VerificationMessageTemplate,
+    UserPoolClient, UserPoolDomain, VerificationMessageTemplate, COGNITO_SNAPSHOT_SCHEMA_VERSION,
 };
 use crate::triggers::CognitoDeliveryContext;
 
 pub struct CognitoService {
     state: SharedCognitoState,
     delivery_ctx: Option<CognitoDeliveryContext>,
+    snapshot_store: Option<Arc<dyn SnapshotStore>>,
+    snapshot_lock: Arc<AsyncMutex<()>>,
 }
 
 impl CognitoService {
@@ -41,6 +46,8 @@ impl CognitoService {
         Self {
             state,
             delivery_ctx: None,
+            snapshot_store: None,
+            snapshot_lock: Arc::new(AsyncMutex::new(())),
         }
     }
 
@@ -49,6 +56,83 @@ impl CognitoService {
         self.delivery_ctx = Some(ctx);
         self
     }
+
+    pub fn with_snapshot_store(mut self, store: Arc<dyn SnapshotStore>) -> Self {
+        self.snapshot_store = Some(store);
+        self
+    }
+
+    /// Persist current state as a snapshot. Held across the
+    /// clone-serialize-write sequence to prevent stale-last writes,
+    /// with serde + file I/O offloaded to the blocking pool.
+    async fn save_snapshot(&self) {
+        let Some(store) = self.snapshot_store.clone() else {
+            return;
+        };
+        let _guard = self.snapshot_lock.lock().await;
+        let snapshot = CognitoSnapshot {
+            schema_version: COGNITO_SNAPSHOT_SCHEMA_VERSION,
+            state: self.state.read().clone(),
+        };
+        let join = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            let bytes = serde_json::to_vec(&snapshot)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+            store.save(&bytes)
+        })
+        .await;
+        match join {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => tracing::error!(%err, "failed to write cognito snapshot"),
+            Err(err) => tracing::error!(%err, "cognito snapshot task panicked"),
+        }
+    }
+}
+
+/// Actions that mutate persistent state. List excludes pure reads
+/// (`Describe*`, `List*`, `Get*`, `AdminGet*`, `AdminList*`) and any
+/// other action that doesn't change state stored in `CognitoState`.
+fn is_mutating_action(action: &str) -> bool {
+    !matches!(
+        action,
+        "DescribeUserPool"
+            | "DescribeUserPoolClient"
+            | "DescribeUserPoolDomain"
+            | "DescribeIdentityProvider"
+            | "DescribeResourceServer"
+            | "DescribeRiskConfiguration"
+            | "DescribeManagedLoginBranding"
+            | "DescribeManagedLoginBrandingByClient"
+            | "DescribeUserImportJob"
+            | "DescribeTerms"
+            | "ListUserPools"
+            | "ListUserPoolClients"
+            | "ListUserPoolClientSecrets"
+            | "ListUsers"
+            | "ListUsersInGroup"
+            | "ListGroups"
+            | "ListIdentityProviders"
+            | "ListResourceServers"
+            | "ListDevices"
+            | "ListTagsForResource"
+            | "ListUserImportJobs"
+            | "ListTerms"
+            | "ListWebAuthnCredentials"
+            | "AdminGetUser"
+            | "AdminGetDevice"
+            | "AdminListDevices"
+            | "AdminListGroupsForUser"
+            | "AdminListUserAuthEvents"
+            | "GetUser"
+            | "GetGroup"
+            | "GetDevice"
+            | "GetUserPoolMfaConfig"
+            | "GetUserAuthFactors"
+            | "GetUICustomization"
+            | "GetLogDeliveryConfiguration"
+            | "GetSigningCertificate"
+            | "GetCSVHeader"
+            | "GetIdentityProviderByIdentifier"
+    )
 }
 
 #[async_trait]
@@ -58,7 +142,8 @@ impl AwsService for CognitoService {
     }
 
     async fn handle(&self, req: AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        match req.action.as_str() {
+        let mutates = is_mutating_action(req.action.as_str());
+        let result = match req.action.as_str() {
             "CreateUserPool" => self.create_user_pool(&req),
             "DescribeUserPool" => self.describe_user_pool(&req),
             "UpdateUserPool" => self.update_user_pool(&req),
@@ -187,7 +272,11 @@ impl AwsService for CognitoService {
                 "cognito-idp",
                 &req.action,
             )),
+        };
+        if mutates && matches!(result.as_ref(), Ok(resp) if resp.status.is_success()) {
+            self.save_snapshot().await;
         }
+        result
     }
 
     fn supported_actions(&self) -> &[&str] {

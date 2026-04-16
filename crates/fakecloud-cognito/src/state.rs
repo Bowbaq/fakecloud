@@ -7,46 +7,75 @@ use serde::{Deserialize, Serialize};
 
 pub type SharedCognitoState = Arc<RwLock<CognitoState>>;
 
+pub const COGNITO_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CognitoSnapshot {
+    pub schema_version: u32,
+    pub state: CognitoState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CognitoState {
     pub account_id: String,
     pub region: String,
+    #[serde(default)]
     pub user_pools: HashMap<String, UserPool>,
+    #[serde(default)]
     pub user_pool_clients: HashMap<String, UserPoolClient>,
     /// pool_id -> (username -> User)
+    #[serde(default)]
     pub users: HashMap<String, HashMap<String, User>>,
     /// refresh_token -> RefreshTokenData
+    #[serde(default)]
     pub refresh_tokens: HashMap<String, RefreshTokenData>,
     /// session_token -> SessionData
+    #[serde(default)]
     pub sessions: HashMap<String, SessionData>,
     /// access_token -> AccessTokenData
+    #[serde(default)]
     pub access_tokens: HashMap<String, AccessTokenData>,
     /// pool_id -> (group_name -> Group)
+    #[serde(default)]
     pub groups: HashMap<String, HashMap<String, Group>>,
     /// pool_id -> (username -> [group_names])
+    #[serde(default)]
     pub user_groups: HashMap<String, HashMap<String, Vec<String>>>,
     /// pool_id -> (provider_name -> IdentityProvider)
+    #[serde(default)]
     pub identity_providers: HashMap<String, HashMap<String, IdentityProvider>>,
     /// pool_id -> (identifier -> ResourceServer)
+    #[serde(default)]
     pub resource_servers: HashMap<String, HashMap<String, ResourceServer>>,
     /// domain -> UserPoolDomain
+    #[serde(default)]
     pub domains: HashMap<String, UserPoolDomain>,
     /// resource_arn -> tags
+    #[serde(default)]
     pub tags: HashMap<String, HashMap<String, String>>,
     /// pool_id -> (job_id -> UserImportJob)
+    #[serde(default)]
     pub import_jobs: HashMap<String, HashMap<String, UserImportJob>>,
-    /// Auth events for introspection
+    /// Auth events for introspection — not persisted across restarts.
+    #[serde(default, skip)]
     pub auth_events: Vec<AuthEvent>,
     /// (pool_id, client_id|"") -> UICustomization JSON
+    #[serde(default)]
     pub ui_customizations: HashMap<String, serde_json::Value>,
     /// pool_id -> LogDeliveryConfiguration JSON
+    #[serde(default)]
     pub log_delivery_configs: HashMap<String, serde_json::Value>,
     /// (pool_id, client_id|"") -> RiskConfiguration JSON
+    #[serde(default)]
     pub risk_configurations: HashMap<String, serde_json::Value>,
     /// branding_id -> ManagedLoginBranding JSON
+    #[serde(default)]
     pub managed_login_brandings: HashMap<String, serde_json::Value>,
     /// terms_id -> Terms JSON
+    #[serde(default)]
     pub terms: HashMap<String, serde_json::Value>,
     /// (pool_id:username) -> WebAuthn credentials
+    #[serde(default)]
     pub webauthn_credentials: HashMap<String, Vec<WebAuthnCredential>>,
 }
 
@@ -132,6 +161,7 @@ impl CognitoState {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RefreshTokenData {
     pub user_pool_id: String,
     pub username: String,
@@ -139,6 +169,7 @@ pub struct RefreshTokenData {
     pub issued_at: DateTime<Utc>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AccessTokenData {
     pub user_pool_id: String,
     pub username: String,
@@ -146,6 +177,7 @@ pub struct AccessTokenData {
     pub issued_at: DateTime<Utc>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SessionData {
     pub user_pool_id: String,
     pub username: String,
@@ -158,7 +190,7 @@ pub struct SessionData {
 }
 
 /// Tracks the result of a single challenge round in a CUSTOM_AUTH flow.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChallengeResult {
     pub challenge_name: String,
     pub challenge_result: bool,
