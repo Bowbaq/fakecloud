@@ -1134,4 +1134,175 @@ mod tests {
             "expected ~900s duration, got diff={diff}s from expected"
         );
     }
+
+    fn make_sts_service() -> (StsService, SharedIamState) {
+        use crate::state::IamState;
+        use parking_lot::RwLock;
+        use std::sync::Arc;
+
+        let state: SharedIamState = Arc::new(RwLock::new(IamState::new("123456789012")));
+        let sts = StsService::new(state.clone());
+        (sts, state)
+    }
+
+    fn sts_request(action: &str, params: Vec<(&str, &str)>) -> AwsRequest {
+        let mut qp = std::collections::HashMap::new();
+        qp.insert("Action".to_string(), action.to_string());
+        for (k, v) in params {
+            qp.insert(k.to_string(), v.to_string());
+        }
+        let mut req = make_test_request(qp);
+        req.action = action.to_string();
+        req
+    }
+
+    fn create_role_in_state(state: &SharedIamState, name: &str) -> String {
+        let arn = format!("arn:aws:iam::123456789012:role/{name}");
+        let mut s = state.write();
+        s.roles.insert(
+            arn.clone(),
+            crate::state::IamRole {
+                role_name: name.to_string(),
+                role_id: format!("AROA{}", &uuid::Uuid::new_v4().to_string()[..17]),
+                arn: arn.clone(),
+                path: "/".to_string(),
+                assume_role_policy_document: "{}".to_string(),
+                created_at: Utc::now(),
+                description: None,
+                max_session_duration: 3600,
+                tags: Vec::new(),
+                permissions_boundary: None,
+            },
+        );
+        arn
+    }
+
+    // ── GetCallerIdentity ──
+
+    #[tokio::test]
+    async fn get_caller_identity() {
+        let (svc, _) = make_sts_service();
+        let req = sts_request("GetCallerIdentity", vec![]);
+        let resp = svc.handle(req).await.unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("<Account>123456789012</Account>"));
+        assert!(body.contains("<Arn>"));
+    }
+
+    // ── AssumeRole ──
+
+    #[tokio::test]
+    async fn assume_role_basic() {
+        let (svc, state) = make_sts_service();
+        let role_arn = create_role_in_state(&state, "test-role");
+
+        let req = sts_request(
+            "AssumeRole",
+            vec![("RoleArn", &role_arn), ("RoleSessionName", "test-session")],
+        );
+        let resp = svc.handle(req).await.unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("<AccessKeyId>"));
+        assert!(body.contains("<SecretAccessKey>"));
+        assert!(body.contains("<SessionToken>"));
+    }
+
+    #[tokio::test]
+    async fn assume_role_not_found() {
+        let (svc, _) = make_sts_service();
+        let req = sts_request(
+            "AssumeRole",
+            vec![
+                ("RoleArn", "arn:aws:iam::123456789012:role/nonexistent"),
+                ("RoleSessionName", "s"),
+            ],
+        );
+        assert!(svc.handle(req).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn assume_role_missing_session_name() {
+        let (svc, _) = make_sts_service();
+        let req = sts_request(
+            "AssumeRole",
+            vec![("RoleArn", "arn:aws:iam::123456789012:role/r")],
+        );
+        assert!(svc.handle(req).await.is_err());
+    }
+
+    // ── AssumeRoleWithWebIdentity ──
+
+    #[tokio::test]
+    async fn assume_role_with_web_identity() {
+        let (svc, state) = make_sts_service();
+        let role_arn = create_role_in_state(&state, "web-role");
+
+        let req = sts_request(
+            "AssumeRoleWithWebIdentity",
+            vec![
+                ("RoleArn", &role_arn),
+                ("RoleSessionName", "web-session"),
+                ("WebIdentityToken", "fake-jwt-token"),
+            ],
+        );
+        let resp = svc.handle(req).await.unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("<AccessKeyId>"));
+    }
+
+    // ── GetSessionToken ──
+
+    #[tokio::test]
+    async fn get_session_token() {
+        let (svc, _) = make_sts_service();
+        let req = sts_request("GetSessionToken", vec![]);
+        let resp = svc.handle(req).await.unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("<AccessKeyId>"));
+        assert!(body.contains("<SessionToken>"));
+    }
+
+    #[tokio::test]
+    async fn get_session_token_with_duration() {
+        let (svc, _) = make_sts_service();
+        let req = sts_request("GetSessionToken", vec![("DurationSeconds", "1800")]);
+        let resp = svc.handle(req).await.unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("<Expiration>"));
+    }
+
+    // ── GetFederationToken ──
+
+    #[tokio::test]
+    async fn get_federation_token() {
+        let (svc, _) = make_sts_service();
+        let req = sts_request("GetFederationToken", vec![("Name", "feduser")]);
+        let resp = svc.handle(req).await.unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("<AccessKeyId>"));
+        assert!(body.contains("<FederatedUserId>"));
+    }
+
+    // ── GetAccessKeyInfo ──
+
+    #[tokio::test]
+    async fn get_access_key_info() {
+        let (svc, _) = make_sts_service();
+        let req = sts_request(
+            "GetAccessKeyInfo",
+            vec![("AccessKeyId", "AKIAIOSFODNN7EXAMPLE")],
+        );
+        let resp = svc.handle(req).await.unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("<Account>"));
+    }
+
+    // ── Unsupported action ──
+
+    #[tokio::test]
+    async fn unsupported_sts_action() {
+        let (svc, _) = make_sts_service();
+        let req = sts_request("BogusAction", vec![]);
+        assert!(svc.handle(req).await.is_err());
+    }
 }
