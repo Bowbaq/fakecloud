@@ -4084,4 +4084,268 @@ mod tests {
             "1"
         );
     }
+
+    // ── Batch additions: permission, batch ops, dead letter ─────────
+
+    fn body_json(resp: AwsResponse) -> Value {
+        serde_json::from_slice(resp.body.expect_bytes()).unwrap()
+    }
+
+    fn create_queue_url(svc: &SqsService, name: &str) -> String {
+        let resp = svc
+            .create_queue(&make_request("CreateQueue", json!({ "QueueName": name })))
+            .unwrap();
+        body_json(resp)["QueueUrl"].as_str().unwrap().to_string()
+    }
+
+    fn send_msg_simple(svc: &SqsService, url: &str, body: &str) {
+        svc.send_message(&make_request(
+            "SendMessage",
+            json!({ "QueueUrl": url, "MessageBody": body }),
+        ))
+        .unwrap();
+    }
+
+    // ── AddPermission / RemovePermission ─────────────────────────────
+
+    #[test]
+    fn add_permission_builds_policy_and_remove_strips_it() {
+        let svc = make_service();
+        let url = create_queue_url(&svc, "perm-q");
+
+        let add = make_request(
+            "AddPermission",
+            json!({
+                "QueueUrl": url,
+                "Label": "AllowSend",
+                "Actions": ["SendMessage"],
+                "AWSAccountIds": ["111111111111"]
+            }),
+        );
+        svc.add_permission(&add).unwrap();
+
+        let attrs = svc
+            .get_queue_attributes(&make_request(
+                "GetQueueAttributes",
+                json!({ "QueueUrl": url, "AttributeNames": ["Policy"] }),
+            ))
+            .unwrap();
+        let body = body_json(attrs);
+        let policy_str = body["Attributes"]["Policy"].as_str().unwrap();
+        let policy: Value = serde_json::from_str(policy_str).unwrap();
+        let stmts = policy["Statement"].as_array().unwrap();
+        assert_eq!(stmts.len(), 1);
+        assert_eq!(stmts[0]["Sid"], json!("AllowSend"));
+
+        let rm = make_request(
+            "RemovePermission",
+            json!({ "QueueUrl": url, "Label": "AllowSend" }),
+        );
+        svc.remove_permission(&rm).unwrap();
+        let attrs2 = svc
+            .get_queue_attributes(&make_request(
+                "GetQueueAttributes",
+                json!({ "QueueUrl": url, "AttributeNames": ["Policy"] }),
+            ))
+            .unwrap();
+        let body2 = body_json(attrs2);
+        let policy2: Value =
+            serde_json::from_str(body2["Attributes"]["Policy"].as_str().unwrap()).unwrap();
+        assert!(policy2["Statement"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn add_permission_rejects_empty_actions() {
+        let svc = make_service();
+        let url = create_queue_url(&svc, "perm-q2");
+        let req = make_request(
+            "AddPermission",
+            json!({
+                "QueueUrl": url,
+                "Label": "L",
+                "Actions": [],
+                "AWSAccountIds": ["111111111111"]
+            }),
+        );
+        assert_eq!(
+            expect_err(svc.add_permission(&req)).code(),
+            "MissingParameter"
+        );
+    }
+
+    #[test]
+    fn add_permission_rejects_owner_only_actions() {
+        let svc = make_service();
+        let url = create_queue_url(&svc, "perm-q3");
+        let req = make_request(
+            "AddPermission",
+            json!({
+                "QueueUrl": url,
+                "Label": "L",
+                "Actions": ["DeleteQueue"],
+                "AWSAccountIds": ["111111111111"]
+            }),
+        );
+        assert_eq!(
+            expect_err(svc.add_permission(&req)).code(),
+            "InvalidParameterValue"
+        );
+    }
+
+    #[test]
+    fn add_permission_rejects_duplicate_label() {
+        let svc = make_service();
+        let url = create_queue_url(&svc, "perm-q4");
+        let add = make_request(
+            "AddPermission",
+            json!({
+                "QueueUrl": url,
+                "Label": "L",
+                "Actions": ["SendMessage"],
+                "AWSAccountIds": ["111111111111"]
+            }),
+        );
+        svc.add_permission(&add).unwrap();
+        assert_eq!(
+            expect_err(svc.add_permission(&add)).code(),
+            "InvalidParameterValue"
+        );
+    }
+
+    #[test]
+    fn remove_permission_unknown_label_errors() {
+        let svc = make_service();
+        let url = create_queue_url(&svc, "perm-q5");
+        let req = make_request(
+            "RemovePermission",
+            json!({ "QueueUrl": url, "Label": "ghost" }),
+        );
+        assert_eq!(
+            expect_err(svc.remove_permission(&req)).code(),
+            "InvalidParameterValue"
+        );
+    }
+
+    // ── DeleteMessageBatch ───────────────────────────────────────────
+
+    #[test]
+    fn delete_message_batch_removes_listed_messages() {
+        let svc = make_service();
+        let url = create_queue_url(&svc, "batch-del");
+        send_msg_simple(&svc, &url, "a");
+        send_msg_simple(&svc, &url, "b");
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let recv = rt
+            .block_on(svc.receive_message(&make_request(
+                "ReceiveMessage",
+                json!({ "QueueUrl": url, "MaxNumberOfMessages": 2 }),
+            )))
+            .unwrap();
+        let messages = body_json(recv)["Messages"].as_array().unwrap().clone();
+        assert_eq!(messages.len(), 2);
+
+        let entries: Vec<Value> = messages
+            .iter()
+            .enumerate()
+            .map(|(i, m)| {
+                json!({
+                    "Id": format!("e{i}"),
+                    "ReceiptHandle": m["ReceiptHandle"].as_str().unwrap(),
+                })
+            })
+            .collect();
+
+        let del = svc
+            .delete_message_batch(&make_request(
+                "DeleteMessageBatch",
+                json!({ "QueueUrl": url, "Entries": entries }),
+            ))
+            .unwrap();
+        let body = body_json(del);
+        assert_eq!(body["Successful"].as_array().unwrap().len(), 2);
+    }
+
+    // ── ChangeMessageVisibilityBatch ─────────────────────────────────
+
+    #[test]
+    fn change_message_visibility_batch_updates_multiple() {
+        let svc = make_service();
+        let url = create_queue_url(&svc, "batch-vis");
+        send_msg_simple(&svc, &url, "a");
+        send_msg_simple(&svc, &url, "b");
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let recv = rt
+            .block_on(svc.receive_message(&make_request(
+                "ReceiveMessage",
+                json!({ "QueueUrl": url, "MaxNumberOfMessages": 2 }),
+            )))
+            .unwrap();
+        let messages = body_json(recv)["Messages"].as_array().unwrap().clone();
+
+        let entries: Vec<Value> = messages
+            .iter()
+            .enumerate()
+            .map(|(i, m)| {
+                json!({
+                    "Id": format!("e{i}"),
+                    "ReceiptHandle": m["ReceiptHandle"].as_str().unwrap(),
+                    "VisibilityTimeout": 300,
+                })
+            })
+            .collect();
+
+        let resp = svc
+            .change_message_visibility_batch(&make_request(
+                "ChangeMessageVisibilityBatch",
+                json!({ "QueueUrl": url, "Entries": entries }),
+            ))
+            .unwrap();
+        let body = body_json(resp);
+        assert_eq!(body["Successful"].as_array().unwrap().len(), 2);
+    }
+
+    // ── ListDeadLetterSourceQueues ───────────────────────────────────
+
+    #[test]
+    fn list_dead_letter_source_queues_finds_sources() {
+        let svc = make_service();
+        let dlq_url = create_queue_url(&svc, "dlq");
+        let dlq_arn = {
+            let resp = svc
+                .get_queue_attributes(&make_request(
+                    "GetQueueAttributes",
+                    json!({ "QueueUrl": dlq_url, "AttributeNames": ["QueueArn"] }),
+                ))
+                .unwrap();
+            body_json(resp)["Attributes"]["QueueArn"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+
+        // Create a source queue that points to the DLQ.
+        let src_url = create_queue_url(&svc, "src-q");
+        let redrive = json!({ "deadLetterTargetArn": dlq_arn, "maxReceiveCount": "3" }).to_string();
+        svc.set_queue_attributes(&make_request(
+            "SetQueueAttributes",
+            json!({
+                "QueueUrl": src_url,
+                "Attributes": { "RedrivePolicy": redrive }
+            }),
+        ))
+        .unwrap();
+
+        let resp = svc
+            .list_dead_letter_source_queues(&make_request(
+                "ListDeadLetterSourceQueues",
+                json!({ "QueueUrl": dlq_url }),
+            ))
+            .unwrap();
+        let body = body_json(resp);
+        let urls = body["queueUrls"].as_array().unwrap();
+        assert_eq!(urls.len(), 1);
+        assert!(urls[0].as_str().unwrap().contains("src-q"));
+    }
 }
