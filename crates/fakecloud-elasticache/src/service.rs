@@ -3,19 +3,21 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use http::StatusCode;
+use tokio::sync::Mutex as AsyncMutex;
 
 use fakecloud_aws::xml::xml_escape;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
+use fakecloud_persistence::SnapshotStore;
 
 use crate::runtime::{ElastiCacheRuntime, RuntimeError};
 use crate::state::{
     default_engine_versions, default_parameters_for_family, CacheCluster, CacheEngineVersion,
-    CacheParameterGroup, CacheSnapshot, CacheSubnetGroup, ElastiCacheState, ElastiCacheUser,
-    ElastiCacheUserGroup, EngineDefaultParameter, GlobalReplicationGroup,
+    CacheParameterGroup, CacheSnapshot, CacheSubnetGroup, ElastiCacheSnapshot, ElastiCacheState,
+    ElastiCacheUser, ElastiCacheUserGroup, EngineDefaultParameter, GlobalReplicationGroup,
     GlobalReplicationGroupMember, RecurringCharge, ReplicationGroup, ReservedCacheNode,
     ReservedCacheNodesOffering, ServerlessCache, ServerlessCacheDataStorage,
     ServerlessCacheEcpuPerSecond, ServerlessCacheEndpoint, ServerlessCacheSnapshot,
-    ServerlessCacheUsageLimits, SharedElastiCacheState,
+    ServerlessCacheUsageLimits, SharedElastiCacheState, ELASTICACHE_SNAPSHOT_SCHEMA_VERSION,
 };
 
 const ELASTICACHE_NS: &str = "http://elasticache.amazonaws.com/doc/2015-02-02/";
@@ -86,6 +88,8 @@ const SUPPORTED_ACTIONS: &[&str] = &[
 pub struct ElastiCacheService {
     state: SharedElastiCacheState,
     runtime: Option<Arc<ElastiCacheRuntime>>,
+    snapshot_store: Option<Arc<dyn SnapshotStore>>,
+    snapshot_lock: Arc<AsyncMutex<()>>,
 }
 
 impl ElastiCacheService {
@@ -93,6 +97,8 @@ impl ElastiCacheService {
         Self {
             state,
             runtime: None,
+            snapshot_store: None,
+            snapshot_lock: Arc::new(AsyncMutex::new(())),
         }
     }
 
@@ -100,6 +106,54 @@ impl ElastiCacheService {
         self.runtime = Some(runtime);
         self
     }
+
+    pub fn with_snapshot_store(mut self, store: Arc<dyn SnapshotStore>) -> Self {
+        self.snapshot_store = Some(store);
+        self
+    }
+
+    async fn save_snapshot(&self) {
+        let Some(store) = self.snapshot_store.clone() else {
+            return;
+        };
+        let _guard = self.snapshot_lock.lock().await;
+        let snapshot = ElastiCacheSnapshot {
+            schema_version: ELASTICACHE_SNAPSHOT_SCHEMA_VERSION,
+            state: self.state.read().clone(),
+        };
+        let join = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            let bytes = serde_json::to_vec(&snapshot)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+            store.save(&bytes)
+        })
+        .await;
+        match join {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => tracing::error!(%err, "failed to write elasticache snapshot"),
+            Err(err) => tracing::error!(%err, "elasticache snapshot task panicked"),
+        }
+    }
+}
+
+fn is_mutating_action(action: &str) -> bool {
+    !matches!(
+        action,
+        "DescribeCacheClusters"
+            | "DescribeCacheEngineVersions"
+            | "DescribeGlobalReplicationGroups"
+            | "DescribeCacheParameterGroups"
+            | "DescribeReservedCacheNodes"
+            | "DescribeReservedCacheNodesOfferings"
+            | "DescribeCacheSubnetGroups"
+            | "DescribeEngineDefaultParameters"
+            | "DescribeReplicationGroups"
+            | "DescribeServerlessCaches"
+            | "DescribeServerlessCacheSnapshots"
+            | "DescribeSnapshots"
+            | "DescribeUserGroups"
+            | "DescribeUsers"
+            | "ListTagsForResource"
+    )
 }
 
 #[async_trait]
@@ -109,7 +163,8 @@ impl AwsService for ElastiCacheService {
     }
 
     async fn handle(&self, request: AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        match request.action.as_str() {
+        let mutates = is_mutating_action(request.action.as_str());
+        let result = match request.action.as_str() {
             "AddTagsToResource" => self.add_tags_to_resource(&request),
             "CreateCacheCluster" => self.create_cache_cluster(&request).await,
             "CreateGlobalReplicationGroup" => self.create_global_replication_group(&request),
@@ -164,7 +219,11 @@ impl AwsService for ElastiCacheService {
                 self.service_name(),
                 &request.action,
             )),
+        };
+        if mutates && matches!(result.as_ref(), Ok(resp) if resp.status.is_success()) {
+            self.save_snapshot().await;
         }
+        result
     }
 
     fn supported_actions(&self) -> &[&str] {

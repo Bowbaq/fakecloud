@@ -6,7 +6,7 @@ use parking_lot::RwLock;
 
 pub type SharedElastiCacheState = Arc<RwLock<ElastiCacheState>>;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CacheEngineVersion {
     pub engine: String,
     pub engine_version: String,
@@ -15,7 +15,7 @@ pub struct CacheEngineVersion {
     pub cache_engine_version_description: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CacheParameterGroup {
     pub cache_parameter_group_name: String,
     pub cache_parameter_group_family: String,
@@ -24,7 +24,7 @@ pub struct CacheParameterGroup {
     pub arn: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EngineDefaultParameter {
     pub parameter_name: String,
     pub parameter_value: String,
@@ -36,7 +36,7 @@ pub struct EngineDefaultParameter {
     pub minimum_engine_version: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CacheSubnetGroup {
     pub cache_subnet_group_name: String,
     pub cache_subnet_group_description: String,
@@ -45,13 +45,13 @@ pub struct CacheSubnetGroup {
     pub arn: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RecurringCharge {
     pub recurring_charge_amount: f64,
     pub recurring_charge_frequency: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ReservedCacheNode {
     pub reserved_cache_node_id: String,
     pub reserved_cache_nodes_offering_id: String,
@@ -68,7 +68,7 @@ pub struct ReservedCacheNode {
     pub reservation_arn: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ReservedCacheNodesOffering {
     pub reserved_cache_nodes_offering_id: String,
     pub cache_node_type: String,
@@ -80,7 +80,7 @@ pub struct ReservedCacheNodesOffering {
     pub recurring_charges: Vec<RecurringCharge>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CacheCluster {
     pub cache_cluster_id: String,
     pub cache_node_type: String,
@@ -100,7 +100,7 @@ pub struct CacheCluster {
     pub replication_group_id: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ReplicationGroup {
     pub replication_group_id: String,
     pub description: String,
@@ -123,7 +123,7 @@ pub struct ReplicationGroup {
     pub snapshot_window: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GlobalReplicationGroupMember {
     pub replication_group_id: String,
     pub replication_group_region: String,
@@ -132,7 +132,7 @@ pub struct GlobalReplicationGroupMember {
     pub status: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GlobalReplicationGroup {
     pub global_replication_group_id: String,
     pub global_replication_group_description: String,
@@ -145,7 +145,7 @@ pub struct GlobalReplicationGroup {
     pub arn: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ElastiCacheUser {
     pub user_id: String,
     pub user_name: String,
@@ -159,7 +159,7 @@ pub struct ElastiCacheUser {
     pub user_group_ids: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ElastiCacheUserGroup {
     pub user_group_id: String,
     pub engine: String,
@@ -171,13 +171,13 @@ pub struct ElastiCacheUserGroup {
     pub replication_groups: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct UserGroupPendingChanges {
     pub user_ids_to_add: Vec<String>,
     pub user_ids_to_remove: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CacheSnapshot {
     pub snapshot_name: String,
     pub replication_group_id: String,
@@ -192,32 +192,32 @@ pub struct CacheSnapshot {
     pub snapshot_source: String,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ServerlessCacheUsageLimits {
     pub data_storage: Option<ServerlessCacheDataStorage>,
     pub ecpu_per_second: Option<ServerlessCacheEcpuPerSecond>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ServerlessCacheDataStorage {
     pub maximum: Option<i32>,
     pub minimum: Option<i32>,
     pub unit: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ServerlessCacheEcpuPerSecond {
     pub maximum: Option<i32>,
     pub minimum: Option<i32>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ServerlessCacheEndpoint {
     pub address: String,
     pub port: u16,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ServerlessCache {
     pub serverless_cache_name: String,
     pub description: String,
@@ -240,7 +240,7 @@ pub struct ServerlessCache {
     pub host_port: u16,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ServerlessCacheSnapshot {
     pub serverless_cache_snapshot_name: String,
     pub arn: String,
@@ -255,7 +255,7 @@ pub struct ServerlessCacheSnapshot {
     pub major_engine_version: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ElastiCacheState {
     pub account_id: String,
     pub region: String,
@@ -624,6 +624,14 @@ fn default_users(account_id: &str, region: &str) -> HashMap<String, ElastiCacheU
         },
     );
     map
+}
+
+pub const ELASTICACHE_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ElastiCacheSnapshot {
+    pub schema_version: u32,
+    pub state: ElastiCacheState,
 }
 
 #[cfg(test)]
