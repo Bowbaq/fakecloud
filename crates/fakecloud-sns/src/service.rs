@@ -5732,4 +5732,199 @@ mod tests {
         );
         assert!(svc.create_platform_endpoint(&req).is_err());
     }
+
+    // ── Phone number opt-out check ──
+
+    #[test]
+    fn check_if_phone_number_is_opted_out() {
+        let (svc, _) = make_sns();
+        let req = sns_request(
+            "CheckIfPhoneNumberIsOptedOut",
+            vec![("phoneNumber", "+15551234567")],
+        );
+        let resp = svc.check_if_phone_number_is_opted_out(&req).unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("isOptedOut"));
+    }
+
+    // ── Publish batch ──
+
+    #[test]
+    fn publish_batch() {
+        let (svc, _) = make_sns();
+        let req = sns_request("CreateTopic", vec![("Name", "batch-topic")]);
+        let resp = svc.create_topic(&req).unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        let arn_start = body.find("<TopicArn>").unwrap() + 10;
+        let arn_end = body.find("</TopicArn>").unwrap();
+        let arn = body[arn_start..arn_end].to_string();
+
+        let req = sns_request(
+            "PublishBatch",
+            vec![
+                ("TopicArn", &arn),
+                ("PublishBatchRequestEntries.member.1.Id", "1"),
+                ("PublishBatchRequestEntries.member.1.Message", "msg1"),
+                ("PublishBatchRequestEntries.member.2.Id", "2"),
+                ("PublishBatchRequestEntries.member.2.Message", "msg2"),
+            ],
+        );
+        let resp = svc.publish_batch(&req).unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("Successful"));
+    }
+
+    #[test]
+    fn publish_batch_to_nonexistent_topic() {
+        let (svc, _) = make_sns();
+        let req = sns_request(
+            "PublishBatch",
+            vec![
+                ("TopicArn", "arn:aws:sns:us-east-1:123456789012:ghost"),
+                ("PublishBatchRequestEntries.member.1.Id", "1"),
+                ("PublishBatchRequestEntries.member.1.Message", "msg"),
+            ],
+        );
+        assert!(svc.publish_batch(&req).is_err());
+    }
+
+    // ── Subscriptions list ──
+
+    #[test]
+    fn list_subscriptions_by_topic() {
+        let (svc, _) = make_sns();
+        let req = sns_request("CreateTopic", vec![("Name", "sub-topic")]);
+        let resp = svc.create_topic(&req).unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        let arn_start = body.find("<TopicArn>").unwrap() + 10;
+        let arn_end = body.find("</TopicArn>").unwrap();
+        let arn = body[arn_start..arn_end].to_string();
+
+        let req = sns_request(
+            "Subscribe",
+            vec![
+                ("TopicArn", &arn),
+                ("Protocol", "email"),
+                ("Endpoint", "test@example.com"),
+                ("ReturnSubscriptionArn", "true"),
+            ],
+        );
+        svc.subscribe(&req).unwrap();
+
+        let req = sns_request("ListSubscriptionsByTopic", vec![("TopicArn", &arn)]);
+        let resp = svc.list_subscriptions_by_topic(&req).unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("Subscriptions"));
+    }
+
+    #[test]
+    fn list_subscriptions() {
+        let (svc, _) = make_sns();
+        let req = sns_request("ListSubscriptions", vec![]);
+        svc.list_subscriptions(&req).unwrap();
+    }
+
+    // ── Topic policy attribute ──
+
+    #[test]
+    fn set_topic_policy_attribute() {
+        let (svc, _) = make_sns();
+        let req = sns_request("CreateTopic", vec![("Name", "policy-t")]);
+        let resp = svc.create_topic(&req).unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        let arn_start = body.find("<TopicArn>").unwrap() + 10;
+        let arn_end = body.find("</TopicArn>").unwrap();
+        let arn = body[arn_start..arn_end].to_string();
+
+        let policy = r#"{"Version":"2012-10-17","Statement":[]}"#;
+        let req = sns_request(
+            "SetTopicAttributes",
+            vec![
+                ("TopicArn", &arn),
+                ("AttributeName", "Policy"),
+                ("AttributeValue", policy),
+            ],
+        );
+        svc.set_topic_attributes(&req).unwrap();
+    }
+
+    // ── Platform application full lifecycle ──
+
+    #[test]
+    fn platform_application_create_list_delete() {
+        let (svc, _) = make_sns();
+
+        let req = sns_request(
+            "CreatePlatformApplication",
+            vec![
+                ("Name", "MyApp"),
+                ("Platform", "GCM"),
+                ("Attributes.entry.1.key", "PlatformCredential"),
+                ("Attributes.entry.1.value", "api-key-value"),
+            ],
+        );
+        let resp = svc.create_platform_application(&req).unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        let arn_start = body.find("<PlatformApplicationArn>").unwrap() + 24;
+        let arn_end = body.find("</PlatformApplicationArn>").unwrap();
+        let arn = body[arn_start..arn_end].to_string();
+
+        // List
+        let req = sns_request("ListPlatformApplications", vec![]);
+        let resp = svc.list_platform_applications(&req).unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("MyApp"));
+
+        // GetPlatformApplicationAttributes
+        let req = sns_request(
+            "GetPlatformApplicationAttributes",
+            vec![("PlatformApplicationArn", &arn)],
+        );
+        svc.get_platform_application_attributes(&req).unwrap();
+
+        // Delete
+        let req = sns_request(
+            "DeletePlatformApplication",
+            vec![("PlatformApplicationArn", &arn)],
+        );
+        svc.delete_platform_application(&req).unwrap();
+    }
+
+    // ── Subscription filter policy ──
+
+    #[test]
+    fn set_subscription_filter_policy() {
+        let (svc, _) = make_sns();
+        let req = sns_request("CreateTopic", vec![("Name", "filter-t")]);
+        let resp = svc.create_topic(&req).unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        let arn_start = body.find("<TopicArn>").unwrap() + 10;
+        let arn_end = body.find("</TopicArn>").unwrap();
+        let arn = body[arn_start..arn_end].to_string();
+
+        let req = sns_request(
+            "Subscribe",
+            vec![
+                ("TopicArn", &arn),
+                ("Protocol", "sqs"),
+                ("Endpoint", "arn:aws:sqs:us-east-1:123456789012:q"),
+                ("ReturnSubscriptionArn", "true"),
+            ],
+        );
+        let resp = svc.subscribe(&req).unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        let sub_arn_start = body.find("<SubscriptionArn>").unwrap() + 17;
+        let sub_arn_end = body.find("</SubscriptionArn>").unwrap();
+        let sub_arn = body[sub_arn_start..sub_arn_end].to_string();
+
+        let req = sns_request(
+            "SetSubscriptionAttributes",
+            vec![
+                ("SubscriptionArn", &sub_arn),
+                ("AttributeName", "FilterPolicy"),
+                ("AttributeValue", r#"{"color":["blue"]}"#),
+            ],
+        );
+        svc.set_subscription_attributes(&req).unwrap();
+    }
 }
