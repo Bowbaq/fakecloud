@@ -4097,4 +4097,452 @@ mod tests {
         svc.put_object_acl("123456789012", &req, "acl-put-b", "file.txt")
             .unwrap();
     }
+
+    // ── Happy-path handler tests (objects.rs coverage) ──
+
+    #[test]
+    fn put_object_via_handler_and_get_back() {
+        let svc = make_service();
+        seed_bucket(&svc, "hp");
+
+        // PUT through handler (not seed_object)
+        let req = make_request(Method::PUT, "/hp/test.txt", &[], b"hello world");
+        let resp = svc.put_object(&req, "hp", "test.txt").unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+
+        // GET back
+        let req = make_request(Method::GET, "/hp/test.txt", &[], b"");
+        let resp = svc.get_object(&req, "hp", "test.txt").unwrap();
+        assert_eq!(resp.body.expect_bytes(), b"hello world");
+    }
+
+    #[test]
+    fn put_object_with_content_type() {
+        let svc = make_service();
+        seed_bucket(&svc, "ct");
+
+        let mut req = make_request(Method::PUT, "/ct/doc.json", &[], b"{\"key\":\"val\"}");
+        req.headers
+            .insert("content-type", "application/json".parse().unwrap());
+        svc.put_object(&req, "ct", "doc.json").unwrap();
+
+        let req = make_request(Method::GET, "/ct/doc.json", &[], b"");
+        let resp = svc.get_object(&req, "ct", "doc.json").unwrap();
+        assert_eq!(resp.content_type, "application/json");
+    }
+
+    #[test]
+    fn put_object_with_metadata() {
+        let svc = make_service();
+        seed_bucket(&svc, "meta");
+
+        let mut req = make_request(Method::PUT, "/meta/obj", &[], b"data");
+        req.headers
+            .insert("x-amz-meta-color", "blue".parse().unwrap());
+        req.headers
+            .insert("x-amz-meta-size", "large".parse().unwrap());
+        svc.put_object(&req, "meta", "obj").unwrap();
+
+        let req = make_request(Method::HEAD, "/meta/obj", &[], b"");
+        let resp = svc.head_object(&req, "meta", "obj").unwrap();
+        assert!(resp
+            .headers
+            .get("x-amz-meta-color")
+            .is_some_and(|v| v == "blue"));
+    }
+
+    #[test]
+    fn put_object_returns_etag() {
+        let svc = make_service();
+        seed_bucket(&svc, "etag");
+
+        let req = make_request(Method::PUT, "/etag/f.txt", &[], b"content");
+        let resp = svc.put_object(&req, "etag", "f.txt").unwrap();
+        assert!(resp.headers.get("etag").is_some());
+    }
+
+    #[test]
+    fn head_object_returns_headers() {
+        let svc = make_service();
+        seed_bucket(&svc, "head");
+
+        let req = make_request(Method::PUT, "/head/f.txt", &[], b"12345");
+        svc.put_object(&req, "head", "f.txt").unwrap();
+
+        let req = make_request(Method::HEAD, "/head/f.txt", &[], b"");
+        let resp = svc.head_object(&req, "head", "f.txt").unwrap();
+        assert_eq!(
+            resp.headers
+                .get("content-length")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "5"
+        );
+    }
+
+    #[test]
+    fn delete_object_via_handler() {
+        let svc = make_service();
+        seed_bucket(&svc, "del");
+
+        let req = make_request(Method::PUT, "/del/rm.txt", &[], b"bye");
+        svc.put_object(&req, "del", "rm.txt").unwrap();
+
+        let req = make_request(Method::DELETE, "/del/rm.txt", &[], b"");
+        svc.delete_object(&req, "del", "rm.txt").unwrap();
+
+        let req = make_request(Method::GET, "/del/rm.txt", &[], b"");
+        assert_aws_err(svc.get_object(&req, "del", "rm.txt"), "NoSuchKey");
+    }
+
+    #[test]
+    fn copy_object_via_handler() {
+        let svc = make_service();
+        seed_bucket(&svc, "cpsrc");
+        seed_bucket(&svc, "cpdst");
+
+        let req = make_request(Method::PUT, "/cpsrc/orig.txt", &[], b"original");
+        svc.put_object(&req, "cpsrc", "orig.txt").unwrap();
+
+        let mut req = make_request(Method::PUT, "/cpdst/copy.txt", &[], b"");
+        req.headers
+            .insert("x-amz-copy-source", "cpsrc/orig.txt".parse().unwrap());
+        svc.copy_object(&req, "cpdst", "copy.txt").unwrap();
+
+        let req = make_request(Method::GET, "/cpdst/copy.txt", &[], b"");
+        let resp = svc.get_object(&req, "cpdst", "copy.txt").unwrap();
+        assert_eq!(resp.body.expect_bytes(), b"original");
+    }
+
+    #[test]
+    fn copy_object_within_same_bucket() {
+        let svc = make_service();
+        seed_bucket(&svc, "same");
+
+        let req = make_request(Method::PUT, "/same/a.txt", &[], b"aaa");
+        svc.put_object(&req, "same", "a.txt").unwrap();
+
+        let mut req = make_request(Method::PUT, "/same/b.txt", &[], b"");
+        req.headers
+            .insert("x-amz-copy-source", "same/a.txt".parse().unwrap());
+        svc.copy_object(&req, "same", "b.txt").unwrap();
+
+        let req = make_request(Method::GET, "/same/b.txt", &[], b"");
+        let resp = svc.get_object(&req, "same", "b.txt").unwrap();
+        assert_eq!(resp.body.expect_bytes(), b"aaa");
+    }
+
+    #[test]
+    fn list_objects_v2_via_handler() {
+        let svc = make_service();
+        seed_bucket(&svc, "lsv2");
+
+        for i in 0..3 {
+            let key = format!("file{i}.txt");
+            let req = make_request(Method::PUT, &format!("/lsv2/{key}"), &[], b"data");
+            svc.put_object(&req, "lsv2", &key).unwrap();
+        }
+
+        let req = make_request(Method::GET, "/lsv2", &[("list-type", "2")], b"");
+        let resp = svc.list_objects_v2(&req, "lsv2").unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("<KeyCount>3</KeyCount>"));
+    }
+
+    #[test]
+    fn list_objects_v2_with_prefix() {
+        let svc = make_service();
+        seed_bucket(&svc, "pfx");
+
+        for key in &["docs/a.txt", "docs/b.txt", "images/c.png"] {
+            let req = make_request(Method::PUT, &format!("/pfx/{key}"), &[], b"x");
+            svc.put_object(&req, "pfx", key).unwrap();
+        }
+
+        let req = make_request(
+            Method::GET,
+            "/pfx",
+            &[("list-type", "2"), ("prefix", "docs/")],
+            b"",
+        );
+        let resp = svc.list_objects_v2(&req, "pfx").unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("<KeyCount>2</KeyCount>"));
+    }
+
+    #[test]
+    fn list_objects_v2_with_delimiter() {
+        let svc = make_service();
+        seed_bucket(&svc, "dlm");
+
+        for key in &["a/1.txt", "a/2.txt", "b/3.txt", "root.txt"] {
+            let req = make_request(Method::PUT, &format!("/dlm/{key}"), &[], b"x");
+            svc.put_object(&req, "dlm", key).unwrap();
+        }
+
+        let req = make_request(
+            Method::GET,
+            "/dlm",
+            &[("list-type", "2"), ("delimiter", "/")],
+            b"",
+        );
+        let resp = svc.list_objects_v2(&req, "dlm").unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        // Should have common prefixes a/ and b/
+        assert!(body.contains("<CommonPrefixes>"));
+        // root.txt should be in contents
+        assert!(body.contains("root.txt"));
+    }
+
+    #[test]
+    fn list_objects_v1_via_handler() {
+        let svc = make_service();
+        seed_bucket(&svc, "lsv1");
+
+        let req = make_request(Method::PUT, "/lsv1/test.txt", &[], b"data");
+        svc.put_object(&req, "lsv1", "test.txt").unwrap();
+
+        let req = make_request(Method::GET, "/lsv1", &[], b"");
+        let resp = svc.list_objects_v1(&req, "lsv1").unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("<Key>test.txt</Key>"));
+    }
+
+    #[test]
+    fn delete_objects_batch() {
+        let svc = make_service();
+        seed_bucket(&svc, "bdel");
+
+        for i in 0..3 {
+            let key = format!("d{i}.txt");
+            let req = make_request(Method::PUT, &format!("/bdel/{key}"), &[], b"x");
+            svc.put_object(&req, "bdel", &key).unwrap();
+        }
+
+        let delete_xml = b"<Delete><Object><Key>d0.txt</Key></Object><Object><Key>d1.txt</Key></Object></Delete>";
+        let req = make_request(Method::POST, "/bdel", &[("delete", "")], delete_xml);
+        let resp = svc.delete_objects(&req, "bdel").unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("<Deleted>"));
+
+        // d2.txt should still exist
+        let req = make_request(Method::GET, "/bdel/d2.txt", &[], b"");
+        svc.get_object(&req, "bdel", "d2.txt").unwrap();
+    }
+
+    #[test]
+    fn put_object_overwrites_existing() {
+        let svc = make_service();
+        seed_bucket(&svc, "ow");
+
+        let req = make_request(Method::PUT, "/ow/f.txt", &[], b"version1");
+        svc.put_object(&req, "ow", "f.txt").unwrap();
+
+        let req = make_request(Method::PUT, "/ow/f.txt", &[], b"version2");
+        svc.put_object(&req, "ow", "f.txt").unwrap();
+
+        let req = make_request(Method::GET, "/ow/f.txt", &[], b"");
+        let resp = svc.get_object(&req, "ow", "f.txt").unwrap();
+        assert_eq!(resp.body.expect_bytes(), b"version2");
+    }
+
+    #[test]
+    fn get_object_attributes_via_handler() {
+        let svc = make_service();
+        seed_bucket(&svc, "attr");
+
+        let req = make_request(Method::PUT, "/attr/f.txt", &[], b"content");
+        svc.put_object(&req, "attr", "f.txt").unwrap();
+
+        let mut req = make_request(Method::GET, "/attr/f.txt", &[], b"");
+        req.headers.insert(
+            "x-amz-object-attributes",
+            "ETag,ObjectSize".parse().unwrap(),
+        );
+        let resp = svc.get_object_attributes(&req, "attr", "f.txt").unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("<ObjectSize>"));
+    }
+
+    // ── Multipart upload happy path ──
+
+    #[test]
+    fn multipart_upload_lifecycle() {
+        let svc = make_service();
+        seed_bucket(&svc, "mp");
+
+        // Create
+        let req = make_request(Method::POST, "/mp/big.bin", &[("uploads", "")], b"");
+        let resp = svc.create_multipart_upload(&req, "mp", "big.bin").unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        let uid_start = body.find("<UploadId>").unwrap() + 10;
+        let uid_end = body.find("</UploadId>").unwrap();
+        let upload_id = &body[uid_start..uid_end];
+
+        // Upload part 1 (>5MB to pass minimum size check)
+        let big_data = vec![b'A'; 5 * 1024 * 1024 + 1];
+        let req = make_request(Method::PUT, "/mp/big.bin", &[], &big_data);
+        let resp = svc
+            .upload_part(&req, "mp", "big.bin", upload_id, 1)
+            .unwrap();
+        let etag1 = resp
+            .headers
+            .get("etag")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        // Upload part 2 (last part can be any size)
+        let req = make_request(Method::PUT, "/mp/big.bin", &[], b"part2-data");
+        let resp = svc
+            .upload_part(&req, "mp", "big.bin", upload_id, 2)
+            .unwrap();
+        let etag2 = resp
+            .headers
+            .get("etag")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        // List parts
+        let req = make_request(Method::GET, "/mp/big.bin", &[], b"");
+        let resp = svc.list_parts(&req, "mp", "big.bin", upload_id).unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("<Part>"));
+
+        // Complete
+        let complete_xml = format!(
+            "<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{etag1}</ETag></Part><Part><PartNumber>2</PartNumber><ETag>{etag2}</ETag></Part></CompleteMultipartUpload>"
+        );
+        let req = make_request(Method::POST, "/mp/big.bin", &[], complete_xml.as_bytes());
+        svc.complete_multipart_upload(&req, "mp", "big.bin", upload_id)
+            .unwrap();
+
+        // Verify object exists
+        let req = make_request(Method::GET, "/mp/big.bin", &[], b"");
+        let resp = svc.get_object(&req, "mp", "big.bin").unwrap();
+        let body = resp.body.expect_bytes();
+        // First part is 5MB+1 of 'A', second is "part2-data"
+        assert!(body.len() > 5 * 1024 * 1024);
+    }
+
+    #[test]
+    fn multipart_upload_abort() {
+        let svc = make_service();
+        seed_bucket(&svc, "mpa");
+
+        let req = make_request(Method::POST, "/mpa/abort.bin", &[("uploads", "")], b"");
+        let resp = svc
+            .create_multipart_upload(&req, "mpa", "abort.bin")
+            .unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        let uid_start = body.find("<UploadId>").unwrap() + 10;
+        let uid_end = body.find("</UploadId>").unwrap();
+        let upload_id = body[uid_start..uid_end].to_string();
+
+        svc.abort_multipart_upload("mpa", "abort.bin", &upload_id)
+            .unwrap();
+
+        // Upload should be gone
+        let req = make_request(Method::GET, "/mpa/abort.bin", &[], b"");
+        assert_aws_err(
+            svc.list_parts(&req, "mpa", "abort.bin", &upload_id),
+            "NoSuchUpload",
+        );
+    }
+
+    #[test]
+    fn list_multipart_uploads() {
+        let svc = make_service();
+        seed_bucket(&svc, "mpl");
+
+        let req = make_request(Method::POST, "/mpl/f1.bin", &[("uploads", "")], b"");
+        svc.create_multipart_upload(&req, "mpl", "f1.bin").unwrap();
+
+        let resp = svc.list_multipart_uploads("mpl").unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("<Upload>"));
+        assert!(body.contains("f1.bin"));
+    }
+
+    // ── Config handler happy paths ──
+
+    #[test]
+    fn put_and_get_bucket_versioning() {
+        let svc = make_service();
+        seed_bucket(&svc, "ver");
+
+        let req = make_request(
+            Method::PUT,
+            "/ver",
+            &[("versioning", "")],
+            b"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>",
+        );
+        svc.put_bucket_versioning(&req, "ver").unwrap();
+
+        let resp = svc.get_bucket_versioning("ver").unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("Enabled"));
+    }
+
+    #[test]
+    fn put_and_get_bucket_lifecycle() {
+        let svc = make_service();
+        seed_bucket(&svc, "lc");
+
+        let xml = b"<LifecycleConfiguration><Rule><ID>expire</ID><Filter><Prefix></Prefix></Filter><Status>Enabled</Status><Expiration><Days>30</Days></Expiration></Rule></LifecycleConfiguration>";
+        let req = make_request(Method::PUT, "/lc", &[("lifecycle", "")], xml);
+        svc.put_bucket_lifecycle(&req, "lc").unwrap();
+
+        let resp = svc.get_bucket_lifecycle("lc").unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("<Rule>"));
+    }
+
+    #[test]
+    fn put_and_get_bucket_notification() {
+        let svc = make_service();
+        seed_bucket(&svc, "notif");
+
+        let xml = b"<NotificationConfiguration></NotificationConfiguration>";
+        let req = make_request(Method::PUT, "/notif", &[("notification", "")], xml);
+        svc.put_bucket_notification(&req, "notif").unwrap();
+
+        let resp = svc.get_bucket_notification("notif").unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("NotificationConfiguration"));
+    }
+
+    #[test]
+    fn put_and_get_and_delete_bucket_encryption() {
+        let svc = make_service();
+        seed_bucket(&svc, "enc");
+
+        let xml = b"<ServerSideEncryptionConfiguration><Rule><ApplyServerSideEncryptionByDefault><SSEAlgorithm>AES256</SSEAlgorithm></ApplyServerSideEncryptionByDefault></Rule></ServerSideEncryptionConfiguration>";
+        let req = make_request(Method::PUT, "/enc", &[("encryption", "")], xml);
+        svc.put_bucket_encryption(&req, "enc").unwrap();
+
+        let resp = svc.get_bucket_encryption("enc").unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("AES256"));
+
+        svc.delete_bucket_encryption("enc").unwrap();
+    }
+
+    #[test]
+    fn bucket_logging_put_and_get() {
+        let svc = make_service();
+        seed_bucket(&svc, "logging-b");
+
+        let xml = b"<BucketLoggingStatus><LoggingEnabled><TargetBucket>logging-b</TargetBucket><TargetPrefix>logs/</TargetPrefix></LoggingEnabled></BucketLoggingStatus>";
+        let req = make_request(Method::PUT, "/logging-b", &[("logging", "")], xml);
+        svc.put_bucket_logging(&req, "logging-b").unwrap();
+
+        let resp = svc.get_bucket_logging("logging-b").unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("LoggingEnabled"));
+    }
 }
