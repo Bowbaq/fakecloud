@@ -5129,4 +5129,232 @@ mod tests {
         let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
         assert!(body.contains(">eu-west-1<"));
     }
+
+    // ── objects.rs additional coverage ──
+
+    #[test]
+    fn get_object_range_request() {
+        let svc = make_service();
+        seed_bucket(&svc, "range");
+        let req = make_request(Method::PUT, "/range/k", &[], b"0123456789ABCDEF");
+        svc.put_object("123456789012", &req, "range", "k").unwrap();
+
+        let mut req = make_request(Method::GET, "/range/k", &[], b"");
+        req.headers.insert("range", "bytes=2-5".parse().unwrap());
+        let resp = svc.get_object("123456789012", &req, "range", "k").unwrap();
+        assert_eq!(resp.status, StatusCode::PARTIAL_CONTENT);
+        assert_eq!(resp.body.expect_bytes(), b"2345");
+    }
+
+    #[test]
+    fn get_object_range_suffix() {
+        let svc = make_service();
+        seed_bucket(&svc, "rsx");
+        let req = make_request(Method::PUT, "/rsx/k", &[], b"0123456789");
+        svc.put_object("123456789012", &req, "rsx", "k").unwrap();
+
+        let mut req = make_request(Method::GET, "/rsx/k", &[], b"");
+        req.headers.insert("range", "bytes=-3".parse().unwrap());
+        let resp = svc.get_object("123456789012", &req, "rsx", "k").unwrap();
+        assert_eq!(resp.status, StatusCode::PARTIAL_CONTENT);
+        assert_eq!(resp.body.expect_bytes(), b"789");
+    }
+
+    #[test]
+    fn get_object_range_open_ended() {
+        let svc = make_service();
+        seed_bucket(&svc, "roe");
+        let req = make_request(Method::PUT, "/roe/k", &[], b"0123456789");
+        svc.put_object("123456789012", &req, "roe", "k").unwrap();
+
+        let mut req = make_request(Method::GET, "/roe/k", &[], b"");
+        req.headers.insert("range", "bytes=7-".parse().unwrap());
+        let resp = svc.get_object("123456789012", &req, "roe", "k").unwrap();
+        assert_eq!(resp.status, StatusCode::PARTIAL_CONTENT);
+        assert_eq!(resp.body.expect_bytes(), b"789");
+    }
+
+    #[test]
+    fn get_object_range_invalid_format() {
+        let svc = make_service();
+        seed_bucket(&svc, "rinv");
+        let req = make_request(Method::PUT, "/rinv/k", &[], b"hello");
+        svc.put_object("123456789012", &req, "rinv", "k").unwrap();
+
+        let mut req = make_request(Method::GET, "/rinv/k", &[], b"");
+        req.headers.insert("range", "bogus=2-5".parse().unwrap());
+        // Non-standard prefix -> full content expected
+        let resp = svc.get_object("123456789012", &req, "rinv", "k").unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+        assert_eq!(resp.body.expect_bytes(), b"hello");
+    }
+
+    #[test]
+    fn get_object_if_match_mismatch_errors() {
+        let svc = make_service();
+        seed_bucket(&svc, "ifm");
+        let req = make_request(Method::PUT, "/ifm/k", &[], b"abc");
+        svc.put_object("123456789012", &req, "ifm", "k").unwrap();
+
+        let mut req = make_request(Method::GET, "/ifm/k", &[], b"");
+        req.headers
+            .insert("if-match", "\"nomatch\"".parse().unwrap());
+        let err = svc.get_object("123456789012", &req, "ifm", "k");
+        assert_aws_err(err, "PreconditionFailed");
+    }
+
+    #[test]
+    fn get_object_if_none_match_star_not_modified() {
+        let svc = make_service();
+        seed_bucket(&svc, "inm");
+        let req = make_request(Method::PUT, "/inm/k", &[], b"abc");
+        svc.put_object("123456789012", &req, "inm", "k").unwrap();
+
+        let mut req = make_request(Method::GET, "/inm/k", &[], b"");
+        req.headers.insert("if-none-match", "*".parse().unwrap());
+        let err = svc.get_object("123456789012", &req, "inm", "k");
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn head_object_range_request() {
+        let svc = make_service();
+        seed_bucket(&svc, "hrng");
+        let req = make_request(Method::PUT, "/hrng/k", &[], b"0123456789");
+        svc.put_object("123456789012", &req, "hrng", "k").unwrap();
+
+        let mut req = make_request(Method::HEAD, "/hrng/k", &[], b"");
+        req.headers.insert("range", "bytes=2-5".parse().unwrap());
+        let resp = svc.head_object("123456789012", &req, "hrng", "k").unwrap();
+        assert_eq!(resp.status, StatusCode::PARTIAL_CONTENT);
+    }
+
+    #[test]
+    fn put_object_with_metadata_headers() {
+        let svc = make_service();
+        seed_bucket(&svc, "meta");
+        let mut req = make_request(Method::PUT, "/meta/k", &[], b"x");
+        req.headers
+            .insert("x-amz-meta-user", "alice".parse().unwrap());
+        req.headers
+            .insert("x-amz-meta-env", "prod".parse().unwrap());
+        svc.put_object("123456789012", &req, "meta", "k").unwrap();
+
+        let req = make_request(Method::HEAD, "/meta/k", &[], b"");
+        let resp = svc.head_object("123456789012", &req, "meta", "k").unwrap();
+        assert_eq!(resp.headers.get("x-amz-meta-user").unwrap(), "alice");
+        assert_eq!(resp.headers.get("x-amz-meta-env").unwrap(), "prod");
+    }
+
+    #[test]
+    fn put_object_with_storage_class_header() {
+        let svc = make_service();
+        seed_bucket(&svc, "stor");
+        let mut req = make_request(Method::PUT, "/stor/k", &[], b"x");
+        req.headers
+            .insert("x-amz-storage-class", "STANDARD_IA".parse().unwrap());
+        svc.put_object("123456789012", &req, "stor", "k").unwrap();
+
+        let req = make_request(Method::HEAD, "/stor/k", &[], b"");
+        let resp = svc.head_object("123456789012", &req, "stor", "k").unwrap();
+        assert_eq!(
+            resp.headers.get("x-amz-storage-class").unwrap(),
+            "STANDARD_IA"
+        );
+    }
+
+    #[test]
+    fn put_object_with_website_redirect() {
+        let svc = make_service();
+        seed_bucket(&svc, "wr");
+        let mut req = make_request(Method::PUT, "/wr/k", &[], b"x");
+        req.headers.insert(
+            "x-amz-website-redirect-location",
+            "/elsewhere".parse().unwrap(),
+        );
+        svc.put_object("123456789012", &req, "wr", "k").unwrap();
+        let req = make_request(Method::GET, "/wr/k", &[], b"");
+        let resp = svc.get_object("123456789012", &req, "wr", "k").unwrap();
+        assert_eq!(
+            resp.headers.get("x-amz-website-redirect-location").unwrap(),
+            "/elsewhere"
+        );
+    }
+
+    #[test]
+    fn delete_object_nonexistent_is_ok() {
+        let svc = make_service();
+        seed_bucket(&svc, "dne");
+        let req = make_request(Method::DELETE, "/dne/missing", &[], b"");
+        let resp = svc
+            .delete_object("123456789012", &req, "dne", "missing")
+            .unwrap();
+        assert_eq!(resp.status, StatusCode::NO_CONTENT);
+    }
+
+    #[test]
+    fn delete_object_bucket_not_found() {
+        let svc = make_service();
+        let req = make_request(Method::DELETE, "/nope/k", &[], b"");
+        assert_aws_err(
+            svc.delete_object("123456789012", &req, "nope", "k"),
+            "NoSuchBucket",
+        );
+    }
+
+    #[test]
+    fn list_objects_v2_with_prefix_and_delimiter() {
+        let svc = make_service();
+        seed_bucket(&svc, "pfxd");
+        for k in &["a/1", "a/2", "b/1"] {
+            let req = make_request(Method::PUT, &format!("/pfxd/{k}"), &[], b"x");
+            svc.put_object("123456789012", &req, "pfxd", k).unwrap();
+        }
+        let req = make_request(
+            Method::GET,
+            "/pfxd",
+            &[("list-type", "2"), ("prefix", "a/"), ("delimiter", "/")],
+            b"",
+        );
+        let resp = svc.list_objects_v2("123456789012", &req, "pfxd").unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("<Contents>"));
+    }
+
+    #[test]
+    fn list_objects_v1_basic() {
+        let svc = make_service();
+        seed_bucket(&svc, "v1");
+        for k in &["a", "b"] {
+            let req = make_request(Method::PUT, &format!("/v1/{k}"), &[], b"x");
+            svc.put_object("123456789012", &req, "v1", k).unwrap();
+        }
+        let req = make_request(Method::GET, "/v1", &[], b"");
+        let resp = svc.list_objects_v1("123456789012", &req, "v1").unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("<ListBucketResult"));
+        assert!(body.contains("<Key>a</Key>"));
+        assert!(body.contains("<Key>b</Key>"));
+    }
+
+    #[test]
+    fn get_object_key_not_found() {
+        let svc = make_service();
+        seed_bucket(&svc, "gkn");
+        let req = make_request(Method::GET, "/gkn/missing", &[], b"");
+        assert_aws_err(
+            svc.get_object("123456789012", &req, "gkn", "missing"),
+            "NoSuchKey",
+        );
+    }
+
+    #[test]
+    fn get_object_bucket_not_found() {
+        let svc = make_service();
+        let req = make_request(Method::GET, "/ghost/k", &[], b"");
+        assert_aws_err(
+            svc.get_object("123456789012", &req, "ghost", "k"),
+            "NoSuchBucket",
+        );
+    }
 }
