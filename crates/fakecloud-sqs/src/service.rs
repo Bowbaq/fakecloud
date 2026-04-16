@@ -571,6 +571,50 @@ impl AwsService for SqsService {
         }
         out
     }
+
+    fn resource_tags_for(
+        &self,
+        resource_arn: &str,
+    ) -> Option<std::collections::HashMap<String, String>> {
+        if resource_arn == "*" {
+            return Some(std::collections::HashMap::new());
+        }
+        // SQS ARN: arn:{partition}:sqs:{region}:{account}:{queue-name}
+        let parts: Vec<&str> = resource_arn.split(':').collect();
+        if parts.len() < 6 {
+            return None;
+        }
+        let queue_name = parts[5];
+        let state = self.state.read();
+        let queue_url = state.name_to_url.get(queue_name)?;
+        let queue = state.queues.get(queue_url)?;
+        Some(queue.tags.clone())
+    }
+
+    fn request_tags_from(
+        &self,
+        request: &AwsRequest,
+        action: &str,
+    ) -> Option<std::collections::HashMap<String, String>> {
+        match action {
+            "CreateQueue" | "TagQueue" => {
+                let body = parse_body(request);
+                let mut tags = std::collections::HashMap::new();
+                // Both CreateQueue and TagQueue send tags as JSON objects
+                for field in &["tags", "Tags"] {
+                    if let Some(obj) = body[field].as_object() {
+                        for (k, v) in obj {
+                            if let Some(val) = v.as_str() {
+                                tags.insert(k.clone(), val.to_string());
+                            }
+                        }
+                    }
+                }
+                Some(tags)
+            }
+            _ => Some(std::collections::HashMap::new()),
+        }
+    }
 }
 
 /// Build the SQS resource ARN for an incoming action. Returns `*` for

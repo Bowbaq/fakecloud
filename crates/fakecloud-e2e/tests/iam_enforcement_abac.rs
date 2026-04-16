@@ -9,6 +9,7 @@ mod helpers;
 use aws_credential_types::Credentials;
 use aws_sdk_iam::Client as IamClient;
 use aws_sdk_s3::Client as S3Client;
+use aws_sdk_sqs::Client as SqsClient;
 use aws_sdk_sts::Client as StsClient;
 use helpers::TestServer;
 
@@ -410,5 +411,163 @@ async fn s3_tag_keys_for_all_values_restricts_allowed_keys() {
     assert!(
         format!("{err:?}").contains("AccessDenied"),
         "expected AccessDenied for disallowed tag key"
+    );
+}
+
+// ======================================================================
+// SQS ABAC tests
+// ======================================================================
+
+#[tokio::test]
+async fn sqs_resource_tag_denies_when_queue_tag_mismatches() {
+    let server = start_strict().await;
+    let (akid, secret) = bootstrap_tagged_user(&server, "sqsuser", &[]).await;
+
+    // Allow all SQS, deny SendMessage unless ResourceTag/Env == dev
+    attach_inline_policy(
+        &server,
+        "sqsuser",
+        "AllowAll",
+        r#"{"Version":"2012-10-17","Statement":[
+            {"Effect":"Allow","Action":"sqs:*","Resource":"*"}
+        ]}"#,
+    )
+    .await;
+    attach_inline_policy(
+        &server,
+        "sqsuser",
+        "DenySendUnlessDev",
+        r#"{"Version":"2012-10-17","Statement":[{
+            "Effect":"Deny",
+            "Action":"sqs:SendMessage",
+            "Resource":"*",
+            "Condition":{"StringNotEquals":{"aws:ResourceTag/Env":"dev"}}
+        }]}"#,
+    )
+    .await;
+
+    let cfg = sdk_config_with(&server, &akid, &secret).await;
+    let sqs = SqsClient::new(&cfg);
+
+    // Create a queue tagged Env=dev
+    let dev_queue = sqs
+        .create_queue()
+        .queue_name("dev-queue")
+        .tags("Env", "dev")
+        .send()
+        .await
+        .unwrap();
+    let dev_url = dev_queue.queue_url().unwrap();
+
+    // Create a queue tagged Env=prod
+    let prod_queue = sqs
+        .create_queue()
+        .queue_name("prod-queue")
+        .tags("Env", "prod")
+        .send()
+        .await
+        .unwrap();
+    let prod_url = prod_queue.queue_url().unwrap();
+
+    // SendMessage to dev queue: allowed
+    sqs.send_message()
+        .queue_url(dev_url)
+        .message_body("hello dev")
+        .send()
+        .await
+        .unwrap();
+
+    // SendMessage to prod queue: denied
+    let err = sqs
+        .send_message()
+        .queue_url(prod_url)
+        .message_body("hello prod")
+        .send()
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{err:?}").contains("AccessDenied"),
+        "expected AccessDenied for prod-tagged queue"
+    );
+}
+
+// ======================================================================
+// IAM resource tag ABAC tests
+// ======================================================================
+
+#[tokio::test]
+async fn iam_resource_tag_denies_get_user_without_matching_tag() {
+    let server = start_strict().await;
+    let (akid, secret) = bootstrap_tagged_user(&server, "iamadmin", &[]).await;
+
+    // Allow all IAM, deny GetUser unless ResourceTag/Team == ops
+    attach_inline_policy(
+        &server,
+        "iamadmin",
+        "AllowAll",
+        r#"{"Version":"2012-10-17","Statement":[
+            {"Effect":"Allow","Action":"iam:*","Resource":"*"}
+        ]}"#,
+    )
+    .await;
+    attach_inline_policy(
+        &server,
+        "iamadmin",
+        "DenyGetUserUnlessOps",
+        r#"{"Version":"2012-10-17","Statement":[{
+            "Effect":"Deny",
+            "Action":"iam:GetUser",
+            "Resource":"*",
+            "Condition":{"StringNotEquals":{"aws:ResourceTag/Team":"ops"}}
+        }]}"#,
+    )
+    .await;
+
+    // Create two users: one with Team=ops, one with Team=dev
+    let boot_cfg = sdk_config_with(&server, "test", "test").await;
+    let boot_iam = IamClient::new(&boot_cfg);
+    boot_iam
+        .create_user()
+        .user_name("ops-user")
+        .tags(
+            aws_sdk_iam::types::Tag::builder()
+                .key("Team")
+                .value("ops")
+                .build()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap();
+    boot_iam
+        .create_user()
+        .user_name("dev-user")
+        .tags(
+            aws_sdk_iam::types::Tag::builder()
+                .key("Team")
+                .value("dev")
+                .build()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    let cfg = sdk_config_with(&server, &akid, &secret).await;
+    let iam = IamClient::new(&cfg);
+
+    // GetUser ops-user: allowed (Team=ops matches)
+    iam.get_user().user_name("ops-user").send().await.unwrap();
+
+    // GetUser dev-user: denied (Team=dev != ops)
+    let err = iam
+        .get_user()
+        .user_name("dev-user")
+        .send()
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{err:?}").contains("AccessDenied"),
+        "expected AccessDenied for dev-tagged user"
     );
 }
