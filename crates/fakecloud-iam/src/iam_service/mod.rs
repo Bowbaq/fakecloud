@@ -180,7 +180,8 @@ impl AwsService for IamService {
         // and on-disk state and reads after a restart lose the timestamp.
         let mut last_used_updated = false;
         if let Some(ref key_id) = req.access_key_id {
-            let mut state = self.state.write();
+            let mut accounts = self.state.write();
+            let state = accounts.get_or_create(&req.account_id);
             let is_known = state
                 .access_keys
                 .values()
@@ -196,7 +197,7 @@ impl AwsService for IamService {
                 );
                 last_used_updated = true;
             }
-            drop(state);
+            drop(accounts);
         }
 
         let mutates = is_mutating_action(req.action.as_str()) || last_used_updated;
@@ -462,7 +463,9 @@ fn iam_resource_tags(
         return None;
     }
     let resource = parts[5];
-    let state = state.read();
+    let account_id = parts.get(4).copied().unwrap_or("");
+    let accounts = state.read();
+    let state = accounts.get(account_id)?;
     if let Some(rest) = resource.strip_prefix("user/") {
         let name = rest.rsplit('/').next().unwrap_or(rest);
         state
@@ -1254,8 +1257,9 @@ mod tests {
     use std::sync::Arc;
 
     fn make_service() -> IamService {
-        let state: SharedIamState =
-            Arc::new(RwLock::new(crate::state::IamState::new("123456789012")));
+        let state: SharedIamState = Arc::new(RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         IamService::new(state)
     }
 

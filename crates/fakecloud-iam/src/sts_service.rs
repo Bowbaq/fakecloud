@@ -267,16 +267,13 @@ impl StsService {
             return Ok(AwsResponse::xml(StatusCode::OK, xml));
         }
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let account_id = accounts.default_account_id();
         let partition = partition_for_region(&req.region);
-        let arn = format!("arn:{}:iam::{}:root", partition, state.account_id);
+        let arn = format!("arn:{}:iam::{}:root", partition, account_id);
         let user_id = "FKIAIOSFODNN7EXAMPLE";
-        let xml = xml_responses::get_caller_identity_response(
-            &state.account_id,
-            &arn,
-            user_id,
-            &req.request_id,
-        );
+        let xml =
+            xml_responses::get_caller_identity_response(account_id, &arn, user_id, &req.request_id);
         Ok(AwsResponse::xml(StatusCode::OK, xml))
     }
 
@@ -368,17 +365,20 @@ impl StsService {
         let partition = partition_for_region(&req.region);
         let creds = StsCredentials::generate();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
 
-        let session_policies = collect_session_policies(req, &state);
+        // Resolve session policies from the caller's account
+        let caller_state = accounts.get_or_create(&req.account_id);
+        let session_policies = collect_session_policies(req, caller_state);
 
-        // Extract account ID from role ARN if present, otherwise use default
+        // Extract account ID from role ARN if present, otherwise use caller's account
         let account_id =
-            extract_account_from_arn(role_arn).unwrap_or_else(|| state.account_id.clone());
+            extract_account_from_arn(role_arn).unwrap_or_else(|| req.account_id.clone());
 
-        // Try to find the role in state to get its role_id
+        // Look up role in the TARGET account's state to get its role_id
+        let target_state = accounts.get_or_create(&account_id);
         let role_name = role_arn.rsplit('/').next().unwrap_or("unknown");
-        let role_id = state
+        let role_id = target_state
             .roles
             .get(role_name)
             .map(|r| r.role_id.clone())
@@ -390,8 +390,10 @@ impl StsService {
         );
         let assumed_role_id = format!("{}:{}", role_id, role_session_name);
 
-        // Store credential identity for GetCallerIdentity lookups
-        state.credential_identities.insert(
+        // Store credential in the target account's state so the credential
+        // resolver finds it when the caller uses these temporary credentials.
+        let target_state = accounts.get_or_create(&account_id);
+        target_state.credential_identities.insert(
             creds.access_key_id.clone(),
             CredentialIdentity {
                 arn: assumed_role_arn.clone(),
@@ -399,7 +401,7 @@ impl StsService {
                 account_id: account_id.clone(),
             },
         );
-        state.sts_temp_credentials.insert(
+        target_state.sts_temp_credentials.insert(
             creds.access_key_id.clone(),
             StsTempCredential {
                 access_key_id: creds.access_key_id.clone(),
@@ -499,10 +501,11 @@ impl StsService {
         let creds = StsCredentials::generate();
         let role_id = xml_responses::generate_role_id();
 
-        let mut state = self.state.write();
-        let session_policies = collect_session_policies(req, &state);
+        let mut accounts = self.state.write();
+        let caller_state = accounts.get_or_create(&req.account_id);
+        let session_policies = collect_session_policies(req, caller_state);
         let account_id =
-            extract_account_from_arn(role_arn).unwrap_or_else(|| state.account_id.clone());
+            extract_account_from_arn(role_arn).unwrap_or_else(|| req.account_id.clone());
 
         let role_name = role_arn.rsplit('/').next().unwrap_or("unknown");
         let assumed_role_arn = format!(
@@ -511,7 +514,8 @@ impl StsService {
         );
         let assumed_role_id_str = format!("{}:{}", role_id, role_session_name);
 
-        state.credential_identities.insert(
+        let target_state = accounts.get_or_create(&account_id);
+        target_state.credential_identities.insert(
             creds.access_key_id.clone(),
             CredentialIdentity {
                 arn: assumed_role_arn.clone(),
@@ -519,7 +523,7 @@ impl StsService {
                 account_id: account_id.clone(),
             },
         );
-        state.sts_temp_credentials.insert(
+        target_state.sts_temp_credentials.insert(
             creds.access_key_id.clone(),
             StsTempCredential {
                 access_key_id: creds.access_key_id.clone(),
@@ -615,10 +619,11 @@ impl StsService {
         let creds = StsCredentials::generate();
         let role_id = xml_responses::generate_role_id();
 
-        let mut state = self.state.write();
-        let session_policies = collect_session_policies(req, &state);
+        let mut accounts = self.state.write();
+        let caller_state = accounts.get_or_create(&req.account_id);
+        let session_policies = collect_session_policies(req, caller_state);
         let account_id =
-            extract_account_from_arn(role_arn).unwrap_or_else(|| state.account_id.clone());
+            extract_account_from_arn(role_arn).unwrap_or_else(|| req.account_id.clone());
 
         let role_name = role_arn.rsplit('/').next().unwrap_or("unknown");
         let assumed_role_arn = format!(
@@ -627,7 +632,8 @@ impl StsService {
         );
         let assumed_role_id_str = format!("{}:{}", role_id, role_session_name);
 
-        state.credential_identities.insert(
+        let target_state = accounts.get_or_create(&account_id);
+        target_state.credential_identities.insert(
             creds.access_key_id.clone(),
             CredentialIdentity {
                 arn: assumed_role_arn.clone(),
@@ -635,7 +641,7 @@ impl StsService {
                 account_id: account_id.clone(),
             },
         );
-        state.sts_temp_credentials.insert(
+        target_state.sts_temp_credentials.insert(
             creds.access_key_id.clone(),
             StsTempCredential {
                 access_key_id: creds.access_key_id.clone(),
@@ -707,7 +713,8 @@ impl StsService {
         // isn't a known IAM user — matches how `GetSessionToken` behaves
         // against AWS with root credentials.
         let partition = partition_for_region(&req.region);
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let (principal_arn, user_id, account_id) =
             if let Some(akid) = extract_access_key(req).as_deref() {
                 if let Some(lookup) = state.credential_secret(akid) {
@@ -798,8 +805,9 @@ impl StsService {
         let partition = partition_for_region(&req.region);
         let creds = StsCredentials::generate();
 
-        let mut state = self.state.write();
-        let session_policies = collect_session_policies(req, &state);
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
+        let session_policies = collect_session_policies(req, state);
         let account_id = state.account_id.clone();
         let federated_user_arn = format!(
             "arn:{}:sts::{}:federated-user/{}",
@@ -871,21 +879,26 @@ impl StsService {
         })?;
         validate_string_length("accessKeyId", access_key_id, 16, 128)?;
 
-        // Try to resolve account from known access keys, fall back to default
-        let state = self.state.read();
-        let account_id = state
-            .access_keys
-            .values()
-            .flatten()
-            .find(|k| k.access_key_id == *access_key_id)
-            .map(|_| state.account_id.clone())
-            .or_else(|| {
-                state
-                    .credential_identities
-                    .get(access_key_id.as_str())
-                    .map(|ci| ci.account_id.clone())
-            })
-            .unwrap_or_else(|| state.account_id.clone());
+        // Try to resolve account from known access keys across all accounts
+        let accounts = self.state.read();
+        let mut resolved_account_id = None;
+        for (acct_id, acct_state) in accounts.iter() {
+            if acct_state
+                .access_keys
+                .values()
+                .flatten()
+                .any(|k| k.access_key_id == *access_key_id)
+            {
+                resolved_account_id = Some(acct_id.to_string());
+                break;
+            }
+            if let Some(ci) = acct_state.credential_identities.get(access_key_id.as_str()) {
+                resolved_account_id = Some(ci.account_id.clone());
+                break;
+            }
+        }
+        let account_id =
+            resolved_account_id.unwrap_or_else(|| accounts.default_account_id().to_string());
 
         let xml = xml_responses::get_access_key_info_response(&account_id, &req.request_id);
         Ok(AwsResponse::xml(StatusCode::OK, xml))
@@ -1010,12 +1023,13 @@ mod tests {
 
     #[test]
     fn test_decode_authorization_message() {
-        use crate::state::IamState;
         use parking_lot::RwLock;
         use std::collections::HashMap;
         use std::sync::Arc;
 
-        let state: SharedIamState = Arc::new(RwLock::new(IamState::new("123456789012")));
+        let state: SharedIamState = Arc::new(RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let service = StsService::new(state);
 
         let mut params = HashMap::new();
@@ -1034,12 +1048,13 @@ mod tests {
 
     #[test]
     fn test_decode_authorization_message_missing_param() {
-        use crate::state::IamState;
         use parking_lot::RwLock;
         use std::collections::HashMap;
         use std::sync::Arc;
 
-        let state: SharedIamState = Arc::new(RwLock::new(IamState::new("123456789012")));
+        let state: SharedIamState = Arc::new(RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let service = StsService::new(state);
 
         let req = make_test_request(HashMap::new());
@@ -1136,11 +1151,12 @@ mod tests {
     }
 
     fn make_sts_service() -> (StsService, SharedIamState) {
-        use crate::state::IamState;
         use parking_lot::RwLock;
         use std::sync::Arc;
 
-        let state: SharedIamState = Arc::new(RwLock::new(IamState::new("123456789012")));
+        let state: SharedIamState = Arc::new(RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let sts = StsService::new(state.clone());
         (sts, state)
     }
@@ -1158,7 +1174,8 @@ mod tests {
 
     fn create_role_in_state(state: &SharedIamState, name: &str) -> String {
         let arn = format!("arn:aws:iam::123456789012:role/{name}");
-        let mut s = state.write();
+        let mut accounts = state.write();
+        let s = accounts.get_or_create("123456789012");
         s.roles.insert(
             arn.clone(),
             crate::state::IamRole {

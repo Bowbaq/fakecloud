@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod delivery;
 pub mod dispatch;
+pub mod multi_account;
 pub mod pagination;
 pub mod protocol;
 pub mod query;

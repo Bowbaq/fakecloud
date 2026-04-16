@@ -25,7 +25,8 @@ impl IamService {
             .unwrap_or_else(|| "/".to_string());
         let tags = parse_tags(&req.query_params);
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if state.instance_profiles.contains_key(&name) {
             return Err(AwsServiceError::aws_error(
@@ -50,7 +51,7 @@ impl IamService {
             tags,
         };
 
-        let xml = self.instance_profile_xml("CreateInstanceProfile", &ip, &state, &req.request_id);
+        let xml = self.instance_profile_xml("CreateInstanceProfile", &ip, state, &req.request_id);
         state.instance_profiles.insert(name, ip);
 
         Ok(AwsResponse::xml(StatusCode::OK, xml))
@@ -62,7 +63,9 @@ impl IamService {
     ) -> Result<AwsResponse, AwsServiceError> {
         let name = required_param(&req.query_params, "InstanceProfileName")?;
         validate_string_length("instanceProfileName", &name, 1, 128)?;
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let ip = state.instance_profiles.get(&name).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -72,7 +75,7 @@ impl IamService {
             )
         })?;
 
-        let xml = self.instance_profile_xml("GetInstanceProfile", ip, &state, &req.request_id);
+        let xml = self.instance_profile_xml("GetInstanceProfile", ip, state, &req.request_id);
         Ok(AwsResponse::xml(StatusCode::OK, xml))
     }
 
@@ -82,7 +85,8 @@ impl IamService {
     ) -> Result<AwsResponse, AwsServiceError> {
         let name = required_param(&req.query_params, "InstanceProfileName")?;
         validate_string_length("instanceProfileName", &name, 1, 128)?;
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let ip = state.instance_profiles.get(&name).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -110,7 +114,9 @@ impl IamService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let path_prefix = req.query_params.get("PathPrefix").cloned();
 
         let profiles: Vec<&IamInstanceProfile> = state
@@ -126,7 +132,7 @@ impl IamService {
 
         let members: String = profiles
             .iter()
-            .map(|ip| self.instance_profile_member_xml(ip, &state))
+            .map(|ip| self.instance_profile_member_xml(ip, state))
             .collect::<Vec<_>>()
             .join("\n");
 
@@ -155,7 +161,8 @@ impl IamService {
         let profile_name = required_param(&req.query_params, "InstanceProfileName")?;
         let role_name = required_param(&req.query_params, "RoleName")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if !state.roles.contains_key(&role_name) {
             return Err(AwsServiceError::aws_error(
@@ -197,7 +204,8 @@ impl IamService {
         let profile_name = required_param(&req.query_params, "InstanceProfileName")?;
         let role_name = required_param(&req.query_params, "RoleName")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let ip = state
             .instance_profiles
@@ -221,7 +229,9 @@ impl IamService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let role_name = required_param(&req.query_params, "RoleName")?;
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         if !state.roles.contains_key(&role_name) {
             return Err(AwsServiceError::aws_error(
@@ -239,7 +249,7 @@ impl IamService {
 
         let members: String = profiles
             .iter()
-            .map(|ip| self.instance_profile_member_xml(ip, &state))
+            .map(|ip| self.instance_profile_member_xml(ip, state))
             .collect::<Vec<_>>()
             .join("\n");
 
@@ -267,7 +277,8 @@ impl IamService {
     ) -> Result<AwsResponse, AwsServiceError> {
         let name = required_param(&req.query_params, "InstanceProfileName")?;
         let new_tags = parse_tags(&req.query_params);
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let ip = state.instance_profiles.get_mut(&name).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -295,7 +306,8 @@ impl IamService {
     ) -> Result<AwsResponse, AwsServiceError> {
         let name = required_param(&req.query_params, "InstanceProfileName")?;
         let tag_keys = parse_tag_keys(&req.query_params);
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let ip = state.instance_profiles.get_mut(&name).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -316,7 +328,9 @@ impl IamService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let name = required_param(&req.query_params, "InstanceProfileName")?;
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let ip = state.instance_profiles.get(&name).ok_or_else(|| {
             AwsServiceError::aws_error(

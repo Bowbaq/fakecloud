@@ -327,7 +327,8 @@ impl ResourceProvisioner {
 
         let path = props.get("Path").and_then(|v| v.as_str()).unwrap_or("/");
 
-        let mut state = self.iam_state.write();
+        let mut accounts = self.iam_state.write();
+        let state = accounts.get_or_create(&self.account_id);
         let role_id = format!(
             "FKIA{}",
             &Uuid::new_v4().to_string().replace('-', "").to_uppercase()[..16]
@@ -360,7 +361,8 @@ impl ResourceProvisioner {
     }
 
     fn delete_iam_role(&self, physical_id: &str) -> Result<(), String> {
-        let mut state = self.iam_state.write();
+        let mut accounts = self.iam_state.write();
+        let state = accounts.get_or_create(&self.account_id);
         // physical_id is the ARN; find the role name
         let role_name = state
             .roles
@@ -397,7 +399,8 @@ impl ResourceProvisioner {
 
         let path = props.get("Path").and_then(|v| v.as_str()).unwrap_or("/");
 
-        let mut state = self.iam_state.write();
+        let mut accounts = self.iam_state.write();
+        let state = accounts.get_or_create(&self.account_id);
         let policy_id = format!(
             "FSIA{}",
             &Uuid::new_v4().to_string().replace('-', "").to_uppercase()[..16]
@@ -438,7 +441,8 @@ impl ResourceProvisioner {
     }
 
     fn delete_iam_policy(&self, physical_id: &str) -> Result<(), String> {
-        let mut state = self.iam_state.write();
+        let mut accounts = self.iam_state.write();
+        let state = accounts.get_or_create(&self.account_id);
         state.policies.remove(physical_id);
         Ok(())
     }
@@ -918,9 +922,9 @@ mod tests {
                 "123456789012",
                 "us-east-1",
             ))),
-            iam_state: Arc::new(RwLock::new(fakecloud_iam::state::IamState::new(
-                "123456789012",
-            ))),
+            iam_state: Arc::new(RwLock::new(
+                fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", "http://localhost:4566"),
+            )),
             s3_state: Arc::new(RwLock::new(fakecloud_s3::state::S3State::new(
                 "123456789012",
                 "us-east-1",

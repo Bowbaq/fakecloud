@@ -32,26 +32,28 @@ impl IamCredentialResolver {
 
 impl CredentialResolver for IamCredentialResolver {
     fn resolve(&self, access_key_id: &str) -> Option<ResolvedCredential> {
-        let mut state = self.state.write();
-        let lookup = state.credential_secret(access_key_id)?;
-        // Classify the principal by ARN shape. IAM user access keys carry
-        // a `:user/` ARN; STS temp credentials carry the assumed-role /
-        // federated-user / root ARN that was stashed when the credential
-        // was issued (batch 2).
-        let principal_type = PrincipalType::from_arn(&lookup.principal_arn);
-        Some(ResolvedCredential {
-            secret_access_key: lookup.secret_access_key,
-            session_token: lookup.session_token,
-            principal: Principal {
-                arn: lookup.principal_arn,
-                user_id: lookup.user_id,
-                account_id: lookup.account_id,
-                principal_type,
-                source_identity: None,
-                tags: lookup.principal_tags,
-            },
-            session_policies: lookup.session_policies,
-        })
+        let mut states = self.state.write();
+        // Search ALL accounts' credentials — a full scan is fine for a
+        // testing tool with a small number of accounts.
+        for (_, account_state) in states.iter_mut() {
+            if let Some(lookup) = account_state.credential_secret(access_key_id) {
+                let principal_type = PrincipalType::from_arn(&lookup.principal_arn);
+                return Some(ResolvedCredential {
+                    secret_access_key: lookup.secret_access_key,
+                    session_token: lookup.session_token,
+                    principal: Principal {
+                        arn: lookup.principal_arn,
+                        user_id: lookup.user_id,
+                        account_id: lookup.account_id,
+                        principal_type,
+                        source_identity: None,
+                        tags: lookup.principal_tags,
+                    },
+                    session_policies: lookup.session_policies,
+                });
+            }
+        }
+        None
     }
 }
 
@@ -68,7 +70,18 @@ mod tests {
     use super::*;
     use crate::state::{IamAccessKey, IamState, IamUser};
     use chrono::Utc;
+    use fakecloud_core::multi_account::MultiAccountState;
     use parking_lot::RwLock;
+
+    /// Helper: create a `SharedIamState` (multi-account) pre-populated with
+    /// one account whose state is set up by the caller.
+    fn shared(state: IamState) -> SharedIamState {
+        let account_id = state.account_id.clone();
+        let mut mas = MultiAccountState::<IamState>::new(&account_id, "us-east-1", "");
+        // Replace the auto-created default with the caller's state.
+        *mas.get_or_create(&account_id) = state;
+        Arc::new(RwLock::new(mas))
+    }
 
     #[test]
     fn resolves_iam_user_secret_from_state() {
@@ -95,7 +108,7 @@ mod tests {
                 created_at: Utc::now(),
             }],
         );
-        let resolver = IamCredentialResolver::new(Arc::new(RwLock::new(state)));
+        let resolver = IamCredentialResolver::new(shared(state));
         let resolved = resolver.resolve("FKIAALICE").unwrap();
         assert_eq!(resolved.secret_access_key, "the-secret");
         assert_eq!(
@@ -109,7 +122,7 @@ mod tests {
     #[test]
     fn returns_none_for_unknown_akid() {
         let state = IamState::new("123456789012");
-        let resolver = IamCredentialResolver::new(Arc::new(RwLock::new(state)));
+        let resolver = IamCredentialResolver::new(shared(state));
         assert!(resolver.resolve("FKIANONE").is_none());
     }
 
@@ -130,13 +143,85 @@ mod tests {
                 session_policies: Vec::new(),
             },
         );
-        let resolver = IamCredentialResolver::new(Arc::new(RwLock::new(state)));
+        let resolver = IamCredentialResolver::new(shared(state));
         let resolved = resolver.resolve("FSIATEMP").unwrap();
         assert_eq!(
             resolved.principal.principal_type,
             PrincipalType::AssumedRole
         );
         assert_eq!(resolved.session_token.as_deref(), Some("temp-token"));
+    }
+
+    #[test]
+    fn resolves_across_accounts() {
+        let mas = MultiAccountState::<IamState>::new("111111111111", "us-east-1", "");
+        let shared_state: SharedIamState = Arc::new(RwLock::new(mas));
+
+        // Add user in account A
+        {
+            let mut states = shared_state.write();
+            let a = states.get_or_create("111111111111");
+            a.users.insert(
+                "alice".into(),
+                IamUser {
+                    user_name: "alice".into(),
+                    user_id: "AIDAALICE".into(),
+                    arn: "arn:aws:iam::111111111111:user/alice".into(),
+                    path: "/".into(),
+                    created_at: Utc::now(),
+                    tags: Vec::new(),
+                    permissions_boundary: None,
+                },
+            );
+            a.access_keys.insert(
+                "alice".into(),
+                vec![IamAccessKey {
+                    access_key_id: "FKIAALICE".into(),
+                    secret_access_key: "secret-a".into(),
+                    user_name: "alice".into(),
+                    status: "Active".into(),
+                    created_at: Utc::now(),
+                }],
+            );
+
+            // Add user in account B
+            let b = states.get_or_create("222222222222");
+            b.users.insert(
+                "bob".into(),
+                IamUser {
+                    user_name: "bob".into(),
+                    user_id: "AIDABOB".into(),
+                    arn: "arn:aws:iam::222222222222:user/bob".into(),
+                    path: "/".into(),
+                    created_at: Utc::now(),
+                    tags: Vec::new(),
+                    permissions_boundary: None,
+                },
+            );
+            b.access_keys.insert(
+                "bob".into(),
+                vec![IamAccessKey {
+                    access_key_id: "FKIABOB".into(),
+                    secret_access_key: "secret-b".into(),
+                    user_name: "bob".into(),
+                    status: "Active".into(),
+                    created_at: Utc::now(),
+                }],
+            );
+        }
+
+        let resolver = IamCredentialResolver::new(shared_state);
+
+        // Resolve from account A
+        let a = resolver.resolve("FKIAALICE").unwrap();
+        assert_eq!(a.principal.account_id, "111111111111");
+
+        // Resolve from account B
+        let b = resolver.resolve("FKIABOB").unwrap();
+        assert_eq!(b.principal.account_id, "222222222222");
+
+        // Unknown key
+        assert!(resolver.resolve("FKIANONE").is_none());
     }
 
     #[test]
@@ -174,7 +259,7 @@ mod tests {
                 created_at: Utc::now(),
             }],
         );
-        let resolver = IamCredentialResolver::new(Arc::new(RwLock::new(state)));
+        let resolver = IamCredentialResolver::new(shared(state));
         let resolved = resolver.resolve("FKIABOB").unwrap();
         let tags = resolved.principal.tags.as_ref().unwrap();
         assert_eq!(tags.get("Team").map(|s| s.as_str()), Some("platform"));
@@ -216,7 +301,7 @@ mod tests {
                 session_policies: Vec::new(),
             },
         );
-        let resolver = IamCredentialResolver::new(Arc::new(RwLock::new(state)));
+        let resolver = IamCredentialResolver::new(shared(state));
         let resolved = resolver.resolve("FSIAOPS").unwrap();
         let tags = resolved.principal.tags.as_ref().unwrap();
         assert_eq!(
@@ -250,7 +335,7 @@ mod tests {
                 created_at: Utc::now(),
             }],
         );
-        let resolver = IamCredentialResolver::new(Arc::new(RwLock::new(state)));
+        let resolver = IamCredentialResolver::new(shared(state));
         let resolved = resolver.resolve("FKIAEMPTY").unwrap();
         assert!(resolved.principal.tags.is_none());
     }

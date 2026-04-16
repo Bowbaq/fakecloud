@@ -137,12 +137,13 @@ impl IamService {
     /// MUST be called before acquiring a write lock on self.state.
     pub(super) fn effective_account_id(&self, req: &AwsRequest) -> String {
         if let Some(access_key) = extract_access_key(req) {
-            let state = self.state.read();
+            let mut accounts = self.state.write();
+            let state = accounts.get_or_create(&req.account_id);
             if let Some(identity) = state.credential_identities.get(&access_key) {
                 return identity.account_id.clone();
             }
         }
-        self.state.read().account_id.clone()
+        self.state.read().default_account_id().to_string()
     }
 
     pub(super) fn create_user(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
@@ -159,7 +160,8 @@ impl IamService {
         let partition = partition_for_region(&req.region);
         let effective_account = self.effective_account_id(req);
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if state.users.contains_key(&user_name) {
             return Err(AwsServiceError::aws_error(
@@ -197,7 +199,9 @@ impl IamService {
             1,
             128,
         )?;
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         // If no UserName specified, return current/default user
         let user_name = match req.query_params.get("UserName") {
@@ -232,7 +236,8 @@ impl IamService {
     pub(super) fn delete_user(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let user_name = required_param(&req.query_params, "UserName")?;
         validate_string_length("userName", &user_name, 1, 64)?;
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if !state.users.contains_key(&user_name) {
             return Err(AwsServiceError::aws_error(
@@ -242,7 +247,7 @@ impl IamService {
             ));
         }
 
-        ensure_user_can_be_deleted(&state, &user_name)?;
+        ensure_user_can_be_deleted(state, &user_name)?;
 
         state.users.remove(&user_name);
         state.access_keys.remove(&user_name);
@@ -278,7 +283,9 @@ impl IamService {
             1000,
         )?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let path_prefix = req.query_params.get("PathPrefix").cloned();
         let mut users: Vec<IamUser> = state.users.values().cloned().collect();
         if let Some(prefix) = path_prefix {
@@ -294,7 +301,8 @@ impl IamService {
         let new_path = req.query_params.get("NewPath").cloned();
         let new_user_name = req.query_params.get("NewUserName").cloned();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let user = state.users.get(&user_name).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -332,7 +340,7 @@ impl IamService {
         state.users.insert(actual_new_name.clone(), user);
 
         if actual_new_name != user_name {
-            rename_user_references(&mut state, &user_name, &actual_new_name);
+            rename_user_references(state, &user_name, &actual_new_name);
         }
 
         let xml = empty_response("UpdateUser", &req.request_id);
@@ -343,7 +351,8 @@ impl IamService {
         let user_name = required_param(&req.query_params, "UserName")?;
         validate_string_length("userName", &user_name, 1, 64)?;
         let new_tags = parse_tags(&req.query_params);
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let user = state.users.get_mut(&user_name).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -369,7 +378,8 @@ impl IamService {
         let user_name = required_param(&req.query_params, "UserName")?;
         validate_string_length("userName", &user_name, 1, 64)?;
         let tag_keys = parse_tag_keys(&req.query_params);
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let user = state.users.get_mut(&user_name).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -388,7 +398,9 @@ impl IamService {
     pub(super) fn list_user_tags(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let user_name = required_param(&req.query_params, "UserName")?;
         validate_string_length("userName", &user_name, 1, 64)?;
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let user = state.users.get(&user_name).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -431,9 +443,10 @@ impl IamService {
             1,
             128,
         )?;
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
-        let user_name = resolve_create_access_key_target(&state, req)?;
+        let user_name = resolve_create_access_key_target(state, req)?;
 
         if !state.users.contains_key(&user_name) {
             return Err(AwsServiceError::aws_error(
@@ -484,11 +497,16 @@ impl IamService {
             .query_params
             .get("UserName")
             .cloned()
-            .unwrap_or_else(|| resolve_calling_user(&self.state.read(), &req.account_id));
+            .unwrap_or_else(|| {
+                let accts = self.state.read();
+                let st = accts.get(&req.account_id);
+                resolve_calling_user(st.unwrap_or(accts.default_ref()), &req.account_id)
+            });
         let access_key_id = required_param(&req.query_params, "AccessKeyId")?;
         validate_string_length("accessKeyId", &access_key_id, 16, 128)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let removed = state
             .access_keys
             .get_mut(&user_name)
@@ -531,7 +549,11 @@ impl IamService {
             .query_params
             .get("UserName")
             .cloned()
-            .unwrap_or_else(|| resolve_calling_user(&self.state.read(), &req.account_id));
+            .unwrap_or_else(|| {
+                let accts = self.state.read();
+                let st = accts.get(&req.account_id);
+                resolve_calling_user(st.unwrap_or(accts.default_ref()), &req.account_id)
+            });
         let marker = req.query_params.get("Marker").cloned();
         validate_optional_range_i64(
             "maxItems",
@@ -548,7 +570,8 @@ impl IamService {
             .and_then(|v| v.parse().ok())
             .unwrap_or(100);
 
-        let state = self.state.read();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let mut keys = state
             .access_keys
             .get(&user_name)
@@ -597,10 +620,15 @@ impl IamService {
             .query_params
             .get("UserName")
             .cloned()
-            .unwrap_or_else(|| resolve_calling_user(&self.state.read(), &req.account_id));
+            .unwrap_or_else(|| {
+                let accts = self.state.read();
+                let st = accts.get(&req.account_id);
+                resolve_calling_user(st.unwrap_or(accts.default_ref()), &req.account_id)
+            });
         let access_key_id = required_param(&req.query_params, "AccessKeyId")?;
         let status = required_param(&req.query_params, "Status")?;
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if let Some(keys) = state.access_keys.get_mut(&user_name) {
             if let Some(key) = keys.iter_mut().find(|k| k.access_key_id == access_key_id) {
@@ -640,7 +668,8 @@ impl IamService {
             .map(|v| v == "true")
             .unwrap_or(false);
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if !state.users.contains_key(&user_name) {
             return Err(AwsServiceError::aws_error(
@@ -693,7 +722,9 @@ impl IamService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let user_name = required_param(&req.query_params, "UserName")?;
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         if !state.users.contains_key(&user_name) {
             return Err(AwsServiceError::aws_error(
@@ -739,7 +770,8 @@ impl IamService {
     ) -> Result<AwsResponse, AwsServiceError> {
         let user_name = required_param(&req.query_params, "UserName")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if !state.users.contains_key(&user_name) {
             return Err(AwsServiceError::aws_error(
@@ -770,7 +802,8 @@ impl IamService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let user_name = required_param(&req.query_params, "UserName")?;
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if !state.users.contains_key(&user_name) {
             return Err(AwsServiceError::aws_error(
@@ -814,7 +847,8 @@ impl IamService {
             ));
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if !state.users.contains_key(&user_name) {
             return Err(AwsServiceError::aws_error(
@@ -877,7 +911,9 @@ impl IamService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let user_name = required_param(&req.query_params, "UserName")?;
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         if !state.users.contains_key(&user_name) {
             return Err(AwsServiceError::aws_error(
@@ -934,7 +970,8 @@ impl IamService {
         let certificate_id = required_param(&req.query_params, "CertificateId")?;
         let status = required_param(&req.query_params, "Status")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Check user exists first
         if !state.users.contains_key(&user_name) {
@@ -980,7 +1017,8 @@ impl IamService {
         let user_name = required_param(&req.query_params, "UserName")?;
         let certificate_id = required_param(&req.query_params, "CertificateId")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let found = if let Some(certs) = state.signing_certificates.get_mut(&user_name) {
             let before = certs.len();
@@ -1013,7 +1051,8 @@ impl IamService {
         let user_name = required_param(&req.query_params, "UserName")?;
         let ssh_public_key_body = required_param(&req.query_params, "SSHPublicKeyBody")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if !state.users.contains_key(&user_name) {
             return Err(AwsServiceError::aws_error(
@@ -1080,7 +1119,9 @@ impl IamService {
         let user_name = required_param(&req.query_params, "UserName")?;
         let ssh_public_key_id = required_param(&req.query_params, "SSHPublicKeyId")?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let key = state
             .ssh_public_keys
@@ -1130,7 +1171,9 @@ impl IamService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let user_name = required_param(&req.query_params, "UserName")?;
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let keys = state.ssh_public_keys.get(&user_name);
         let members: String = keys
@@ -1181,7 +1224,8 @@ impl IamService {
         let ssh_public_key_id = required_param(&req.query_params, "SSHPublicKeyId")?;
         let status = required_param(&req.query_params, "Status")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let key = state
             .ssh_public_keys
@@ -1211,7 +1255,8 @@ impl IamService {
         let user_name = required_param(&req.query_params, "UserName")?;
         let ssh_public_key_id = required_param(&req.query_params, "SSHPublicKeyId")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if let Some(keys) = state.ssh_public_keys.get_mut(&user_name) {
             let len_before = keys.len();
@@ -1244,7 +1289,9 @@ impl IamService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let access_key_id = required_param(&req.query_params, "AccessKeyId")?;
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         // Find the user that owns this access key
         let mut user_name = String::new();
@@ -1309,7 +1356,8 @@ impl IamService {
         let user_name = required_param(&req.query_params, "UserName")?;
         let policy_arn = required_param(&req.query_params, "PolicyArn")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if !state.users.contains_key(&user_name) {
             return Err(AwsServiceError::aws_error(
@@ -1347,7 +1395,8 @@ impl IamService {
         let user_name = required_param(&req.query_params, "UserName")?;
         let policy_arn = required_param(&req.query_params, "PolicyArn")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if !state.users.contains_key(&user_name) {
             return Err(AwsServiceError::aws_error(
@@ -1387,7 +1436,9 @@ impl IamService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let user_name = required_param(&req.query_params, "UserName")?;
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         if !state.users.contains_key(&user_name) {
             return Err(AwsServiceError::aws_error(
@@ -1448,7 +1499,8 @@ impl IamService {
             ));
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if !state.users.contains_key(&user_name) {
             return Err(AwsServiceError::aws_error(
@@ -1471,7 +1523,9 @@ impl IamService {
     pub(super) fn get_user_policy(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let user_name = required_param(&req.query_params, "UserName")?;
         let policy_name = required_param(&req.query_params, "PolicyName")?;
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let doc = state
             .user_inline_policies
@@ -1512,7 +1566,8 @@ impl IamService {
         let user_name = required_param(&req.query_params, "UserName")?;
         let policy_name = required_param(&req.query_params, "PolicyName")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if !state.users.contains_key(&user_name) {
             return Err(AwsServiceError::aws_error(
@@ -1535,7 +1590,9 @@ impl IamService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let user_name = required_param(&req.query_params, "UserName")?;
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         if !state.users.contains_key(&user_name) {
             return Err(AwsServiceError::aws_error(
@@ -1596,7 +1653,8 @@ impl IamService {
             ));
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let user = state.users.get_mut(&user_name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
@@ -1615,7 +1673,8 @@ impl IamService {
     ) -> Result<AwsResponse, AwsServiceError> {
         let user_name = required_param(&req.query_params, "UserName")?;
         validate_string_length("userName", &user_name, 1, 64)?;
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let user = state.users.get_mut(&user_name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,

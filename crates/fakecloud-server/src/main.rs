@@ -94,7 +94,11 @@ async fn main() {
 
     // Shared state
     let iam_state = Arc::new(parking_lot::RwLock::new(
-        fakecloud_iam::state::IamState::new(&cli.account_id),
+        fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        ),
     ));
     let sqs_state = Arc::new(parking_lot::RwLock::new(
         fakecloud_sqs::state::SqsState::new(&cli.account_id, &cli.region, &endpoint_url),
@@ -633,22 +637,39 @@ async fn main() {
                     match serde_json::from_slice::<fakecloud_iam::state::IamSnapshot>(&bytes) {
                         Ok(snapshot) => {
                             if snapshot.schema_version
-                                != fakecloud_iam::state::IAM_SNAPSHOT_SCHEMA_VERSION
+                                > fakecloud_iam::state::IAM_SNAPSHOT_SCHEMA_VERSION
                             {
                                 fatal_exit(format_args!(
-                                    "iam persistence schema mismatch: on-disk={}, expected={}",
+                                    "iam persistence schema too new: on-disk={}, max supported={}",
                                     snapshot.schema_version,
                                     fakecloud_iam::state::IAM_SNAPSHOT_SCHEMA_VERSION,
                                 ));
                             }
-                            let user_count = snapshot.state.users.len();
-                            let role_count = snapshot.state.roles.len();
-                            *iam_state.write() = snapshot.state;
-                            tracing::info!(
-                                users = user_count,
-                                roles = role_count,
-                                "loaded iam persistence snapshot",
-                            );
+                            // v2: multi-account state in `accounts` field
+                            // v1: single-account state in `state` field, migrated by wrapping
+                            if let Some(accounts) = snapshot.accounts {
+                                let account_count = accounts.account_count();
+                                *iam_state.write() = accounts;
+                                tracing::info!(
+                                    accounts = account_count,
+                                    "loaded iam persistence snapshot (multi-account)",
+                                );
+                            } else if let Some(single_state) = snapshot.state {
+                                let user_count = single_state.users.len();
+                                let role_count = single_state.roles.len();
+                                let account_id = single_state.account_id.clone();
+                                let mut mas = iam_state.write();
+                                *mas.get_or_create(&account_id) = single_state;
+                                tracing::info!(
+                                    users = user_count,
+                                    roles = role_count,
+                                    "loaded iam persistence snapshot (migrated from v1)",
+                                );
+                            } else {
+                                tracing::warn!(
+                                    "iam persistence snapshot has neither accounts nor state field; starting empty"
+                                );
+                            }
                         }
                         Err(err) => fatal_exit(format_args!(
                             "failed to parse iam persistence snapshot: {err}"

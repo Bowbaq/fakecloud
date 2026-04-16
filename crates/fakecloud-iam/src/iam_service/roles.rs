@@ -100,7 +100,8 @@ impl IamService {
     pub(super) fn create_role(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let input = CreateRoleInput::from_query(&req.query_params)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if state.roles.contains_key(&input.role_name) {
             return Err(AwsServiceError::aws_error(
@@ -142,7 +143,9 @@ impl IamService {
     pub(super) fn get_role(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let role_name = required_param(&req.query_params, "RoleName")?;
         validate_string_length("roleName", &role_name, 1, 64)?;
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let role = state.roles.get(&role_name).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -159,7 +162,8 @@ impl IamService {
     pub(super) fn delete_role(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let role_name = required_param(&req.query_params, "RoleName")?;
         validate_string_length("roleName", &role_name, 1, 64)?;
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if !state.roles.contains_key(&role_name) {
             return Err(AwsServiceError::aws_error(
@@ -169,7 +173,7 @@ impl IamService {
             ));
         }
 
-        ensure_role_can_be_deleted(&state, &role_name)?;
+        ensure_role_can_be_deleted(state, &role_name)?;
 
         state.roles.remove(&role_name);
         state.role_policies.remove(&role_name);
@@ -201,7 +205,9 @@ impl IamService {
             1,
             1000,
         )?;
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let path_prefix = req.query_params.get("PathPrefix").cloned();
         let max_items: usize = req
             .query_params
@@ -252,7 +258,8 @@ impl IamService {
     pub(super) fn update_role(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let role_name = required_param(&req.query_params, "RoleName")?;
         validate_string_length("roleName", &role_name, 1, 64)?;
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let role = state.roles.get_mut(&role_name).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -286,7 +293,8 @@ impl IamService {
     ) -> Result<AwsResponse, AwsServiceError> {
         let role_name = required_param(&req.query_params, "RoleName")?;
         validate_string_length("roleName", &role_name, 1, 64)?;
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let role = state.roles.get_mut(&role_name).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -363,7 +371,8 @@ impl IamService {
             }
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let role = state.roles.get_mut(&role_name).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -383,7 +392,8 @@ impl IamService {
         let role_name = required_param(&req.query_params, "RoleName")?;
         validate_string_length("roleName", &role_name, 1, 64)?;
         let new_tags = parse_tags(&req.query_params);
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let role = state.roles.get_mut(&role_name).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -418,7 +428,8 @@ impl IamService {
         validate_string_length("roleName", &role_name, 1, 64)?;
         let tag_keys = parse_tag_keys(&req.query_params);
         validate_untag_keys(&tag_keys)?;
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let role = state.roles.get_mut(&role_name).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -437,7 +448,9 @@ impl IamService {
     pub(super) fn list_role_tags(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let role_name = required_param(&req.query_params, "RoleName")?;
         validate_string_length("roleName", &role_name, 1, 64)?;
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let role = state.roles.get(&role_name).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -472,7 +485,8 @@ impl IamService {
             ));
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let role = state.roles.get_mut(&role_name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
@@ -492,7 +506,8 @@ impl IamService {
     ) -> Result<AwsResponse, AwsServiceError> {
         let role_name = required_param(&req.query_params, "RoleName")?;
         validate_string_length("roleName", &role_name, 1, 64)?;
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let role = state.roles.get_mut(&role_name).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -516,7 +531,8 @@ impl IamService {
         let role_name = required_param(&req.query_params, "RoleName")?;
         let policy_arn = required_param(&req.query_params, "PolicyArn")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if !state.roles.contains_key(&role_name) {
             return Err(AwsServiceError::aws_error(
@@ -555,7 +571,8 @@ impl IamService {
         let role_name = required_param(&req.query_params, "RoleName")?;
         let policy_arn = required_param(&req.query_params, "PolicyArn")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if !state.roles.contains_key(&role_name) {
             return Err(AwsServiceError::aws_error(
@@ -595,7 +612,9 @@ impl IamService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let role_name = required_param(&req.query_params, "RoleName")?;
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         if !state.roles.contains_key(&role_name) {
             return Err(AwsServiceError::aws_error(
@@ -660,7 +679,8 @@ impl IamService {
             ));
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if !state.roles.contains_key(&role_name) {
             return Err(AwsServiceError::aws_error(
@@ -683,7 +703,9 @@ impl IamService {
     pub(super) fn get_role_policy(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let role_name = required_param(&req.query_params, "RoleName")?;
         let policy_name = required_param(&req.query_params, "PolicyName")?;
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         if !state.roles.contains_key(&role_name) {
             return Err(AwsServiceError::aws_error(
@@ -732,7 +754,8 @@ impl IamService {
         let role_name = required_param(&req.query_params, "RoleName")?;
         let policy_name = required_param(&req.query_params, "PolicyName")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if !state.roles.contains_key(&role_name) {
             return Err(AwsServiceError::aws_error(
@@ -768,7 +791,9 @@ impl IamService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let role_name = required_param(&req.query_params, "RoleName")?;
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         if !state.roles.contains_key(&role_name) {
             return Err(AwsServiceError::aws_error(
@@ -798,7 +823,8 @@ impl IamService {
         let description = req.query_params.get("Description").cloned();
         let custom_suffix = req.query_params.get("CustomSuffix").cloned();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let role_name =
             derive_service_linked_role_name(&aws_service_name, custom_suffix.as_deref());
@@ -850,7 +876,8 @@ impl IamService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let role_name = required_param(&req.query_params, "RoleName")?;
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if !state.roles.contains_key(&role_name) {
             return Err(AwsServiceError::aws_error(
@@ -896,7 +923,9 @@ impl IamService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let task_id = required_param(&req.query_params, "DeletionTaskId")?;
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let task = state
             .service_linked_role_deletions
