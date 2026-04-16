@@ -5435,4 +5435,206 @@ mod tests {
         );
         assert!(svc.get_endpoint_attributes(&req).is_err());
     }
+
+    // ── Error branch tests ──
+
+    #[test]
+    fn get_topic_attributes_not_found() {
+        let (svc, _) = make_sns();
+        let req = sns_request(
+            "GetTopicAttributes",
+            vec![("TopicArn", "arn:aws:sns:us-east-1:123456789012:nonexistent")],
+        );
+        assert!(svc.get_topic_attributes(&req).is_err());
+    }
+
+    #[test]
+    fn delete_topic_not_found() {
+        let (svc, _) = make_sns();
+        let req = sns_request(
+            "DeleteTopic",
+            vec![("TopicArn", "arn:aws:sns:us-east-1:123456789012:nonexistent")],
+        );
+        // DeleteTopic returns success even for nonexistent topics (AWS behavior)
+        assert!(svc.delete_topic(&req).is_ok());
+    }
+
+    #[test]
+    fn subscribe_to_nonexistent_topic() {
+        let (svc, _) = make_sns();
+        let req = sns_request(
+            "Subscribe",
+            vec![
+                ("TopicArn", "arn:aws:sns:us-east-1:123456789012:nope"),
+                ("Protocol", "email"),
+                ("Endpoint", "test@example.com"),
+            ],
+        );
+        assert!(svc.subscribe(&req).is_err());
+    }
+
+    #[test]
+    fn unsubscribe_nonexistent_is_noop() {
+        let (svc, _) = make_sns();
+        let req = sns_request(
+            "Unsubscribe",
+            vec![(
+                "SubscriptionArn",
+                "arn:aws:sns:us-east-1:123456789012:topic:nonexistent-sub",
+            )],
+        );
+        // AWS returns success for nonexistent subscriptions
+        assert!(svc.unsubscribe(&req).is_ok());
+    }
+
+    #[test]
+    fn set_topic_attributes_not_found() {
+        let (svc, _) = make_sns();
+        let req = sns_request(
+            "SetTopicAttributes",
+            vec![
+                ("TopicArn", "arn:aws:sns:us-east-1:123456789012:nope"),
+                ("AttributeName", "DisplayName"),
+                ("AttributeValue", "My Topic"),
+            ],
+        );
+        assert!(svc.set_topic_attributes(&req).is_err());
+    }
+
+    #[test]
+    fn publish_to_nonexistent_topic() {
+        let (svc, _) = make_sns();
+        let req = sns_request(
+            "Publish",
+            vec![
+                ("TopicArn", "arn:aws:sns:us-east-1:123456789012:nope"),
+                ("Message", "hello"),
+            ],
+        );
+        assert!(svc.publish(&req).is_err());
+    }
+
+    #[test]
+    fn get_subscription_attributes_not_found() {
+        let (svc, _) = make_sns();
+        let req = sns_request(
+            "GetSubscriptionAttributes",
+            vec![(
+                "SubscriptionArn",
+                "arn:aws:sns:us-east-1:123456789012:topic:bad-sub",
+            )],
+        );
+        assert!(svc.get_subscription_attributes(&req).is_err());
+    }
+
+    #[test]
+    fn set_subscription_attributes_not_found() {
+        let (svc, _) = make_sns();
+        let req = sns_request(
+            "SetSubscriptionAttributes",
+            vec![
+                (
+                    "SubscriptionArn",
+                    "arn:aws:sns:us-east-1:123456789012:topic:bad-sub",
+                ),
+                ("AttributeName", "FilterPolicy"),
+                ("AttributeValue", "{}"),
+            ],
+        );
+        assert!(svc.set_subscription_attributes(&req).is_err());
+    }
+
+    #[test]
+    fn tag_resource_nonexistent_topic() {
+        let (svc, _) = make_sns();
+        let req = sns_request(
+            "TagResource",
+            vec![
+                ("ResourceArn", "arn:aws:sns:us-east-1:123456789012:nope"),
+                ("Tags.member.1.Key", "env"),
+                ("Tags.member.1.Value", "prod"),
+            ],
+        );
+        assert!(svc.tag_resource(&req).is_err());
+    }
+
+    #[test]
+    fn untag_resource_nonexistent_topic() {
+        let (svc, _) = make_sns();
+        let req = sns_request(
+            "UntagResource",
+            vec![
+                ("ResourceArn", "arn:aws:sns:us-east-1:123456789012:nope"),
+                ("TagKeys.member.1", "env"),
+            ],
+        );
+        assert!(svc.untag_resource(&req).is_err());
+    }
+
+    #[test]
+    fn list_tags_nonexistent_topic() {
+        let (svc, _) = make_sns();
+        let req = sns_request(
+            "ListTagsForResource",
+            vec![("ResourceArn", "arn:aws:sns:us-east-1:123456789012:nope")],
+        );
+        assert!(svc.list_tags_for_resource(&req).is_err());
+    }
+
+    #[test]
+    fn create_topic_duplicate_returns_existing_arn() {
+        let (svc, _) = make_sns();
+        let req = sns_request("CreateTopic", vec![("Name", "dup-topic")]);
+        let resp1 = svc.create_topic(&req).unwrap();
+
+        let req = sns_request("CreateTopic", vec![("Name", "dup-topic")]);
+        let resp2 = svc.create_topic(&req).unwrap();
+
+        // Should return same ARN (idempotent)
+        let body1 = std::str::from_utf8(resp1.body.expect_bytes()).unwrap();
+        let body2 = std::str::from_utf8(resp2.body.expect_bytes()).unwrap();
+        assert_eq!(body1, body2);
+    }
+
+    #[test]
+    fn confirm_subscription_not_found() {
+        let (svc, _) = make_sns();
+        let req = sns_request(
+            "ConfirmSubscription",
+            vec![
+                ("TopicArn", "arn:aws:sns:us-east-1:123456789012:nope"),
+                ("Token", "fake-token"),
+            ],
+        );
+        assert!(svc.confirm_subscription(&req).is_err());
+    }
+
+    #[test]
+    fn get_platform_application_attributes_not_found() {
+        let (svc, _) = make_sns();
+        let req = sns_request(
+            "GetPlatformApplicationAttributes",
+            vec![(
+                "PlatformApplicationArn",
+                "arn:aws:sns:us-east-1:123456789012:app/GCM/ghost",
+            )],
+        );
+        assert!(svc.get_platform_application_attributes(&req).is_err());
+    }
+
+    #[test]
+    fn create_platform_endpoint_app_not_found() {
+        let (svc, _) = make_sns();
+        let req = sns_request(
+            "CreatePlatformEndpoint",
+            vec![
+                (
+                    "PlatformApplicationArn",
+                    "arn:aws:sns:us-east-1:123456789012:app/GCM/ghost",
+                ),
+                ("Token", "device-token"),
+            ],
+        );
+        assert!(svc.create_platform_endpoint(&req).is_err());
+    }
 }

@@ -1514,4 +1514,122 @@ mod tests {
             "arn:aws:lambda:us-east-1:123456789012:function:newfn"
         );
     }
+
+    // ── Error branch tests ──
+
+    #[tokio::test]
+    async fn create_function_duplicate_returns_conflict() {
+        let svc = LambdaService::new(make_state());
+        seed_function(&svc, "dup-fn").await;
+
+        let body = json!({
+            "FunctionName": "dup-fn",
+            "Runtime": "python3.12",
+            "Role": "arn:aws:iam::123456789012:role/r",
+            "Handler": "index.handler",
+            "Code": {"ZipFile": "UEsDBBQ="},
+        });
+        let req = make_request(Method::POST, "/2015-03-31/functions", &body.to_string());
+        let err = match svc.handle(req).await {
+            Err(e) => e,
+            Ok(_) => panic!("expected ResourceConflictException"),
+        };
+        assert_eq!(err.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn get_function_not_found() {
+        let svc = LambdaService::new(make_state());
+        let req = make_request(Method::GET, "/2015-03-31/functions/nope", "");
+        let err = match svc.handle(req).await {
+            Err(e) => e,
+            Ok(_) => panic!("expected error"),
+        };
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn delete_function_not_found() {
+        let svc = LambdaService::new(make_state());
+        let req = make_request(Method::DELETE, "/2015-03-31/functions/nope", "");
+        let err = match svc.handle(req).await {
+            Err(e) => e,
+            Ok(_) => panic!("expected error"),
+        };
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn get_event_source_mapping_not_found() {
+        let svc = LambdaService::new(make_state());
+        let req = make_request(
+            Method::GET,
+            "/2015-03-31/event-source-mappings/nonexistent",
+            "",
+        );
+        let err = match svc.handle(req).await {
+            Err(e) => e,
+            Ok(_) => panic!("expected error"),
+        };
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn delete_event_source_mapping_not_found() {
+        let svc = LambdaService::new(make_state());
+        let req = make_request(
+            Method::DELETE,
+            "/2015-03-31/event-source-mappings/nonexistent",
+            "",
+        );
+        let err = match svc.handle(req).await {
+            Err(e) => e,
+            Ok(_) => panic!("expected error"),
+        };
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn get_policy_on_missing_function() {
+        let svc = LambdaService::new(make_state());
+        let req = make_request(Method::GET, "/2015-03-31/functions/nope/policy", "");
+        let err = match svc.handle(req).await {
+            Err(e) => e,
+            Ok(_) => panic!("expected error"),
+        };
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn remove_permission_on_missing_function() {
+        let svc = LambdaService::new(make_state());
+        let req = make_request(
+            Method::DELETE,
+            "/2015-03-31/functions/nope/policy/stmt1",
+            "",
+        );
+        let err = match svc.handle(req).await {
+            Err(e) => e,
+            Ok(_) => panic!("expected error"),
+        };
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn publish_version_on_missing_function() {
+        let svc = LambdaService::new(make_state());
+        let req = make_request(Method::POST, "/2015-03-31/functions/nope/versions", "{}");
+        let err = match svc.handle(req).await {
+            Err(e) => e,
+            Ok(_) => panic!("expected error"),
+        };
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn unknown_route_returns_error() {
+        let svc = LambdaService::new(make_state());
+        let req = make_request(Method::POST, "/unknown/route", "{}");
+        assert!(svc.handle(req).await.is_err());
+    }
 }
