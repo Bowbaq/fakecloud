@@ -4868,4 +4868,360 @@ mod tests {
         assert!(body["PublicKey"].as_str().is_some());
         assert_eq!(body["KeySpec"].as_str().unwrap(), "ECC_NIST_P256");
     }
+
+    // ── Batch 8 additions: key lifecycle, alias, policy handlers ─────
+
+    fn body_json(resp: AwsResponse) -> Value {
+        serde_json::from_slice(resp.body.expect_bytes()).unwrap()
+    }
+
+    #[test]
+    fn describe_key_returns_metadata_for_new_key() {
+        let svc = make_service();
+        let key_id = create_key(&svc);
+        let resp = svc
+            .describe_key(&make_request("DescribeKey", json!({ "KeyId": key_id })))
+            .unwrap();
+        let body = body_json(resp);
+        assert_eq!(body["KeyMetadata"]["KeyId"], json!(key_id));
+        assert_eq!(body["KeyMetadata"]["Enabled"], json!(true));
+        assert_eq!(body["KeyMetadata"]["KeyState"], json!("Enabled"));
+    }
+
+    #[test]
+    fn describe_key_requires_key_id() {
+        let svc = make_service();
+        let err = svc
+            .describe_key(&make_request("DescribeKey", json!({})))
+            .err()
+            .expect("expected error");
+        assert_eq!(err.code(), "ValidationException");
+    }
+
+    #[test]
+    fn describe_key_unknown_errors() {
+        let svc = make_service();
+        let err = svc
+            .describe_key(&make_request(
+                "DescribeKey",
+                json!({ "KeyId": "00000000-0000-0000-0000-000000000000" }),
+            ))
+            .err()
+            .expect("expected error");
+        assert_eq!(err.code(), "NotFoundException");
+    }
+
+    #[test]
+    fn enable_disable_key_flip_the_state() {
+        let svc = make_service();
+        let key_id = create_key(&svc);
+        svc.disable_key(&make_request("DisableKey", json!({ "KeyId": key_id })))
+            .unwrap();
+        let resp = svc
+            .describe_key(&make_request("DescribeKey", json!({ "KeyId": key_id })))
+            .unwrap();
+        assert_eq!(
+            body_json(resp)["KeyMetadata"]["KeyState"],
+            json!("Disabled")
+        );
+
+        svc.enable_key(&make_request("EnableKey", json!({ "KeyId": key_id })))
+            .unwrap();
+        let resp = svc
+            .describe_key(&make_request("DescribeKey", json!({ "KeyId": key_id })))
+            .unwrap();
+        assert_eq!(body_json(resp)["KeyMetadata"]["KeyState"], json!("Enabled"));
+    }
+
+    #[test]
+    fn schedule_key_deletion_sets_pending_deletion_state() {
+        let svc = make_service();
+        let key_id = create_key(&svc);
+        let resp = svc
+            .schedule_key_deletion(&make_request(
+                "ScheduleKeyDeletion",
+                json!({ "KeyId": key_id, "PendingWindowInDays": 7 }),
+            ))
+            .unwrap();
+        let body = body_json(resp);
+        assert_eq!(body["KeyState"], json!("PendingDeletion"));
+        assert_eq!(body["PendingWindowInDays"], json!(7));
+        assert!(body["DeletionDate"].as_f64().unwrap() > 0.0);
+    }
+
+    #[test]
+    fn schedule_key_deletion_defaults_to_30_days() {
+        let svc = make_service();
+        let key_id = create_key(&svc);
+        let resp = svc
+            .schedule_key_deletion(&make_request(
+                "ScheduleKeyDeletion",
+                json!({ "KeyId": key_id }),
+            ))
+            .unwrap();
+        assert_eq!(body_json(resp)["PendingWindowInDays"], json!(30));
+    }
+
+    #[test]
+    fn list_keys_returns_created_keys() {
+        let svc = make_service();
+        let id1 = create_key(&svc);
+        let id2 = create_key(&svc);
+        let resp = svc.list_keys(&make_request("ListKeys", json!({}))).unwrap();
+        let body = body_json(resp);
+        let ids: Vec<String> = body["Keys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|k| k["KeyId"].as_str().unwrap().to_string())
+            .collect();
+        assert!(ids.contains(&id1));
+        assert!(ids.contains(&id2));
+    }
+
+    #[test]
+    fn list_keys_respects_limit_and_next_marker() {
+        let svc = make_service();
+        let _ = create_key(&svc);
+        let _ = create_key(&svc);
+        let _ = create_key(&svc);
+
+        let resp = svc
+            .list_keys(&make_request("ListKeys", json!({ "Limit": 2 })))
+            .unwrap();
+        let body = body_json(resp);
+        assert_eq!(body["Keys"].as_array().unwrap().len(), 2);
+        assert_eq!(body["Truncated"], json!(true));
+        assert!(body["NextMarker"].is_string());
+    }
+
+    // ── Aliases ──────────────────────────────────────────────────────
+
+    fn create_alias(svc: &KmsService, alias: &str, target: &str) {
+        svc.create_alias(&make_request(
+            "CreateAlias",
+            json!({ "AliasName": alias, "TargetKeyId": target }),
+        ))
+        .unwrap();
+    }
+
+    #[test]
+    fn create_alias_rejects_malformed_name() {
+        let svc = make_service();
+        let key_id = create_key(&svc);
+        let err = svc
+            .create_alias(&make_request(
+                "CreateAlias",
+                json!({ "AliasName": "missing-prefix", "TargetKeyId": key_id }),
+            ))
+            .err()
+            .expect("expected error");
+        assert_eq!(err.code(), "ValidationException");
+    }
+
+    #[test]
+    fn create_alias_rejects_unknown_target() {
+        let svc = make_service();
+        let err = svc
+            .create_alias(&make_request(
+                "CreateAlias",
+                json!({
+                    "AliasName": "alias/my-key",
+                    "TargetKeyId": "00000000-0000-0000-0000-000000000000"
+                }),
+            ))
+            .err()
+            .expect("expected error");
+        assert_eq!(err.code(), "NotFoundException");
+    }
+
+    #[test]
+    fn create_alias_duplicate_errors() {
+        let svc = make_service();
+        let key_id = create_key(&svc);
+        create_alias(&svc, "alias/dup", &key_id);
+        let err = svc
+            .create_alias(&make_request(
+                "CreateAlias",
+                json!({ "AliasName": "alias/dup", "TargetKeyId": key_id }),
+            ))
+            .err()
+            .expect("expected error");
+        assert_eq!(err.code(), "AlreadyExistsException");
+    }
+
+    #[test]
+    fn delete_alias_removes_entry() {
+        let svc = make_service();
+        let key_id = create_key(&svc);
+        create_alias(&svc, "alias/deleteme", &key_id);
+        svc.delete_alias(&make_request(
+            "DeleteAlias",
+            json!({ "AliasName": "alias/deleteme" }),
+        ))
+        .unwrap();
+        let err = svc
+            .delete_alias(&make_request(
+                "DeleteAlias",
+                json!({ "AliasName": "alias/deleteme" }),
+            ))
+            .err()
+            .expect("expected error");
+        assert_eq!(err.code(), "NotFoundException");
+    }
+
+    #[test]
+    fn delete_alias_rejects_missing_prefix() {
+        let svc = make_service();
+        let err = svc
+            .delete_alias(&make_request(
+                "DeleteAlias",
+                json!({ "AliasName": "no-prefix" }),
+            ))
+            .err()
+            .expect("expected error");
+        assert_eq!(err.code(), "ValidationException");
+    }
+
+    #[test]
+    fn list_aliases_filters_by_key_id() {
+        let svc = make_service();
+        let k1 = create_key(&svc);
+        let k2 = create_key(&svc);
+        create_alias(&svc, "alias/a", &k1);
+        create_alias(&svc, "alias/b", &k2);
+
+        let resp = svc
+            .list_aliases(&make_request("ListAliases", json!({ "KeyId": k1 })))
+            .unwrap();
+        let body = body_json(resp);
+        let names: Vec<String> = body["Aliases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["AliasName"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(names, vec!["alias/a".to_string()]);
+    }
+
+    // ── Key policies ─────────────────────────────────────────────────
+
+    #[test]
+    fn get_key_policy_returns_policy_field() {
+        let svc = make_service();
+        let key_id = create_key(&svc);
+        let resp = svc
+            .get_key_policy(&make_request(
+                "GetKeyPolicy",
+                json!({ "KeyId": key_id, "PolicyName": "default" }),
+            ))
+            .unwrap();
+        let body = body_json(resp);
+        assert!(body["Policy"].as_str().is_some());
+    }
+
+    #[test]
+    fn get_key_policy_rejects_alias_as_key_id() {
+        let svc = make_service();
+        let err = svc
+            .get_key_policy(&make_request(
+                "GetKeyPolicy",
+                json!({ "KeyId": "alias/anything", "PolicyName": "default" }),
+            ))
+            .err()
+            .expect("expected error");
+        assert_eq!(err.code(), "NotFoundException");
+    }
+
+    #[test]
+    fn list_key_policies_returns_default_name() {
+        let svc = make_service();
+        let key_id = create_key(&svc);
+        let resp = svc
+            .list_key_policies(&make_request("ListKeyPolicies", json!({ "KeyId": key_id })))
+            .unwrap();
+        let body = body_json(resp);
+        assert_eq!(
+            body["PolicyNames"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["default"]
+        );
+    }
+
+    #[test]
+    fn put_get_key_policy_round_trip() {
+        let svc = make_service();
+        let key_id = create_key(&svc);
+        let custom_policy = json!({
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Sid": "Custom",
+                "Effect": "Allow",
+                "Principal": { "AWS": "arn:aws:iam::123456789012:root" },
+                "Action": "kms:*",
+                "Resource": "*"
+            }]
+        })
+        .to_string();
+
+        svc.put_key_policy(&make_request(
+            "PutKeyPolicy",
+            json!({
+                "KeyId": key_id,
+                "PolicyName": "default",
+                "Policy": custom_policy
+            }),
+        ))
+        .unwrap();
+
+        let resp = svc
+            .get_key_policy(&make_request(
+                "GetKeyPolicy",
+                json!({ "KeyId": key_id, "PolicyName": "default" }),
+            ))
+            .unwrap();
+        let body = body_json(resp);
+        let got: Value = serde_json::from_str(body["Policy"].as_str().unwrap()).unwrap();
+        assert_eq!(got["Statement"][0]["Sid"], json!("Custom"));
+    }
+
+    #[test]
+    fn put_key_policy_rejects_alias_as_key_id() {
+        let svc = make_service();
+        let err = svc
+            .put_key_policy(&make_request(
+                "PutKeyPolicy",
+                json!({
+                    "KeyId": "alias/anything",
+                    "PolicyName": "default",
+                    "Policy": "{}"
+                }),
+            ))
+            .err()
+            .expect("expected error");
+        assert_eq!(err.code(), "NotFoundException");
+    }
+
+    // ── GenerateRandom (not already covered by existing tests) ──────
+
+    #[test]
+    fn generate_random_returns_base64_encoded_payload() {
+        let svc = make_service();
+        let resp = svc
+            .generate_random(&make_request(
+                "GenerateRandom",
+                json!({ "NumberOfBytes": 32 }),
+            ))
+            .unwrap();
+        let body = body_json(resp);
+        let plaintext = body["Plaintext"].as_str().unwrap();
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(plaintext)
+            .unwrap();
+        assert_eq!(decoded.len(), 32);
+    }
 }
