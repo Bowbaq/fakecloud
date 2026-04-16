@@ -424,6 +424,107 @@ impl AwsService for IamService {
             resource: iam_action_resource(static_action, partition, account, request),
         })
     }
+
+    fn resource_tags_for(
+        &self,
+        resource_arn: &str,
+    ) -> Option<std::collections::HashMap<String, String>> {
+        iam_resource_tags(&self.state, resource_arn)
+    }
+
+    fn request_tags_from(
+        &self,
+        request: &AwsRequest,
+        action: &str,
+    ) -> Option<std::collections::HashMap<String, String>> {
+        iam_request_tags(request, action)
+    }
+}
+
+/// Look up resource tags for an IAM ARN.
+///
+/// IAM ARN formats:
+/// - `arn:{p}:iam::{account}:user/{path/}name`
+/// - `arn:{p}:iam::{account}:role/{path/}name`
+/// - `arn:{p}:iam::{account}:policy/{path/}name`
+/// - `arn:{p}:iam::{account}:instance-profile/{path/}name`
+/// - `*` for account-level operations
+fn iam_resource_tags(
+    state: &SharedIamState,
+    resource_arn: &str,
+) -> Option<std::collections::HashMap<String, String>> {
+    if resource_arn == "*" {
+        return Some(std::collections::HashMap::new());
+    }
+    // Parse the resource segment after the 6th colon
+    let parts: Vec<&str> = resource_arn.split(':').collect();
+    if parts.len() < 6 {
+        return None;
+    }
+    let resource = parts[5];
+    let state = state.read();
+    if let Some(rest) = resource.strip_prefix("user/") {
+        let name = rest.rsplit('/').next().unwrap_or(rest);
+        state
+            .users
+            .get(name)
+            .map(|u| tags_to_hashmap_or_empty(&u.tags))
+    } else if let Some(rest) = resource.strip_prefix("role/") {
+        let name = rest.rsplit('/').next().unwrap_or(rest);
+        state
+            .roles
+            .get(name)
+            .map(|r| tags_to_hashmap_or_empty(&r.tags))
+    } else if resource.starts_with("policy/") {
+        // Policies are keyed by full ARN
+        state
+            .policies
+            .get(resource_arn)
+            .map(|p| tags_to_hashmap_or_empty(&p.tags))
+    } else if let Some(rest) = resource.strip_prefix("instance-profile/") {
+        let name = rest.rsplit('/').next().unwrap_or(rest);
+        state
+            .instance_profiles
+            .get(name)
+            .map(|ip| tags_to_hashmap_or_empty(&ip.tags))
+    } else {
+        Some(std::collections::HashMap::new())
+    }
+}
+
+fn tags_to_hashmap_or_empty(tags: &[Tag]) -> std::collections::HashMap<String, String> {
+    tags.iter()
+        .map(|t| (t.key.clone(), t.value.clone()))
+        .collect()
+}
+
+/// Extract request tags from IAM operations that accept tags.
+fn iam_request_tags(
+    request: &AwsRequest,
+    action: &str,
+) -> Option<std::collections::HashMap<String, String>> {
+    const TAG_ACTIONS: &[&str] = &[
+        "CreateUser",
+        "TagUser",
+        "CreateRole",
+        "TagRole",
+        "CreatePolicy",
+        "TagPolicy",
+        "CreateInstanceProfile",
+        "TagInstanceProfile",
+        "CreateOpenIDConnectProvider",
+        "TagOpenIDConnectProvider",
+        "CreateSAMLProvider",
+        "TagSAMLProvider",
+        "UploadServerCertificate",
+        "TagServerCertificate",
+    ];
+    if TAG_ACTIONS.contains(&action) {
+        let tags = parse_tags(&request.query_params);
+        Some(tags.into_iter().map(|t| (t.key, t.value)).collect())
+    } else {
+        Some(std::collections::HashMap::new())
+    }
 }
 
 /// Derive the fully-qualified IAM resource ARN for a given action +
