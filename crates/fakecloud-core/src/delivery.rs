@@ -217,3 +217,208 @@ impl Default for DeliveryBus {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    // Mock implementations
+    struct MockSqs {
+        call_count: AtomicUsize,
+    }
+    impl SqsDelivery for MockSqs {
+        fn deliver_to_queue(
+            &self,
+            _queue_arn: &str,
+            _message_body: &str,
+            _attributes: &HashMap<String, String>,
+        ) {
+            self.call_count.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    struct MockSns {
+        call_count: AtomicUsize,
+    }
+    impl SnsDelivery for MockSns {
+        fn publish_to_topic(&self, _topic_arn: &str, _message: &str, _subject: Option<&str>) {
+            self.call_count.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    struct MockEventBridge {
+        call_count: AtomicUsize,
+    }
+    impl EventBridgeDelivery for MockEventBridge {
+        fn put_event(
+            &self,
+            _source: &str,
+            _detail_type: &str,
+            _detail: &str,
+            _event_bus_name: &str,
+        ) {
+            self.call_count.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    struct MockKinesis {
+        call_count: AtomicUsize,
+    }
+    impl KinesisDelivery for MockKinesis {
+        fn put_record(&self, _stream_arn: &str, _data: &str, _partition_key: &str) {
+            self.call_count.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    struct MockStepFunctions {
+        call_count: AtomicUsize,
+    }
+    impl StepFunctionsDelivery for MockStepFunctions {
+        fn start_execution(&self, _state_machine_arn: &str, _input: &str) {
+            self.call_count.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn delivery_bus_new_has_no_senders() {
+        let bus = DeliveryBus::new();
+        // Calling methods without senders should be no-ops
+        bus.send_to_sqs("arn:queue", "body", &HashMap::new());
+        bus.publish_to_sns("arn:topic", "msg", None);
+        bus.put_event_to_eventbridge("src", "type", "{}", "default");
+        bus.send_to_kinesis("arn:stream", "data", "pk");
+        bus.start_stepfunctions_execution("arn:sfn", "{}");
+        // No panics = success
+    }
+
+    #[test]
+    fn delivery_bus_default_is_same_as_new() {
+        let bus = DeliveryBus::default();
+        bus.send_to_sqs("arn:q", "b", &HashMap::new());
+    }
+
+    #[test]
+    fn send_to_sqs_calls_sender() {
+        let mock = Arc::new(MockSqs {
+            call_count: AtomicUsize::new(0),
+        });
+        let bus = DeliveryBus::new().with_sqs(mock.clone());
+
+        bus.send_to_sqs("arn:queue", "msg", &HashMap::new());
+        assert_eq!(mock.call_count.load(Ordering::SeqCst), 1);
+
+        bus.send_to_sqs("arn:queue2", "msg2", &HashMap::new());
+        assert_eq!(mock.call_count.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn send_to_sqs_with_attrs_calls_sender() {
+        let mock = Arc::new(MockSqs {
+            call_count: AtomicUsize::new(0),
+        });
+        let bus = DeliveryBus::new().with_sqs(mock.clone());
+
+        let mut attrs = HashMap::new();
+        attrs.insert(
+            "key".to_string(),
+            SqsMessageAttribute {
+                data_type: "String".to_string(),
+                string_value: Some("val".to_string()),
+                binary_value: None,
+            },
+        );
+        bus.send_to_sqs_with_attrs("arn:q", "body", &attrs, Some("group"), Some("dedup"));
+        assert_eq!(mock.call_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn publish_to_sns_calls_sender() {
+        let mock = Arc::new(MockSns {
+            call_count: AtomicUsize::new(0),
+        });
+        let bus = DeliveryBus::new().with_sns(mock.clone());
+
+        bus.publish_to_sns("arn:topic", "message", Some("subject"));
+        assert_eq!(mock.call_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn put_event_to_eventbridge_calls_sender() {
+        let mock = Arc::new(MockEventBridge {
+            call_count: AtomicUsize::new(0),
+        });
+        let bus = DeliveryBus::new().with_eventbridge(mock.clone());
+
+        bus.put_event_to_eventbridge("aws.s3", "Object Created", "{}", "default");
+        assert_eq!(mock.call_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn send_to_kinesis_calls_sender() {
+        let mock = Arc::new(MockKinesis {
+            call_count: AtomicUsize::new(0),
+        });
+        let bus = DeliveryBus::new().with_kinesis(mock.clone());
+
+        bus.send_to_kinesis("arn:stream", "data", "partition-key");
+        assert_eq!(mock.call_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn start_stepfunctions_calls_sender() {
+        let mock = Arc::new(MockStepFunctions {
+            call_count: AtomicUsize::new(0),
+        });
+        let bus = DeliveryBus::new().with_stepfunctions(mock.clone());
+
+        bus.start_stepfunctions_execution("arn:sfn:machine", r#"{"key":"val"}"#);
+        assert_eq!(mock.call_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn builder_chaining_works() {
+        let sqs = Arc::new(MockSqs {
+            call_count: AtomicUsize::new(0),
+        });
+        let sns = Arc::new(MockSns {
+            call_count: AtomicUsize::new(0),
+        });
+        let eb = Arc::new(MockEventBridge {
+            call_count: AtomicUsize::new(0),
+        });
+        let kin = Arc::new(MockKinesis {
+            call_count: AtomicUsize::new(0),
+        });
+        let sfn = Arc::new(MockStepFunctions {
+            call_count: AtomicUsize::new(0),
+        });
+
+        let bus = DeliveryBus::new()
+            .with_sqs(sqs.clone())
+            .with_sns(sns.clone())
+            .with_eventbridge(eb.clone())
+            .with_kinesis(kin.clone())
+            .with_stepfunctions(sfn.clone());
+
+        bus.send_to_sqs("q", "m", &HashMap::new());
+        bus.publish_to_sns("t", "m", None);
+        bus.put_event_to_eventbridge("s", "d", "{}", "b");
+        bus.send_to_kinesis("s", "d", "k");
+        bus.start_stepfunctions_execution("sm", "{}");
+
+        assert_eq!(sqs.call_count.load(Ordering::SeqCst), 1);
+        assert_eq!(sns.call_count.load(Ordering::SeqCst), 1);
+        assert_eq!(eb.call_count.load(Ordering::SeqCst), 1);
+        assert_eq!(kin.call_count.load(Ordering::SeqCst), 1);
+        assert_eq!(sfn.call_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn invoke_lambda_returns_none_without_invoker() {
+        let bus = DeliveryBus::new();
+        let result = bus.invoke_lambda("arn:lambda", "{}").await;
+        assert!(result.is_none());
+    }
+}
