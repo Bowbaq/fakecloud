@@ -6,11 +6,16 @@ use chrono::Utc;
 use http::{Method, StatusCode};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use tokio::sync::Mutex as AsyncMutex;
 
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
+use fakecloud_persistence::SnapshotStore;
 
 use crate::runtime::ContainerRuntime;
-use crate::state::{EventSourceMapping, LambdaFunction, SharedLambdaState};
+use crate::state::{
+    EventSourceMapping, LambdaFunction, LambdaSnapshot, SharedLambdaState,
+    LAMBDA_SNAPSHOT_SCHEMA_VERSION,
+};
 
 /// All fields of a `CreateFunction` request, already parsed and
 /// defaulted. The code zip (if any) is eagerly base64-decoded so the
@@ -112,6 +117,8 @@ impl CreateFunctionInput {
 pub struct LambdaService {
     state: SharedLambdaState,
     runtime: Option<Arc<ContainerRuntime>>,
+    snapshot_store: Option<Arc<dyn SnapshotStore>>,
+    snapshot_lock: Arc<AsyncMutex<()>>,
 }
 
 impl LambdaService {
@@ -119,12 +126,41 @@ impl LambdaService {
         Self {
             state,
             runtime: None,
+            snapshot_store: None,
+            snapshot_lock: Arc::new(AsyncMutex::new(())),
         }
     }
 
     pub fn with_runtime(mut self, runtime: Arc<ContainerRuntime>) -> Self {
         self.runtime = Some(runtime);
         self
+    }
+
+    pub fn with_snapshot_store(mut self, store: Arc<dyn SnapshotStore>) -> Self {
+        self.snapshot_store = Some(store);
+        self
+    }
+
+    async fn save_snapshot(&self) {
+        let Some(store) = self.snapshot_store.clone() else {
+            return;
+        };
+        let _guard = self.snapshot_lock.lock().await;
+        let snapshot = LambdaSnapshot {
+            schema_version: LAMBDA_SNAPSHOT_SCHEMA_VERSION,
+            state: self.state.read().clone(),
+        };
+        let join = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            let bytes = serde_json::to_vec(&snapshot)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+            store.save(&bytes)
+        })
+        .await;
+        match join {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => tracing::error!(%err, "failed to write lambda snapshot"),
+            Err(err) => tracing::error!(%err, "lambda snapshot task panicked"),
+        }
     }
 
     /// Determine the action from the HTTP method and path segments.
@@ -791,7 +827,18 @@ impl AwsService for LambdaService {
             )
         })?;
 
-        match action {
+        let mutates = matches!(
+            action,
+            "CreateFunction"
+                | "DeleteFunction"
+                | "PublishVersion"
+                | "AddPermission"
+                | "RemovePermission"
+                | "CreateEventSourceMapping"
+                | "DeleteEventSourceMapping"
+        );
+
+        let result = match action {
             "CreateFunction" => self.create_function(&req),
             "ListFunctions" => self.list_functions(),
             "GetFunction" => self.get_function(resource_name.as_deref().unwrap_or("")),
@@ -817,7 +864,11 @@ impl AwsService for LambdaService {
                 self.delete_event_source_mapping(resource_name.as_deref().unwrap_or(""))
             }
             _ => Err(AwsServiceError::action_not_implemented("lambda", action)),
+        };
+        if mutates && matches!(result.as_ref(), Ok(resp) if resp.status.is_success()) {
+            self.save_snapshot().await;
         }
+        result
     }
 
     fn supported_actions(&self) -> &[&str] {

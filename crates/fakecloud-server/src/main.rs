@@ -382,7 +382,7 @@ async fn main() {
 
     // Register services
     if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
-        for service in ["lambda", "rds", "elasticache", "states", "bedrock"] {
+        for service in ["rds", "elasticache", "states", "bedrock"] {
             fakecloud_persistence::warn_unsupported(service);
         }
     }
@@ -742,6 +742,55 @@ async fn main() {
     let mut lambda_service = LambdaService::new(lambda_state.clone());
     if let Some(ref rt) = container_runtime {
         lambda_service = lambda_service.with_runtime(rt.clone());
+    }
+    let lambda_snapshot_store: Option<Arc<dyn fakecloud_persistence::SnapshotStore>> =
+        if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
+            let data_path = persistence_config
+                .data_path
+                .as_ref()
+                .expect("validated above")
+                .clone();
+            let path = data_path.join("lambda").join("snapshot.json");
+            let store = fakecloud_persistence::DiskSnapshotStore::new(path);
+            match fakecloud_persistence::SnapshotStore::load(&store) {
+                Ok(Some(bytes)) => {
+                    match serde_json::from_slice::<fakecloud_lambda::state::LambdaSnapshot>(&bytes)
+                    {
+                        Ok(snapshot) => {
+                            if snapshot.schema_version
+                                != fakecloud_lambda::state::LAMBDA_SNAPSHOT_SCHEMA_VERSION
+                            {
+                                fatal_exit(format_args!(
+                                    "lambda persistence schema mismatch: on-disk={}, expected={}",
+                                    snapshot.schema_version,
+                                    fakecloud_lambda::state::LAMBDA_SNAPSHOT_SCHEMA_VERSION,
+                                ));
+                            }
+                            let fn_count = snapshot.state.functions.len();
+                            *lambda_state.write() = snapshot.state;
+                            tracing::info!(
+                                functions = fn_count,
+                                "loaded lambda persistence snapshot",
+                            );
+                        }
+                        Err(err) => fatal_exit(format_args!(
+                            "failed to parse lambda persistence snapshot: {err}"
+                        )),
+                    }
+                }
+                Ok(None) => {
+                    tracing::info!("no lambda persistence snapshot found; starting empty");
+                }
+                Err(err) => fatal_exit(format_args!(
+                    "failed to read lambda persistence snapshot: {err}"
+                )),
+            }
+            Some(Arc::new(store) as Arc<dyn fakecloud_persistence::SnapshotStore>)
+        } else {
+            None
+        };
+    if let Some(store) = lambda_snapshot_store {
+        lambda_service = lambda_service.with_snapshot_store(store);
     }
     registry.register(Arc::new(lambda_service));
     // SecretsManager delivery bus (rotation Lambda invocation)
