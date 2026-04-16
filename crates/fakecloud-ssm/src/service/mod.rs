@@ -3444,4 +3444,264 @@ mod tests {
         assert_eq!(body["DeletedParameters"].as_array().unwrap().len(), 1);
         assert_eq!(body["InvalidParameters"].as_array().unwrap().len(), 1);
     }
+
+    // ── parameters.rs filter validation coverage ──
+
+    #[test]
+    fn describe_parameters_invalid_filter_key_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "DescribeParameters",
+            json!({
+                "ParameterFilters": [{"Key": "Bogus", "Values": ["x"]}]
+            }),
+        );
+        expect_err_code(svc.describe_parameters(&req), "ValidationException");
+    }
+
+    #[test]
+    fn describe_parameters_label_filter_rejected() {
+        let svc = make_service();
+        let req = make_request(
+            "DescribeParameters",
+            json!({
+                "ParameterFilters": [{"Key": "Label", "Values": ["v1"]}]
+            }),
+        );
+        expect_err_code(svc.describe_parameters(&req), "ValidationException");
+    }
+
+    #[test]
+    fn describe_parameters_missing_values_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "DescribeParameters",
+            json!({"ParameterFilters": [{"Key": "Name"}]}),
+        );
+        expect_err_code(svc.describe_parameters(&req), "ValidationException");
+    }
+
+    #[test]
+    fn describe_parameters_duplicate_filter_key_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "DescribeParameters",
+            json!({
+                "ParameterFilters": [
+                    {"Key": "Name", "Values": ["a"]},
+                    {"Key": "Name", "Values": ["b"]}
+                ]
+            }),
+        );
+        expect_err_code(svc.describe_parameters(&req), "ValidationException");
+    }
+
+    #[test]
+    fn describe_parameters_path_invalid_option_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "DescribeParameters",
+            json!({
+                "ParameterFilters": [
+                    {"Key": "Path", "Option": "Equals", "Values": ["/foo"]}
+                ]
+            }),
+        );
+        expect_err_code(svc.describe_parameters(&req), "ValidationException");
+    }
+
+    #[test]
+    fn describe_parameters_path_aws_prefix_rejected() {
+        let svc = make_service();
+        let req = make_request(
+            "DescribeParameters",
+            json!({
+                "ParameterFilters": [
+                    {"Key": "Path", "Values": ["/aws/secret"]}
+                ]
+            }),
+        );
+        expect_err_code(svc.describe_parameters(&req), "ValidationException");
+    }
+
+    #[test]
+    fn describe_parameters_tier_invalid_value_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "DescribeParameters",
+            json!({"ParameterFilters": [{"Key": "Tier", "Values": ["Bogus"]}]}),
+        );
+        expect_err_code(svc.describe_parameters(&req), "ValidationException");
+    }
+
+    #[test]
+    fn describe_parameters_type_invalid_value_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "DescribeParameters",
+            json!({"ParameterFilters": [{"Key": "Type", "Values": ["Bogus"]}]}),
+        );
+        expect_err_code(svc.describe_parameters(&req), "ValidationException");
+    }
+
+    #[test]
+    fn describe_parameters_name_invalid_option_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "DescribeParameters",
+            json!({
+                "ParameterFilters": [
+                    {"Key": "Name", "Option": "EndsWith", "Values": ["x"]}
+                ]
+            }),
+        );
+        expect_err_code(svc.describe_parameters(&req), "ValidationException");
+    }
+
+    #[test]
+    fn describe_parameters_key_length_exceeds() {
+        let svc = make_service();
+        let long_key = "k".repeat(140);
+        let req = make_request(
+            "DescribeParameters",
+            json!({
+                "ParameterFilters": [
+                    {"Key": long_key, "Values": ["v"]}
+                ]
+            }),
+        );
+        expect_err_code(svc.describe_parameters(&req), "ValidationException");
+    }
+
+    #[test]
+    fn describe_parameters_option_length_exceeds() {
+        let svc = make_service();
+        let long_opt = "x".repeat(20);
+        let req = make_request(
+            "DescribeParameters",
+            json!({
+                "ParameterFilters": [
+                    {"Key": "Name", "Option": long_opt, "Values": ["v"]}
+                ]
+            }),
+        );
+        expect_err_code(svc.describe_parameters(&req), "ValidationException");
+    }
+
+    #[test]
+    fn describe_parameters_value_length_exceeds() {
+        let svc = make_service();
+        let long_val = "v".repeat(1100);
+        let req = make_request(
+            "DescribeParameters",
+            json!({
+                "ParameterFilters": [
+                    {"Key": "Name", "Values": [long_val]}
+                ]
+            }),
+        );
+        expect_err_code(svc.describe_parameters(&req), "ValidationException");
+    }
+
+    #[test]
+    fn get_parameters_by_path_filters_disallow_name() {
+        let svc = make_service();
+        let req = make_request(
+            "GetParametersByPath",
+            json!({
+                "Path": "/",
+                "ParameterFilters": [
+                    {"Key": "Name", "Values": ["x"]}
+                ]
+            }),
+        );
+        expect_err_code(svc.get_parameters_by_path(&req), "ValidationException");
+    }
+
+    #[test]
+    fn get_parameters_by_path_missing_path_errors() {
+        let svc = make_service();
+        let req = make_request("GetParametersByPath", json!({}));
+        expect_err_code(svc.get_parameters_by_path(&req), "ValidationException");
+    }
+
+    #[test]
+    fn put_parameter_securestring_encrypted_roundtrip() {
+        let svc = make_service();
+        let req = make_request(
+            "PutParameter",
+            json!({
+                "Name": "/sec",
+                "Value": "secret-value",
+                "Type": "SecureString"
+            }),
+        );
+        svc.put_parameter(&req).unwrap();
+
+        let req = make_request(
+            "GetParameter",
+            json!({"Name": "/sec", "WithDecryption": true}),
+        );
+        let resp = svc.get_parameter(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["Parameter"]["Value"], "secret-value");
+    }
+
+    #[test]
+    fn put_parameter_stringlist_with_commas() {
+        let svc = make_service();
+        let req = make_request(
+            "PutParameter",
+            json!({"Name": "/list", "Value": "a,b,c", "Type": "StringList"}),
+        );
+        svc.put_parameter(&req).unwrap();
+    }
+
+    #[test]
+    fn get_parameter_by_arn_resolves() {
+        let svc = make_service();
+        svc.put_parameter(&make_request(
+            "PutParameter",
+            json!({"Name": "/byarn", "Value": "v", "Type": "String"}),
+        ))
+        .unwrap();
+
+        let arn = "arn:aws:ssm:us-east-1:123456789012:parameter/byarn";
+        let req = make_request("GetParameter", json!({"Name": arn}));
+        let resp = svc.get_parameter(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["Parameter"]["Name"], "/byarn");
+    }
+
+    #[test]
+    fn get_parameter_with_version_selector() {
+        let svc = make_service();
+        svc.put_parameter(&make_request(
+            "PutParameter",
+            json!({"Name": "/verp", "Value": "v1", "Type": "String"}),
+        ))
+        .unwrap();
+        svc.put_parameter(&make_request(
+            "PutParameter",
+            json!({"Name": "/verp", "Value": "v2", "Type": "String", "Overwrite": true}),
+        ))
+        .unwrap();
+
+        let req = make_request("GetParameter", json!({"Name": "/verp:1"}));
+        let resp = svc.get_parameter(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["Parameter"]["Value"], "v1");
+    }
+
+    #[test]
+    fn get_parameter_nonexistent_version_errors() {
+        let svc = make_service();
+        svc.put_parameter(&make_request(
+            "PutParameter",
+            json!({"Name": "/gpnv", "Value": "v", "Type": "String"}),
+        ))
+        .unwrap();
+        let req = make_request("GetParameter", json!({"Name": "/gpnv:99"}));
+        expect_err_code(svc.get_parameter(&req), "ParameterVersionNotFound");
+    }
 }

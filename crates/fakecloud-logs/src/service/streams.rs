@@ -1503,4 +1503,482 @@ mod tests {
         let results = body["results"].as_array().unwrap();
         assert_eq!(results.len(), 2, "Should only match ERROR JSON events");
     }
+
+    // ── create_log_stream validation ──
+
+    #[test]
+    fn create_log_stream_missing_group_errors() {
+        let svc = make_service();
+        let req = make_request("CreateLogStream", json!({"logStreamName": "s"}));
+        assert!(svc.create_log_stream(&req).is_err());
+    }
+
+    #[test]
+    fn create_log_stream_missing_stream_errors() {
+        let svc = make_service();
+        create_group(&svc, "g1");
+        let req = make_request("CreateLogStream", json!({"logGroupName": "g1"}));
+        assert!(svc.create_log_stream(&req).is_err());
+    }
+
+    #[test]
+    fn create_log_stream_nonexistent_group_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "CreateLogStream",
+            json!({"logGroupName": "missing", "logStreamName": "s"}),
+        );
+        assert!(svc.create_log_stream(&req).is_err());
+    }
+
+    #[test]
+    fn create_log_stream_duplicate_errors() {
+        let svc = make_service();
+        create_group(&svc, "dup");
+        create_stream(&svc, "dup", "s");
+        let req = make_request(
+            "CreateLogStream",
+            json!({"logGroupName": "dup", "logStreamName": "s"}),
+        );
+        assert!(svc.create_log_stream(&req).is_err());
+    }
+
+    // ── delete_log_stream validation ──
+
+    #[test]
+    fn delete_log_stream_missing_group_errors() {
+        let svc = make_service();
+        let req = make_request("DeleteLogStream", json!({"logStreamName": "s"}));
+        assert!(svc.delete_log_stream(&req).is_err());
+    }
+
+    #[test]
+    fn delete_log_stream_missing_stream_errors() {
+        let svc = make_service();
+        let req = make_request("DeleteLogStream", json!({"logGroupName": "g"}));
+        assert!(svc.delete_log_stream(&req).is_err());
+    }
+
+    #[test]
+    fn delete_log_stream_nonexistent_group() {
+        let svc = make_service();
+        let req = make_request(
+            "DeleteLogStream",
+            json!({"logGroupName": "missing", "logStreamName": "s"}),
+        );
+        assert!(svc.delete_log_stream(&req).is_err());
+    }
+
+    #[test]
+    fn delete_log_stream_nonexistent_stream() {
+        let svc = make_service();
+        create_group(&svc, "g2");
+        let req = make_request(
+            "DeleteLogStream",
+            json!({"logGroupName": "g2", "logStreamName": "missing"}),
+        );
+        assert!(svc.delete_log_stream(&req).is_err());
+    }
+
+    #[test]
+    fn delete_log_stream_succeeds() {
+        let svc = make_service();
+        create_group(&svc, "gd");
+        create_stream(&svc, "gd", "s");
+        let req = make_request(
+            "DeleteLogStream",
+            json!({"logGroupName": "gd", "logStreamName": "s"}),
+        );
+        svc.delete_log_stream(&req).unwrap();
+    }
+
+    // ── describe_log_streams ──
+
+    #[test]
+    fn describe_log_streams_missing_group_errors() {
+        let svc = make_service();
+        let req = make_request("DescribeLogStreams", json!({}));
+        assert!(svc.describe_log_streams(&req).is_err());
+    }
+
+    #[test]
+    fn describe_log_streams_identifier_ending_in_colon_star_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "DescribeLogStreams",
+            json!({"logGroupIdentifier": "arn:aws:logs:us-east-1:123456789012:log-group:x:*"}),
+        );
+        assert!(svc.describe_log_streams(&req).is_err());
+    }
+
+    #[test]
+    fn describe_log_streams_identifier_as_arn() {
+        let svc = make_service();
+        create_group(&svc, "ident");
+        create_stream(&svc, "ident", "s1");
+        let req = make_request(
+            "DescribeLogStreams",
+            json!({"logGroupIdentifier": "arn:aws:logs:us-east-1:123456789012:log-group:ident"}),
+        );
+        let resp = svc.describe_log_streams(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["logStreams"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn describe_log_streams_limit_over_50_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "DescribeLogStreams",
+            json!({"logGroupName": "g", "limit": 100}),
+        );
+        assert!(svc.describe_log_streams(&req).is_err());
+    }
+
+    #[test]
+    fn describe_log_streams_invalid_order_by_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "DescribeLogStreams",
+            json!({"logGroupName": "g", "orderBy": "Bogus"}),
+        );
+        assert!(svc.describe_log_streams(&req).is_err());
+    }
+
+    #[test]
+    fn describe_log_streams_last_event_time_with_prefix_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "DescribeLogStreams",
+            json!({
+                "logGroupName": "g",
+                "orderBy": "LastEventTime",
+                "logStreamNamePrefix": "abc"
+            }),
+        );
+        assert!(svc.describe_log_streams(&req).is_err());
+    }
+
+    #[test]
+    fn describe_log_streams_missing_group_resource_error() {
+        let svc = make_service();
+        let req = make_request("DescribeLogStreams", json!({"logGroupName": "missing"}));
+        assert!(svc.describe_log_streams(&req).is_err());
+    }
+
+    #[test]
+    fn describe_log_streams_with_prefix_filter() {
+        let svc = make_service();
+        create_group(&svc, "pref");
+        create_stream(&svc, "pref", "web-1");
+        create_stream(&svc, "pref", "api-1");
+        let req = make_request(
+            "DescribeLogStreams",
+            json!({"logGroupName": "pref", "logStreamNamePrefix": "web"}),
+        );
+        let resp = svc.describe_log_streams(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["logStreams"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn describe_log_streams_pagination() {
+        let svc = make_service();
+        create_group(&svc, "pg");
+        for i in 0..5 {
+            create_stream(&svc, "pg", &format!("s{i}"));
+        }
+        let req = make_request(
+            "DescribeLogStreams",
+            json!({"logGroupName": "pg", "limit": 2}),
+        );
+        let resp = svc.describe_log_streams(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["logStreams"].as_array().unwrap().len(), 2);
+        assert!(body["nextToken"].is_string());
+
+        let token = body["nextToken"].as_str().unwrap().to_string();
+        let req = make_request(
+            "DescribeLogStreams",
+            json!({"logGroupName": "pg", "limit": 2, "nextToken": token}),
+        );
+        let resp = svc.describe_log_streams(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["logStreams"].as_array().unwrap().len(), 2);
+    }
+
+    // ── put_log_events ──
+
+    #[test]
+    fn put_log_events_missing_group() {
+        let svc = make_service();
+        let req = make_request("PutLogEvents", json!({"logStreamName": "s"}));
+        assert!(svc.put_log_events(&req).is_err());
+    }
+
+    #[test]
+    fn put_log_events_missing_stream() {
+        let svc = make_service();
+        let req = make_request("PutLogEvents", json!({"logGroupName": "g"}));
+        assert!(svc.put_log_events(&req).is_err());
+    }
+
+    #[test]
+    fn put_log_events_missing_events() {
+        let svc = make_service();
+        create_group(&svc, "g");
+        create_stream(&svc, "g", "s");
+        let req = make_request(
+            "PutLogEvents",
+            json!({"logGroupName": "g", "logStreamName": "s"}),
+        );
+        assert!(svc.put_log_events(&req).is_err());
+    }
+
+    #[test]
+    fn put_log_events_non_chronological_errors() {
+        let svc = make_service();
+        create_group(&svc, "g");
+        create_stream(&svc, "g", "s");
+        let now = chrono::Utc::now().timestamp_millis();
+        let req = make_request(
+            "PutLogEvents",
+            json!({
+                "logGroupName": "g",
+                "logStreamName": "s",
+                "logEvents": [
+                    {"timestamp": now, "message": "b"},
+                    {"timestamp": now - 1000, "message": "a"}
+                ]
+            }),
+        );
+        assert!(svc.put_log_events(&req).is_err());
+    }
+
+    #[test]
+    fn put_log_events_too_old_rejected() {
+        let svc = make_service();
+        create_group(&svc, "g");
+        create_stream(&svc, "g", "s");
+        let now = chrono::Utc::now().timestamp_millis();
+        let old = now - 20 * 24 * 60 * 60 * 1000;
+        let req = make_request(
+            "PutLogEvents",
+            json!({
+                "logGroupName": "g",
+                "logStreamName": "s",
+                "logEvents": [
+                    {"timestamp": old, "message": "old"},
+                    {"timestamp": now, "message": "new"}
+                ]
+            }),
+        );
+        let resp = svc.put_log_events(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(body["rejectedLogEventsInfo"].is_object());
+    }
+
+    #[test]
+    fn put_log_events_too_new_rejected() {
+        let svc = make_service();
+        create_group(&svc, "g");
+        create_stream(&svc, "g", "s");
+        let now = chrono::Utc::now().timestamp_millis();
+        let future = now + 10 * 60 * 60 * 1000;
+        let req = make_request(
+            "PutLogEvents",
+            json!({
+                "logGroupName": "g",
+                "logStreamName": "s",
+                "logEvents": [
+                    {"timestamp": now, "message": "now"},
+                    {"timestamp": future, "message": "future"}
+                ]
+            }),
+        );
+        let resp = svc.put_log_events(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(body["rejectedLogEventsInfo"].is_object());
+    }
+
+    #[test]
+    fn put_log_events_nonexistent_group_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "PutLogEvents",
+            json!({
+                "logGroupName": "missing",
+                "logStreamName": "s",
+                "logEvents": [{"timestamp": 1000, "message": "x"}]
+            }),
+        );
+        assert!(svc.put_log_events(&req).is_err());
+    }
+
+    #[test]
+    fn put_log_events_nonexistent_stream_errors() {
+        let svc = make_service();
+        create_group(&svc, "g");
+        let req = make_request(
+            "PutLogEvents",
+            json!({
+                "logGroupName": "g",
+                "logStreamName": "missing",
+                "logEvents": [{"timestamp": 1000, "message": "x"}]
+            }),
+        );
+        assert!(svc.put_log_events(&req).is_err());
+    }
+
+    // ── get_log_events ──
+
+    #[test]
+    fn get_log_events_basic_returns_events() {
+        let svc = make_service();
+        create_group(&svc, "g");
+        create_stream(&svc, "g", "s");
+        put_events(&svc, "g", "s", &["a", "b", "c"]);
+
+        let req = make_request(
+            "GetLogEvents",
+            json!({"logGroupName": "g", "logStreamName": "s"}),
+        );
+        let resp = svc.get_log_events(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["events"].as_array().unwrap().len(), 3);
+        assert!(body["nextForwardToken"].is_string());
+        assert!(body["nextBackwardToken"].is_string());
+    }
+
+    #[test]
+    fn get_log_events_start_from_head() {
+        let svc = make_service();
+        create_group(&svc, "g");
+        create_stream(&svc, "g", "s");
+        put_events(&svc, "g", "s", &["a", "b", "c"]);
+
+        let req = make_request(
+            "GetLogEvents",
+            json!({
+                "logGroupName": "g",
+                "logStreamName": "s",
+                "startFromHead": true,
+                "limit": 2
+            }),
+        );
+        let resp = svc.get_log_events(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["events"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn get_log_events_missing_group_errors() {
+        let svc = make_service();
+        let req = make_request("GetLogEvents", json!({"logStreamName": "s"}));
+        assert!(svc.get_log_events(&req).is_err());
+    }
+
+    #[test]
+    fn get_log_events_missing_stream_errors() {
+        let svc = make_service();
+        let req = make_request("GetLogEvents", json!({"logGroupName": "g"}));
+        assert!(svc.get_log_events(&req).is_err());
+    }
+
+    #[test]
+    fn get_log_events_limit_over_10000() {
+        let svc = make_service();
+        let req = make_request(
+            "GetLogEvents",
+            json!({"logGroupName": "g", "logStreamName": "s", "limit": 20000}),
+        );
+        assert!(svc.get_log_events(&req).is_err());
+    }
+
+    #[test]
+    fn get_log_events_invalid_next_token_format() {
+        let svc = make_service();
+        let req = make_request(
+            "GetLogEvents",
+            json!({
+                "logGroupName": "g",
+                "logStreamName": "s",
+                "nextToken": "bogus"
+            }),
+        );
+        assert!(svc.get_log_events(&req).is_err());
+    }
+
+    #[test]
+    fn get_log_events_identifier_colon_star_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "GetLogEvents",
+            json!({
+                "logGroupIdentifier": "arn:aws:logs:us-east-1:123456789012:log-group:g:*",
+                "logStreamName": "s"
+            }),
+        );
+        assert!(svc.get_log_events(&req).is_err());
+    }
+
+    #[test]
+    fn get_log_events_identifier_as_arn_resolves() {
+        let svc = make_service();
+        create_group(&svc, "ga");
+        create_stream(&svc, "ga", "s");
+        put_events(&svc, "ga", "s", &["x"]);
+        let req = make_request(
+            "GetLogEvents",
+            json!({
+                "logGroupIdentifier": "arn:aws:logs:us-east-1:123456789012:log-group:ga",
+                "logStreamName": "s"
+            }),
+        );
+        let resp = svc.get_log_events(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["events"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn get_log_events_time_range_filters() {
+        let svc = make_service();
+        create_group(&svc, "g");
+        create_stream(&svc, "g", "s");
+        put_events(&svc, "g", "s", &["a", "b", "c"]);
+
+        let req = make_request(
+            "GetLogEvents",
+            json!({
+                "logGroupName": "g",
+                "logStreamName": "s",
+                "startTime": 0,
+                "endTime": i64::MAX
+            }),
+        );
+        let resp = svc.get_log_events(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["events"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn get_log_events_missing_group_resource_error() {
+        let svc = make_service();
+        let req = make_request(
+            "GetLogEvents",
+            json!({"logGroupName": "missing", "logStreamName": "s"}),
+        );
+        assert!(svc.get_log_events(&req).is_err());
+    }
+
+    #[test]
+    fn get_log_events_missing_stream_resource_error() {
+        let svc = make_service();
+        create_group(&svc, "g");
+        let req = make_request(
+            "GetLogEvents",
+            json!({"logGroupName": "g", "logStreamName": "missing"}),
+        );
+        assert!(svc.get_log_events(&req).is_err());
+    }
 }
