@@ -6068,4 +6068,96 @@ mod tests {
         svc.create_user(&req).unwrap();
         expect_ec_err(svc.create_user(&req), "UserAlreadyExistsFault");
     }
+
+    // ── Describe cache engine versions ──
+
+    #[test]
+    fn describe_cache_engine_versions() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+
+        let resp = svc
+            .describe_cache_engine_versions(&request("DescribeCacheEngineVersions", &[]))
+            .unwrap();
+        let xml = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(xml.contains("CacheEngineVersions"));
+    }
+
+    // ── Reserved cache nodes offerings ──
+
+    #[test]
+    fn describe_reserved_cache_nodes_offerings_basic() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+
+        let resp = svc
+            .describe_reserved_cache_nodes_offerings(&request(
+                "DescribeReservedCacheNodesOfferings",
+                &[],
+            ))
+            .unwrap();
+        let xml = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(xml.contains("ReservedCacheNodesOfferings"));
+    }
+
+    #[test]
+    fn describe_reserved_cache_nodes_empty() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+
+        let resp = svc
+            .describe_reserved_cache_nodes(&request("DescribeReservedCacheNodes", &[]))
+            .unwrap();
+        let xml = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(xml.contains("ReservedCacheNodes"));
+    }
+
+    // ── Subnet group lifecycle ──
+
+    #[test]
+    fn subnet_group_create_describe_delete() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+
+        svc.create_cache_subnet_group(&request(
+            "CreateCacheSubnetGroup",
+            &[
+                ("CacheSubnetGroupName", "my-sn"),
+                ("CacheSubnetGroupDescription", "desc"),
+                ("SubnetIds.SubnetIdentifier.1", "subnet-123"),
+            ],
+        ))
+        .unwrap();
+
+        svc.describe_cache_subnet_groups(&request(
+            "DescribeCacheSubnetGroups",
+            &[("CacheSubnetGroupName", "my-sn")],
+        ))
+        .unwrap();
+
+        svc.delete_cache_subnet_group(&request(
+            "DeleteCacheSubnetGroup",
+            &[("CacheSubnetGroupName", "my-sn")],
+        ))
+        .unwrap();
+    }
+
+    // ── Global replication group operations ──
+
+    #[test]
+    fn describe_global_replication_groups_empty() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+
+        let resp = svc
+            .describe_global_replication_groups(&request("DescribeGlobalReplicationGroups", &[]))
+            .unwrap();
+        let xml = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(xml.contains("GlobalReplicationGroups"));
+    }
 }
