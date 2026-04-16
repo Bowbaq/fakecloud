@@ -1,5 +1,4 @@
 use crate::state::Route;
-use std::cmp::Reverse;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -138,7 +137,7 @@ impl Router {
             .collect();
 
         // Sort by priority (highest first)
-        parsed_routes.sort_by_key(|a| Reverse(a.1.priority));
+        parsed_routes.sort_by_key(|r| std::cmp::Reverse(r.1.priority));
 
         Self {
             routes: parsed_routes,

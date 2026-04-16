@@ -4991,4 +4991,316 @@ mod tests {
         let attrs = b["UserAttributes"].as_array().unwrap();
         assert!(!attrs.iter().any(|a| a["Name"] == "custom:role"));
     }
+
+    // ── Managed Login Branding ──
+
+    #[test]
+    fn managed_login_branding_crud() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+
+        // Create
+        let body = json!({
+            "UserPoolId": pool_id,
+            "ClientId": client_id,
+            "UseCognitoProvidedValues": true,
+            "Settings": {"theme": "dark"},
+        });
+        let req = make_req("CreateManagedLoginBranding", &body.to_string());
+        let resp = svc.create_managed_login_branding(&req).unwrap();
+        let b = resp_json(&resp);
+        let branding_id = b["ManagedLoginBranding"]["ManagedLoginBrandingId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // Describe
+        let body = json!({
+            "ManagedLoginBrandingId": branding_id,
+            "UserPoolId": pool_id,
+        });
+        let req = make_req("DescribeManagedLoginBranding", &body.to_string());
+        let resp = svc.describe_managed_login_branding(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["ManagedLoginBranding"]["UseCognitoProvidedValues"], true);
+
+        // Describe by client
+        let body = json!({
+            "UserPoolId": pool_id,
+            "ClientId": client_id,
+        });
+        let req = make_req("DescribeManagedLoginBrandingByClient", &body.to_string());
+        let resp = svc.describe_managed_login_branding_by_client(&req).unwrap();
+        let b = resp_json(&resp);
+        assert!(b["ManagedLoginBranding"]["ManagedLoginBrandingId"].is_string());
+
+        // Update
+        let body = json!({
+            "ManagedLoginBrandingId": branding_id,
+            "UserPoolId": pool_id,
+            "Settings": {"theme": "light"},
+        });
+        let req = make_req("UpdateManagedLoginBranding", &body.to_string());
+        svc.update_managed_login_branding(&req).unwrap();
+
+        // Delete
+        let body = json!({
+            "ManagedLoginBrandingId": branding_id,
+            "UserPoolId": pool_id,
+        });
+        let req = make_req("DeleteManagedLoginBranding", &body.to_string());
+        svc.delete_managed_login_branding(&req).unwrap();
+    }
+
+    #[test]
+    fn managed_login_branding_missing_client() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+
+        let body = json!({
+            "UserPoolId": pool_id,
+            "ClientId": "nonexistent-client",
+        });
+        let req = make_req("CreateManagedLoginBranding", &body.to_string());
+        let err = expect_err(svc.create_managed_login_branding(&req));
+        assert_eq!(err.code(), "ResourceNotFoundException");
+    }
+
+    // ── Terms of Service ──
+
+    #[test]
+    fn terms_crud() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+
+        // Create
+        let body = json!({
+            "UserPoolId": pool_id,
+            "TermsName": "tos-v1",
+        });
+        let req = make_req("CreateTerms", &body.to_string());
+        let resp = svc.create_terms(&req).unwrap();
+        let b = resp_json(&resp);
+        assert!(b["Terms"]["TermsId"].is_string());
+
+        // List
+        let body = json!({"UserPoolId": pool_id});
+        let req = make_req("ListTerms", &body.to_string());
+        let resp = svc.list_terms(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["Terms"].as_array().unwrap().len(), 1);
+
+        // Describe
+        let terms_id = {
+            let s = svc.state.read();
+            s.terms.keys().next().unwrap().clone()
+        };
+        let body = json!({"UserPoolId": pool_id, "TermsId": terms_id});
+        let req = make_req("DescribeTerms", &body.to_string());
+        svc.describe_terms(&req).unwrap();
+
+        // Update
+        let body = json!({
+            "UserPoolId": pool_id,
+            "TermsId": terms_id,
+            "TermsContent": "Updated terms",
+        });
+        let req = make_req("UpdateTerms", &body.to_string());
+        svc.update_terms(&req).unwrap();
+
+        // Delete
+        let body = json!({"UserPoolId": pool_id, "TermsId": terms_id});
+        let req = make_req("DeleteTerms", &body.to_string());
+        svc.delete_terms(&req).unwrap();
+    }
+
+    // ── WebAuthn Credentials ──
+
+    #[test]
+    fn web_authn_registration_and_list() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        admin_create_user_helper(&svc, &pool_id, "webauthn-user");
+        set_user_password(&svc, &pool_id, "webauthn-user", "Pass123!");
+
+        // Auth to get access token
+        let body = json!({
+            "UserPoolId": pool_id,
+            "ClientId": client_id,
+            "AuthFlow": "ADMIN_NO_SRP_AUTH",
+            "AuthParameters": {"USERNAME": "webauthn-user", "PASSWORD": "Pass123!"},
+        });
+        let req = make_req("AdminInitiateAuth", &body.to_string());
+        let resp = block_on(svc.admin_initiate_auth(&req)).unwrap();
+        let b = resp_json(&resp);
+        let token = b["AuthenticationResult"]["AccessToken"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // Start registration
+        let body = json!({"AccessToken": token});
+        let req = make_req("StartWebAuthnRegistration", &body.to_string());
+        let resp = svc.start_web_authn_registration(&req).unwrap();
+        let b = resp_json(&resp);
+        assert!(b["CredentialCreationOptions"].is_object());
+
+        // List (should be empty before completion)
+        let body = json!({"AccessToken": token});
+        let req = make_req("ListWebAuthnCredentials", &body.to_string());
+        let resp = svc.list_web_authn_credentials(&req).unwrap();
+        let b = resp_json(&resp);
+        assert!(b["Credentials"].as_array().unwrap().is_empty());
+    }
+
+    // ── Legacy Operations ──
+
+    #[test]
+    fn admin_set_user_settings_legacy() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "legacy-user");
+
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Username": "legacy-user",
+            "MFAOptions": [{"DeliveryMedium": "SMS", "AttributeName": "phone_number"}],
+        });
+        let req = make_req("AdminSetUserSettings", &body.to_string());
+        svc.admin_set_user_settings(&req).unwrap();
+    }
+
+    #[test]
+    fn admin_set_user_settings_pool_not_found() {
+        let (svc, _) = make_svc();
+
+        let body = json!({
+            "UserPoolId": "us-east-1_NONEXIST",
+            "Username": "ghost",
+            "MFAOptions": [],
+        });
+        let req = make_req("AdminSetUserSettings", &body.to_string());
+        let err = expect_err(svc.admin_set_user_settings(&req));
+        assert_eq!(err.code(), "ResourceNotFoundException");
+    }
+
+    #[test]
+    fn admin_set_user_settings_user_not_found() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        // Add a user so the pool has a users entry, then test with a different username
+        admin_create_user_helper(&svc, &pool_id, "exists");
+
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Username": "ghost",
+            "MFAOptions": [],
+        });
+        let req = make_req("AdminSetUserSettings", &body.to_string());
+        let err = expect_err(svc.admin_set_user_settings(&req));
+        assert_eq!(err.code(), "UserNotFoundException");
+    }
+
+    #[test]
+    fn admin_link_provider_for_user() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "link-user");
+
+        let body = json!({
+            "UserPoolId": pool_id,
+            "DestinationUser": {"ProviderName": "Cognito", "ProviderAttributeValue": "link-user"},
+            "SourceUser": {"ProviderName": "Google", "ProviderAttributeName": "Cognito_Subject", "ProviderAttributeValue": "google-sub-123"},
+        });
+        let req = make_req("AdminLinkProviderForUser", &body.to_string());
+        svc.admin_link_provider_for_user(&req).unwrap();
+    }
+
+    #[test]
+    fn admin_disable_provider_for_user() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "prov-user");
+
+        // Link a provider first
+        let body = json!({
+            "UserPoolId": pool_id,
+            "DestinationUser": {"ProviderName": "Cognito", "ProviderAttributeValue": "prov-user"},
+            "SourceUser": {"ProviderName": "Facebook", "ProviderAttributeName": "Cognito_Subject", "ProviderAttributeValue": "fb-123"},
+        });
+        let req = make_req("AdminLinkProviderForUser", &body.to_string());
+        svc.admin_link_provider_for_user(&req).unwrap();
+
+        // Disable
+        let body = json!({
+            "UserPoolId": pool_id,
+            "User": {"ProviderName": "Facebook", "ProviderAttributeName": "Cognito_Subject", "ProviderAttributeValue": "fb-123"},
+        });
+        let req = make_req("AdminDisableProviderForUser", &body.to_string());
+        svc.admin_disable_provider_for_user(&req).unwrap();
+    }
+
+    #[test]
+    fn admin_list_user_auth_events() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "event-user");
+
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Username": "event-user",
+        });
+        let req = make_req("AdminListUserAuthEvents", &body.to_string());
+        let resp = svc.admin_list_user_auth_events(&req).unwrap();
+        let b = resp_json(&resp);
+        assert!(b["AuthEvents"].as_array().is_some());
+    }
+
+    #[test]
+    fn admin_update_auth_event_feedback_user_not_found() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Username": "nope",
+            "EventId": "fake-event-id",
+            "FeedbackValue": "Valid",
+        });
+        let req = make_req("AdminUpdateAuthEventFeedback", &body.to_string());
+        let err = expect_err(svc.admin_update_auth_event_feedback(&req));
+        assert_eq!(err.code(), "UserNotFoundException");
+    }
+
+    #[test]
+    fn admin_update_auth_event_feedback_event_not_found() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "feedback-user");
+
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Username": "feedback-user",
+            "EventId": "fake-event-id",
+            "FeedbackValue": "Valid",
+        });
+        let req = make_req("AdminUpdateAuthEventFeedback", &body.to_string());
+        let err = expect_err(svc.admin_update_auth_event_feedback(&req));
+        assert_eq!(err.code(), "ResourceNotFoundException");
+    }
+
+    #[test]
+    fn set_user_settings_legacy_invalid_token() {
+        let (svc, _) = make_svc();
+
+        let body = json!({
+            "AccessToken": "invalid-token",
+            "MFAOptions": [],
+        });
+        let req = make_req("SetUserSettings", &body.to_string());
+        let err = expect_err(svc.set_user_settings(&req));
+        assert_eq!(err.code(), "NotAuthorizedException");
+    }
 }

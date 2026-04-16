@@ -2,7 +2,6 @@ use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -344,7 +343,7 @@ impl DynamoTable {
             .iter()
             .map(|(k, &v)| (k.as_str(), v))
             .collect();
-        entries.sort_by_key(|a| Reverse(a.1));
+        entries.sort_by_key(|e| std::cmp::Reverse(e.1));
         entries.truncate(n);
         entries
     }
