@@ -5,7 +5,6 @@ pub mod key_escape;
 pub mod s3;
 pub mod snapshot;
 pub mod version;
-pub mod warn;
 
 pub use config::{PersistenceConfig, StorageMode};
 pub use s3::{
@@ -15,4 +14,3 @@ pub use s3::{
     TagsSnapshot, UploadPartMeta,
 };
 pub use snapshot::{DiskSnapshotStore, MemorySnapshotStore, SnapshotStore};
-pub use warn::warn_unsupported;

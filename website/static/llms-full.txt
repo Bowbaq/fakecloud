@@ -66,7 +66,7 @@ fakecloud listens at `http://localhost:4566`.
 | `--region` | `FAKECLOUD_REGION` | `us-east-1` | AWS region to advertise |
 | `--account-id` | `FAKECLOUD_ACCOUNT_ID` | `123456789012` | AWS account ID |
 | `--log-level` | `FAKECLOUD_LOG` | `info` | Log level (trace, debug, info, warn, error) |
-| `--storage-mode` | `FAKECLOUD_STORAGE_MODE` | `memory` | `memory` (default) or `persistent` (mirror S3 state to `--data-path`) |
+| `--storage-mode` | `FAKECLOUD_STORAGE_MODE` | `memory` | `memory` (default) or `persistent` (mirror all state to `--data-path`) |
 | `--data-path` | `FAKECLOUD_DATA_PATH` | — | Directory to persist state to. Required when `--storage-mode=persistent`. |
 | `--s3-cache-size` | `FAKECLOUD_S3_CACHE_SIZE` | `268435456` | In-memory LRU cache for S3 object bodies in persistent mode. Default 256 MiB. |
 
@@ -74,20 +74,20 @@ fakecloud listens at `http://localhost:4566`.
 
 Default is `memory` mode — all state lives in RAM, startup is instant,
 shutdown is a no-op. Pass `--storage-mode=persistent --data-path=<dir>` to
-mirror supported services to disk and reload them on the next launch.
+mirror all service state to disk and reload on the next launch.
 
-S3 is the only service wired up today: buckets, objects, versions, delete
-markers, multipart uploads (resumable across restarts), and every bucket
-subresource are written to disk on every mutation and reloaded on startup.
-Other services emit `persistence not yet supported, running in-memory` at
-startup and continue to operate exactly as in memory mode.
+All 21 services are fully persisted: S3, SQS, SNS, EventBridge, IAM/STS,
+SSM, Secrets Manager, CloudWatch Logs, KMS, DynamoDB, Kinesis, SES,
+API Gateway v2, CloudFormation, Cognito, Lambda, Step Functions, RDS,
+ElastiCache, and Bedrock. State is written to disk on every mutation and
+reloaded on startup.
 
 The data directory is guarded by `fakecloud.version.toml`. A format mismatch
-fails startup loudly — there is no auto-migration. Object bodies stream
+fails startup loudly — there is no auto-migration. S3 object bodies stream
 straight to disk; a bounded LRU (`--s3-cache-size`, default 256 MiB) caches
 recent reads, and objects larger than `cache-size / 2` bypass the cache so a
-single large upload cannot evict everything. `/_fakecloud/s3/notifications`
-is intentionally in-memory only.
+single large upload cannot evict everything. Introspection buffers
+(`/_fakecloud/*/`) are intentionally not persisted — they reset on restart.
 
 ### Health check
 ```sh
