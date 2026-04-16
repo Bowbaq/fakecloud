@@ -6205,4 +6205,240 @@ mod tests {
         let err = svc.create_event_bus(&req).err().expect("expected error");
         assert_eq!(err.code(), "ResourceAlreadyExistsException");
     }
+
+    // ── Rule lifecycle ──
+
+    #[test]
+    fn rule_put_describe_enable_disable_delete() {
+        let svc = make_service();
+        svc.put_rule(&make_request(
+            "PutRule",
+            json!({"Name": "my-rule", "EventPattern": "{\"source\":[\"aws.s3\"]}", "State": "ENABLED"}),
+        ))
+        .unwrap();
+
+        let resp = svc
+            .describe_rule(&make_request("DescribeRule", json!({"Name": "my-rule"})))
+            .unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["State"], "ENABLED");
+
+        svc.disable_rule(&make_request("DisableRule", json!({"Name": "my-rule"})))
+            .unwrap();
+        svc.enable_rule(&make_request("EnableRule", json!({"Name": "my-rule"})))
+            .unwrap();
+        svc.delete_rule(&make_request("DeleteRule", json!({"Name": "my-rule"})))
+            .unwrap();
+    }
+
+    #[test]
+    fn list_rules_returns_created() {
+        let svc = make_service();
+        for name in &["r1", "r2", "r3"] {
+            svc.put_rule(&make_request(
+                "PutRule",
+                json!({"Name": name, "EventPattern": "{\"source\":[\"aws.s3\"]}"}),
+            ))
+            .unwrap();
+        }
+        let resp = svc
+            .list_rules(&make_request("ListRules", json!({})))
+            .unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["Rules"].as_array().unwrap().len(), 3);
+    }
+
+    // ── Targets ──
+
+    #[test]
+    fn put_list_remove_targets() {
+        let svc = make_service();
+        svc.put_rule(&make_request(
+            "PutRule",
+            json!({"Name": "tr", "EventPattern": "{\"source\":[\"aws.s3\"]}"}),
+        ))
+        .unwrap();
+
+        svc.put_targets(&make_request(
+            "PutTargets",
+            json!({
+                "Rule": "tr",
+                "Targets": [
+                    {"Id": "t1", "Arn": "arn:aws:sqs:us-east-1:123456789012:q1"},
+                    {"Id": "t2", "Arn": "arn:aws:lambda:us-east-1:123456789012:function:fn1"},
+                ]
+            }),
+        ))
+        .unwrap();
+
+        let resp = svc
+            .list_targets_by_rule(&make_request("ListTargetsByRule", json!({"Rule": "tr"})))
+            .unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["Targets"].as_array().unwrap().len(), 2);
+
+        svc.remove_targets(&make_request(
+            "RemoveTargets",
+            json!({"Rule": "tr", "Ids": ["t1"]}),
+        ))
+        .unwrap();
+
+        let resp = svc
+            .list_targets_by_rule(&make_request("ListTargetsByRule", json!({"Rule": "tr"})))
+            .unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["Targets"].as_array().unwrap().len(), 1);
+    }
+
+    // ── PutEvents ──
+
+    #[test]
+    fn put_events_basic() {
+        let svc = make_service();
+        let resp = svc
+            .put_events(&make_request(
+                "PutEvents",
+                json!({
+                    "Entries": [
+                        {"Source": "aws.s3", "DetailType": "Object Created", "Detail": "{}"},
+                    ]
+                }),
+            ))
+            .unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["FailedEntryCount"], 0);
+    }
+
+    // ── Archives ──
+
+    #[test]
+    fn archive_create_describe_list_delete() {
+        let svc = make_service();
+
+        svc.create_archive(&make_request(
+            "CreateArchive",
+            json!({
+                "ArchiveName": "my-archive",
+                "EventSourceArn": "arn:aws:events:us-east-1:123456789012:event-bus/default",
+            }),
+        ))
+        .unwrap();
+
+        let resp = svc
+            .describe_archive(&make_request(
+                "DescribeArchive",
+                json!({"ArchiveName": "my-archive"}),
+            ))
+            .unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["ArchiveName"], "my-archive");
+
+        let resp = svc
+            .list_archives(&make_request("ListArchives", json!({})))
+            .unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(!body["Archives"].as_array().unwrap().is_empty());
+
+        svc.delete_archive(&make_request(
+            "DeleteArchive",
+            json!({"ArchiveName": "my-archive"}),
+        ))
+        .unwrap();
+    }
+
+    // ── Connections ──
+
+    #[test]
+    fn connection_create_list_describe_deauthorize() {
+        let svc = make_service();
+
+        svc.create_connection(&make_request(
+            "CreateConnection",
+            json!({
+                "Name": "my-conn",
+                "AuthorizationType": "API_KEY",
+                "AuthParameters": {
+                    "ApiKeyAuthParameters": {"ApiKeyName": "x-key", "ApiKeyValue": "secret"}
+                }
+            }),
+        ))
+        .unwrap();
+
+        let resp = svc
+            .list_connections(&make_request("ListConnections", json!({})))
+            .unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(!body["Connections"].as_array().unwrap().is_empty());
+
+        svc.describe_connection(&make_request(
+            "DescribeConnection",
+            json!({"Name": "my-conn"}),
+        ))
+        .unwrap();
+        svc.deauthorize_connection(&make_request(
+            "DeauthorizeConnection",
+            json!({"Name": "my-conn"}),
+        ))
+        .unwrap();
+    }
+
+    // ── Event bus list ──
+
+    #[test]
+    fn list_event_buses_returns_default_and_custom() {
+        let svc = make_service();
+        svc.create_event_bus(&make_request(
+            "CreateEventBus",
+            json!({"Name": "custom-bus"}),
+        ))
+        .unwrap();
+
+        let resp = svc
+            .list_event_buses(&make_request("ListEventBuses", json!({})))
+            .unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        let names: Vec<&str> = body["EventBuses"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["Name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"default"));
+        assert!(names.contains(&"custom-bus"));
+    }
+
+    // ── Tags ──
+
+    #[test]
+    fn tag_list_untag_rule_resource() {
+        let svc = make_service();
+        svc.put_rule(&make_request(
+            "PutRule",
+            json!({"Name": "tagged-rule", "EventPattern": "{\"source\":[\"aws.s3\"]}"}),
+        ))
+        .unwrap();
+
+        let arn = "arn:aws:events:us-east-1:123456789012:rule/tagged-rule";
+
+        svc.tag_resource(&make_request(
+            "TagResource",
+            json!({"ResourceARN": arn, "Tags": [{"Key": "env", "Value": "prod"}]}),
+        ))
+        .unwrap();
+
+        let resp = svc
+            .list_tags_for_resource(&make_request(
+                "ListTagsForResource",
+                json!({"ResourceARN": arn}),
+            ))
+            .unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["Tags"].as_array().unwrap().len(), 1);
+
+        svc.untag_resource(&make_request(
+            "UntagResource",
+            json!({"ResourceARN": arn, "TagKeys": ["env"]}),
+        ))
+        .unwrap();
+    }
 }
