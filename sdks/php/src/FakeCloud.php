@@ -326,16 +326,16 @@ final class CognitoClient
     {
         $payload = json_encode($req->toArray(), JSON_THROW_ON_ERROR);
         $response = $this->http->execute('POST', '/_fakecloud/cognito/confirm-user', $payload, 'application/json');
-        $parsed = ConfirmUserResponse::fromArray(json_decode($response['body'], true, 512, JSON_THROW_ON_ERROR));
 
         if ($response['status'] === 404) {
+            $parsed = ConfirmUserResponse::fromArray(json_decode($response['body'], true, 512, JSON_THROW_ON_ERROR));
             throw new FakeCloudError(404, $parsed->error ?? 'user not found');
         }
         if ($response['status'] < 200 || $response['status'] >= 300) {
             throw new FakeCloudError($response['status'], $response['body']);
         }
 
-        return $parsed;
+        return ConfirmUserResponse::fromArray(json_decode($response['body'], true, 512, JSON_THROW_ON_ERROR));
     }
 
     public function getTokens(): TokensResponse
