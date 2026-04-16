@@ -3913,4 +3913,230 @@ mod tests {
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::CONFLICT);
     }
+
+    // ── contact_lists coverage ──
+
+    #[tokio::test]
+    async fn contact_list_duplicate_conflict() {
+        let state = make_state();
+        let svc = SesV2Service::new(state);
+
+        let req = make_request(
+            Method::POST,
+            "/v2/email/contact-lists",
+            r#"{"ContactListName": "newsletter"}"#,
+        );
+        svc.handle(req).await.unwrap();
+
+        let req = make_request(
+            Method::POST,
+            "/v2/email/contact-lists",
+            r#"{"ContactListName": "newsletter"}"#,
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn contact_list_get_not_found() {
+        let state = make_state();
+        let svc = SesV2Service::new(state);
+        let req = make_request(Method::GET, "/v2/email/contact-lists/ghost", "");
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn contact_list_delete_not_found() {
+        let state = make_state();
+        let svc = SesV2Service::new(state);
+        let req = make_request(Method::DELETE, "/v2/email/contact-lists/ghost", "");
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn contact_in_nonexistent_list() {
+        let state = make_state();
+        let svc = SesV2Service::new(state);
+        let req = make_request(
+            Method::POST,
+            "/v2/email/contact-lists/ghost/contacts",
+            r#"{"EmailAddress": "u@x.com"}"#,
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn contact_list_lifecycle() {
+        let state = make_state();
+        let svc = SesV2Service::new(state);
+
+        // Create list
+        let req = make_request(
+            Method::POST,
+            "/v2/email/contact-lists",
+            r#"{"ContactListName": "news"}"#,
+        );
+        svc.handle(req).await.unwrap();
+
+        // Get list
+        let req = make_request(Method::GET, "/v2/email/contact-lists/news", "");
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+
+        // Create contact
+        let req = make_request(
+            Method::POST,
+            "/v2/email/contact-lists/news/contacts",
+            r#"{"EmailAddress": "u@x.com"}"#,
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+
+        // List contacts
+        let req = make_request(Method::GET, "/v2/email/contact-lists/news/contacts", "");
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+
+        // Get contact
+        let req = make_request(
+            Method::GET,
+            "/v2/email/contact-lists/news/contacts/u@x.com",
+            "",
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+
+        // Delete contact
+        let req = make_request(
+            Method::DELETE,
+            "/v2/email/contact-lists/news/contacts/u@x.com",
+            "",
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+
+        // Delete list
+        let req = make_request(Method::DELETE, "/v2/email/contact-lists/news", "");
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+    }
+
+    // ── templates lifecycle ──
+
+    #[tokio::test]
+    async fn template_duplicate_conflict() {
+        let state = make_state();
+        let svc = SesV2Service::new(state);
+        let req = make_request(
+            Method::POST,
+            "/v2/email/templates",
+            r#"{"TemplateName":"t1","TemplateContent":{"Subject":"s"}}"#,
+        );
+        svc.handle(req).await.unwrap();
+
+        let req = make_request(
+            Method::POST,
+            "/v2/email/templates",
+            r#"{"TemplateName":"t1","TemplateContent":{"Subject":"s"}}"#,
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn template_get_not_found() {
+        let state = make_state();
+        let svc = SesV2Service::new(state);
+        let req = make_request(Method::GET, "/v2/email/templates/ghost", "");
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::NOT_FOUND);
+    }
+
+    // ── configuration sets ──
+
+    #[tokio::test]
+    async fn configuration_set_duplicate_conflict() {
+        let state = make_state();
+        let svc = SesV2Service::new(state);
+        let req = make_request(
+            Method::POST,
+            "/v2/email/configuration-sets",
+            r#"{"ConfigurationSetName":"cs1"}"#,
+        );
+        svc.handle(req).await.unwrap();
+
+        let req = make_request(
+            Method::POST,
+            "/v2/email/configuration-sets",
+            r#"{"ConfigurationSetName":"cs1"}"#,
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn configuration_set_get_not_found() {
+        let state = make_state();
+        let svc = SesV2Service::new(state);
+        let req = make_request(Method::GET, "/v2/email/configuration-sets/ghost", "");
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn configuration_set_delete_not_found() {
+        let state = make_state();
+        let svc = SesV2Service::new(state);
+        let req = make_request(Method::DELETE, "/v2/email/configuration-sets/ghost", "");
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::NOT_FOUND);
+    }
+
+    // ── suppression destination ──
+
+    #[tokio::test]
+    async fn put_suppressed_destination_and_get() {
+        let state = make_state();
+        let svc = SesV2Service::new(state);
+
+        let req = make_request(
+            Method::PUT,
+            "/v2/email/suppression/addresses",
+            r#"{"EmailAddress":"block@x.com","Reason":"BOUNCE"}"#,
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+
+        let req = make_request(
+            Method::GET,
+            "/v2/email/suppression/addresses/block@x.com",
+            "",
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+
+        let req = make_request(
+            Method::DELETE,
+            "/v2/email/suppression/addresses/block@x.com",
+            "",
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn get_suppressed_destination_not_found() {
+        let state = make_state();
+        let svc = SesV2Service::new(state);
+        let req = make_request(
+            Method::GET,
+            "/v2/email/suppression/addresses/ghost@x.com",
+            "",
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::NOT_FOUND);
+    }
 }
