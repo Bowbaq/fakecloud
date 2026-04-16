@@ -2456,4 +2456,325 @@ mod tests {
         let req = make_request(Method::POST, "/nonexistent/route", "{}");
         assert!(svc.handle(req).await.is_err());
     }
+
+    // ── Custom Models CRUD (direct handler calls to avoid ARN-in-path issues) ──
+
+    #[test]
+    fn custom_model_crud() {
+        let state = make_state();
+        let req = make_request(
+            Method::POST,
+            "/custom-models/create-custom-model",
+            r#"{"modelName":"my-model"}"#,
+        );
+        let body = req.json_body();
+        let resp = crate::custom_models::create_custom_model(&state, &req, &body).unwrap();
+        assert_eq!(resp.status, StatusCode::CREATED);
+        let b = body_json(&resp);
+        let arn = b["modelArn"].as_str().unwrap();
+
+        let resp = crate::custom_models::get_custom_model(&state, arn).unwrap();
+        let b = body_json(&resp);
+        assert_eq!(b["modelName"], "my-model");
+
+        let resp = crate::custom_models::list_custom_models(&state, &req).unwrap();
+        let b = body_json(&resp);
+        assert_eq!(b["modelSummaries"].as_array().unwrap().len(), 1);
+
+        crate::custom_models::delete_custom_model(&state, arn).unwrap();
+        assert!(crate::custom_models::get_custom_model(&state, arn).is_err());
+    }
+
+    #[test]
+    fn custom_model_deployment_crud() {
+        let state = make_state();
+        let req = make_request(
+            Method::POST,
+            "/",
+            r#"{"modelDeploymentName":"dep1","modelArn":"m1"}"#,
+        );
+        let body = req.json_body();
+        let resp =
+            crate::custom_model_deployments::create_custom_model_deployment(&state, &req, &body)
+                .unwrap();
+        let b = body_json(&resp);
+        let arn = b["customModelDeploymentArn"].as_str().unwrap();
+
+        crate::custom_model_deployments::get_custom_model_deployment(&state, arn).unwrap();
+
+        let resp =
+            crate::custom_model_deployments::list_custom_model_deployments(&state, &req).unwrap();
+        let b = body_json(&resp);
+        assert!(!b["modelDeploymentSummaries"].as_array().unwrap().is_empty());
+
+        let upd = serde_json::json!({"desiredModelUnits": 2});
+        crate::custom_model_deployments::update_custom_model_deployment(&state, arn, &upd).unwrap();
+        crate::custom_model_deployments::delete_custom_model_deployment(&state, arn).unwrap();
+    }
+
+    #[test]
+    fn model_import_job_crud() {
+        let state = make_state();
+        let req = make_request(
+            Method::POST,
+            "/",
+            r#"{"jobName":"imp","importedModelName":"m","roleArn":"arn:aws:iam::1:role/r","modelDataSource":{"s3DataSource":{"s3Uri":"s3://b"}}}"#,
+        );
+        let body = req.json_body();
+        let resp = crate::model_import::create_model_import_job(&state, &req, &body).unwrap();
+        let b = body_json(&resp);
+        let arn = b["jobArn"].as_str().unwrap();
+
+        crate::model_import::get_model_import_job(&state, arn).unwrap();
+        let resp = crate::model_import::list_model_import_jobs(&state, &req).unwrap();
+        let b = body_json(&resp);
+        assert!(!b["modelImportJobSummaries"].as_array().unwrap().is_empty());
+
+        let resp = crate::model_import::list_imported_models(&state, &req).unwrap();
+        let b = body_json(&resp);
+        assert!(!b["modelSummaries"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn model_copy_job_crud() {
+        let state = make_state();
+        let req = make_request(
+            Method::POST,
+            "/",
+            r#"{"sourceModelArn":"arn:aws:bedrock:us-west-2:1:fm/m","targetModelName":"cp"}"#,
+        );
+        let body = req.json_body();
+        let resp = crate::model_copy::create_model_copy_job(&state, &req, &body).unwrap();
+        let b = body_json(&resp);
+        let arn = b["jobArn"].as_str().unwrap();
+
+        crate::model_copy::get_model_copy_job(&state, arn).unwrap();
+        let resp = crate::model_copy::list_model_copy_jobs(&state, &req).unwrap();
+        let b = body_json(&resp);
+        assert!(!b["modelCopyJobSummaries"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn invocation_job_crud() {
+        let state = make_state();
+        let req = make_request(
+            Method::POST,
+            "/",
+            r#"{"jobName":"batch","modelId":"m","roleArn":"arn:aws:iam::1:role/r","inputDataConfig":{"s3InputDataConfig":{"s3Uri":"s3://i"}},"outputDataConfig":{"s3OutputDataConfig":{"s3Uri":"s3://o"}}}"#,
+        );
+        let body = req.json_body();
+        let resp =
+            crate::invocation_jobs::create_model_invocation_job(&state, &req, &body).unwrap();
+        let b = body_json(&resp);
+        let arn = b["jobArn"].as_str().unwrap();
+
+        crate::invocation_jobs::get_model_invocation_job(&state, arn).unwrap();
+        let resp = crate::invocation_jobs::list_model_invocation_jobs(&state, &req).unwrap();
+        let b = body_json(&resp);
+        assert!(!b["invocationJobSummaries"].as_array().unwrap().is_empty());
+        crate::invocation_jobs::stop_model_invocation_job(&state, arn).unwrap();
+    }
+
+    #[test]
+    fn evaluation_job_crud() {
+        let state = make_state();
+        let req = make_request(
+            Method::POST,
+            "/",
+            r#"{"jobName":"eval","roleArn":"arn:aws:iam::1:role/r","evaluationConfig":{},"inferenceConfig":{},"outputDataConfig":{"s3Uri":"s3://o"}}"#,
+        );
+        let body = req.json_body();
+        let resp = crate::evaluation::create_evaluation_job(&state, &req, &body).unwrap();
+        let b = body_json(&resp);
+        let arn = b["jobArn"].as_str().unwrap();
+
+        crate::evaluation::get_evaluation_job(&state, arn).unwrap();
+        let resp = crate::evaluation::list_evaluation_jobs(&state, &req).unwrap();
+        let b = body_json(&resp);
+        assert!(!b["jobSummaries"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn inference_profile_crud() {
+        let state = make_state();
+        let req = make_request(
+            Method::POST,
+            "/",
+            r#"{"inferenceProfileName":"prof","modelSource":{"copyFrom":"arn:aws:bedrock:us-east-1::fm/m"}}"#,
+        );
+        let body = req.json_body();
+        let resp =
+            crate::inference_profiles::create_inference_profile(&state, &req, &body).unwrap();
+        let b = body_json(&resp);
+        let arn = b["inferenceProfileArn"].as_str().unwrap();
+
+        crate::inference_profiles::get_inference_profile(&state, arn).unwrap();
+        let resp = crate::inference_profiles::list_inference_profiles(&state, &req).unwrap();
+        let b = body_json(&resp);
+        assert!(!b["inferenceProfileSummaries"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        crate::inference_profiles::delete_inference_profile(&state, arn).unwrap();
+    }
+
+    #[test]
+    fn prompt_router_crud() {
+        let state = make_state();
+        let req = make_request(
+            Method::POST,
+            "/",
+            r#"{"promptRouterName":"rt","models":[{"modelArn":"arn:aws:bedrock:us-east-1::fm/m"}],"fallbackModel":{"modelArn":"arn:aws:bedrock:us-east-1::fm/m"},"routingCriteria":{"responseQualityDifference":0.5}}"#,
+        );
+        let body = req.json_body();
+        let resp = crate::prompt_routers::create_prompt_router(&state, &req, &body).unwrap();
+        let b = body_json(&resp);
+        let arn = b["promptRouterArn"].as_str().unwrap();
+
+        crate::prompt_routers::get_prompt_router(&state, arn).unwrap();
+        let resp = crate::prompt_routers::list_prompt_routers(&state, &req).unwrap();
+        let b = body_json(&resp);
+        assert!(!b["promptRouterSummaries"].as_array().unwrap().is_empty());
+        crate::prompt_routers::delete_prompt_router(&state, arn).unwrap();
+    }
+
+    #[test]
+    fn customization_job_crud() {
+        let state = make_state();
+        let req = make_request(
+            Method::POST,
+            "/",
+            r#"{"jobName":"ft","customModelName":"cm","roleArn":"arn:aws:iam::1:role/r","baseModelIdentifier":"m","trainingDataConfig":{"s3Uri":"s3://t"},"outputDataConfig":{"s3Uri":"s3://o"}}"#,
+        );
+        let body = req.json_body();
+        let resp =
+            crate::customization::create_model_customization_job(&state, &req, &body).unwrap();
+        let b = body_json(&resp);
+        let arn = b["jobArn"].as_str().unwrap();
+
+        crate::customization::get_model_customization_job(&state, &req, arn).unwrap();
+        let resp = crate::customization::list_model_customization_jobs(&state, &req).unwrap();
+        let b = body_json(&resp);
+        assert!(!b["modelCustomizationJobSummaries"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn provisioned_throughput_crud() {
+        let state = make_state();
+        let req = make_request(
+            Method::POST,
+            "/",
+            r#"{"provisionedModelName":"pt","modelId":"m","modelUnits":1}"#,
+        );
+        let body = req.json_body();
+        let resp =
+            crate::throughput::create_provisioned_model_throughput(&state, &req, &body).unwrap();
+        let b = body_json(&resp);
+        let arn = b["provisionedModelArn"].as_str().unwrap();
+
+        crate::throughput::get_provisioned_model_throughput(&state, arn).unwrap();
+        let resp = crate::throughput::list_provisioned_model_throughputs(&state, &req).unwrap();
+        let b = body_json(&resp);
+        assert!(!b["provisionedModelSummaries"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+
+        let upd = serde_json::json!({"desiredModelUnits": 2});
+        crate::throughput::update_provisioned_model_throughput(&state, arn, &upd).unwrap();
+        crate::throughput::delete_provisioned_model_throughput(&state, arn).unwrap();
+    }
+
+    #[test]
+    fn marketplace_endpoint_crud() {
+        let state = make_state();
+        let req = make_request(
+            Method::POST,
+            "/",
+            r#"{"endpointName":"ep","modelSourceIdentifier":"arn:aws:sm:us-east-1:1:mp/p","endpointConfig":{"sageMaker":{"initialInstanceCount":1,"instanceType":"ml.g5.xlarge"}}}"#,
+        );
+        let body = req.json_body();
+        let resp =
+            crate::marketplace::create_marketplace_model_endpoint(&state, &req, &body).unwrap();
+        let b = body_json(&resp);
+        let arn = b["marketplaceModelEndpointArn"].as_str().unwrap();
+
+        crate::marketplace::get_marketplace_model_endpoint(&state, arn).unwrap();
+        let resp = crate::marketplace::list_marketplace_model_endpoints(&state, &req).unwrap();
+        let b = body_json(&resp);
+        assert!(!b["marketplaceModelEndpoints"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        crate::marketplace::delete_marketplace_model_endpoint(&state, arn).unwrap();
+    }
+
+    #[test]
+    fn async_invoke_crud() {
+        let state = make_state();
+        let req = make_request(
+            Method::POST,
+            "/",
+            r#"{"modelId":"m","modelInput":{"prompt":"t"},"outputDataConfig":{"s3OutputDataConfig":{"s3Uri":"s3://o"}}}"#,
+        );
+        let body = req.json_body();
+        let resp = crate::async_invoke::start_async_invoke(&state, &req, &body).unwrap();
+        let b = body_json(&resp);
+        let arn = b["invocationArn"].as_str().unwrap();
+
+        crate::async_invoke::get_async_invoke(&state, arn).unwrap();
+        let resp = crate::async_invoke::list_async_invokes(&state, &req).unwrap();
+        let b = body_json(&resp);
+        assert!(!b["asyncInvokeSummaries"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn automated_reasoning_policy_crud() {
+        let state = make_state();
+        let req = make_request(
+            Method::POST,
+            "/",
+            r#"{"policyName":"pol","policyDocument":{"rules":[]}}"#,
+        );
+        let body = req.json_body();
+        let resp =
+            crate::automated_reasoning::create_automated_reasoning_policy(&state, &req, &body)
+                .unwrap();
+        let b = body_json(&resp);
+        let arn = b["policyArn"].as_str().unwrap();
+
+        crate::automated_reasoning::get_automated_reasoning_policy(&state, arn).unwrap();
+        let resp =
+            crate::automated_reasoning::list_automated_reasoning_policies(&state, &req).unwrap();
+        let b = body_json(&resp);
+        assert!(!b["policySummaries"].as_array().unwrap().is_empty());
+
+        let upd = serde_json::json!({"description": "updated"});
+        crate::automated_reasoning::update_automated_reasoning_policy(&state, arn, &upd).unwrap();
+        crate::automated_reasoning::delete_automated_reasoning_policy(&state, arn).unwrap();
+    }
+
+    #[test]
+    fn foundation_model_agreement_and_use_case() {
+        let state = make_state();
+        let req = make_request(Method::POST, "/", r#"{"modelId":"m","offerToken":"t"}"#);
+        let body = req.json_body();
+        crate::foundation_model_agreements::create_foundation_model_agreement(&state, &req, &body)
+            .unwrap();
+
+        crate::foundation_model_agreements::get_use_case_for_model_access(&state).unwrap();
+    }
+
+    #[test]
+    fn enforced_guardrail_config() {
+        let state = make_state();
+        let body = serde_json::json!({"guardrailIdentifier":"g1","guardrailVersion":"1","modelArn":"arn:m"});
+        crate::enforced_guardrails::put_enforced_guardrail_configuration(&state, &body).unwrap();
+
+        let req = make_request(Method::GET, "/", "");
+        crate::enforced_guardrails::list_enforced_guardrails_configuration(&state, &req).unwrap();
+    }
 }
