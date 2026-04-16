@@ -6059,4 +6059,150 @@ mod tests {
         let err = svc.delete_event_bus(&req).err().expect("expected error");
         assert_eq!(err.code(), "ValidationException");
     }
+
+    // ── Error branch tests ──
+
+    #[test]
+    fn describe_rule_not_found() {
+        let svc = make_service();
+        let req = make_request("DescribeRule", json!({"Name": "nonexistent"}));
+        let err = svc.describe_rule(&req).err().expect("expected error");
+        assert_eq!(err.code(), "ResourceNotFoundException");
+    }
+
+    #[test]
+    fn delete_rule_nonexistent_is_noop() {
+        let svc = make_service();
+        let req = make_request("DeleteRule", json!({"Name": "nope"}));
+        // EventBridge returns success for deleting nonexistent rules
+        svc.delete_rule(&req).unwrap();
+    }
+
+    #[test]
+    fn put_targets_rule_not_found() {
+        let svc = make_service();
+        let req = make_request(
+            "PutTargets",
+            json!({"Rule": "ghost", "Targets": [{"Id": "t1", "Arn": "arn:a"}]}),
+        );
+        let err = svc.put_targets(&req).err().expect("expected error");
+        assert_eq!(err.code(), "ResourceNotFoundException");
+    }
+
+    #[test]
+    fn remove_targets_rule_not_found() {
+        let svc = make_service();
+        let req = make_request("RemoveTargets", json!({"Rule": "ghost", "Ids": ["t1"]}));
+        let err = svc.remove_targets(&req).err().expect("expected error");
+        assert_eq!(err.code(), "ResourceNotFoundException");
+    }
+
+    #[test]
+    fn list_targets_by_rule_not_found() {
+        let svc = make_service();
+        let req = make_request("ListTargetsByRule", json!({"Rule": "ghost"}));
+        let err = svc
+            .list_targets_by_rule(&req)
+            .err()
+            .expect("expected error");
+        assert_eq!(err.code(), "ResourceNotFoundException");
+    }
+
+    #[test]
+    fn enable_rule_not_found() {
+        let svc = make_service();
+        let req = make_request("EnableRule", json!({"Name": "ghost"}));
+        let err = svc.enable_rule(&req).err().expect("expected error");
+        assert_eq!(err.code(), "ResourceNotFoundException");
+    }
+
+    #[test]
+    fn disable_rule_not_found() {
+        let svc = make_service();
+        let req = make_request("DisableRule", json!({"Name": "ghost"}));
+        let err = svc.disable_rule(&req).err().expect("expected error");
+        assert_eq!(err.code(), "ResourceNotFoundException");
+    }
+
+    #[test]
+    fn describe_event_bus_not_found() {
+        let svc = make_service();
+        let req = make_request("DescribeEventBus", json!({"Name": "nonexistent-bus"}));
+        let err = svc.describe_event_bus(&req).err().expect("expected error");
+        assert_eq!(err.code(), "ResourceNotFoundException");
+    }
+
+    #[test]
+    fn tag_resource_not_found() {
+        let svc = make_service();
+        let req = make_request(
+            "TagResource",
+            json!({"ResourceARN": "arn:aws:events:us-east-1:123:nope", "Tags": [{"Key": "k", "Value": "v"}]}),
+        );
+        let err = svc.tag_resource(&req).err().expect("expected error");
+        assert_eq!(err.code(), "ResourceNotFoundException");
+    }
+
+    #[test]
+    fn untag_resource_not_found() {
+        let svc = make_service();
+        let req = make_request(
+            "UntagResource",
+            json!({"ResourceARN": "arn:aws:events:us-east-1:123:nope", "TagKeys": ["k"]}),
+        );
+        let err = svc.untag_resource(&req).err().expect("expected error");
+        assert_eq!(err.code(), "ResourceNotFoundException");
+    }
+
+    #[test]
+    fn describe_archive_not_found() {
+        let svc = make_service();
+        let req = make_request("DescribeArchive", json!({"ArchiveName": "ghost"}));
+        let err = svc.describe_archive(&req).err().expect("expected error");
+        assert_eq!(err.code(), "ResourceNotFoundException");
+    }
+
+    #[test]
+    fn delete_archive_not_found() {
+        let svc = make_service();
+        let req = make_request("DeleteArchive", json!({"ArchiveName": "ghost"}));
+        let err = svc.delete_archive(&req).err().expect("expected error");
+        assert_eq!(err.code(), "ResourceNotFoundException");
+    }
+
+    #[test]
+    fn describe_connection_not_found() {
+        let svc = make_service();
+        let req = make_request("DescribeConnection", json!({"Name": "ghost"}));
+        let err = svc.describe_connection(&req).err().expect("expected error");
+        assert_eq!(err.code(), "ResourceNotFoundException");
+    }
+
+    #[test]
+    fn describe_api_destination_not_found() {
+        let svc = make_service();
+        let req = make_request("DescribeApiDestination", json!({"Name": "ghost"}));
+        let err = svc
+            .describe_api_destination(&req)
+            .err()
+            .expect("expected error");
+        assert_eq!(err.code(), "ResourceNotFoundException");
+    }
+
+    #[test]
+    fn describe_replay_not_found() {
+        let svc = make_service();
+        let req = make_request("DescribeReplay", json!({"ReplayName": "ghost"}));
+        let err = svc.describe_replay(&req).err().expect("expected error");
+        assert_eq!(err.code(), "ResourceNotFoundException");
+    }
+
+    #[test]
+    fn create_event_bus_duplicate() {
+        let svc = make_service();
+        let req = make_request("CreateEventBus", json!({"Name": "dup-bus"}));
+        svc.create_event_bus(&req).unwrap();
+        let err = svc.create_event_bus(&req).err().expect("expected error");
+        assert_eq!(err.code(), "ResourceAlreadyExistsException");
+    }
 }

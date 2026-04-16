@@ -1368,7 +1368,7 @@ impl ElastiCacheService {
                         state.cancel_serverless_cache_creation(&serverless_cache_name);
                         return Err(AwsServiceError::aws_error(
                             StatusCode::NOT_FOUND,
-                            "UserGroupNotFound",
+                            "UserGroupNotFoundFault",
                             format!("User group {group_id} not found."),
                         ));
                     }
@@ -1566,7 +1566,7 @@ impl ElastiCacheService {
             let user_group = state.user_groups.get(group_id).ok_or_else(|| {
                 AwsServiceError::aws_error(
                     StatusCode::NOT_FOUND,
-                    "UserGroupNotFound",
+                    "UserGroupNotFoundFault",
                     format!("User group {group_id} not found."),
                 )
             })?;
@@ -5859,5 +5859,213 @@ mod tests {
         assert!(xml.contains("<EngineVersion>7.1</EngineVersion>"));
         assert!(xml.contains("<NumCacheClusters>2</NumCacheClusters>"));
         assert!(xml.contains("<ARN>arn:aws:elasticache:us-east-1:123:snapshot:test-snap</ARN>"));
+    }
+
+    // ── Error branch tests ──
+
+    fn expect_ec_err(result: Result<AwsResponse, AwsServiceError>, code: &str) {
+        match result {
+            Err(e) => assert_eq!(e.code(), code, "wrong error code: {e}"),
+            Ok(_) => panic!("expected error {code}, got Ok"),
+        }
+    }
+
+    #[test]
+    fn describe_cache_cluster_not_found() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+        expect_ec_err(
+            svc.describe_cache_clusters(&request(
+                "DescribeCacheClusters",
+                &[("CacheClusterId", "nope")],
+            )),
+            "CacheClusterNotFound",
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_cache_cluster_not_found() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+        expect_ec_err(
+            svc.delete_cache_cluster(&request(
+                "DeleteCacheClusters",
+                &[("CacheClusterId", "nope")],
+            ))
+            .await,
+            "CacheClusterNotFound",
+        );
+    }
+
+    #[test]
+    fn describe_replication_group_not_found() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+        expect_ec_err(
+            svc.describe_replication_groups(&request(
+                "DescribeReplicationGroups",
+                &[("ReplicationGroupId", "nope")],
+            )),
+            "ReplicationGroupNotFoundFault",
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_replication_group_not_found() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+        expect_ec_err(
+            svc.delete_replication_group(&request(
+                "DeleteReplicationGroup",
+                &[("ReplicationGroupId", "nope")],
+            ))
+            .await,
+            "ReplicationGroupNotFoundFault",
+        );
+    }
+
+    #[test]
+    fn describe_serverless_cache_not_found() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+        expect_ec_err(
+            svc.describe_serverless_caches(&request(
+                "DescribeServerlessCaches",
+                &[("ServerlessCacheName", "nope")],
+            )),
+            "ServerlessCacheNotFoundFault",
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_serverless_cache_not_found() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+        expect_ec_err(
+            svc.delete_serverless_cache(&request(
+                "DeleteServerlessCache",
+                &[("ServerlessCacheName", "nope")],
+            ))
+            .await,
+            "ServerlessCacheNotFoundFault",
+        );
+    }
+
+    #[test]
+    fn describe_user_not_found() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+        expect_ec_err(
+            svc.describe_users(&request("DescribeUsers", &[("UserId", "nope")])),
+            "UserNotFoundFault",
+        );
+    }
+
+    #[test]
+    fn delete_user_not_found() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+        expect_ec_err(
+            svc.delete_user(&request("DeleteUser", &[("UserId", "nope")])),
+            "UserNotFoundFault",
+        );
+    }
+
+    #[test]
+    fn describe_user_group_not_found() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+        expect_ec_err(
+            svc.describe_user_groups(&request("DescribeUserGroups", &[("UserGroupId", "nope")])),
+            "UserGroupNotFoundFault",
+        );
+    }
+
+    #[test]
+    fn delete_user_group_not_found() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+        expect_ec_err(
+            svc.delete_user_group(&request("DeleteUserGroup", &[("UserGroupId", "nope")])),
+            "UserGroupNotFoundFault",
+        );
+    }
+
+    #[test]
+    fn describe_cache_subnet_group_not_found() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+        expect_ec_err(
+            svc.describe_cache_subnet_groups(&request(
+                "DescribeCacheSubnetGroups",
+                &[("CacheSubnetGroupName", "nope")],
+            )),
+            "CacheSubnetGroupNotFoundFault",
+        );
+    }
+
+    #[test]
+    fn delete_cache_subnet_group_not_found() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+        expect_ec_err(
+            svc.delete_cache_subnet_group(&request(
+                "DeleteCacheSubnetGroup",
+                &[("CacheSubnetGroupName", "nope")],
+            )),
+            "CacheSubnetGroupNotFoundFault",
+        );
+    }
+
+    #[test]
+    fn describe_snapshot_not_found() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+        expect_ec_err(
+            svc.describe_snapshots(&request("DescribeSnapshots", &[("SnapshotName", "nope")])),
+            "SnapshotNotFoundFault",
+        );
+    }
+
+    #[test]
+    fn delete_snapshot_nonexistent() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+        expect_ec_err(
+            svc.delete_snapshot(&request("DeleteSnapshot", &[("SnapshotName", "nope")])),
+            "SnapshotNotFoundFault",
+        );
+    }
+
+    #[test]
+    fn create_user_duplicate() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+        let req = request(
+            "CreateUser",
+            &[
+                ("UserId", "dup"),
+                ("UserName", "dup"),
+                ("Engine", "redis"),
+                ("AccessString", "on ~* +@all"),
+            ],
+        );
+        svc.create_user(&req).unwrap();
+        expect_ec_err(svc.create_user(&req), "UserAlreadyExistsFault");
     }
 }
