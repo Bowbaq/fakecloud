@@ -37,14 +37,12 @@ impl ResetState {
                 self.iam.write().reset();
             }
             "sqs" => {
-                let mut s = self.sqs.write();
-                s.queues.clear();
-                s.name_to_url.clear();
+                self.sqs.write().reset();
             }
             "sns" => {
                 let mut s = self.sns.write();
                 s.reset();
-                s.seed_default_opted_out();
+                s.default_mut().seed_default_opted_out();
             }
             "events" | "eventbridge" => {
                 let mut eb = self.eb.write();
@@ -129,12 +127,11 @@ impl ResetState {
 
     pub(crate) fn reset(&self) -> axum::Json<types::ResetResponse> {
         self.iam.write().reset();
-        self.sqs.write().queues.clear();
-        self.sqs.write().name_to_url.clear();
+        self.sqs.write().reset();
         {
             let mut sns = self.sns.write();
             sns.reset();
-            sns.seed_default_opted_out();
+            sns.default_mut().seed_default_opted_out();
         }
         {
             let mut eb = self.eb.write();
@@ -242,14 +239,14 @@ mod tests {
                 ),
             )),
             sqs: Arc::new(parking_lot::RwLock::new(
-                fakecloud_sqs::state::SqsState::new(
+                fakecloud_core::multi_account::MultiAccountState::new(
                     "123456789012",
                     "us-east-1",
                     "http://localhost:4566",
                 ),
             )),
             sns: Arc::new(parking_lot::RwLock::new(
-                fakecloud_sns::state::SnsState::new(
+                fakecloud_core::multi_account::MultiAccountState::new(
                     "123456789012",
                     "us-east-1",
                     "http://localhost:4566",

@@ -106,7 +106,8 @@ impl ResourceProvisioner {
             .and_then(|v| v.as_str())
             .unwrap_or(&resource.logical_id);
 
-        let mut state = self.sqs_state.write();
+        let mut __sqs_mas = self.sqs_state.write();
+        let state = __sqs_mas.get_or_create(&self.account_id);
         let queue_url = format!("{}/{}/{}", state.endpoint, state.account_id, queue_name);
         let arn = format!(
             "arn:aws:sqs:{}:{}:{}",
@@ -153,7 +154,8 @@ impl ResourceProvisioner {
     }
 
     fn delete_sqs_queue(&self, physical_id: &str) -> Result<(), String> {
-        let mut state = self.sqs_state.write();
+        let mut __sqs_mas = self.sqs_state.write();
+        let state = __sqs_mas.get_or_create(&self.account_id);
         if let Some(queue) = state.queues.remove(physical_id) {
             state.name_to_url.remove(&queue.queue_name);
         }
@@ -169,7 +171,8 @@ impl ResourceProvisioner {
             .and_then(|v| v.as_str())
             .unwrap_or(&resource.logical_id);
 
-        let mut state = self.sns_state.write();
+        let mut __sns_mas = self.sns_state.write();
+        let state = __sns_mas.get_or_create(&self.account_id);
         let topic_arn = format!(
             "arn:aws:sns:{}:{}:{}",
             state.region, state.account_id, topic_name
@@ -189,7 +192,8 @@ impl ResourceProvisioner {
     }
 
     fn delete_sns_topic(&self, physical_id: &str) -> Result<(), String> {
-        let mut state = self.sns_state.write();
+        let mut __sns_mas = self.sns_state.write();
+        let state = __sns_mas.get_or_create(&self.account_id);
         state.topics.remove(physical_id);
         // Also remove subscriptions for this topic
         state
@@ -215,7 +219,8 @@ impl ResourceProvisioner {
             .and_then(|v| v.as_str())
             .ok_or("SNS Subscription requires Endpoint")?;
 
-        let mut state = self.sns_state.write();
+        let mut __sns_mas = self.sns_state.write();
+        let state = __sns_mas.get_or_create(&self.account_id);
 
         // Validate that the topic exists
         if !state.topics.contains_key(topic_arn) {
@@ -240,7 +245,8 @@ impl ResourceProvisioner {
     }
 
     fn delete_sns_subscription(&self, physical_id: &str) -> Result<(), String> {
-        let mut state = self.sns_state.write();
+        let mut __sns_mas = self.sns_state.write();
+        let state = __sns_mas.get_or_create(&self.account_id);
         state.subscriptions.remove(physical_id);
         Ok(())
     }
@@ -912,16 +918,20 @@ mod tests {
 
     fn make_provisioner() -> ResourceProvisioner {
         ResourceProvisioner {
-            sqs_state: Arc::new(RwLock::new(fakecloud_sqs::state::SqsState::new(
-                "123456789012",
-                "us-east-1",
-                "http://localhost:4566",
-            ))),
-            sns_state: Arc::new(RwLock::new(fakecloud_sns::state::SnsState::new(
-                "123456789012",
-                "us-east-1",
-                "http://localhost:4566",
-            ))),
+            sqs_state: Arc::new(RwLock::new(
+                fakecloud_core::multi_account::MultiAccountState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "http://localhost:4566",
+                ),
+            )),
+            sns_state: Arc::new(RwLock::new(
+                fakecloud_core::multi_account::MultiAccountState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "http://localhost:4566",
+                ),
+            )),
             ssm_state: Arc::new(RwLock::new(fakecloud_ssm::state::SsmState::new(
                 "123456789012",
                 "us-east-1",

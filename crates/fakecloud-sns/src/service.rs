@@ -49,7 +49,8 @@ impl SnsService {
         let _guard = self.snapshot_lock.lock().await;
         let snapshot = SnsSnapshot {
             schema_version: SNS_SNAPSHOT_SCHEMA_VERSION,
-            state: self.state.read().clone(),
+            accounts: Some(self.state.read().clone()),
+            state: None,
         };
         let join = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
             let bytes = serde_json::to_vec(&snapshot)
@@ -224,7 +225,7 @@ impl AwsService for SnsService {
                 // evaluation and the actual ARN can't diverge even if
                 // the two sources ever drift (identified by cubic on
                 // PR #399).
-                let state = self.state.read();
+                let _accts = self.state.read(); let _empty = crate::state::SnsState::new(&request.account_id, &request.region, ""); let state = _accts.get(&request.account_id).unwrap_or(&_empty);
                 let partition = if request.region.starts_with("cn-") {
                     "aws-cn"
                 } else if request.region.starts_with("us-gov-") {
@@ -306,7 +307,9 @@ impl AwsService for SnsService {
         if resource_arn == "*" {
             return Some(std::collections::HashMap::new());
         }
-        let state = self.state.read();
+        let account_id = resource_arn.split(':').nth(4).unwrap_or("");
+        let _accts = self.state.read();
+        let state = _accts.get(account_id)?;
         let topic = state.topics.get(resource_arn)?;
         Some(topic.tags.iter().cloned().collect())
     }
@@ -498,7 +501,8 @@ impl SnsService {
         // Parse tags from request
         let tags = parse_tags(req);
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let topic_arn = Arn::new("sns", &req.region, &state.account_id, &name).to_string();
 
         if !state.topics.contains_key(&topic_arn) {
@@ -565,7 +569,8 @@ impl SnsService {
 
     fn delete_topic(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let topic_arn = required(req, "TopicArn")?;
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         state.topics.remove(&topic_arn);
         state
             .subscriptions
@@ -585,7 +590,9 @@ impl SnsService {
     }
 
     fn list_topics(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let _accts = self.state.read();
+        let _empty = crate::state::SnsState::new(&req.account_id, &req.region, "");
+        let state = _accts.get(&req.account_id).unwrap_or(&_empty);
 
         // Filter topics by region
         let all_topics: Vec<&SnsTopic> = state
@@ -659,7 +666,9 @@ impl SnsService {
             }
         }
 
-        let state = self.state.read();
+        let _accts = self.state.read();
+        let _empty = crate::state::SnsState::new(&req.account_id, &req.region, "");
+        let state = _accts.get(&req.account_id).unwrap_or(&_empty);
         let topic = state
             .topics
             .get(&topic_arn)
@@ -719,7 +728,8 @@ impl SnsService {
         let attr_name = required(req, "AttributeName")?;
         let attr_value = param(req, "AttributeValue").unwrap_or_default();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let topic = state
             .topics
             .get_mut(&topic_arn)
@@ -758,13 +768,17 @@ impl SnsService {
         let protocol = required(req, "Protocol")?;
         let endpoint = param(req, "Endpoint").unwrap_or_default();
 
-        let state_r = self.state.read();
+        let accts = self.state.read();
+        let state_r = match accts.get(&req.account_id) {
+            Some(s) => s,
+            None => return Err(not_found("Topic")),
+        };
         let topic = state_r
             .topics
             .get(&topic_arn)
             .ok_or_else(|| not_found("Topic"))?;
         let is_fifo_topic = topic.is_fifo;
-        let account_id = state_r.account_id.clone();
+        let account_id = req.account_id.clone();
 
         // Validate application endpoint exists
         if protocol == "application" {
@@ -782,7 +796,7 @@ impl SnsService {
                 ));
             }
         }
-        drop(state_r);
+        drop(accts);
 
         // Validate SMS endpoint
         if protocol == "sms" {
@@ -836,7 +850,8 @@ impl SnsService {
         }
 
         // Check for duplicate subscription (same topic, protocol, endpoint)
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         for sub in state.subscriptions.values() {
             if sub.topic_arn == topic_arn && sub.protocol == protocol && sub.endpoint == endpoint {
                 return Ok(xml_resp(
@@ -906,7 +921,8 @@ impl SnsService {
         let topic_arn = required(req, "TopicArn")?;
         let token = required(req, "Token")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         // AWS accepts both the confirmation token and the subscription ARN as the Token parameter.
         // Confirming an already-confirmed subscription is a no-op (idempotent).
         let sub_arn = state
@@ -949,7 +965,11 @@ impl SnsService {
 
     fn unsubscribe(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let sub_arn = required(req, "SubscriptionArn")?;
-        self.state.write().subscriptions.remove(&sub_arn);
+        self.state
+            .write()
+            .get_or_create(&req.account_id)
+            .subscriptions
+            .remove(&sub_arn);
 
         Ok(xml_resp(
             &format!(
@@ -1041,7 +1061,8 @@ impl SnsService {
             );
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let topic = state
             .topics
             .get(&topic_arn)
@@ -1107,9 +1128,9 @@ impl SnsService {
         };
 
         let subscribers =
-            collect_topic_subscribers(&state, &topic_arn, &message_attributes, &message);
+            collect_topic_subscribers(state, &topic_arn, &message_attributes, &message);
         let endpoint = state.endpoint.clone();
-        drop(state);
+        drop(accounts);
 
         // Determine actual message content per protocol
         let sqs_message = if let Some(ref structure) = parsed_structure {
@@ -1266,7 +1287,9 @@ impl SnsService {
             .collect();
 
         {
-            let mut state = self.state.write();
+            let acct = ctx.topic_arn.split(':').nth(4).unwrap_or("");
+            let mut accounts = self.state.write();
+            let state = accounts.get_or_create(acct);
             for (function_arn, _) in &lambda_payloads {
                 state
                     .lambda_invocations
@@ -1314,7 +1337,9 @@ impl SnsService {
         }
         let now = Utc::now();
         let subject_owned = ctx.subject.map(|s| s.to_string());
-        let mut state = self.state.write();
+        let acct = ctx.topic_arn.split(':').nth(4).unwrap_or("");
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(acct);
         for email_address in subs {
             tracing::info!(
                 email = %email_address,
@@ -1335,7 +1360,9 @@ impl SnsService {
         if subs.is_empty() {
             return;
         }
-        let mut state = self.state.write();
+        let acct = ctx.topic_arn.split(':').nth(4).unwrap_or("");
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(acct);
         for phone_number in subs {
             tracing::info!(
                 phone_number = %phone_number,
@@ -1351,14 +1378,16 @@ impl SnsService {
     fn publish_batch(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let topic_arn = required(req, "TopicArn")?;
 
-        let state = self.state.read();
+        let _accts = self.state.read();
+        let _empty = crate::state::SnsState::new(&req.account_id, &req.region, "");
+        let state = _accts.get(&req.account_id).unwrap_or(&_empty);
         let topic = state
             .topics
             .get(&topic_arn)
             .ok_or_else(|| not_found("Topic"))?;
         let is_fifo = topic.is_fifo;
         let endpoint = state.endpoint.clone();
-        drop(state);
+        drop(_accts);
 
         // Parse batch entries: PublishBatchRequestEntries.member.N.*
         let mut entries = Vec::new();
@@ -1434,7 +1463,8 @@ impl SnsService {
             }
 
             let msg_id = uuid::Uuid::new_v4().to_string();
-            let mut state = self.state.write();
+            let mut accounts = self.state.write();
+            let state = accounts.get_or_create(&req.account_id);
             state.published.push(PublishedMessage {
                 message_id: msg_id.clone(),
                 topic_arn: topic_arn.clone(),
@@ -1482,7 +1512,7 @@ impl SnsService {
                     (s.endpoint.clone(), raw)
                 })
                 .collect();
-            drop(state);
+            drop(accounts);
 
             // Build envelope attributes
             let mut envelope_attrs = serde_json::Map::new();
@@ -1606,7 +1636,8 @@ impl SnsService {
         }
 
         let msg_id = uuid::Uuid::new_v4().to_string();
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         state
             .sms_messages
             .push((phone.to_string(), message.clone()));
@@ -1644,7 +1675,9 @@ impl SnsService {
         message_attributes: &HashMap<String, MessageAttribute>,
         request_id: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let acct = endpoint_arn.split(':').nth(4).unwrap_or("");
+        let _accts = self.state.read();
+        let state = _accts.get(acct).unwrap_or_else(|| _accts.default_ref());
 
         // Find the platform endpoint
         let mut found_endpoint: Option<&PlatformEndpoint> = None;
@@ -1666,10 +1699,12 @@ impl SnsService {
                 "Endpoint is disabled",
             ));
         }
-        drop(state);
+        drop(_accts);
 
         let msg_id = uuid::Uuid::new_v4().to_string();
-        let mut state = self.state.write();
+        let acct = endpoint_arn.split(':').nth(4).unwrap_or("");
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(acct);
         // Store message on the endpoint
         for app in state.platform_applications.values_mut() {
             if let Some(ep) = app.endpoints.get_mut(endpoint_arn) {
@@ -1703,7 +1738,9 @@ impl SnsService {
     }
 
     fn list_subscriptions(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let _accts = self.state.read();
+        let _empty = crate::state::SnsState::new(&req.account_id, &req.region, "");
+        let state = _accts.get(&req.account_id).unwrap_or(&_empty);
 
         let all_subs: Vec<&SnsSubscription> = state.subscriptions.values().collect();
         let next_token = param(req, "NextToken")
@@ -1757,7 +1794,9 @@ impl SnsService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let topic_arn = required(req, "TopicArn")?;
-        let state = self.state.read();
+        let _accts = self.state.read();
+        let _empty = crate::state::SnsState::new(&req.account_id, &req.region, "");
+        let state = _accts.get(&req.account_id).unwrap_or(&_empty);
 
         let all_subs: Vec<&SnsSubscription> = state
             .subscriptions
@@ -1816,7 +1855,9 @@ impl SnsService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let sub_arn = required(req, "SubscriptionArn")?;
-        let state = self.state.read();
+        let _accts = self.state.read();
+        let _empty = crate::state::SnsState::new(&req.account_id, &req.region, "");
+        let state = _accts.get(&req.account_id).unwrap_or(&_empty);
         let sub = state
             .subscriptions
             .get(&sub_arn)
@@ -1903,7 +1944,8 @@ impl SnsService {
             validate_filter_policy(&attr_value)?;
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let sub = state
             .subscriptions
             .get_mut(&sub_arn)
@@ -1935,7 +1977,8 @@ impl SnsService {
         let resource_arn = required(req, "ResourceArn")?;
         let new_tags = parse_tags(req);
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let topic = state.topics.get_mut(&resource_arn).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
@@ -1982,7 +2025,8 @@ impl SnsService {
         let resource_arn = required(req, "ResourceArn")?;
         let tag_keys = parse_tag_keys(req);
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let topic = state.topics.get_mut(&resource_arn).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
@@ -2008,7 +2052,9 @@ impl SnsService {
 
     fn list_tags_for_resource(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let resource_arn = required(req, "ResourceArn")?;
-        let state = self.state.read();
+        let _accts = self.state.read();
+        let _empty = crate::state::SnsState::new(&req.account_id, &req.region, "");
+        let state = _accts.get(&req.account_id).unwrap_or(&_empty);
         let topic = state.topics.get(&resource_arn).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
@@ -2078,7 +2124,8 @@ impl SnsService {
             }
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let account_id = state.account_id.clone();
         let topic = state
             .topics
@@ -2172,7 +2219,8 @@ impl SnsService {
         let topic_arn = required(req, "TopicArn")?;
         let label = required(req, "Label")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let topic = state
             .topics
             .get_mut(&topic_arn)
@@ -2212,7 +2260,8 @@ impl SnsService {
         let platform = required(req, "Platform")?;
         let attributes = parse_entries(req, "Attributes");
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let arn = format!(
             "arn:aws:sns:{}:{}:app/{}/{}",
             req.region, state.account_id, platform, name
@@ -2250,7 +2299,11 @@ impl SnsService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let arn = required(req, "PlatformApplicationArn")?;
-        self.state.write().platform_applications.remove(&arn);
+        self.state
+            .write()
+            .get_or_create(&req.account_id)
+            .platform_applications
+            .remove(&arn);
 
         Ok(xml_resp(
             &format!(
@@ -2270,7 +2323,9 @@ impl SnsService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let arn = required(req, "PlatformApplicationArn")?;
-        let state = self.state.read();
+        let _accts = self.state.read();
+        let _empty = crate::state::SnsState::new(&req.account_id, &req.region, "");
+        let state = _accts.get(&req.account_id).unwrap_or(&_empty);
         let app = state
             .platform_applications
             .get(&arn)
@@ -2308,7 +2363,8 @@ impl SnsService {
         let arn = required(req, "PlatformApplicationArn")?;
         let new_attrs = parse_entries(req, "Attributes");
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let app = state
             .platform_applications
             .get_mut(&arn)
@@ -2332,7 +2388,9 @@ impl SnsService {
     }
 
     fn list_platform_applications(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let _accts = self.state.read();
+        let _empty = crate::state::SnsState::new(&req.account_id, &req.region, "");
+        let state = _accts.get(&req.account_id).unwrap_or(&_empty);
 
         let members: String = state
             .platform_applications
@@ -2381,7 +2439,8 @@ impl SnsService {
         let custom_user_data = param(req, "CustomUserData");
         let attrs = parse_entries(req, "Attributes");
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let account_id = state.account_id.clone();
         let app = state
             .platform_applications
@@ -2487,7 +2546,8 @@ impl SnsService {
     fn delete_endpoint(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let endpoint_arn = required(req, "EndpointArn")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         for app in state.platform_applications.values_mut() {
             app.endpoints.remove(&endpoint_arn);
         }
@@ -2508,7 +2568,9 @@ impl SnsService {
     fn get_endpoint_attributes(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let endpoint_arn = required(req, "EndpointArn")?;
 
-        let state = self.state.read();
+        let _accts = self.state.read();
+        let _empty = crate::state::SnsState::new(&req.account_id, &req.region, "");
+        let state = _accts.get(&req.account_id).unwrap_or(&_empty);
         for app in state.platform_applications.values() {
             if let Some(ep) = app.endpoints.get(&endpoint_arn) {
                 let attrs: String = ep
@@ -2544,7 +2606,8 @@ impl SnsService {
         let endpoint_arn = required(req, "EndpointArn")?;
         let new_attrs = parse_entries(req, "Attributes");
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         for app in state.platform_applications.values_mut() {
             if let Some(ep) = app.endpoints.get_mut(&endpoint_arn) {
                 for (k, v) in new_attrs {
@@ -2577,7 +2640,9 @@ impl SnsService {
     ) -> Result<AwsResponse, AwsServiceError> {
         let app_arn = required(req, "PlatformApplicationArn")?;
 
-        let state = self.state.read();
+        let _accts = self.state.read();
+        let _empty = crate::state::SnsState::new(&req.account_id, &req.region, "");
+        let state = _accts.get(&req.account_id).unwrap_or(&_empty);
         let app = state
             .platform_applications
             .get(&app_arn)
@@ -2629,7 +2694,8 @@ impl SnsService {
     fn set_sms_attributes(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let attrs = parse_entries(req, "attributes");
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         for (k, v) in attrs {
             state.sms_attributes.insert(k, v);
         }
@@ -2660,7 +2726,9 @@ impl SnsService {
             }
         }
 
-        let state = self.state.read();
+        let _accts = self.state.read();
+        let _empty = crate::state::SnsState::new(&req.account_id, &req.region, "");
+        let state = _accts.get(&req.account_id).unwrap_or(&_empty);
 
         let attrs: String = state
             .sms_attributes
@@ -2708,7 +2776,9 @@ impl SnsService {
             ));
         }
 
-        let state = self.state.read();
+        let _accts = self.state.read();
+        let _empty = crate::state::SnsState::new(&req.account_id, &req.region, "");
+        let state = _accts.get(&req.account_id).unwrap_or(&_empty);
         // Numbers ending in 99 are considered opted out by convention
         let is_opted_out =
             state.opted_out_numbers.contains(&phone_number) || phone_number.ends_with("99");
@@ -2733,7 +2803,9 @@ impl SnsService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let _accts = self.state.read();
+        let _empty = crate::state::SnsState::new(&req.account_id, &req.region, "");
+        let state = _accts.get(&req.account_id).unwrap_or(&_empty);
         let members: String = state
             .opted_out_numbers
             .iter()
@@ -2761,7 +2833,8 @@ impl SnsService {
 
     fn opt_in_phone_number(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let phone_number = required(req, "phoneNumber")?;
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         state.opted_out_numbers.retain(|n| n != &phone_number);
 
         Ok(xml_resp(
@@ -3984,14 +4057,17 @@ mod tests {
     #[test]
     fn add_permission_with_invalid_policy_returns_error_not_panic() {
         use fakecloud_core::delivery::DeliveryBus;
+        use fakecloud_core::multi_account::MultiAccountState;
         use parking_lot::RwLock;
         use std::sync::Arc;
 
-        let state = Arc::new(RwLock::new(crate::state::SnsState::new(
-            "123456789012",
-            "us-east-1",
-            "http://localhost:4566",
-        )));
+        let state = Arc::new(RwLock::new(
+            MultiAccountState::<crate::state::SnsState>::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4566",
+            ),
+        ));
         let delivery = Arc::new(DeliveryBus::new());
         let svc = SnsService::new(state.clone(), delivery);
 
@@ -3999,7 +4075,7 @@ mod tests {
         let topic_arn = "arn:aws:sns:us-east-1:123456789012:test-topic";
         {
             let mut s = state.write();
-            s.topics.insert(
+            s.default_mut().topics.insert(
                 topic_arn.to_string(),
                 crate::state::SnsTopic {
                     topic_arn: topic_arn.to_string(),
@@ -4052,14 +4128,17 @@ mod tests {
 
     fn make_sns() -> (SnsService, crate::state::SharedSnsState) {
         use fakecloud_core::delivery::DeliveryBus;
+        use fakecloud_core::multi_account::MultiAccountState;
         use parking_lot::RwLock;
         use std::sync::Arc;
 
-        let state = Arc::new(RwLock::new(crate::state::SnsState::new(
-            "123456789012",
-            "us-east-1",
-            "http://localhost:4566",
-        )));
+        let state = Arc::new(RwLock::new(
+            MultiAccountState::<crate::state::SnsState>::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4566",
+            ),
+        ));
         let delivery = Arc::new(DeliveryBus::new());
         let svc = SnsService::new(state.clone(), delivery);
         (svc, state)
@@ -4234,14 +4313,17 @@ mod tests {
         // Get subscription ARN from state
         let sub_arn = {
             let s = state.read();
-            s.subscriptions.keys().next().unwrap().clone()
+            s.default_ref().subscriptions.keys().next().unwrap().clone()
         };
 
         let req = sns_request("Unsubscribe", vec![("SubscriptionArn", &sub_arn)]);
         assert_ok(&svc.unsubscribe(&req));
 
         let s = state.read();
-        assert!(s.subscriptions.is_empty(), "Subscription should be removed");
+        assert!(
+            s.default_ref().subscriptions.is_empty(),
+            "Subscription should be removed"
+        );
     }
 
     #[test]
@@ -4346,9 +4428,12 @@ mod tests {
         );
 
         let s = state.read();
-        assert_eq!(s.published.len(), 1);
-        assert_eq!(s.published[0].message, "Hello world");
-        assert_eq!(s.published[0].subject.as_deref(), Some("Test subject"));
+        assert_eq!(s.default_ref().published.len(), 1);
+        assert_eq!(s.default_ref().published[0].message, "Hello world");
+        assert_eq!(
+            s.default_ref().published[0].subject.as_deref(),
+            Some("Test subject")
+        );
     }
 
     #[test]
@@ -4403,9 +4488,9 @@ mod tests {
         assert_ok(&result);
 
         let s = state.read();
-        assert_eq!(s.sms_messages.len(), 1);
-        assert_eq!(s.sms_messages[0].0, "+15551234567");
-        assert_eq!(s.sms_messages[0].1, "SMS test");
+        assert_eq!(s.default_ref().sms_messages.len(), 1);
+        assert_eq!(s.default_ref().sms_messages[0].0, "+15551234567");
+        assert_eq!(s.default_ref().sms_messages[0].1, "SMS test");
     }
 
     #[test]
@@ -4444,7 +4529,7 @@ mod tests {
         );
 
         let s = state.read();
-        assert_eq!(s.published.len(), 2);
+        assert_eq!(s.default_ref().published.len(), 2);
     }
 
     #[test]
@@ -4486,7 +4571,7 @@ mod tests {
 
         let sub_arn = {
             let s = state.read();
-            s.subscriptions.keys().next().unwrap().clone()
+            s.default_ref().subscriptions.keys().next().unwrap().clone()
         };
 
         let req = sns_request(
@@ -4531,7 +4616,7 @@ mod tests {
 
         let sub_arn = {
             let s = state.read();
-            s.subscriptions.keys().next().unwrap().clone()
+            s.default_ref().subscriptions.keys().next().unwrap().clone()
         };
 
         // Set RawMessageDelivery to true
@@ -4547,7 +4632,7 @@ mod tests {
 
         // Verify in state
         let s = state.read();
-        let sub = s.subscriptions.get(&sub_arn).unwrap();
+        let sub = s.default_ref().subscriptions.get(&sub_arn).unwrap();
         assert_eq!(sub.attributes.get("RawMessageDelivery").unwrap(), "true");
     }
 
@@ -4568,7 +4653,7 @@ mod tests {
 
         let sub_arn = {
             let s = state.read();
-            s.subscriptions.keys().next().unwrap().clone()
+            s.default_ref().subscriptions.keys().next().unwrap().clone()
         };
 
         let req = sns_request(
@@ -4801,7 +4886,8 @@ mod tests {
         // Get the token from the pending subscription
         let token = {
             let s = state.read();
-            s.subscriptions
+            s.default_ref()
+                .subscriptions
                 .values()
                 .find(|sub| sub.topic_arn == topic_arn && !sub.confirmed)
                 .expect("should have a pending subscription")
@@ -4825,6 +4911,7 @@ mod tests {
         // Verify the subscription is now confirmed
         let s = state.read();
         let sub = s
+            .default_ref()
             .subscriptions
             .values()
             .find(|sub| sub.topic_arn == topic_arn)
@@ -4887,6 +4974,7 @@ mod tests {
         let (second_arn, second_token) = {
             let s = state.read();
             let sub = s
+                .default_ref()
                 .subscriptions
                 .values()
                 .find(|sub| sub.endpoint == "http://second.example.com/hook")
@@ -4912,7 +5000,7 @@ mod tests {
 
         // Verify only the second subscription is confirmed
         let s = state.read();
-        for sub in s.subscriptions.values() {
+        for sub in s.default_ref().subscriptions.values() {
             if sub.endpoint == "http://second.example.com/hook" {
                 assert!(sub.confirmed, "second subscription should be confirmed");
             } else {
@@ -4941,7 +5029,8 @@ mod tests {
         // Get the subscription ARN
         let sub_arn = {
             let s = state.read();
-            s.subscriptions
+            s.default_ref()
+                .subscriptions
                 .values()
                 .find(|sub| sub.topic_arn == topic_arn)
                 .expect("should have a subscription")
@@ -4960,6 +5049,7 @@ mod tests {
         // Verify the subscription is now confirmed
         let s = state.read();
         let sub = s
+            .default_ref()
             .subscriptions
             .values()
             .find(|sub| sub.topic_arn == topic_arn)
@@ -5033,6 +5123,7 @@ mod tests {
         {
             let s = state.read();
             let policy_str = s
+                .default_ref()
                 .topics
                 .get(topic_arn)
                 .unwrap()
@@ -5060,6 +5151,7 @@ mod tests {
         {
             let s = state.read();
             let policy_str = s
+                .default_ref()
                 .topics
                 .get(topic_arn)
                 .unwrap()
@@ -5136,7 +5228,7 @@ mod tests {
     #[test]
     fn check_phone_opted_out() {
         let (svc, state) = make_sns();
-        state.write().seed_default_opted_out();
+        state.write().default_mut().seed_default_opted_out();
 
         let req = sns_request(
             "CheckIfPhoneNumberIsOptedOut",
@@ -5154,7 +5246,7 @@ mod tests {
     #[test]
     fn list_phone_numbers_opted_out() {
         let (svc, state) = make_sns();
-        state.write().seed_default_opted_out();
+        state.write().default_mut().seed_default_opted_out();
 
         let req = sns_request("ListPhoneNumbersOptedOut", vec![]);
         let result = svc.list_phone_numbers_opted_out(&req);
@@ -5169,7 +5261,7 @@ mod tests {
     #[test]
     fn opt_in_phone_number() {
         let (svc, state) = make_sns();
-        state.write().seed_default_opted_out();
+        state.write().default_mut().seed_default_opted_out();
 
         let req = sns_request("OptInPhoneNumber", vec![("phoneNumber", "+15005550099")]);
         assert_ok(&svc.opt_in_phone_number(&req));
@@ -5177,7 +5269,9 @@ mod tests {
         // Verify removed from opted-out list
         let s = state.read();
         assert!(
-            !s.opted_out_numbers.contains(&"+15005550099".to_string()),
+            !s.default_ref()
+                .opted_out_numbers
+                .contains(&"+15005550099".to_string()),
             "Phone should no longer be opted out"
         );
     }
@@ -5198,11 +5292,11 @@ mod tests {
             ],
         )));
 
-        assert_eq!(state.read().subscriptions.len(), 1);
+        assert_eq!(state.read().default_ref().subscriptions.len(), 1);
 
         assert_ok(&svc.delete_topic(&sns_request("DeleteTopic", vec![("TopicArn", topic_arn)])));
         assert_eq!(
-            state.read().subscriptions.len(),
+            state.read().default_ref().subscriptions.len(),
             0,
             "Subscriptions should be removed with topic"
         );
@@ -5257,7 +5351,7 @@ mod tests {
         let (svc, state) = make_sns();
         let arn = create_app(&svc, "MyApp", "GCM");
         let s = state.read();
-        let app = s.platform_applications.get(&arn).unwrap();
+        let app = s.default_ref().platform_applications.get(&arn).unwrap();
         assert_eq!(app.name, "MyApp");
         assert_eq!(app.platform, "GCM");
         assert_eq!(
@@ -5305,7 +5399,8 @@ mod tests {
         svc.set_platform_application_attributes(&req).unwrap();
         let s = state.read();
         assert_eq!(
-            s.platform_applications
+            s.default_ref()
+                .platform_applications
                 .get(&arn)
                 .unwrap()
                 .attributes
@@ -5324,7 +5419,7 @@ mod tests {
             vec![("PlatformApplicationArn", arn.as_str())],
         );
         svc.delete_platform_application(&req).unwrap();
-        assert!(state.read().platform_applications.is_empty());
+        assert!(state.read().default_ref().platform_applications.is_empty());
     }
 
     fn create_endpoint(svc: &SnsService, app_arn: &str, token: &str) -> String {
@@ -5419,7 +5514,7 @@ mod tests {
         );
         svc.delete_endpoint(&del).unwrap();
         let s = state.read();
-        let app = s.platform_applications.get(&app_arn).unwrap();
+        let app = s.default_ref().platform_applications.get(&app_arn).unwrap();
         assert!(app.endpoints.is_empty());
     }
 

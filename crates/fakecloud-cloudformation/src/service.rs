@@ -835,16 +835,20 @@ mod tests {
             "us-east-1",
         )));
         let deps = CloudFormationDeps {
-            sqs: Arc::new(RwLock::new(fakecloud_sqs::state::SqsState::new(
-                "123456789012",
-                "us-east-1",
-                "http://localhost:4566",
-            ))),
-            sns: Arc::new(RwLock::new(fakecloud_sns::state::SnsState::new(
-                "123456789012",
-                "us-east-1",
-                "http://localhost:4566",
-            ))),
+            sqs: Arc::new(RwLock::new(
+                fakecloud_core::multi_account::MultiAccountState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "http://localhost:4566",
+                ),
+            )),
+            sns: Arc::new(RwLock::new(
+                fakecloud_core::multi_account::MultiAccountState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "http://localhost:4566",
+                ),
+            )),
             ssm: Arc::new(RwLock::new(fakecloud_ssm::state::SsmState::new(
                 "123456789012",
                 "us-east-1",

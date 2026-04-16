@@ -12,43 +12,47 @@ pub struct PendingConfirmation {
 
 /// List all subscriptions that are pending confirmation.
 pub fn list_pending_confirmations(state: &SharedSnsState) -> Vec<PendingConfirmation> {
-    let s = state.read();
-    s.subscriptions
-        .values()
-        .filter(|sub| !sub.confirmed)
-        .map(|sub| PendingConfirmation {
-            subscription_arn: sub.subscription_arn.clone(),
-            topic_arn: sub.topic_arn.clone(),
-            protocol: sub.protocol.clone(),
-            endpoint: sub.endpoint.clone(),
-            token: sub.confirmation_token.clone(),
-        })
-        .collect()
+    let accts = state.read();
+    let mut result = Vec::new();
+    for (_, acct_state) in accts.iter() {
+        for sub in acct_state.subscriptions.values() {
+            if !sub.confirmed {
+                result.push(PendingConfirmation {
+                    subscription_arn: sub.subscription_arn.clone(),
+                    topic_arn: sub.topic_arn.clone(),
+                    protocol: sub.protocol.clone(),
+                    endpoint: sub.endpoint.clone(),
+                    token: sub.confirmation_token.clone(),
+                });
+            }
+        }
+    }
+    result
 }
 
 /// Force-confirm a subscription by its ARN. Returns true if the
 /// subscription was found and confirmed (or was already confirmed).
 pub fn confirm_subscription(state: &SharedSnsState, subscription_arn: &str) -> bool {
-    let mut s = state.write();
-    match s.subscriptions.get_mut(subscription_arn) {
-        Some(sub) => {
+    let mut accts = state.write();
+    for (_, acct_state) in accts.iter_mut() {
+        if let Some(sub) = acct_state.subscriptions.get_mut(subscription_arn) {
             sub.confirmed = true;
-            true
+            return true;
         }
-        None => false,
     }
+    false
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::SnsState;
+    use fakecloud_core::multi_account::MultiAccountState;
     use parking_lot::RwLock;
     use std::collections::HashMap;
     use std::sync::Arc;
 
     fn make_state() -> SharedSnsState {
-        Arc::new(RwLock::new(SnsState::new(
+        Arc::new(RwLock::new(MultiAccountState::new(
             "123456789012",
             "us-east-1",
             "http://localhost:4566",
@@ -63,7 +67,8 @@ mod tests {
         confirmed: bool,
     ) -> String {
         let sub_arn = format!("{}:{}", topic_arn, uuid::Uuid::new_v4());
-        let mut s = state.write();
+        let mut accts = state.write();
+        let s = accts.default_mut();
         s.subscriptions.insert(
             sub_arn.clone(),
             crate::state::SnsSubscription {
@@ -125,11 +130,11 @@ mod tests {
         let topic_arn = "arn:aws:sns:us-east-1:123456789012:my-topic";
         let sub_arn = add_subscription(&state, topic_arn, "http", "http://example.com/hook", false);
 
-        assert!(!state.read().subscriptions[&sub_arn].confirmed);
+        assert!(!state.read().default_ref().subscriptions[&sub_arn].confirmed);
 
         let result = confirm_subscription(&state, &sub_arn);
         assert!(result);
-        assert!(state.read().subscriptions[&sub_arn].confirmed);
+        assert!(state.read().default_ref().subscriptions[&sub_arn].confirmed);
     }
 
     #[test]

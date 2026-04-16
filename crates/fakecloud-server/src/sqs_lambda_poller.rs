@@ -70,7 +70,11 @@ impl SqsLambdaPoller {
 
         for (queue_arn, function_arn, batch_size) in mappings {
             let messages = {
-                let mut sqs = self.sqs_state.write();
+                let mut sqs_mas = self.sqs_state.write();
+                // Parse account from queue ARN for multi-account routing
+                let default_acct = sqs_mas.default_account_id().to_string();
+                let acct = queue_arn.split(':').nth(4).unwrap_or(&default_acct);
+                let sqs = sqs_mas.get_or_create(acct);
                 let queue = sqs.queues.values_mut().find(|q| q.arn == queue_arn);
                 let queue = match queue {
                     Some(q) => q,

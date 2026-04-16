@@ -397,7 +397,8 @@ impl SqsService {
         let _guard = self.snapshot_lock.lock().await;
         let snapshot = SqsSnapshot {
             schema_version: SQS_SNAPSHOT_SCHEMA_VERSION,
-            state: self.state.read().clone(),
+            accounts: Some(self.state.read().clone()),
+            state: None,
         };
         let join = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
             let bytes = serde_json::to_vec(&snapshot)
@@ -585,7 +586,9 @@ impl AwsService for SqsService {
             return None;
         }
         let queue_name = parts[5];
-        let state = self.state.read();
+        let account_id = parts[4];
+        let _accts = self.state.read();
+        let state = _accts.get(account_id)?;
         let queue_url = state.name_to_url.get(queue_name)?;
         let queue = state.queues.get(queue_url)?;
         Some(queue.tags.clone())
@@ -1002,7 +1005,8 @@ impl SqsService {
             }
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if let Some(url) = state.name_to_url.get(&queue_name) {
             // Queue exists - check if attributes match
@@ -1100,7 +1104,7 @@ impl SqsService {
             .and_then(|s| parse_redrive_policy(s));
 
         if let Some(ref rp) = redrive_policy {
-            validate_redrive_policy_target(&state, rp, is_fifo)?;
+            validate_redrive_policy_target(state, rp, is_fifo)?;
         }
 
         // RedrivePolicy is already canonicalized to compact JSON above by
@@ -1170,8 +1174,9 @@ impl SqsService {
             .ok_or_else(|| missing_param("QueueUrl"))?
             .to_string();
 
-        let mut state = self.state.write();
-        let resolved_url = resolve_queue_url(&queue_url, &state).ok_or_else(queue_not_found)?;
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
+        let resolved_url = resolve_queue_url(&queue_url, state).ok_or_else(queue_not_found)?;
         let queue = state
             .queues
             .remove(&resolved_url)
@@ -1189,7 +1194,9 @@ impl SqsService {
     fn list_queues(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = parse_body(req);
         let prefix = body["QueueNamePrefix"].as_str();
-        let state = self.state.read();
+        let _accts = self.state.read();
+        let _empty = crate::state::SqsState::new(&req.account_id, &req.region, "");
+        let state = _accts.get(&req.account_id).unwrap_or(&_empty);
 
         let max_results = body["MaxResults"]
             .as_u64()
@@ -1237,7 +1244,9 @@ impl SqsService {
             .as_str()
             .ok_or_else(|| missing_param("QueueName"))?;
 
-        let state = self.state.read();
+        let _accts = self.state.read();
+        let _empty = crate::state::SqsState::new(&req.account_id, &req.region, "");
+        let state = _accts.get(&req.account_id).unwrap_or(&_empty);
         let url = state
             .name_to_url
             .get(queue_name)
@@ -1257,8 +1266,10 @@ impl SqsService {
             .as_str()
             .ok_or_else(|| missing_param("QueueUrl"))?;
 
-        let state = self.state.read();
-        let resolved_url = resolve_queue_url(queue_url, &state).ok_or_else(queue_not_found)?;
+        let _accts = self.state.read();
+        let _empty = crate::state::SqsState::new(&req.account_id, &req.region, "");
+        let state = _accts.get(&req.account_id).unwrap_or(&_empty);
+        let resolved_url = resolve_queue_url(queue_url, state).ok_or_else(queue_not_found)?;
         let queue = state
             .queues
             .get(&resolved_url)
@@ -1421,8 +1432,9 @@ impl SqsService {
 
         // --- Acquire write lock ONLY for queue validation + mutation ---
         let (message_id, sequence_number) = {
-            let mut state = self.state.write();
-            let resolved_url = resolve_queue_url(&queue_url, &state).ok_or_else(queue_not_found)?;
+            let mut accounts = self.state.write();
+            let state = accounts.get_or_create(&req.account_id);
+            let resolved_url = resolve_queue_url(&queue_url, state).ok_or_else(queue_not_found)?;
             let queue = state
                 .queues
                 .get_mut(&resolved_url)
@@ -1558,8 +1570,10 @@ impl SqsService {
 
         // Resolve the queue URL (might be a name)
         let queue_url = {
-            let state = self.state.read();
-            resolve_queue_url(&queue_url_input, &state).ok_or_else(queue_not_found)?
+            let _accts = self.state.read();
+            let _empty = crate::state::SqsState::new(&req.account_id, &req.region, "");
+            let state = _accts.get(&req.account_id).unwrap_or(&_empty);
+            resolve_queue_url(&queue_url_input, state).ok_or_else(queue_not_found)?
         };
 
         let max_messages_raw = val_as_i64(&body["MaxNumberOfMessages"]);
@@ -1621,7 +1635,12 @@ impl SqsService {
         };
 
         loop {
-            let result = self.try_receive_messages(&queue_url, max_messages, visibility_timeout)?;
+            let result = self.try_receive_messages(
+                &req.account_id,
+                &queue_url,
+                max_messages,
+                visibility_timeout,
+            )?;
 
             if !result.is_empty() || deadline.is_none() {
                 return Ok(format_receive_response(
@@ -1650,12 +1669,14 @@ impl SqsService {
 
     fn try_receive_messages(
         &self,
+        account_id: &str,
         queue_url: &str,
         max_messages: usize,
         req_visibility_timeout: Option<i64>,
     ) -> Result<Vec<SqsMessage>, AwsServiceError> {
-        let mut state = self.state.write();
-        let resolved_url = resolve_queue_url(queue_url, &state).ok_or_else(queue_not_found)?;
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(account_id);
+        let resolved_url = resolve_queue_url(queue_url, state).ok_or_else(queue_not_found)?;
         let queue = state
             .queues
             .get_mut(&resolved_url)
@@ -1858,8 +1879,9 @@ impl SqsService {
             .as_str()
             .ok_or_else(|| missing_param("ReceiptHandle"))?;
 
-        let mut state = self.state.write();
-        let resolved_url = resolve_queue_url(queue_url, &state).ok_or_else(queue_not_found)?;
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
+        let resolved_url = resolve_queue_url(queue_url, state).ok_or_else(queue_not_found)?;
         let queue = state
             .queues
             .get_mut(&resolved_url)
@@ -1896,8 +1918,9 @@ impl SqsService {
             .as_str()
             .ok_or_else(|| missing_param("QueueUrl"))?;
 
-        let mut state = self.state.write();
-        let resolved_url = resolve_queue_url(queue_url, &state).ok_or_else(queue_not_found)?;
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
+        let resolved_url = resolve_queue_url(queue_url, state).ok_or_else(queue_not_found)?;
         let queue = state
             .queues
             .get_mut(&resolved_url)
@@ -1925,8 +1948,9 @@ impl SqsService {
         let visibility_timeout = val_as_i64(&body["VisibilityTimeout"])
             .ok_or_else(|| missing_param("VisibilityTimeout"))?;
 
-        let mut state = self.state.write();
-        let resolved_url = resolve_queue_url(queue_url, &state).ok_or_else(queue_not_found)?;
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
+        let resolved_url = resolve_queue_url(queue_url, state).ok_or_else(queue_not_found)?;
         let queue = state
             .queues
             .get_mut(&resolved_url)
@@ -1998,8 +2022,9 @@ impl SqsService {
             .ok_or_else(|| missing_param("Entries"))?
             .clone();
 
-        let mut state = self.state.write();
-        let resolved_url = resolve_queue_url(queue_url, &state).ok_or_else(queue_not_found)?;
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
+        let resolved_url = resolve_queue_url(queue_url, state).ok_or_else(queue_not_found)?;
         let queue = state
             .queues
             .get_mut(&resolved_url)
@@ -2100,8 +2125,9 @@ impl SqsService {
             .as_str()
             .ok_or_else(|| missing_param("QueueUrl"))?;
 
-        let mut state = self.state.write();
-        let resolved_url = resolve_queue_url(queue_url, &state).ok_or_else(queue_not_found)?;
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
+        let resolved_url = resolve_queue_url(queue_url, state).ok_or_else(queue_not_found)?;
         let queue = state
             .queues
             .get_mut(&resolved_url)
@@ -2271,8 +2297,9 @@ impl SqsService {
             ));
         }
 
-        let mut state = self.state.write();
-        let resolved_url = resolve_queue_url(&queue_url, &state).ok_or_else(queue_not_found)?;
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
+        let resolved_url = resolve_queue_url(&queue_url, state).ok_or_else(queue_not_found)?;
         let queue = state
             .queues
             .get_mut(&resolved_url)
@@ -2336,8 +2363,9 @@ impl SqsService {
             }
         }
 
-        let mut state = self.state.write();
-        let resolved_url = resolve_queue_url(queue_url, &state).ok_or_else(queue_not_found)?;
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
+        let resolved_url = resolve_queue_url(queue_url, state).ok_or_else(queue_not_found)?;
         let queue = state
             .queues
             .get_mut(&resolved_url)
@@ -2400,8 +2428,10 @@ impl SqsService {
             .as_str()
             .ok_or_else(|| missing_param("QueueUrl"))?;
 
-        let state = self.state.read();
-        let resolved_url = resolve_queue_url(queue_url, &state).ok_or_else(queue_not_found)?;
+        let _accts = self.state.read();
+        let _empty = crate::state::SqsState::new(&req.account_id, &req.region, "");
+        let state = _accts.get(&req.account_id).unwrap_or(&_empty);
+        let resolved_url = resolve_queue_url(queue_url, state).ok_or_else(queue_not_found)?;
         let queue = state
             .queues
             .get(&resolved_url)
@@ -2432,8 +2462,9 @@ impl SqsService {
             ));
         }
 
-        let mut state = self.state.write();
-        let resolved_url = resolve_queue_url(queue_url, &state).ok_or_else(queue_not_found)?;
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
+        let resolved_url = resolve_queue_url(queue_url, state).ok_or_else(queue_not_found)?;
         let queue = state
             .queues
             .get_mut(&resolved_url)
@@ -2481,8 +2512,9 @@ impl SqsService {
             ));
         }
 
-        let mut state = self.state.write();
-        let resolved_url = resolve_queue_url(queue_url, &state).ok_or_else(queue_not_found)?;
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
+        let resolved_url = resolve_queue_url(queue_url, state).ok_or_else(queue_not_found)?;
         let queue = state
             .queues
             .get_mut(&resolved_url)
@@ -2592,8 +2624,9 @@ impl SqsService {
             }
         }
 
-        let mut state = self.state.write();
-        let resolved_url = resolve_queue_url(queue_url, &state).ok_or_else(queue_not_found)?;
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
+        let resolved_url = resolve_queue_url(queue_url, state).ok_or_else(queue_not_found)?;
         let queue = state
             .queues
             .get_mut(&resolved_url)
@@ -2680,8 +2713,9 @@ impl SqsService {
             .as_str()
             .ok_or_else(|| missing_param("Label"))?;
 
-        let mut state = self.state.write();
-        let resolved_url = resolve_queue_url(queue_url, &state).ok_or_else(queue_not_found)?;
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
+        let resolved_url = resolve_queue_url(queue_url, state).ok_or_else(queue_not_found)?;
         let queue = state
             .queues
             .get_mut(&resolved_url)
@@ -2735,8 +2769,10 @@ impl SqsService {
             .as_str()
             .ok_or_else(|| missing_param("QueueUrl"))?;
 
-        let state = self.state.read();
-        let resolved_url = resolve_queue_url(queue_url, &state).ok_or_else(queue_not_found)?;
+        let _accts = self.state.read();
+        let _empty = crate::state::SqsState::new(&req.account_id, &req.region, "");
+        let state = _accts.get(&req.account_id).unwrap_or(&_empty);
+        let resolved_url = resolve_queue_url(queue_url, state).ok_or_else(queue_not_found)?;
         let queue = state
             .queues
             .get(&resolved_url)
@@ -3232,11 +3268,13 @@ mod tests {
     }
 
     fn make_service() -> SqsService {
-        let state: SharedSqsState = Arc::new(RwLock::new(crate::state::SqsState::new(
-            "123456789012",
-            "us-east-1",
-            "http://localhost:4566",
-        )));
+        let state: SharedSqsState = Arc::new(RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4566",
+            ),
+        ));
         SqsService::new(state)
     }
 

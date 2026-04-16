@@ -101,13 +101,22 @@ async fn main() {
         ),
     ));
     let sqs_state = Arc::new(parking_lot::RwLock::new(
-        fakecloud_sqs::state::SqsState::new(&cli.account_id, &cli.region, &endpoint_url),
+        fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        ),
     ));
     let sns_state = Arc::new(parking_lot::RwLock::new({
-        let mut s =
-            fakecloud_sns::state::SnsState::new(&cli.account_id, &cli.region, &endpoint_url);
-        s.seed_default_opted_out();
-        s
+        let mut mas: fakecloud_core::multi_account::MultiAccountState<
+            fakecloud_sns::state::SnsState,
+        > = fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        );
+        mas.default_mut().seed_default_opted_out();
+        mas
     }));
     let eb_state = Arc::new(parking_lot::RwLock::new(
         fakecloud_eventbridge::state::EventBridgeState::new(&cli.account_id, &cli.region),
@@ -473,17 +482,31 @@ async fn main() {
                     match serde_json::from_slice::<fakecloud_sqs::state::SqsSnapshot>(&bytes) {
                         Ok(snapshot) => {
                             if snapshot.schema_version
-                                != fakecloud_sqs::state::SQS_SNAPSHOT_SCHEMA_VERSION
+                                > fakecloud_sqs::state::SQS_SNAPSHOT_SCHEMA_VERSION
                             {
                                 fatal_exit(format_args!(
-                                    "sqs persistence schema mismatch: on-disk={}, expected={}",
+                                    "sqs persistence schema too new: on-disk={}, max supported={}",
                                     snapshot.schema_version,
                                     fakecloud_sqs::state::SQS_SNAPSHOT_SCHEMA_VERSION,
                                 ));
                             }
-                            let queue_count = snapshot.state.queues.len();
-                            *sqs_state.write() = snapshot.state;
-                            tracing::info!(queues = queue_count, "loaded sqs persistence snapshot",);
+                            if let Some(accounts) = snapshot.accounts {
+                                let account_count = accounts.account_count();
+                                *sqs_state.write() = accounts;
+                                tracing::info!(
+                                    accounts = account_count,
+                                    "loaded sqs persistence snapshot (multi-account)"
+                                );
+                            } else if let Some(single_state) = snapshot.state {
+                                let queue_count = single_state.queues.len();
+                                let account_id = single_state.account_id.clone();
+                                let mut mas = sqs_state.write();
+                                *mas.get_or_create(&account_id) = single_state;
+                                tracing::info!(
+                                    queues = queue_count,
+                                    "loaded sqs persistence snapshot (migrated from v1)"
+                                );
+                            }
                         }
                         Err(err) => fatal_exit(format_args!(
                             "failed to parse sqs persistence snapshot: {err}"
@@ -522,22 +545,31 @@ async fn main() {
                     match serde_json::from_slice::<fakecloud_sns::state::SnsSnapshot>(&bytes) {
                         Ok(snapshot) => {
                             if snapshot.schema_version
-                                != fakecloud_sns::state::SNS_SNAPSHOT_SCHEMA_VERSION
+                                > fakecloud_sns::state::SNS_SNAPSHOT_SCHEMA_VERSION
                             {
                                 fatal_exit(format_args!(
-                                    "sns persistence schema mismatch: on-disk={}, expected={}",
+                                    "sns persistence schema too new: on-disk={}, max supported={}",
                                     snapshot.schema_version,
                                     fakecloud_sns::state::SNS_SNAPSHOT_SCHEMA_VERSION,
                                 ));
                             }
-                            let topic_count = snapshot.state.topics.len();
-                            let sub_count = snapshot.state.subscriptions.len();
-                            *sns_state.write() = snapshot.state;
-                            tracing::info!(
-                                topics = topic_count,
-                                subscriptions = sub_count,
-                                "loaded sns persistence snapshot",
-                            );
+                            if let Some(accounts) = snapshot.accounts {
+                                let account_count = accounts.account_count();
+                                *sns_state.write() = accounts;
+                                tracing::info!(
+                                    accounts = account_count,
+                                    "loaded sns persistence snapshot (multi-account)"
+                                );
+                            } else if let Some(single_state) = snapshot.state {
+                                let topic_count = single_state.topics.len();
+                                let account_id = single_state.account_id.clone();
+                                let mut mas = sns_state.write();
+                                *mas.get_or_create(&account_id) = single_state;
+                                tracing::info!(
+                                    topics = topic_count,
+                                    "loaded sns persistence snapshot (migrated from v1)"
+                                );
+                            }
                         }
                         Err(err) => fatal_exit(format_args!(
                             "failed to parse sns persistence snapshot: {err}"
@@ -1981,7 +2013,8 @@ async fn main() {
             axum::routing::get({
                 let ss = sns_introspection_state;
                 move || async move {
-                    let state = ss.read();
+                    let mas = ss.read();
+                    let state = mas.default_ref();
                     let messages = state
                         .published
                         .iter()
@@ -2002,7 +2035,8 @@ async fn main() {
             axum::routing::get({
                 let ss = sqs_introspection_state;
                 move || async move {
-                    let state = ss.read();
+                    let mas = ss.read();
+                    let state = mas.default_ref();
                     let queues = state
                         .queues
                         .values()

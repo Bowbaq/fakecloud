@@ -46,7 +46,9 @@ impl ResourcePolicyProvider for SnsResourcePolicyProvider {
         if !is_sns_topic_arn(resource_arn) {
             return None;
         }
-        let state = self.state.read();
+        let accts = self.state.read();
+        let acct = resource_arn.split(':').nth(4).unwrap_or("");
+        let state = accts.get(acct).unwrap_or_else(|| accts.default_ref());
         state
             .topics
             .get(resource_arn)
@@ -82,16 +84,21 @@ mod tests {
     use super::*;
     use crate::state::{SnsState, SnsTopic};
     use chrono::Utc;
+    use fakecloud_core::multi_account::MultiAccountState;
     use parking_lot::RwLock;
     use std::collections::HashMap;
 
     fn state_with_topic(arn: &str, policy: Option<&str>) -> SharedSnsState {
-        let mut s = SnsState::new("123456789012", "us-east-1", "http://localhost:4566");
+        let state = Arc::new(RwLock::new(MultiAccountState::<SnsState>::new(
+            "123456789012",
+            "us-east-1",
+            "http://localhost:4566",
+        )));
         let mut attrs = HashMap::new();
         if let Some(p) = policy {
             attrs.insert("Policy".to_string(), p.to_string());
         }
-        s.topics.insert(
+        state.write().default_mut().topics.insert(
             arn.to_string(),
             SnsTopic {
                 topic_arn: arn.to_string(),
@@ -102,7 +109,7 @@ mod tests {
                 created_at: Utc::now(),
             },
         );
-        Arc::new(RwLock::new(s))
+        state
     }
 
     #[test]

@@ -140,14 +140,23 @@ impl SnsState {
     }
 }
 
-pub type SharedSnsState = Arc<RwLock<SnsState>>;
+pub type SharedSnsState = Arc<RwLock<fakecloud_core::multi_account::MultiAccountState<SnsState>>>;
 
 /// On-disk snapshot envelope for SNS state. Versioned so format
 /// changes fail loudly on upgrade.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SnsSnapshot {
     pub schema_version: u32,
-    pub state: SnsState,
+    #[serde(default)]
+    pub accounts: Option<fakecloud_core::multi_account::MultiAccountState<SnsState>>,
+    #[serde(default)]
+    pub state: Option<SnsState>,
 }
 
-pub const SNS_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+pub const SNS_SNAPSHOT_SCHEMA_VERSION: u32 = 2;
+
+impl fakecloud_core::multi_account::AccountState for SnsState {
+    fn new_for_account(account_id: &str, region: &str, endpoint: &str) -> Self {
+        Self::new(account_id, region, endpoint)
+    }
+}
