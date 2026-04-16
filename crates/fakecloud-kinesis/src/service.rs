@@ -1984,6 +1984,592 @@ mod tests {
         assert_eq!(index, 2);
     }
 
+    // ── Helpers for the expanded test suite ─────────────────────────
+
+    fn make_service() -> (KinesisService, SharedKinesisState) {
+        let state = Arc::new(RwLock::new(KinesisState::new("123456789012", "us-east-1")));
+        let svc = KinesisService::new(state.clone());
+        (svc, state)
+    }
+
+    fn create_stream_action(svc: &KinesisService, name: &str, shards: i64) {
+        svc.create_stream(&request(
+            "CreateStream",
+            json!({ "StreamName": name, "ShardCount": shards }),
+        ))
+        .unwrap();
+    }
+
+    fn json_response(resp: AwsResponse) -> Value {
+        serde_json::from_slice(resp.body.expect_bytes()).unwrap()
+    }
+
+    fn assert_code_kinesis<T>(
+        result: Result<T, AwsServiceError>,
+        expected: &str,
+    ) -> AwsServiceError {
+        match result {
+            Ok(_) => panic!("expected error {expected}, got Ok"),
+            Err(e) => {
+                assert_eq!(e.code(), expected, "wrong error code");
+                e
+            }
+        }
+    }
+
+    // ── DescribeStream / DescribeStreamSummary / ListStreams / DeleteStream ──
+
+    #[test]
+    fn describe_stream_returns_shard_descriptions() {
+        let (svc, _) = make_service();
+        create_stream_action(&svc, "orders", 2);
+        let resp = svc
+            .describe_stream(&request(
+                "DescribeStream",
+                json!({ "StreamName": "orders" }),
+            ))
+            .unwrap();
+        let body = json_response(resp);
+        let desc = &body["StreamDescription"];
+        assert_eq!(desc["StreamName"], json!("orders"));
+        assert_eq!(desc["StreamStatus"], json!("ACTIVE"));
+        assert_eq!(desc["Shards"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn describe_stream_unknown_errors() {
+        let (svc, _) = make_service();
+        assert_code_kinesis(
+            svc.describe_stream(&request("DescribeStream", json!({ "StreamName": "ghost" }))),
+            "ResourceNotFoundException",
+        );
+    }
+
+    #[test]
+    fn describe_stream_summary_counts_consumers() {
+        let (svc, _) = make_service();
+        create_stream_action(&svc, "orders", 1);
+        let resp = svc
+            .describe_stream_summary(&request(
+                "DescribeStreamSummary",
+                json!({ "StreamName": "orders" }),
+            ))
+            .unwrap();
+        let body = json_response(resp);
+        assert_eq!(body["StreamDescriptionSummary"]["ConsumerCount"], json!(0));
+        assert_eq!(body["StreamDescriptionSummary"]["OpenShardCount"], json!(1));
+    }
+
+    #[test]
+    fn list_streams_sorts_and_paginates() {
+        let (svc, _) = make_service();
+        for name in ["charlie", "alpha", "bravo"] {
+            create_stream_action(&svc, name, 1);
+        }
+
+        // Ask for 2 and expect names in sorted order.
+        let resp = svc
+            .list_streams(&request("ListStreams", json!({ "Limit": 2 })))
+            .unwrap();
+        let body = json_response(resp);
+        let names: Vec<String> = serde_json::from_value(body["StreamNames"].clone()).unwrap();
+        assert_eq!(names, vec!["alpha", "bravo"]);
+        assert_eq!(body["HasMoreStreams"], json!(true));
+
+        // Continue after "bravo".
+        let resp = svc
+            .list_streams(&request(
+                "ListStreams",
+                json!({ "ExclusiveStartStreamName": "bravo" }),
+            ))
+            .unwrap();
+        let body = json_response(resp);
+        let names: Vec<String> = serde_json::from_value(body["StreamNames"].clone()).unwrap();
+        assert_eq!(names, vec!["charlie"]);
+        assert_eq!(body["HasMoreStreams"], json!(false));
+    }
+
+    #[test]
+    fn delete_stream_unknown_errors() {
+        let (svc, _) = make_service();
+        assert_code_kinesis(
+            svc.delete_stream(&request("DeleteStream", json!({ "StreamName": "ghost" }))),
+            "ResourceNotFoundException",
+        );
+    }
+
+    #[test]
+    fn delete_stream_removes_entry_and_consumers() {
+        let (svc, state) = make_service();
+        create_stream_action(&svc, "orders", 1);
+        // Register a consumer on the stream.
+        let stream_arn = state.read().stream_arn("orders");
+        svc.register_stream_consumer(&request(
+            "RegisterStreamConsumer",
+            json!({ "StreamARN": stream_arn, "ConsumerName": "c1" }),
+        ))
+        .unwrap();
+
+        svc.delete_stream(&request("DeleteStream", json!({ "StreamName": "orders" })))
+            .unwrap();
+
+        let s = state.read();
+        assert!(!s.streams.contains_key("orders"));
+        assert!(s.consumers.is_empty());
+    }
+
+    // ── PutRecord / PutRecords / GetRecords ─────────────────────────
+
+    #[test]
+    fn put_record_requires_partition_key_and_data() {
+        let (svc, _) = make_service();
+        create_stream_action(&svc, "orders", 1);
+        let resp = svc
+            .put_record(&request(
+                "PutRecord",
+                json!({
+                    "StreamName": "orders",
+                    "Data": base64::engine::general_purpose::STANDARD.encode(b"hello"),
+                    "PartitionKey": "k1",
+                }),
+            ))
+            .unwrap();
+        let body = json_response(resp);
+        assert!(body["ShardId"].as_str().unwrap().starts_with("shardId-"));
+        assert!(body["SequenceNumber"].is_string());
+    }
+
+    #[test]
+    fn put_records_delivers_each_entry_to_a_shard() {
+        let (svc, state) = make_service();
+        create_stream_action(&svc, "orders", 2);
+        let records = json!({
+            "StreamName": "orders",
+            "Records": [
+                { "Data": base64::engine::general_purpose::STANDARD.encode(b"a"), "PartitionKey": "k1" },
+                { "Data": base64::engine::general_purpose::STANDARD.encode(b"b"), "PartitionKey": "k2" },
+            ]
+        });
+        let resp = svc.put_records(&request("PutRecords", records)).unwrap();
+        let body = json_response(resp);
+        assert_eq!(body["FailedRecordCount"], json!(0));
+        assert_eq!(body["Records"].as_array().unwrap().len(), 2);
+
+        // Verify records landed somewhere.
+        let s = state.read();
+        let stream = s.streams.get("orders").unwrap();
+        let total: usize = stream.shards.iter().map(|sh| sh.records.len()).sum();
+        assert_eq!(total, 2);
+    }
+
+    #[test]
+    fn get_shard_iterator_and_records_happy_path() {
+        let (svc, state) = make_service();
+        create_stream_action(&svc, "orders", 1);
+        // Put a record.
+        svc.put_record(&request(
+            "PutRecord",
+            json!({
+                "StreamName": "orders",
+                "Data": base64::engine::general_purpose::STANDARD.encode(b"hi"),
+                "PartitionKey": "k1",
+            }),
+        ))
+        .unwrap();
+        let shard_id = state.read().streams.get("orders").unwrap().shards[0]
+            .shard_id
+            .clone();
+
+        let iter_resp = svc
+            .get_shard_iterator(&request(
+                "GetShardIterator",
+                json!({
+                    "StreamName": "orders",
+                    "ShardId": shard_id,
+                    "ShardIteratorType": "TRIM_HORIZON",
+                }),
+            ))
+            .unwrap();
+        let iterator = json_response(iter_resp)["ShardIterator"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let rec_resp = svc
+            .get_records(&request("GetRecords", json!({ "ShardIterator": iterator })))
+            .unwrap();
+        let body = json_response(rec_resp);
+        let records = body["Records"].as_array().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["PartitionKey"], json!("k1"));
+        assert!(body["NextShardIterator"].is_string());
+    }
+
+    #[test]
+    fn get_records_requires_shard_iterator() {
+        let (svc, _) = make_service();
+        assert_code_kinesis(
+            svc.get_records(&request("GetRecords", json!({}))),
+            "InvalidArgumentException",
+        );
+    }
+
+    #[test]
+    fn get_records_rejects_unknown_iterator() {
+        let (svc, _) = make_service();
+        assert_code_kinesis(
+            svc.get_records(&request(
+                "GetRecords",
+                json!({ "ShardIterator": "not-a-real-iterator" }),
+            )),
+            "ExpiredIteratorException",
+        );
+    }
+
+    // ── Tags ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn add_list_remove_tags_for_stream() {
+        let (svc, _) = make_service();
+        create_stream_action(&svc, "orders", 1);
+
+        svc.add_tags_to_stream(&request(
+            "AddTagsToStream",
+            json!({ "StreamName": "orders", "Tags": { "env": "prod", "team": "core" } }),
+        ))
+        .unwrap();
+
+        let resp = svc
+            .list_tags_for_stream(&request(
+                "ListTagsForStream",
+                json!({ "StreamName": "orders" }),
+            ))
+            .unwrap();
+        let body = json_response(resp);
+        let tags = body["Tags"].as_array().unwrap();
+        assert_eq!(tags.len(), 2);
+
+        svc.remove_tags_from_stream(&request(
+            "RemoveTagsFromStream",
+            json!({ "StreamName": "orders", "TagKeys": ["env"] }),
+        ))
+        .unwrap();
+        let resp = svc
+            .list_tags_for_stream(&request(
+                "ListTagsForStream",
+                json!({ "StreamName": "orders" }),
+            ))
+            .unwrap();
+        let body = json_response(resp);
+        let tags = body["Tags"].as_array().unwrap();
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0]["Key"], json!("team"));
+    }
+
+    // ── Retention period ────────────────────────────────────────────
+
+    #[test]
+    fn increase_retention_period_bumps_value() {
+        let (svc, state) = make_service();
+        create_stream_action(&svc, "orders", 1);
+        svc.increase_stream_retention_period(&request(
+            "IncreaseStreamRetentionPeriod",
+            json!({ "StreamName": "orders", "RetentionPeriodHours": 72 }),
+        ))
+        .unwrap();
+        assert_eq!(
+            state
+                .read()
+                .streams
+                .get("orders")
+                .unwrap()
+                .retention_period_hours,
+            72
+        );
+    }
+
+    #[test]
+    fn decrease_retention_period_after_increase() {
+        let (svc, state) = make_service();
+        create_stream_action(&svc, "orders", 1);
+        svc.increase_stream_retention_period(&request(
+            "IncreaseStreamRetentionPeriod",
+            json!({ "StreamName": "orders", "RetentionPeriodHours": 72 }),
+        ))
+        .unwrap();
+        svc.decrease_stream_retention_period(&request(
+            "DecreaseStreamRetentionPeriod",
+            json!({ "StreamName": "orders", "RetentionPeriodHours": 48 }),
+        ))
+        .unwrap();
+        assert_eq!(
+            state
+                .read()
+                .streams
+                .get("orders")
+                .unwrap()
+                .retention_period_hours,
+            48
+        );
+    }
+
+    #[test]
+    fn increase_retention_below_current_errors() {
+        let (svc, _) = make_service();
+        create_stream_action(&svc, "orders", 1);
+        assert_code_kinesis(
+            svc.increase_stream_retention_period(&request(
+                "IncreaseStreamRetentionPeriod",
+                json!({ "StreamName": "orders", "RetentionPeriodHours": 12 }),
+            )),
+            "InvalidArgumentException",
+        );
+    }
+
+    // ── Encryption / monitoring / stream mode ───────────────────────
+
+    #[test]
+    fn start_and_stop_stream_encryption() {
+        let (svc, state) = make_service();
+        create_stream_action(&svc, "orders", 1);
+        svc.start_stream_encryption(&request(
+            "StartStreamEncryption",
+            json!({
+                "StreamName": "orders",
+                "EncryptionType": "KMS",
+                "KeyId": "alias/aws/kinesis"
+            }),
+        ))
+        .unwrap();
+        assert_eq!(
+            state.read().streams.get("orders").unwrap().encryption_type,
+            "KMS"
+        );
+        svc.stop_stream_encryption(&request(
+            "StopStreamEncryption",
+            json!({
+                "StreamName": "orders",
+                "EncryptionType": "KMS",
+                "KeyId": "alias/aws/kinesis"
+            }),
+        ))
+        .unwrap();
+        assert_eq!(
+            state.read().streams.get("orders").unwrap().encryption_type,
+            "NONE"
+        );
+    }
+
+    #[test]
+    fn enable_and_disable_enhanced_monitoring() {
+        let (svc, state) = make_service();
+        create_stream_action(&svc, "orders", 1);
+        svc.enable_enhanced_monitoring(&request(
+            "EnableEnhancedMonitoring",
+            json!({
+                "StreamName": "orders",
+                "ShardLevelMetrics": ["IncomingBytes", "OutgoingBytes"]
+            }),
+        ))
+        .unwrap();
+        assert_eq!(
+            state
+                .read()
+                .streams
+                .get("orders")
+                .unwrap()
+                .enhanced_metrics
+                .len(),
+            2
+        );
+        svc.disable_enhanced_monitoring(&request(
+            "DisableEnhancedMonitoring",
+            json!({
+                "StreamName": "orders",
+                "ShardLevelMetrics": ["IncomingBytes"]
+            }),
+        ))
+        .unwrap();
+        let s = state.read();
+        let metrics = &s.streams.get("orders").unwrap().enhanced_metrics;
+        assert_eq!(metrics, &vec!["OutgoingBytes".to_string()]);
+    }
+
+    #[test]
+    fn update_stream_mode_writes_new_mode() {
+        let (svc, state) = make_service();
+        create_stream_action(&svc, "orders", 1);
+        let stream_arn = state.read().stream_arn("orders");
+        svc.update_stream_mode(&request(
+            "UpdateStreamMode",
+            json!({
+                "StreamARN": stream_arn,
+                "StreamModeDetails": { "StreamMode": "ON_DEMAND" }
+            }),
+        ))
+        .unwrap();
+        assert_eq!(
+            state.read().streams.get("orders").unwrap().stream_mode,
+            "ON_DEMAND"
+        );
+    }
+
+    // ── Consumers ────────────────────────────────────────────────────
+
+    #[test]
+    fn register_describe_deregister_consumer() {
+        let (svc, state) = make_service();
+        create_stream_action(&svc, "orders", 1);
+        let stream_arn = state.read().stream_arn("orders");
+        svc.register_stream_consumer(&request(
+            "RegisterStreamConsumer",
+            json!({ "StreamARN": stream_arn, "ConsumerName": "c1" }),
+        ))
+        .unwrap();
+
+        let desc = svc
+            .describe_stream_consumer(&request(
+                "DescribeStreamConsumer",
+                json!({ "StreamARN": stream_arn, "ConsumerName": "c1" }),
+            ))
+            .unwrap();
+        let body = json_response(desc);
+        assert_eq!(body["ConsumerDescription"]["ConsumerName"], json!("c1"));
+
+        svc.deregister_stream_consumer(&request(
+            "DeregisterStreamConsumer",
+            json!({ "StreamARN": stream_arn, "ConsumerName": "c1" }),
+        ))
+        .unwrap();
+        assert!(state.read().consumers.is_empty());
+    }
+
+    #[test]
+    fn register_consumer_duplicate_errors() {
+        let (svc, state) = make_service();
+        create_stream_action(&svc, "orders", 1);
+        let stream_arn = state.read().stream_arn("orders");
+        svc.register_stream_consumer(&request(
+            "RegisterStreamConsumer",
+            json!({ "StreamARN": stream_arn, "ConsumerName": "c1" }),
+        ))
+        .unwrap();
+        assert_code_kinesis(
+            svc.register_stream_consumer(&request(
+                "RegisterStreamConsumer",
+                json!({ "StreamARN": stream_arn, "ConsumerName": "c1" }),
+            )),
+            "ResourceInUseException",
+        );
+    }
+
+    #[test]
+    fn list_stream_consumers_returns_registered_consumer() {
+        let (svc, state) = make_service();
+        create_stream_action(&svc, "orders", 1);
+        let stream_arn = state.read().stream_arn("orders");
+        svc.register_stream_consumer(&request(
+            "RegisterStreamConsumer",
+            json!({ "StreamARN": stream_arn, "ConsumerName": "c1" }),
+        ))
+        .unwrap();
+        let resp = svc
+            .list_stream_consumers(&request(
+                "ListStreamConsumers",
+                json!({ "StreamARN": stream_arn }),
+            ))
+            .unwrap();
+        let body = json_response(resp);
+        let consumers = body["Consumers"].as_array().unwrap();
+        assert_eq!(consumers.len(), 1);
+        assert_eq!(consumers[0]["ConsumerName"], json!("c1"));
+    }
+
+    // ── Resource policy ─────────────────────────────────────────────
+
+    #[test]
+    fn put_get_delete_resource_policy() {
+        let (svc, state) = make_service();
+        create_stream_action(&svc, "orders", 1);
+        let stream_arn = state.read().stream_arn("orders");
+        let policy_body = json!({"Version":"2012-10-17","Statement":[]}).to_string();
+
+        svc.put_resource_policy(&request(
+            "PutResourcePolicy",
+            json!({ "ResourceARN": stream_arn, "Policy": policy_body }),
+        ))
+        .unwrap();
+
+        let get = svc
+            .get_resource_policy(&request(
+                "GetResourcePolicy",
+                json!({ "ResourceARN": stream_arn }),
+            ))
+            .unwrap();
+        let body = json_response(get);
+        assert_eq!(body["Policy"], json!(policy_body));
+
+        svc.delete_resource_policy(&request(
+            "DeleteResourcePolicy",
+            json!({ "ResourceARN": stream_arn }),
+        ))
+        .unwrap();
+        // After delete, the stream still exists so GetResourcePolicy succeeds
+        // with an empty policy string rather than erroring.
+        let get = svc
+            .get_resource_policy(&request(
+                "GetResourcePolicy",
+                json!({ "ResourceARN": stream_arn }),
+            ))
+            .unwrap();
+        assert_eq!(json_response(get)["Policy"], json!(""));
+    }
+
+    #[test]
+    fn get_resource_policy_unknown_stream_errors() {
+        let (svc, _) = make_service();
+        let bogus = "arn:aws:kinesis:us-east-1:123456789012:stream/ghost";
+        assert_code_kinesis(
+            svc.get_resource_policy(&request(
+                "GetResourcePolicy",
+                json!({ "ResourceARN": bogus }),
+            )),
+            "ResourceNotFoundException",
+        );
+    }
+
+    // ── Account settings ────────────────────────────────────────────
+
+    #[test]
+    fn update_account_settings_toggles_billing_commitment() {
+        let (svc, state) = make_service();
+        svc.update_account_settings(&request(
+            "UpdateAccountSettings",
+            json!({ "MinimumThroughputBillingCommitment": { "Status": "ENABLED" } }),
+        ))
+        .unwrap();
+        assert_eq!(state.read().billing_commitment_status, "ENABLED");
+
+        svc.update_account_settings(&request(
+            "UpdateAccountSettings",
+            json!({ "MinimumThroughputBillingCommitment": { "Status": "DISABLED" } }),
+        ))
+        .unwrap();
+        assert_eq!(state.read().billing_commitment_status, "DISABLED");
+    }
+
+    #[test]
+    fn update_account_settings_rejects_invalid_status() {
+        let (svc, _) = make_service();
+        assert_code_kinesis(
+            svc.update_account_settings(&request(
+                "UpdateAccountSettings",
+                json!({ "MinimumThroughputBillingCommitment": { "Status": "NOPE" } }),
+            )),
+            "InvalidArgumentException",
+        );
+    }
+
     #[test]
     fn insert_iterator_purges_expired_leases() {
         let mut state = crate::state::KinesisState::new("123456789012", "us-east-1");
