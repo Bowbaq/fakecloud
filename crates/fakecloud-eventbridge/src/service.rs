@@ -6441,4 +6441,318 @@ mod tests {
         ))
         .unwrap();
     }
+
+    // ── put_permission / remove_permission ──
+
+    #[test]
+    fn put_permission_with_policy_json() {
+        let svc = make_service();
+        let policy = r#"{"Version":"2012-10-17","Statement":[]}"#;
+        let req = make_request("PutPermission", json!({"Policy": policy}));
+        svc.put_permission(&req).unwrap();
+    }
+
+    #[test]
+    fn put_permission_invalid_action_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "PutPermission",
+            json!({
+                "Action": "events:NotARealAction",
+                "Principal": "123456789012",
+                "StatementId": "s1"
+            }),
+        );
+        assert!(svc.put_permission(&req).is_err());
+    }
+
+    #[test]
+    fn put_permission_unknown_bus_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "PutPermission",
+            json!({
+                "EventBusName": "missing",
+                "Action": "events:PutEvents",
+                "Principal": "123456789012",
+                "StatementId": "s1"
+            }),
+        );
+        assert!(svc.put_permission(&req).is_err());
+    }
+
+    #[test]
+    fn put_permission_add_and_remove_statement() {
+        let svc = make_service();
+        let req = make_request(
+            "PutPermission",
+            json!({
+                "Action": "events:PutEvents",
+                "Principal": "123456789012",
+                "StatementId": "s1"
+            }),
+        );
+        svc.put_permission(&req).unwrap();
+
+        let req = make_request("RemovePermission", json!({"StatementId": "s1"}));
+        svc.remove_permission(&req).unwrap();
+    }
+
+    #[test]
+    fn remove_permission_remove_all_flag() {
+        let svc = make_service();
+        let req = make_request(
+            "PutPermission",
+            json!({
+                "Action": "events:PutEvents",
+                "Principal": "123456789012",
+                "StatementId": "s1"
+            }),
+        );
+        svc.put_permission(&req).unwrap();
+
+        let req = make_request("RemovePermission", json!({"RemoveAllPermissions": true}));
+        svc.remove_permission(&req).unwrap();
+    }
+
+    #[test]
+    fn remove_permission_unknown_bus_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "RemovePermission",
+            json!({"EventBusName": "missing", "StatementId": "s1"}),
+        );
+        assert!(svc.remove_permission(&req).is_err());
+    }
+
+    #[test]
+    fn remove_permission_no_policy_errors() {
+        let svc = make_service();
+        let req = make_request("RemovePermission", json!({"StatementId": "s1"}));
+        assert!(svc.remove_permission(&req).is_err());
+    }
+
+    #[test]
+    fn remove_permission_unknown_statement_errors() {
+        let svc = make_service();
+        svc.put_permission(&make_request(
+            "PutPermission",
+            json!({
+                "Action": "events:PutEvents",
+                "Principal": "123456789012",
+                "StatementId": "s1"
+            }),
+        ))
+        .unwrap();
+
+        let req = make_request("RemovePermission", json!({"StatementId": "ghost"}));
+        assert!(svc.remove_permission(&req).is_err());
+    }
+
+    // ── put_rule invalid schedule expression ──
+
+    #[test]
+    fn put_rule_missing_name_errors() {
+        let svc = make_service();
+        let req = make_request("PutRule", json!({}));
+        assert!(svc.put_rule(&req).is_err());
+    }
+
+    #[test]
+    fn put_rule_name_too_long_errors() {
+        let svc = make_service();
+        let name = "x".repeat(65);
+        let req = make_request("PutRule", json!({"Name": name}));
+        assert!(svc.put_rule(&req).is_err());
+    }
+
+    #[test]
+    fn put_rule_invalid_state_errors() {
+        let svc = make_service();
+        let req = make_request("PutRule", json!({"Name": "r1", "State": "BOGUS"}));
+        assert!(svc.put_rule(&req).is_err());
+    }
+
+    // ── create_connection variants ──
+
+    #[test]
+    fn create_connection_api_key_auth() {
+        let svc = make_service();
+        let req = make_request(
+            "CreateConnection",
+            json!({
+                "Name": "conn-apikey",
+                "AuthorizationType": "API_KEY",
+                "AuthParameters": {
+                    "ApiKeyAuthParameters": {
+                        "ApiKeyName": "X-Api-Key",
+                        "ApiKeyValue": "secret"
+                    }
+                }
+            }),
+        );
+        svc.create_connection(&req).unwrap();
+    }
+
+    #[test]
+    fn create_connection_basic_auth() {
+        let svc = make_service();
+        let req = make_request(
+            "CreateConnection",
+            json!({
+                "Name": "conn-basic",
+                "AuthorizationType": "BASIC",
+                "AuthParameters": {
+                    "BasicAuthParameters": {
+                        "Username": "u",
+                        "Password": "p"
+                    }
+                }
+            }),
+        );
+        svc.create_connection(&req).unwrap();
+    }
+
+    #[test]
+    fn create_connection_missing_name_errors() {
+        let svc = make_service();
+        let req = make_request("CreateConnection", json!({"AuthorizationType": "API_KEY"}));
+        assert!(svc.create_connection(&req).is_err());
+    }
+
+    #[test]
+    fn create_connection_missing_auth_type_errors() {
+        let svc = make_service();
+        let req = make_request("CreateConnection", json!({"Name": "c-noauth"}));
+        assert!(svc.create_connection(&req).is_err());
+    }
+
+    #[test]
+    fn delete_connection_not_found() {
+        let svc = make_service();
+        let req = make_request("DeleteConnection", json!({"Name": "ghost"}));
+        assert!(svc.delete_connection(&req).is_err());
+    }
+
+    // ── api destination validation ──
+
+    #[test]
+    fn create_api_destination_missing_name_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "CreateApiDestination",
+            json!({
+                "ConnectionArn": "arn:aws:events:us-east-1:123456789012:connection/c",
+                "InvocationEndpoint": "https://example.com",
+                "HttpMethod": "POST"
+            }),
+        );
+        assert!(svc.create_api_destination(&req).is_err());
+    }
+
+    #[test]
+    fn create_api_destination_invalid_method_errors() {
+        let svc = make_service();
+        create_connection(&svc, "conn-m");
+        let state = svc.state.read();
+        let conn_arn = state
+            .connections
+            .get("conn-m")
+            .map(|c| c.arn.clone())
+            .unwrap_or_default();
+        drop(state);
+
+        let req = make_request(
+            "CreateApiDestination",
+            json!({
+                "Name": "d1",
+                "ConnectionArn": conn_arn,
+                "InvocationEndpoint": "https://example.com",
+                "HttpMethod": "FLY"
+            }),
+        );
+        assert!(svc.create_api_destination(&req).is_err());
+    }
+
+    #[test]
+    fn delete_api_destination_not_found() {
+        let svc = make_service();
+        let req = make_request("DeleteApiDestination", json!({"Name": "ghost"}));
+        assert!(svc.delete_api_destination(&req).is_err());
+    }
+
+    // ── archive error paths ──
+
+    #[test]
+    fn create_archive_missing_name_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "CreateArchive",
+            json!({"EventSourceArn": "arn:aws:events:us-east-1:123456789012:event-bus/default"}),
+        );
+        assert!(svc.create_archive(&req).is_err());
+    }
+
+    #[test]
+    fn create_archive_missing_source_arn_errors() {
+        let svc = make_service();
+        let req = make_request("CreateArchive", json!({"ArchiveName": "arc1"}));
+        assert!(svc.create_archive(&req).is_err());
+    }
+
+    #[test]
+    fn delete_archive_missing_errors() {
+        let svc = make_service();
+        let req = make_request("DeleteArchive", json!({"ArchiveName": "ghost"}));
+        assert!(svc.delete_archive(&req).is_err());
+    }
+
+    // ── replay error paths ──
+
+    #[test]
+    fn cancel_replay_not_found() {
+        let svc = make_service();
+        let req = make_request("CancelReplay", json!({"ReplayName": "ghost"}));
+        assert!(svc.cancel_replay(&req).is_err());
+    }
+
+    // ── put_events empty ──
+
+    #[test]
+    fn put_events_empty_entries_errors() {
+        let svc = make_service();
+        let req = make_request("PutEvents", json!({"Entries": []}));
+        assert!(svc.put_events(&req).is_err());
+    }
+
+    #[test]
+    fn put_events_success_count() {
+        let svc = make_service();
+        let req = make_request(
+            "PutEvents",
+            json!({
+                "Entries": [
+                    {"Source": "my.app", "DetailType": "Test", "Detail": "{}"}
+                ]
+            }),
+        );
+        let resp = svc.put_events(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["FailedEntryCount"], 0);
+        assert_eq!(body["Entries"].as_array().unwrap().len(), 1);
+    }
+
+    // ── list_tags_for_resource on unknown ARN ──
+
+    #[test]
+    fn list_tags_for_resource_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "ListTagsForResource",
+            json!({
+                "ResourceARN": "arn:aws:events:us-east-1:123456789012:rule/ghost"
+            }),
+        );
+        assert!(svc.list_tags_for_resource(&req).is_err());
+    }
 }
