@@ -636,6 +636,13 @@ async fn main() {
                 Ok(Some(bytes)) => {
                     match serde_json::from_slice::<fakecloud_iam::state::IamSnapshot>(&bytes) {
                         Ok(snapshot) => {
+                            if snapshot.schema_version > fakecloud_iam::state::IAM_SNAPSHOT_SCHEMA_VERSION {
+                                fatal_exit(format_args!(
+                                    "iam persistence schema too new: on-disk={}, max supported={}",
+                                    snapshot.schema_version,
+                                    fakecloud_iam::state::IAM_SNAPSHOT_SCHEMA_VERSION,
+                                ));
+                            }
                             // v2: multi-account state in `accounts` field
                             // v1: single-account state in `state` field, migrated by wrapping
                             if let Some(accounts) = snapshot.accounts {

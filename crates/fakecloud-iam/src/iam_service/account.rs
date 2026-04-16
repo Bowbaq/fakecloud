@@ -318,8 +318,9 @@ impl IamService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let mut accounts = self.state.write();
-        let state = accounts.get_or_create(&req.account_id);
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let xml = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -399,8 +400,9 @@ impl IamService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let mut accounts = self.state.write();
-        let state = accounts.get_or_create(&req.account_id);
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let user_details = build_user_details_xml(state);
         let role_details = build_role_details_xml(state);
@@ -467,8 +469,9 @@ impl IamService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let mut accounts = self.state.write();
-        let state = accounts.get_or_create(&req.account_id);
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let members: String = state
             .account_aliases
             .iter()
@@ -515,8 +518,9 @@ impl IamService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let mut accounts = self.state.write();
-        let state = accounts.get_or_create(&req.account_id);
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let policy = state.account_password_policy.as_ref().ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -634,8 +638,9 @@ impl IamService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         use base64::Engine;
-        let mut accounts = self.state.write();
-        let state = accounts.get_or_create(&req.account_id);
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         if !state.credential_report_generated {
             return Err(AwsServiceError::aws_error(
@@ -846,8 +851,9 @@ impl IamService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let mut accounts = self.state.write();
-        let state = accounts.get_or_create(&req.account_id);
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let assignment_status = req.query_params.get("AssignmentStatus").cloned();
         let max_items_i64 = parse_optional_i64_param(
             "maxItems",
@@ -1028,8 +1034,9 @@ impl IamService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let user_name = required_param(&req.query_params, "UserName")?;
-        let mut accounts = self.state.write();
-        let state = accounts.get_or_create(&req.account_id);
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let devices: Vec<&VirtualMfaDevice> = state
             .virtual_mfa_devices

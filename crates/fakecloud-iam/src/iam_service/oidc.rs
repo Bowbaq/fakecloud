@@ -132,8 +132,9 @@ impl IamService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let arn = required_param(&req.query_params, "SAMLProviderArn")?;
-        let mut accounts = self.state.write();
-        let state = accounts.get_or_create(&req.account_id);
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let provider = state.saml_providers.get(&arn).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -191,8 +192,9 @@ impl IamService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let mut accounts = self.state.write();
-        let state = accounts.get_or_create(&req.account_id);
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let members: String = state
             .saml_providers
@@ -344,8 +346,9 @@ impl IamService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let arn = required_param(&req.query_params, "OpenIDConnectProviderArn")?;
-        let mut accounts = self.state.write();
-        let state = accounts.get_or_create(&req.account_id);
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let provider = state.oidc_providers.get(&arn).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -417,8 +420,9 @@ impl IamService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let mut accounts = self.state.write();
-        let state = accounts.get_or_create(&req.account_id);
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let members: String = state
             .oidc_providers
@@ -586,8 +590,9 @@ impl IamService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let arn = required_param(&req.query_params, "OpenIDConnectProviderArn")?;
-        let mut accounts = self.state.write();
-        let state = accounts.get_or_create(&req.account_id);
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let provider = state.oidc_providers.get(&arn).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -681,8 +686,9 @@ impl IamService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let name = required_param(&req.query_params, "ServerCertificateName")?;
-        let mut accounts = self.state.write();
-        let state = accounts.get_or_create(&req.account_id);
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let cert = state.server_certificates.get(&name).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -760,8 +766,9 @@ impl IamService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let mut accounts = self.state.write();
-        let state = accounts.get_or_create(&req.account_id);
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let members: String = state
             .server_certificates

@@ -63,8 +63,9 @@ impl IamService {
     ) -> Result<AwsResponse, AwsServiceError> {
         let name = required_param(&req.query_params, "InstanceProfileName")?;
         validate_string_length("instanceProfileName", &name, 1, 128)?;
-        let mut accounts = self.state.write();
-        let state = accounts.get_or_create(&req.account_id);
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let ip = state.instance_profiles.get(&name).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -113,8 +114,9 @@ impl IamService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let mut accounts = self.state.write();
-        let state = accounts.get_or_create(&req.account_id);
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let path_prefix = req.query_params.get("PathPrefix").cloned();
 
         let profiles: Vec<&IamInstanceProfile> = state
@@ -227,8 +229,9 @@ impl IamService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let role_name = required_param(&req.query_params, "RoleName")?;
-        let mut accounts = self.state.write();
-        let state = accounts.get_or_create(&req.account_id);
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         if !state.roles.contains_key(&role_name) {
             return Err(AwsServiceError::aws_error(
@@ -325,8 +328,9 @@ impl IamService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let name = required_param(&req.query_params, "InstanceProfileName")?;
-        let mut accounts = self.state.write();
-        let state = accounts.get_or_create(&req.account_id);
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let ip = state.instance_profiles.get(&name).ok_or_else(|| {
             AwsServiceError::aws_error(

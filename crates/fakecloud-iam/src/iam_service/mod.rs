@@ -465,9 +465,7 @@ fn iam_resource_tags(
     let resource = parts[5];
     let account_id = parts.get(4).copied().unwrap_or("");
     let accounts = state.read();
-    let state = accounts
-        .get(account_id)
-        .or_else(|| Some(accounts.default_ref()))?;
+    let state = accounts.get(account_id)?;
     if let Some(rest) = resource.strip_prefix("user/") {
         let name = rest.rsplit('/').next().unwrap_or(rest);
         state

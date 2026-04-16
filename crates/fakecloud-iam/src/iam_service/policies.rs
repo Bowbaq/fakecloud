@@ -95,8 +95,9 @@ impl IamService {
 
     pub(super) fn get_policy(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let policy_arn = required_param(&req.query_params, "PolicyArn")?;
-        let mut accounts = self.state.write();
-        let state = accounts.get_or_create(&req.account_id);
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let policy = state.policies.get(&policy_arn).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -173,8 +174,9 @@ impl IamService {
             &["PermissionsPolicy", "PermissionsBoundary"],
         )?;
 
-        let mut accounts = self.state.write();
-        let state = accounts.get_or_create(&req.account_id);
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let path_prefix = req.query_params.get("PathPrefix").cloned();
         let scope = PolicyScope::from_query(req.query_params.get("Scope").map(|s| s.as_str()));
         let mut policies: Vec<IamPolicy> = state.policies.values().cloned().collect();
@@ -244,8 +246,9 @@ impl IamService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let policy_arn = required_param(&req.query_params, "PolicyArn")?;
-        let mut accounts = self.state.write();
-        let state = accounts.get_or_create(&req.account_id);
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let policy = state.policies.get(&policy_arn).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -351,8 +354,9 @@ impl IamService {
     ) -> Result<AwsResponse, AwsServiceError> {
         let policy_arn = required_param(&req.query_params, "PolicyArn")?;
         let version_id = required_param(&req.query_params, "VersionId")?;
-        let mut accounts = self.state.write();
-        let state = accounts.get_or_create(&req.account_id);
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let policy = state.policies.get(&policy_arn).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -405,8 +409,9 @@ impl IamService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let policy_arn = required_param(&req.query_params, "PolicyArn")?;
-        let mut accounts = self.state.write();
-        let state = accounts.get_or_create(&req.account_id);
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let policy = state.policies.get(&policy_arn).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -561,8 +566,9 @@ impl IamService {
     ) -> Result<AwsResponse, AwsServiceError> {
         let policy_arn = required_param(&req.query_params, "PolicyArn")?;
         let entity_filter = req.query_params.get("EntityFilter").cloned();
-        let mut accounts = self.state.write();
-        let state = accounts.get_or_create(&req.account_id);
+        let accounts = self.state.read();
+        let empty = crate::state::IamState::new(&req.account_id);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         if !state.policies.contains_key(&policy_arn) {
             return Err(AwsServiceError::aws_error(
