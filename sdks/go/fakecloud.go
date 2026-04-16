@@ -50,6 +50,18 @@ func (fc *FakeCloud) ResetService(ctx context.Context, service string) (*ResetSe
 	return &out, nil
 }
 
+// CreateAdmin creates an IAM admin user in a specific account.
+func (fc *FakeCloud) CreateAdmin(ctx context.Context, accountID, userName string) (*CreateAdminResponse, error) {
+	var out CreateAdminResponse
+	if err := fc.doPost(ctx, "/_fakecloud/iam/create-admin", &CreateAdminRequest{
+		AccountID: accountID,
+		UserName:  userName,
+	}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // Sub-client accessors
 
 // SES returns the SES sub-client.

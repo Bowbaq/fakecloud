@@ -76,6 +76,18 @@ final class FakeCloud
         );
     }
 
+    // ── IAM ───────────────────────────────────────────────────────
+
+    public function createAdmin(string $accountId, string $userName): CreateAdminResponse
+    {
+        return CreateAdminResponse::fromArray(
+            $this->http->postJson('/_fakecloud/iam/create-admin', [
+                'accountId' => $accountId,
+                'userName' => $userName,
+            ])
+        );
+    }
+
     // ── Sub-client accessors ───────────────────────────────────────
 
     public function lambda(): LambdaClient { return $this->lambda; }

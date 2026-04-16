@@ -5,6 +5,7 @@ from __future__ import annotations
 import httpx
 
 from fakecloud.types import (
+    CreateAdminResponse,
     ApiGatewayV2RequestsResponse,
     AuthEventsResponse,
     BedrockFaultRule,
@@ -768,6 +769,15 @@ class FakeCloud:
         _check(resp)
         return ResetServiceResponse.from_dict(resp.json())
 
+    async def create_admin(self, account_id: str, user_name: str) -> CreateAdminResponse:
+        """Create an IAM admin user in a specific account."""
+        resp = await self._client.post(
+            f"{self._base}/_fakecloud/iam/create-admin",
+            json={"accountId": account_id, "userName": user_name},
+        )
+        _check(resp)
+        return CreateAdminResponse.from_dict(resp.json())
+
     # ── Service sub-clients ─────────────────────────────────────────
 
     @property
@@ -872,6 +882,15 @@ class FakeCloudSync:
         resp = self._client.post(f"{self._base}/_fakecloud/reset/{service}")
         _check(resp)
         return ResetServiceResponse.from_dict(resp.json())
+
+    def create_admin(self, account_id: str, user_name: str) -> CreateAdminResponse:
+        """Create an IAM admin user in a specific account."""
+        resp = self._client.post(
+            f"{self._base}/_fakecloud/iam/create-admin",
+            json={"accountId": account_id, "userName": user_name},
+        )
+        _check(resp)
+        return CreateAdminResponse.from_dict(resp.json())
 
     # ── Service sub-clients ─────────────────────────────────────────
 

@@ -494,6 +494,22 @@ type BedrockStatusResponse struct {
 	Status string `json:"status"`
 }
 
+// ── IAM ───────────────────────────────────────────────────────────
+
+// CreateAdminRequest is the payload for creating an IAM admin user.
+type CreateAdminRequest struct {
+	AccountID string `json:"accountId"`
+	UserName  string `json:"userName"`
+}
+
+// CreateAdminResponse is returned after creating an IAM admin user.
+type CreateAdminResponse struct {
+	AccessKeyID     string `json:"accessKeyId"`
+	SecretAccessKey string `json:"secretAccessKey"`
+	AccountID       string `json:"accountId"`
+	Arn             string `json:"arn"`
+}
+
 // ── API Gateway v2 ─────────────────────────────────────────────────
 
 // ApiGatewayV2Request represents an HTTP API request that was received.

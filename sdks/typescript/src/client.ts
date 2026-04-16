@@ -1,4 +1,5 @@
 import type {
+  CreateAdminResponse,
   ApiGatewayV2RequestsResponse,
   BedrockFaultRule,
   BedrockFaultsResponse,
@@ -466,6 +467,23 @@ export class FakeCloud {
     const resp = await fetch(
       `${this.baseUrl}/_fakecloud/reset/${encodeURIComponent(service)}`,
       { method: "POST" },
+    );
+    return parse(resp);
+  }
+
+  // ── IAM ────────────────────────────────────────────────────────
+
+  async createAdmin(
+    accountId: string,
+    userName: string,
+  ): Promise<CreateAdminResponse> {
+    const resp = await fetch(
+      `${this.baseUrl}/_fakecloud/iam/create-admin`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accountId, userName }),
+      },
     );
     return parse(resp);
   }

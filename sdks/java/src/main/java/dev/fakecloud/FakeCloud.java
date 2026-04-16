@@ -10,6 +10,8 @@ import dev.fakecloud.Types.BedrockInvocationsResponse;
 import dev.fakecloud.Types.BedrockModelResponseConfig;
 import dev.fakecloud.Types.BedrockResponseRule;
 import dev.fakecloud.Types.BedrockStatusResponse;
+import dev.fakecloud.Types.CreateAdminRequest;
+import dev.fakecloud.Types.CreateAdminResponse;
 import dev.fakecloud.Types.ConfirmSubscriptionRequest;
 import dev.fakecloud.Types.ConfirmSubscriptionResponse;
 import dev.fakecloud.Types.ConfirmUserRequest;
@@ -126,6 +128,15 @@ public final class FakeCloud {
 
     public ResetServiceResponse resetService(String service) {
         return http.postEmpty("/_fakecloud/reset/" + encodePath(service), ResetServiceResponse.class);
+    }
+
+    // ── IAM ───────────────────────────────────────────────────────
+
+    public CreateAdminResponse createAdmin(String accountId, String userName) {
+        return http.postJson(
+                "/_fakecloud/iam/create-admin",
+                new CreateAdminRequest(accountId, userName),
+                CreateAdminResponse.class);
     }
 
     // ── Sub-client accessors ───────────────────────────────────────

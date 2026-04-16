@@ -436,6 +436,20 @@ export interface BedrockStatusResponse {
   status: string;
 }
 
+// ── IAM ───────────────────────────────────────────────────────────────
+
+export interface CreateAdminRequest {
+  accountId: string;
+  userName: string;
+}
+
+export interface CreateAdminResponse {
+  accessKeyId: string;
+  secretAccessKey: string;
+  accountId: string;
+  arn: string;
+}
+
 // ── API Gateway v2 ──────────────────────────────────────────────────
 
 export interface ApiGatewayV2Request {
