@@ -10,13 +10,18 @@ use fakecloud_dynamodb::state::SharedDynamoDbState;
 use fakecloud_eventbridge::state::SharedEventBridgeState;
 use fakecloud_iam::state::SharedIamState;
 use fakecloud_logs::state::SharedLogsState;
+use fakecloud_persistence::SnapshotStore;
 use fakecloud_s3::state::SharedS3State;
 use fakecloud_sns::state::SharedSnsState;
 use fakecloud_sqs::state::SharedSqsState;
 use fakecloud_ssm::state::SharedSsmState;
+use tokio::sync::Mutex as AsyncMutex;
 
 use crate::resource_provisioner::ResourceProvisioner;
-use crate::state::{SharedCloudFormationState, Stack, StackResource};
+use crate::state::{
+    CloudFormationSnapshot, SharedCloudFormationState, Stack, StackResource,
+    CLOUDFORMATION_SNAPSHOT_SCHEMA_VERSION,
+};
 use crate::template;
 use crate::xml_responses;
 
@@ -116,11 +121,45 @@ pub struct CloudFormationDeps {
 pub struct CloudFormationService {
     state: SharedCloudFormationState,
     deps: CloudFormationDeps,
+    snapshot_store: Option<Arc<dyn SnapshotStore>>,
+    snapshot_lock: Arc<AsyncMutex<()>>,
 }
 
 impl CloudFormationService {
     pub fn new(state: SharedCloudFormationState, deps: CloudFormationDeps) -> Self {
-        Self { state, deps }
+        Self {
+            state,
+            deps,
+            snapshot_store: None,
+            snapshot_lock: Arc::new(AsyncMutex::new(())),
+        }
+    }
+
+    pub fn with_snapshot_store(mut self, store: Arc<dyn SnapshotStore>) -> Self {
+        self.snapshot_store = Some(store);
+        self
+    }
+
+    async fn save_snapshot(&self) {
+        let Some(store) = self.snapshot_store.clone() else {
+            return;
+        };
+        let _guard = self.snapshot_lock.lock().await;
+        let snapshot = CloudFormationSnapshot {
+            schema_version: CLOUDFORMATION_SNAPSHOT_SCHEMA_VERSION,
+            state: self.state.read().clone(),
+        };
+        let join = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            let bytes = serde_json::to_vec(&snapshot)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+            store.save(&bytes)
+        })
+        .await;
+        match join {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => tracing::error!(%err, "failed to write cloudformation snapshot"),
+            Err(err) => tracing::error!(%err, "cloudformation snapshot task panicked"),
+        }
     }
 
     fn provisioner(&self, stack_id: &str) -> ResourceProvisioner {
@@ -618,7 +657,11 @@ impl AwsService for CloudFormationService {
     }
 
     async fn handle(&self, req: AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        match req.action.as_str() {
+        let mutates = matches!(
+            req.action.as_str(),
+            "CreateStack" | "DeleteStack" | "UpdateStack"
+        );
+        let result = match req.action.as_str() {
             "CreateStack" => self.create_stack(&req),
             "DeleteStack" => self.delete_stack(&req),
             "DescribeStacks" => self.describe_stacks(&req),
@@ -631,7 +674,11 @@ impl AwsService for CloudFormationService {
                 "cloudformation",
                 &req.action,
             )),
+        };
+        if mutates && matches!(result.as_ref(), Ok(resp) if resp.status.is_success()) {
+            self.save_snapshot().await;
         }
+        result
     }
 
     fn supported_actions(&self) -> &[&str] {

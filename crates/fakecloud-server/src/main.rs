@@ -383,7 +383,6 @@ async fn main() {
     // Register services
     if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
         for service in [
-            "cloudformation",
             "lambda",
             "cognito-idp",
             "rds",
@@ -395,8 +394,56 @@ async fn main() {
         }
     }
     let mut registry = ServiceRegistry::new();
-    registry.register(Arc::new(CloudFormationService::new(
-        cloudformation_state,
+    let cloudformation_snapshot_store: Option<Arc<dyn fakecloud_persistence::SnapshotStore>> =
+        if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
+            let data_path = persistence_config
+                .data_path
+                .as_ref()
+                .expect("validated above")
+                .clone();
+            let path = data_path.join("cloudformation").join("snapshot.json");
+            let store = fakecloud_persistence::DiskSnapshotStore::new(path);
+            match fakecloud_persistence::SnapshotStore::load(&store) {
+                Ok(Some(bytes)) => {
+                    match serde_json::from_slice::<
+                        fakecloud_cloudformation::state::CloudFormationSnapshot,
+                    >(&bytes)
+                    {
+                        Ok(snapshot) => {
+                            if snapshot.schema_version
+                                != fakecloud_cloudformation::state::CLOUDFORMATION_SNAPSHOT_SCHEMA_VERSION
+                            {
+                                fatal_exit(format_args!(
+                                    "cloudformation persistence schema mismatch: on-disk={}, expected={}",
+                                    snapshot.schema_version,
+                                    fakecloud_cloudformation::state::CLOUDFORMATION_SNAPSHOT_SCHEMA_VERSION,
+                                ));
+                            }
+                            let stack_count = snapshot.state.stacks.len();
+                            *cloudformation_state.write() = snapshot.state;
+                            tracing::info!(
+                                stacks = stack_count,
+                                "loaded cloudformation persistence snapshot",
+                            );
+                        }
+                        Err(err) => fatal_exit(format_args!(
+                            "failed to parse cloudformation persistence snapshot: {err}"
+                        )),
+                    }
+                }
+                Ok(None) => {
+                    tracing::info!("no cloudformation persistence snapshot found; starting empty");
+                }
+                Err(err) => fatal_exit(format_args!(
+                    "failed to read cloudformation persistence snapshot: {err}"
+                )),
+            }
+            Some(Arc::new(store) as Arc<dyn fakecloud_persistence::SnapshotStore>)
+        } else {
+            None
+        };
+    let mut cloudformation_service = CloudFormationService::new(
+        cloudformation_state.clone(),
         fakecloud_cloudformation::service::CloudFormationDeps {
             sqs: sqs_state.clone(),
             sns: sns_state.clone(),
@@ -408,7 +455,11 @@ async fn main() {
             logs: logs_state.clone(),
             delivery: delivery_for_cf,
         },
-    )));
+    );
+    if let Some(store) = cloudformation_snapshot_store {
+        cloudformation_service = cloudformation_service.with_snapshot_store(store);
+    }
+    registry.register(Arc::new(cloudformation_service));
     let sqs_snapshot_store: Option<Arc<dyn fakecloud_persistence::SnapshotStore>> =
         if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
             let data_path = persistence_config

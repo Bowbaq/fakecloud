@@ -2043,6 +2043,7 @@ dependencies = [
  "fakecloud-eventbridge",
  "fakecloud-iam",
  "fakecloud-logs",
+ "fakecloud-persistence",
  "fakecloud-s3",
  "fakecloud-sns",
  "fakecloud-sqs",
