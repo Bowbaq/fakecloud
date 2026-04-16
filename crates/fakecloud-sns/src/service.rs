@@ -298,6 +298,32 @@ impl AwsService for SnsService {
         }
         out
     }
+
+    fn resource_tags_for(
+        &self,
+        resource_arn: &str,
+    ) -> Option<std::collections::HashMap<String, String>> {
+        if resource_arn == "*" {
+            return Some(std::collections::HashMap::new());
+        }
+        let state = self.state.read();
+        let topic = state.topics.get(resource_arn)?;
+        Some(topic.tags.iter().cloned().collect())
+    }
+
+    fn request_tags_from(
+        &self,
+        request: &AwsRequest,
+        action: &str,
+    ) -> Option<std::collections::HashMap<String, String>> {
+        match action {
+            "CreateTopic" | "TagResource" => {
+                let tags = parse_tags(request);
+                Some(tags.into_iter().collect())
+            }
+            _ => Some(std::collections::HashMap::new()),
+        }
+    }
 }
 
 const SNS_SUPPORTED_ACTIONS: &[&str] = &[
