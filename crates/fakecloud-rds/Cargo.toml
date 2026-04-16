@@ -10,6 +10,7 @@ version.workspace = true
 [dependencies]
 fakecloud-aws = { workspace = true }
 fakecloud-core = { workspace = true }
+fakecloud-persistence = { workspace = true }
 async-trait = { workspace = true }
 http = { workspace = true }
 parking_lot = { workspace = true }
@@ -23,3 +24,4 @@ thiserror = { workspace = true }
 tokio-postgres = { workspace = true }
 mysql_async = "0.34"
 base64 = { workspace = true }
+tracing = { workspace = true }

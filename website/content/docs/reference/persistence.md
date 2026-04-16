@@ -39,6 +39,7 @@ FAKECLOUD_STORAGE_MODE=persistent FAKECLOUD_DATA_PATH=/var/lib/fakecloud fakeclo
 - **Cognito** — user pools, user pool clients, users, groups, identity providers, resource servers, domains, import jobs, tags, UI customization, log delivery, risk and branding configuration, terms, WebAuthn credentials, refresh/access tokens and sessions. The `/_fakecloud/cognito/auth-events` introspection buffer resets on restart.
 - **Lambda** — functions (code zips, configuration, resource policies), event source mappings. The `/_fakecloud/lambda/invocations` introspection buffer resets on restart; containers are rebuilt from the persisted code zip on first Invoke.
 - **Step Functions** — state machines, definitions, executions, execution history events, tags.
+- **RDS** — DB instances (configuration, credentials, tags), DB snapshots (including dump data), subnet groups, parameter groups.
 - **Every other service** emits `persistence not yet supported, running in-memory` at startup and continues to operate exactly as in memory mode. Your tests don't break — you just don't get cross-restart durability for those services yet.
 
 ## Version compatibility
