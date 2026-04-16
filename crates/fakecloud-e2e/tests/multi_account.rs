@@ -65,7 +65,7 @@ async fn bootstrap_admin(server: &TestServer, name: &str) -> (String, String) {
     iam.put_user_policy()
         .user_name(name)
         .policy_name("admin")
-        .policy_document(r#"{"Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}"#)
+        .policy_document(r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}"#)
         .send()
         .await
         .unwrap();
@@ -93,7 +93,7 @@ async fn assume_into_account_b(server: &TestServer) -> (String, String, String) 
     iam.create_role()
         .role_name("cross-account-role")
         .assume_role_policy_document(
-            r#"{"Statement":[{"Effect":"Allow","Principal":"*","Action":"sts:AssumeRole"}]}"#,
+            r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":"*","Action":"sts:AssumeRole"}]}"#,
         )
         .send()
         .await
@@ -103,7 +103,7 @@ async fn assume_into_account_b(server: &TestServer) -> (String, String, String) 
     iam.put_role_policy()
         .role_name("cross-account-role")
         .policy_name("admin")
-        .policy_document(r#"{"Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}"#)
+        .policy_document(r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}"#)
         .send()
         .await
         .unwrap();
