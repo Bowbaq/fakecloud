@@ -27,14 +27,17 @@
 //! not apply" with a `fakecloud::iam::audit` debug log, matching the
 //! no-silent-accept rule from Phase 1.
 //!
+//! **Phase 3** — [`evaluate_with_gates`] and
+//! [`evaluate_with_resource_policy_and_gates`] add intersection with
+//! optional permission-boundary and session-policy layers. Each layer
+//! is evaluated independently with the same matching logic; the final
+//! decision requires every present layer to allow, and an explicit
+//! `Deny` in any layer still wins.
+//!
 //! **Not** implemented (returns implicit deny rather than guessing — these
 //! are tracked for future phases and documented on `/docs/reference/security`):
 //! - `NotPrincipal` (used in resource-based policies)
-//! - Resource-based policies (S3 bucket policies, SNS topic policies,
-//!   KMS key policies, Lambda resource policies, …)
-//! - Permission boundaries
 //! - Service control policies
-//! - Session policies passed to `AssumeRole`
 //! - ABAC / tag conditions
 //!
 use std::collections::HashSet;
@@ -383,7 +386,69 @@ fn coerce_string_list(value: &Value) -> Vec<String> {
 /// 3. After all statements are scanned: return [`Decision::Allow`] if any
 ///    allow matched, otherwise [`Decision::ImplicitDeny`].
 pub fn evaluate(policies: &[PolicyDocument], request: &EvalRequest<'_>) -> Decision {
-    evaluate_inner(policies, request, /* is_resource_policy */ false)
+    evaluate_with_gates(policies, None, None, request)
+}
+
+/// Evaluate `request` against a principal's identity policies plus
+/// optional permission-boundary and session-policy layers.
+///
+/// Phase 3 intersection semantics:
+///
+/// - `boundary = None` / `session = None` → the layer is absent and does
+///   not gate the decision (pass-through).
+/// - `boundary = Some(&[])` / `session = Some(&[])` → the layer is
+///   present but empty, which evaluates to `ImplicitDeny` and therefore
+///   denies the request. This is how dangling boundary ARNs and empty
+///   session policies are represented.
+/// - Any layer returning `ExplicitDeny` wins immediately (Deny
+///   precedence applies across layers, not just within one).
+/// - Otherwise the request is allowed iff **every present layer**
+///   evaluates to `Allow`. A layer with `ImplicitDeny` caps the
+///   intersection to `ImplicitDeny`.
+pub fn evaluate_with_gates(
+    identity: &[PolicyDocument],
+    boundary: Option<&[PolicyDocument]>,
+    session: Option<&[PolicyDocument]>,
+    request: &EvalRequest<'_>,
+) -> Decision {
+    let identity_decision = evaluate_inner(identity, request, false);
+    intersect_layers(identity_decision, boundary, session, request)
+}
+
+/// Combine an already-computed identity-side decision with the optional
+/// boundary and session-policy layers. Factored out so the
+/// resource-policy variant can apply the same intersection to the
+/// identity side before OR/ANDing with the resource-policy side.
+fn intersect_layers(
+    identity_decision: Decision,
+    boundary: Option<&[PolicyDocument]>,
+    session: Option<&[PolicyDocument]>,
+    request: &EvalRequest<'_>,
+) -> Decision {
+    if matches!(identity_decision, Decision::ExplicitDeny) {
+        return Decision::ExplicitDeny;
+    }
+    let boundary_decision = boundary.map(|policies| evaluate_inner(policies, request, false));
+    if matches!(boundary_decision, Some(Decision::ExplicitDeny)) {
+        return Decision::ExplicitDeny;
+    }
+    let session_decision = session.map(|policies| evaluate_inner(policies, request, false));
+    if matches!(session_decision, Some(Decision::ExplicitDeny)) {
+        return Decision::ExplicitDeny;
+    }
+    // Intersection: every present layer must allow.
+    let identity_allows = matches!(identity_decision, Decision::Allow);
+    let boundary_allows = boundary_decision
+        .map(|d| matches!(d, Decision::Allow))
+        .unwrap_or(true);
+    let session_allows = session_decision
+        .map(|d| matches!(d, Decision::Allow))
+        .unwrap_or(true);
+    if identity_allows && boundary_allows && session_allows {
+        Decision::Allow
+    } else {
+        Decision::ImplicitDeny
+    }
 }
 
 /// Evaluate `request` against the principal's identity policies and an
@@ -407,28 +472,67 @@ pub fn evaluate_with_resource_policy(
     request: &EvalRequest<'_>,
     resource_account_id: &str,
 ) -> Decision {
-    let identity = evaluate_inner(identity_policies, request, false);
-    if matches!(identity, Decision::ExplicitDeny) {
+    evaluate_with_resource_policy_and_gates(
+        identity_policies,
+        None,
+        None,
+        resource_policy,
+        request,
+        resource_account_id,
+    )
+}
+
+/// Resource-policy variant of [`evaluate_with_gates`].
+///
+/// The boundary and session policies gate the **identity side** only —
+/// they never apply to the resource-policy branch. Rationale: the
+/// resource policy is evaluated in the resource's account, and a
+/// caller's permission boundary has no authority in another account
+/// (this is also how AWS describes it). That shows up here as two
+/// separate combinators:
+///
+/// - Same-account: `(identity ∩ boundary ∩ session) OR resource`.
+///   Boundary/session cap the identity side, but a resource-policy
+///   grant in the same account still allows the request on its own.
+/// - Cross-account: `(identity ∩ boundary ∩ session) AND resource`.
+///   Both sides must allow; boundary/session still cap the identity
+///   side.
+///
+/// Explicit Deny from any layer — identity, boundary, session, or
+/// resource — wins immediately.
+pub fn evaluate_with_resource_policy_and_gates(
+    identity_policies: &[PolicyDocument],
+    boundary: Option<&[PolicyDocument]>,
+    session: Option<&[PolicyDocument]>,
+    resource_policy: Option<&PolicyDocument>,
+    request: &EvalRequest<'_>,
+    resource_account_id: &str,
+) -> Decision {
+    let identity_raw = evaluate_inner(identity_policies, request, false);
+    if matches!(identity_raw, Decision::ExplicitDeny) {
         return Decision::ExplicitDeny;
     }
+    // Apply boundary and session gates to the identity side. An
+    // ExplicitDeny from either layer short-circuits the whole call.
+    let identity_gated = intersect_layers(identity_raw, boundary, session, request);
+    if matches!(identity_gated, Decision::ExplicitDeny) {
+        return Decision::ExplicitDeny;
+    }
+
     let same_account = request.principal.account_id == resource_account_id;
-    // Same-account with no resource policy: preserve the Phase 1
-    // identity-only path exactly so rollouts that haven't attached any
-    // bucket policy behave as they did before.
+    // Same-account with no resource policy: preserve the identity-only
+    // path so rollouts without a bucket/topic policy behave as before.
     if resource_policy.is_none() && same_account {
-        return identity;
+        return identity_gated;
     }
     let resource = match resource_policy {
         Some(policy) => evaluate_inner(std::slice::from_ref(policy), request, true),
-        // No resource policy attached → resource side is silent.
-        // Cross-account callers fall through to ImplicitDeny because
-        // the AND below requires both sides to grant.
         None => Decision::ImplicitDeny,
     };
     if matches!(resource, Decision::ExplicitDeny) {
         return Decision::ExplicitDeny;
     }
-    let identity_allows = matches!(identity, Decision::Allow);
+    let identity_allows = matches!(identity_gated, Decision::Allow);
     let resource_allows = matches!(resource, Decision::Allow);
     let allowed = if same_account {
         identity_allows || resource_allows
@@ -1953,6 +2057,327 @@ mod tests {
         assert_eq!(
             classify_aws_principal("arn:aws:iam::111111111111:user/alice"),
             PrincipalRef::AwsArn("arn:aws:iam::111111111111:user/alice".to_string())
+        );
+    }
+
+    // --- evaluate_with_gates (Phase 3) ---------------------------------
+
+    fn allow_all() -> PolicyDocument {
+        doc(json!({
+            "Statement": [{
+                "Effect": "Allow",
+                "Action": "*",
+                "Resource": "*"
+            }]
+        }))
+    }
+
+    fn allow_get_object() -> PolicyDocument {
+        doc(json!({
+            "Statement": [{
+                "Effect": "Allow",
+                "Action": "s3:GetObject",
+                "Resource": "*"
+            }]
+        }))
+    }
+
+    fn deny_put_object() -> PolicyDocument {
+        doc(json!({
+            "Statement": [{
+                "Effect": "Deny",
+                "Action": "s3:PutObject",
+                "Resource": "*"
+            }]
+        }))
+    }
+
+    #[test]
+    fn gates_absent_behaves_like_phase2_allow() {
+        let p = principal_user("arn:aws:iam::123456789012:user/alice");
+        let identity = [allow_all()];
+        assert_eq!(
+            evaluate_with_gates(
+                &identity,
+                None,
+                None,
+                &req(&p, "s3:GetObject", "arn:aws:s3:::bucket/key")
+            ),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn gates_absent_behaves_like_phase2_implicit_deny() {
+        let p = principal_user("arn:aws:iam::123456789012:user/alice");
+        assert_eq!(
+            evaluate_with_gates(
+                &[],
+                None,
+                None,
+                &req(&p, "s3:GetObject", "arn:aws:s3:::bucket/key")
+            ),
+            Decision::ImplicitDeny
+        );
+    }
+
+    #[test]
+    fn boundary_caps_identity_allow() {
+        let p = principal_user("arn:aws:iam::123456789012:user/alice");
+        let identity = [allow_all()];
+        let boundary = [allow_get_object()];
+        // Action covered by both identity and boundary → Allow.
+        assert_eq!(
+            evaluate_with_gates(
+                &identity,
+                Some(&boundary),
+                None,
+                &req(&p, "s3:GetObject", "arn:aws:s3:::bucket/key")
+            ),
+            Decision::Allow
+        );
+        // Action covered by identity but not boundary → ImplicitDeny.
+        assert_eq!(
+            evaluate_with_gates(
+                &identity,
+                Some(&boundary),
+                None,
+                &req(&p, "s3:PutObject", "arn:aws:s3:::bucket/key")
+            ),
+            Decision::ImplicitDeny
+        );
+    }
+
+    #[test]
+    fn empty_boundary_denies_everything() {
+        let p = principal_user("arn:aws:iam::123456789012:user/alice");
+        let identity = [allow_all()];
+        let boundary: [PolicyDocument; 0] = [];
+        // Dangling / unresolved boundary ARN → caller passes Some(&[])
+        // which must deny everything.
+        assert_eq!(
+            evaluate_with_gates(
+                &identity,
+                Some(&boundary),
+                None,
+                &req(&p, "s3:GetObject", "arn:aws:s3:::bucket/key")
+            ),
+            Decision::ImplicitDeny
+        );
+    }
+
+    #[test]
+    fn explicit_deny_in_boundary_wins() {
+        let p = principal_user("arn:aws:iam::123456789012:user/alice");
+        let identity = [allow_all()];
+        let boundary = [deny_put_object()];
+        assert_eq!(
+            evaluate_with_gates(
+                &identity,
+                Some(&boundary),
+                None,
+                &req(&p, "s3:PutObject", "arn:aws:s3:::bucket/key")
+            ),
+            Decision::ExplicitDeny
+        );
+    }
+
+    #[test]
+    fn identity_implicit_with_boundary_allow_is_implicit_deny() {
+        // Boundary doesn't grant — only caps. If identity is silent,
+        // the request must still deny.
+        let p = principal_user("arn:aws:iam::123456789012:user/alice");
+        let boundary = [allow_all()];
+        assert_eq!(
+            evaluate_with_gates(
+                &[],
+                Some(&boundary),
+                None,
+                &req(&p, "s3:GetObject", "arn:aws:s3:::bucket/key")
+            ),
+            Decision::ImplicitDeny
+        );
+    }
+
+    #[test]
+    fn session_policy_caps_identity_allow() {
+        let p = principal_user("arn:aws:iam::123456789012:user/alice");
+        let identity = [allow_all()];
+        let session = [allow_get_object()];
+        assert_eq!(
+            evaluate_with_gates(
+                &identity,
+                None,
+                Some(&session),
+                &req(&p, "s3:PutObject", "arn:aws:s3:::bucket/key")
+            ),
+            Decision::ImplicitDeny
+        );
+        assert_eq!(
+            evaluate_with_gates(
+                &identity,
+                None,
+                Some(&session),
+                &req(&p, "s3:GetObject", "arn:aws:s3:::bucket/key")
+            ),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn session_policy_explicit_deny_wins() {
+        let p = principal_user("arn:aws:iam::123456789012:user/alice");
+        let identity = [allow_all()];
+        let session = [deny_put_object()];
+        assert_eq!(
+            evaluate_with_gates(
+                &identity,
+                None,
+                Some(&session),
+                &req(&p, "s3:PutObject", "arn:aws:s3:::bucket/key")
+            ),
+            Decision::ExplicitDeny
+        );
+    }
+
+    #[test]
+    fn boundary_and_session_must_both_allow() {
+        let p = principal_user("arn:aws:iam::123456789012:user/alice");
+        let identity = [allow_all()];
+        let boundary = [allow_all()];
+        let session = [allow_get_object()];
+        // Session caps to GetObject only.
+        assert_eq!(
+            evaluate_with_gates(
+                &identity,
+                Some(&boundary),
+                Some(&session),
+                &req(&p, "s3:PutObject", "arn:aws:s3:::bucket/key")
+            ),
+            Decision::ImplicitDeny
+        );
+        assert_eq!(
+            evaluate_with_gates(
+                &identity,
+                Some(&boundary),
+                Some(&session),
+                &req(&p, "s3:GetObject", "arn:aws:s3:::bucket/key")
+            ),
+            Decision::Allow
+        );
+    }
+
+    // --- evaluate_with_resource_policy_and_gates -----------------------
+
+    #[test]
+    fn resource_policy_gated_same_account_resource_bypasses_boundary() {
+        // Same-account grant via a resource policy does NOT need the
+        // identity side (or the boundary/session gates) to allow —
+        // resource policies in the same account stand on their own.
+        let p = principal_user("arn:aws:iam::123456789012:user/alice");
+        let identity: [PolicyDocument; 0] = [];
+        let boundary: [PolicyDocument; 0] = []; // deny-all boundary
+        let resource = doc(json!({
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": {"AWS": "arn:aws:iam::123456789012:user/alice"},
+                "Action": "s3:GetObject",
+                "Resource": "arn:aws:s3:::bucket/key"
+            }]
+        }));
+        assert_eq!(
+            evaluate_with_resource_policy_and_gates(
+                &identity,
+                Some(&boundary),
+                None,
+                Some(&resource),
+                &req(&p, "s3:GetObject", "arn:aws:s3:::bucket/key"),
+                "123456789012"
+            ),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn resource_policy_gated_cross_account_identity_must_allow() {
+        // Cross-account: identity AND resource must both allow. Even
+        // with a resource-policy grant, if identity is implicit-deny
+        // the call is denied.
+        let p = principal_user("arn:aws:iam::123456789012:user/alice");
+        let identity: [PolicyDocument; 0] = [];
+        let resource = doc(json!({
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": "*",
+                "Action": "s3:GetObject",
+                "Resource": "arn:aws:s3:::bucket/key"
+            }]
+        }));
+        assert_eq!(
+            evaluate_with_resource_policy_and_gates(
+                &identity,
+                None,
+                None,
+                Some(&resource),
+                &req(&p, "s3:GetObject", "arn:aws:s3:::bucket/key"),
+                "999999999999"
+            ),
+            Decision::ImplicitDeny
+        );
+    }
+
+    #[test]
+    fn resource_policy_gated_cross_account_boundary_caps_identity_side() {
+        // Cross-account, identity allows, resource allows, but the
+        // caller's boundary is empty (deny-all) → identity side is
+        // gated to ImplicitDeny and the AND denies the call.
+        let p = principal_user("arn:aws:iam::123456789012:user/alice");
+        let identity = [allow_all()];
+        let boundary: [PolicyDocument; 0] = [];
+        let resource = doc(json!({
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": "*",
+                "Action": "s3:GetObject",
+                "Resource": "arn:aws:s3:::bucket/key"
+            }]
+        }));
+        assert_eq!(
+            evaluate_with_resource_policy_and_gates(
+                &identity,
+                Some(&boundary),
+                None,
+                Some(&resource),
+                &req(&p, "s3:GetObject", "arn:aws:s3:::bucket/key"),
+                "999999999999"
+            ),
+            Decision::ImplicitDeny
+        );
+    }
+
+    #[test]
+    fn resource_policy_gated_explicit_deny_in_session_wins() {
+        let p = principal_user("arn:aws:iam::123456789012:user/alice");
+        let identity = [allow_all()];
+        let session = [deny_put_object()];
+        let resource = doc(json!({
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": "*",
+                "Action": "s3:PutObject",
+                "Resource": "arn:aws:s3:::bucket/*"
+            }]
+        }));
+        assert_eq!(
+            evaluate_with_resource_policy_and_gates(
+                &identity,
+                None,
+                Some(&session),
+                Some(&resource),
+                &req(&p, "s3:PutObject", "arn:aws:s3:::bucket/key"),
+                "123456789012"
+            ),
+            Decision::ExplicitDeny
         );
     }
 }
