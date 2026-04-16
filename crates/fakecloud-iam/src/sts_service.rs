@@ -1151,11 +1151,12 @@ mod tests {
     }
 
     fn make_sts_service() -> (StsService, SharedIamState) {
-        use crate::state::IamState;
         use parking_lot::RwLock;
         use std::sync::Arc;
 
-        let state: SharedIamState = Arc::new(RwLock::new(IamState::new("123456789012")));
+        let state: SharedIamState = Arc::new(RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let sts = StsService::new(state.clone());
         (sts, state)
     }
@@ -1173,7 +1174,8 @@ mod tests {
 
     fn create_role_in_state(state: &SharedIamState, name: &str) -> String {
         let arn = format!("arn:aws:iam::123456789012:role/{name}");
-        let mut s = state.write();
+        let mut accounts = state.write();
+        let s = accounts.get_or_create("123456789012");
         s.roles.insert(
             arn.clone(),
             crate::state::IamRole {
