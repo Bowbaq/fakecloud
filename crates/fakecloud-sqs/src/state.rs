@@ -91,7 +91,7 @@ impl SqsState {
     }
 }
 
-pub type SharedSqsState = Arc<RwLock<SqsState>>;
+pub type SharedSqsState = Arc<RwLock<fakecloud_core::multi_account::MultiAccountState<SqsState>>>;
 
 /// On-disk snapshot envelope for SQS. Mirrors the DynamoDB pattern: a
 /// versioned wrapper around the full [`SqsState`] so format changes fail
@@ -99,7 +99,16 @@ pub type SharedSqsState = Arc<RwLock<SqsState>>;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SqsSnapshot {
     pub schema_version: u32,
-    pub state: SqsState,
+    #[serde(default)]
+    pub accounts: Option<fakecloud_core::multi_account::MultiAccountState<SqsState>>,
+    #[serde(default)]
+    pub state: Option<SqsState>,
 }
 
-pub const SQS_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+pub const SQS_SNAPSHOT_SCHEMA_VERSION: u32 = 2;
+
+impl fakecloud_core::multi_account::AccountState for SqsState {
+    fn new_for_account(account_id: &str, region: &str, endpoint: &str) -> Self {
+        Self::new(account_id, region, endpoint)
+    }
+}

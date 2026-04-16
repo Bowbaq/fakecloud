@@ -36,7 +36,12 @@ impl SqsDelivery for SqsDeliveryImpl {
         message_group_id: Option<&str>,
         message_dedup_id: Option<&str>,
     ) {
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+
+        // Parse account from queue ARN (arn:aws:sqs:region:ACCOUNT:name)
+        let default_id = accounts.default_account_id().to_string();
+        let target_account = queue_arn.split(':').nth(4).unwrap_or(&default_id);
+        let state = accounts.get_or_create(target_account);
 
         // Find queue by ARN
         let queue = state.queues.values_mut().find(|q| q.arn == queue_arn);

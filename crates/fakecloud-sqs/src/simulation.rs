@@ -12,26 +12,28 @@ pub fn tick_expiration(state: &SharedSqsState) -> u64 {
     let mut total = 0u64;
     let now = Utc::now();
 
-    let mut state = state.write();
-    for queue in state.queues.values_mut() {
-        let retention_seconds: i64 = queue
-            .attributes
-            .get("MessageRetentionPeriod")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(345600); // default 4 days
+    let mut mas = state.write();
+    for (_, acct_state) in mas.iter_mut() {
+        for queue in acct_state.queues.values_mut() {
+            let retention_seconds: i64 = queue
+                .attributes
+                .get("MessageRetentionPeriod")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(345600); // default 4 days
 
-        let before = queue.messages.len() + queue.inflight.len();
+            let before = queue.messages.len() + queue.inflight.len();
 
-        queue
-            .messages
-            .retain(|m| (now - m.created_at).num_seconds() < retention_seconds);
-        queue
-            .inflight
-            .retain(|m| (now - m.created_at).num_seconds() < retention_seconds);
+            queue
+                .messages
+                .retain(|m| (now - m.created_at).num_seconds() < retention_seconds);
+            queue
+                .inflight
+                .retain(|m| (now - m.created_at).num_seconds() < retention_seconds);
 
-        let after = queue.messages.len() + queue.inflight.len();
-        total += (before - after) as u64;
-    }
+            let after = queue.messages.len() + queue.inflight.len();
+            total += (before - after) as u64;
+        }
+    } // end per-account loop
 
     total
 }
@@ -46,7 +48,8 @@ pub fn tick_expiration(state: &SharedSqsState) -> u64 {
 /// If the queue has no redrive policy, or the DLQ does not exist, this
 /// is a no-op returning 0.
 pub fn force_dlq(state: &SharedSqsState, queue_name: &str) -> u64 {
-    let mut state = state.write();
+    let mut mas = state.write();
+    let state = mas.default_mut();
 
     // Resolve queue URL from name
     let queue_url = match state.name_to_url.get(queue_name) {
@@ -117,12 +120,13 @@ mod tests {
     use super::*;
     use crate::state::{RedrivePolicy, SqsMessage, SqsQueue, SqsState};
     use chrono::Duration;
+    use fakecloud_core::multi_account::MultiAccountState;
     use parking_lot::RwLock;
     use std::collections::{HashMap, VecDeque};
     use std::sync::Arc;
 
     fn make_state() -> SharedSqsState {
-        Arc::new(RwLock::new(SqsState::new(
+        Arc::new(RwLock::new(MultiAccountState::<SqsState>::new(
             "123456789012",
             "us-east-1",
             "http://localhost:4566",
@@ -148,7 +152,8 @@ mod tests {
     }
 
     fn add_queue(state: &SharedSqsState, name: &str, retention: Option<&str>) -> String {
-        let mut s = state.write();
+        let mut accts = state.write();
+        let s = accts.default_mut();
         let url = format!("http://localhost:4566/123456789012/{name}");
         let arn = format!("arn:aws:sqs:us-east-1:123456789012:{name}");
         let mut attrs = HashMap::new();
@@ -182,16 +187,16 @@ mod tests {
         let url = add_queue(&state, "test-q", Some("60")); // 60s retention
 
         {
-            let mut s = state.write();
-            let q = s.queues.get_mut(&url).unwrap();
+            let mut accts = state.write();
+            let q = accts.default_mut().queues.get_mut(&url).unwrap();
             q.messages.push_back(make_message("old", 120, 0)); // 120s old > 60s retention
         }
 
         let expired = tick_expiration(&state);
         assert_eq!(expired, 1);
 
-        let s = state.read();
-        assert_eq!(s.queues[&url].messages.len(), 0);
+        let accts = state.read();
+        assert_eq!(accts.default_ref().queues[&url].messages.len(), 0);
     }
 
     #[test]
@@ -200,16 +205,16 @@ mod tests {
         let url = add_queue(&state, "test-q", Some("60")); // 60s retention
 
         {
-            let mut s = state.write();
-            let q = s.queues.get_mut(&url).unwrap();
+            let mut accts = state.write();
+            let q = accts.default_mut().queues.get_mut(&url).unwrap();
             q.messages.push_back(make_message("young", 10, 0)); // 10s old < 60s retention
         }
 
         let expired = tick_expiration(&state);
         assert_eq!(expired, 0);
 
-        let s = state.read();
-        assert_eq!(s.queues[&url].messages.len(), 1);
+        let accts = state.read();
+        assert_eq!(accts.default_ref().queues[&url].messages.len(), 1);
     }
 
     #[test]
@@ -219,14 +224,14 @@ mod tests {
         let src_url = add_queue(&state, "src-q", None);
 
         let dlq_arn = {
-            let s = state.read();
-            s.queues[&dlq_url].arn.clone()
+            let accts = state.read();
+            accts.default_ref().queues[&dlq_url].arn.clone()
         };
 
         // Set redrive policy on source
         {
-            let mut s = state.write();
-            let q = s.queues.get_mut(&src_url).unwrap();
+            let mut accts = state.write();
+            let q = accts.default_mut().queues.get_mut(&src_url).unwrap();
             q.redrive_policy = Some(RedrivePolicy {
                 dead_letter_target_arn: dlq_arn,
                 max_receive_count: 2,
@@ -238,7 +243,8 @@ mod tests {
         let moved = force_dlq(&state, "src-q");
         assert_eq!(moved, 1);
 
-        let s = state.read();
+        let accts = state.read();
+        let s = accts.default_ref();
         assert_eq!(s.queues[&src_url].messages.len(), 0);
         assert_eq!(s.queues[&dlq_url].messages.len(), 1);
         assert_eq!(s.queues[&dlq_url].messages[0].body, "over");
@@ -251,13 +257,13 @@ mod tests {
         let src_url = add_queue(&state, "src-q", None);
 
         let dlq_arn = {
-            let s = state.read();
-            s.queues[&dlq_url].arn.clone()
+            let accts = state.read();
+            accts.default_ref().queues[&dlq_url].arn.clone()
         };
 
         {
-            let mut s = state.write();
-            let q = s.queues.get_mut(&src_url).unwrap();
+            let mut accts = state.write();
+            let q = accts.default_mut().queues.get_mut(&src_url).unwrap();
             q.redrive_policy = Some(RedrivePolicy {
                 dead_letter_target_arn: dlq_arn,
                 max_receive_count: 3,
@@ -269,7 +275,8 @@ mod tests {
         let moved = force_dlq(&state, "src-q");
         assert_eq!(moved, 0);
 
-        let s = state.read();
+        let accts = state.read();
+        let s = accts.default_ref();
         assert_eq!(s.queues[&src_url].messages.len(), 1);
         assert_eq!(s.queues[&dlq_url].messages.len(), 0);
     }

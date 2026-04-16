@@ -21,7 +21,12 @@ impl SnsDeliveryImpl {
 
 impl SnsDelivery for SnsDeliveryImpl {
     fn publish_to_topic(&self, topic_arn: &str, message: &str, subject: Option<&str>) {
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+
+        // Parse account from topic ARN (arn:aws:sns:region:ACCOUNT:name)
+        let default_id = accounts.default_account_id().to_string();
+        let target_account = topic_arn.split(':').nth(4).unwrap_or(&default_id);
+        let state = accounts.get_or_create(target_account);
 
         if !state.topics.contains_key(topic_arn) {
             tracing::warn!(topic_arn, "SNS delivery target topic not found");
@@ -138,7 +143,7 @@ impl SnsDelivery for SnsDeliveryImpl {
         }
 
         // Drop the lock before calling into SQS delivery
-        drop(state);
+        drop(accounts);
 
         // Wrap the message in SNS notification envelope (matches real AWS format)
         let sns_envelope = serde_json::json!({
