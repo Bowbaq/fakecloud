@@ -382,9 +382,7 @@ async fn main() {
 
     // Register services
     if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
-        for service in ["bedrock"] {
-            fakecloud_persistence::warn_unsupported(service);
-        }
+        fakecloud_persistence::warn_unsupported("bedrock");
     }
     let mut registry = ServiceRegistry::new();
     let cloudformation_snapshot_store: Option<Arc<dyn fakecloud_persistence::SnapshotStore>> =
