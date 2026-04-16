@@ -4856,4 +4856,261 @@ mod tests {
         );
         svc.set_queue_attributes(&req).unwrap();
     }
+
+    // ── create queue validation branches ──
+
+    #[test]
+    fn create_queue_name_too_long() {
+        let svc = make_service();
+        let name = "x".repeat(81);
+        let req = make_request("CreateQueue", json!({"QueueName": name}));
+        expect_err(svc.create_queue(&req));
+    }
+
+    #[test]
+    fn create_queue_name_empty() {
+        let svc = make_service();
+        let req = make_request("CreateQueue", json!({"QueueName": ""}));
+        expect_err(svc.create_queue(&req));
+    }
+
+    #[test]
+    fn create_queue_invalid_chars() {
+        let svc = make_service();
+        let req = make_request("CreateQueue", json!({"QueueName": "bad name"}));
+        expect_err(svc.create_queue(&req));
+    }
+
+    #[test]
+    fn create_queue_fifo_without_suffix() {
+        let svc = make_service();
+        let req = make_request(
+            "CreateQueue",
+            json!({
+                "QueueName": "plain",
+                "Attributes": {"FifoQueue": "true"}
+            }),
+        );
+        expect_err(svc.create_queue(&req));
+    }
+
+    #[test]
+    fn create_queue_invalid_max_message_size() {
+        let svc = make_service();
+        let req = make_request(
+            "CreateQueue",
+            json!({
+                "QueueName": "mms",
+                "Attributes": {"MaximumMessageSize": "100"}
+            }),
+        );
+        expect_err(svc.create_queue(&req));
+    }
+
+    #[test]
+    fn create_queue_invalid_delay_seconds() {
+        let svc = make_service();
+        let req = make_request(
+            "CreateQueue",
+            json!({
+                "QueueName": "ds",
+                "Attributes": {"DelaySeconds": "10000"}
+            }),
+        );
+        expect_err(svc.create_queue(&req));
+    }
+
+    // ── send_message error branches ──
+
+    #[test]
+    fn send_message_missing_queue_url() {
+        let svc = make_service();
+        let req = make_request("SendMessage", json!({"MessageBody": "hi"}));
+        expect_err(svc.send_message(&req));
+    }
+
+    #[test]
+    fn send_message_queue_not_found_detailed() {
+        let svc = make_service();
+        let req = make_request(
+            "SendMessage",
+            json!({
+                "QueueUrl": "http://localhost:4566/123456789012/ghost",
+                "MessageBody": "hi"
+            }),
+        );
+        expect_err(svc.send_message(&req));
+    }
+
+    #[test]
+    fn send_message_invalid_delay_seconds() {
+        let svc = make_service();
+        let req = make_request("CreateQueue", json!({"QueueName": "d"}));
+        let resp = svc.create_queue(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        let url = body["QueueUrl"].as_str().unwrap().to_string();
+        let req = make_request(
+            "SendMessage",
+            json!({
+                "QueueUrl": url,
+                "MessageBody": "hi",
+                "DelaySeconds": 9999
+            }),
+        );
+        expect_err(svc.send_message(&req));
+    }
+
+    // ── change_message_visibility error branches ──
+
+    #[test]
+    fn change_message_visibility_over_max_errors() {
+        let svc = make_service();
+        let req = make_request("CreateQueue", json!({"QueueName": "cmv"}));
+        let resp = svc.create_queue(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        let url = body["QueueUrl"].as_str().unwrap().to_string();
+        let req = make_request(
+            "ChangeMessageVisibility",
+            json!({
+                "QueueUrl": url,
+                "ReceiptHandle": "bogus",
+                "VisibilityTimeout": 99999
+            }),
+        );
+        expect_err(svc.change_message_visibility(&req));
+    }
+
+    // ── delete_message ──
+
+    #[test]
+    fn delete_message_missing_receipt_errors() {
+        let svc = make_service();
+        let req = make_request("CreateQueue", json!({"QueueName": "dm"}));
+        let resp = svc.create_queue(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        let url = body["QueueUrl"].as_str().unwrap().to_string();
+        let req = make_request("DeleteMessage", json!({"QueueUrl": url}));
+        expect_err(svc.delete_message(&req));
+    }
+
+    // ── get_queue_attributes ──
+
+    #[test]
+    fn get_queue_attributes_filtered_by_names() {
+        let svc = make_service();
+        svc.create_queue(&make_request("CreateQueue", json!({"QueueName": "filt"})))
+            .unwrap();
+        let req = make_request(
+            "GetQueueAttributes",
+            json!({
+                "QueueUrl": "http://localhost:4566/123456789012/filt",
+                "AttributeNames": ["VisibilityTimeout"]
+            }),
+        );
+        let resp = svc.get_queue_attributes(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(body["Attributes"]["VisibilityTimeout"].is_string());
+        assert!(body["Attributes"]["MessageRetentionPeriod"].is_null());
+    }
+
+    // ── set_queue_attributes error branches ──
+
+    // ── list_queues pagination/prefix ──
+
+    #[test]
+    fn list_queues_by_prefix_pagination() {
+        let svc = make_service();
+        for i in 0..10 {
+            svc.create_queue(&make_request(
+                "CreateQueue",
+                json!({"QueueName": format!("pfx-{i}")}),
+            ))
+            .unwrap();
+        }
+        svc.create_queue(&make_request("CreateQueue", json!({"QueueName": "other"})))
+            .unwrap();
+        let req = make_request(
+            "ListQueues",
+            json!({"QueueNamePrefix": "pfx-", "MaxResults": 3}),
+        );
+        let resp = svc.list_queues(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["QueueUrls"].as_array().unwrap().len(), 3);
+        assert!(body["NextToken"].is_string());
+    }
+
+    // ── tag_queue errors ──
+
+    #[test]
+    fn tag_queue_missing_url_errors() {
+        let svc = make_service();
+        let req = make_request("TagQueue", json!({"Tags": {"env": "prod"}}));
+        expect_err(svc.tag_queue(&req));
+    }
+
+    // ── fifo queue specific errors ──
+
+    #[test]
+    fn send_to_fifo_without_dedup_id_and_no_content_dedup_errors() {
+        let svc = make_service();
+        svc.create_queue(&make_request(
+            "CreateQueue",
+            json!({
+                "QueueName": "nd.fifo",
+                "Attributes": {"FifoQueue": "true"}
+            }),
+        ))
+        .unwrap();
+        let req = make_request(
+            "SendMessage",
+            json!({
+                "QueueUrl": "http://localhost:4566/123456789012/nd.fifo",
+                "MessageBody": "m",
+                "MessageGroupId": "g1"
+            }),
+        );
+        expect_err(svc.send_message(&req));
+    }
+
+    // ── purge queue ──
+
+    #[test]
+    fn purge_queue_missing_url_errors() {
+        let svc = make_service();
+        let req = make_request("PurgeQueue", json!({}));
+        expect_err(svc.purge_queue(&req));
+    }
+
+    // ── delete_message_batch ──
+
+    #[test]
+    fn delete_message_batch_empty_errors() {
+        let svc = make_service();
+        svc.create_queue(&make_request("CreateQueue", json!({"QueueName": "dmb"})))
+            .unwrap();
+        let req = make_request(
+            "DeleteMessageBatch",
+            json!({
+                "QueueUrl": "http://localhost:4566/123456789012/dmb",
+                "Entries": []
+            }),
+        );
+        expect_err(svc.delete_message_batch(&req));
+    }
+
+    // ── list_dead_letter_source_queues nonexistent ──
+
+    #[test]
+    fn list_dead_letter_source_queues_nonexistent_ok() {
+        let svc = make_service();
+        svc.create_queue(&make_request("CreateQueue", json!({"QueueName": "dlq"})))
+            .unwrap();
+        let req = make_request(
+            "ListDeadLetterSourceQueues",
+            json!({"QueueUrl": "http://localhost:4566/123456789012/dlq"}),
+        );
+        let resp = svc.list_dead_letter_source_queues(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(body["queueUrls"].as_array().unwrap().is_empty());
+    }
 }
