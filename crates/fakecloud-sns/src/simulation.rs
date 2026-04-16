@@ -13,32 +13,34 @@ pub struct PendingConfirmation {
 /// List all subscriptions that are pending confirmation.
 pub fn list_pending_confirmations(state: &SharedSnsState) -> Vec<PendingConfirmation> {
     let accts = state.read();
-    let s = accts.default_ref();
-    s.subscriptions
-        .values()
-        .filter(|sub| !sub.confirmed)
-        .map(|sub| PendingConfirmation {
-            subscription_arn: sub.subscription_arn.clone(),
-            topic_arn: sub.topic_arn.clone(),
-            protocol: sub.protocol.clone(),
-            endpoint: sub.endpoint.clone(),
-            token: sub.confirmation_token.clone(),
-        })
-        .collect()
+    let mut result = Vec::new();
+    for (_, acct_state) in accts.iter() {
+        for sub in acct_state.subscriptions.values() {
+            if !sub.confirmed {
+                result.push(PendingConfirmation {
+                    subscription_arn: sub.subscription_arn.clone(),
+                    topic_arn: sub.topic_arn.clone(),
+                    protocol: sub.protocol.clone(),
+                    endpoint: sub.endpoint.clone(),
+                    token: sub.confirmation_token.clone(),
+                });
+            }
+        }
+    }
+    result
 }
 
 /// Force-confirm a subscription by its ARN. Returns true if the
 /// subscription was found and confirmed (or was already confirmed).
 pub fn confirm_subscription(state: &SharedSnsState, subscription_arn: &str) -> bool {
     let mut accts = state.write();
-    let s = accts.default_mut();
-    match s.subscriptions.get_mut(subscription_arn) {
-        Some(sub) => {
+    for (_, acct_state) in accts.iter_mut() {
+        if let Some(sub) = acct_state.subscriptions.get_mut(subscription_arn) {
             sub.confirmed = true;
-            true
+            return true;
         }
-        None => false,
     }
+    false
 }
 
 #[cfg(test)]

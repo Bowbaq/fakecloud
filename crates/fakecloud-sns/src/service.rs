@@ -769,9 +769,10 @@ impl SnsService {
         let endpoint = param(req, "Endpoint").unwrap_or_default();
 
         let accts = self.state.read();
-        let state_r = accts
-            .get(&req.account_id)
-            .unwrap_or_else(|| accts.default_ref());
+        let state_r = match accts.get(&req.account_id) {
+            Some(s) => s,
+            None => return Err(not_found("Topic")),
+        };
         let topic = state_r
             .topics
             .get(&topic_arn)

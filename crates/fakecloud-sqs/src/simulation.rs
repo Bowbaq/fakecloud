@@ -49,7 +49,14 @@ pub fn tick_expiration(state: &SharedSqsState) -> u64 {
 /// is a no-op returning 0.
 pub fn force_dlq(state: &SharedSqsState, queue_name: &str) -> u64 {
     let mut mas = state.write();
-    let state = mas.default_mut();
+
+    // Find which account owns this queue by name
+    let account_id = match mas.find_account(|s| s.name_to_url.contains_key(queue_name)) {
+        Some(id) => id.to_string(),
+        None => return 0,
+    };
+
+    let state = mas.get_or_create(&account_id);
 
     // Resolve queue URL from name
     let queue_url = match state.name_to_url.get(queue_name) {
