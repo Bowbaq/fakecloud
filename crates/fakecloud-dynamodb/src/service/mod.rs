@@ -97,7 +97,8 @@ impl DynamoDbService {
         let _guard = self.snapshot_lock.lock().await;
         let snapshot = DynamoDbSnapshot {
             schema_version: DYNAMODB_SNAPSHOT_SCHEMA_VERSION,
-            state: self.state.read().clone(),
+            accounts: Some(self.state.read().clone()),
+            state: None,
         };
         let join = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
             let bytes = serde_json::to_vec(&snapshot)
@@ -2355,7 +2356,8 @@ fn execute_partiql_select(
     let after_from = statement[from_pos + 4..].trim();
     let (table_name, rest) = parse_partiql_table_name(after_from);
 
-    let state = state.read();
+    let __mas = state.read();
+    let state = __mas.default_ref();
     let table = get_table(&state.tables, &table_name)?;
 
     let rest_upper = rest.trim().to_ascii_uppercase();
@@ -2402,7 +2404,8 @@ fn execute_partiql_insert(
     let value_str = rest.trim()[value_pos + 5..].trim();
     let item = parse_partiql_value_object(value_str, parameters)?;
 
-    let mut state = state.write();
+    let mut __mas = state.write();
+    let state = __mas.default_mut();
     let table = get_table_mut(&mut state.tables, &table_name)?;
     let key = extract_key(table, &item);
     if table.find_item_index(&key).is_some() {
@@ -2449,7 +2452,8 @@ fn execute_partiql_update(
         (after_set, "")
     };
 
-    let mut state = state.write();
+    let mut __mas = state.write();
+    let state = __mas.default_mut();
     let table = get_table_mut(&mut state.tables, &table_name)?;
 
     let matched_indices = if !where_clause.is_empty() {
@@ -2508,7 +2512,8 @@ fn execute_partiql_delete(
     }
     let where_clause = rest.trim()[5..].trim();
 
-    let mut state = state.write();
+    let mut __mas = state.write();
+    let state = __mas.default_mut();
     let table = get_table_mut(&mut state.tables, &table_name)?;
 
     let mut indices = find_partiql_where_indices(table, where_clause, parameters)?;
@@ -2917,10 +2922,9 @@ mod tests {
     use std::sync::Arc;
 
     fn make_service() -> DynamoDbService {
-        let state: SharedDynamoDbState = Arc::new(RwLock::new(crate::state::DynamoDbState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state: SharedDynamoDbState = Arc::new(RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         DynamoDbService::new(state)
     }
 
@@ -3265,7 +3269,8 @@ mod tests {
         create_test_table(&svc);
 
         let table_arn = {
-            let state = svc.state.read();
+            let __mas = svc.state.read();
+            let state = __mas.default_ref();
             state.tables.get("test-table").unwrap().arn.clone()
         };
 
@@ -5810,7 +5815,12 @@ mod tests {
         create_test_table(&svc);
         let arn = {
             let s = svc.state.read();
-            s.tables.get("test-table").unwrap().arn.clone()
+            s.default_ref()
+                .tables
+                .get("test-table")
+                .unwrap()
+                .arn
+                .clone()
         };
 
         let req = make_request(

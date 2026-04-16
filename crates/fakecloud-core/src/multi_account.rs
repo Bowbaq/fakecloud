@@ -14,6 +14,11 @@ use serde::{Deserialize, Serialize};
 pub trait AccountState: Sized {
     /// Create a fresh, empty state for the given account.
     fn new_for_account(account_id: &str, region: &str, endpoint: &str) -> Self;
+
+    /// Called after a new account state is created via [`MultiAccountState::get_or_create`],
+    /// with a reference to an existing sibling state. Services can override
+    /// this to propagate shared resources (e.g. body caches) to the new state.
+    fn inherit_from(&mut self, _sibling: &Self) {}
 }
 
 /// Account-partitioned state container.
@@ -46,12 +51,33 @@ impl<T: AccountState> MultiAccountState<T> {
     }
 
     /// Get or lazily create the state for `account_id`.
+    ///
+    /// When a new account is created, [`AccountState::inherit_from`] is called
+    /// with the default account's state so services can propagate shared
+    /// resources (e.g. body caches).
     pub fn get_or_create(&mut self, account_id: &str) -> &mut T {
         if !self.accounts.contains_key(account_id) {
-            self.accounts.insert(
-                account_id.to_string(),
-                T::new_for_account(account_id, &self.region, &self.endpoint),
-            );
+            let mut state = T::new_for_account(account_id, &self.region, &self.endpoint);
+            // Let the new state inherit shared resources from the default account.
+            if let Some(sibling) = self.accounts.get(&self.default_account_id) {
+                state.inherit_from(sibling);
+            }
+            self.accounts.insert(account_id.to_string(), state);
+        }
+        self.accounts.get_mut(account_id).unwrap()
+    }
+
+    /// Get or lazily create the state for `account_id`, then run `init` on
+    /// the newly created state. The callback is only invoked when the account
+    /// is freshly created, not on subsequent lookups.
+    pub fn get_or_create_with<F>(&mut self, account_id: &str, init: F) -> &mut T
+    where
+        F: FnOnce(&mut T),
+    {
+        if !self.accounts.contains_key(account_id) {
+            let mut state = T::new_for_account(account_id, &self.region, &self.endpoint);
+            init(&mut state);
+            self.accounts.insert(account_id.to_string(), state);
         }
         self.accounts.get_mut(account_id).unwrap()
     }
@@ -99,6 +125,19 @@ impl<T: AccountState> MultiAccountState<T> {
             self.default_account_id.clone(),
             T::new_for_account(&self.default_account_id, &self.region, &self.endpoint),
         );
+    }
+
+    /// Find the first account whose state satisfies `predicate` and return
+    /// the account id. Useful for resolving globally-unique resources (e.g.
+    /// S3 bucket names) back to their owning account.
+    pub fn find_account<F>(&self, predicate: F) -> Option<&str>
+    where
+        F: Fn(&T) -> bool,
+    {
+        self.accounts
+            .iter()
+            .find(|(_, v)| predicate(v))
+            .map(|(k, _)| k.as_str())
     }
 
     /// Number of accounts with state.

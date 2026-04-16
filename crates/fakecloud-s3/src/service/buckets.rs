@@ -12,8 +12,14 @@ use super::{
 };
 
 impl S3Service {
-    pub(super) fn list_buckets(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+    pub(super) fn list_buckets(
+        &self,
+        account_id: &str,
+        _req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let accts = self.state.read();
+        let __empty = crate::state::S3State::new(account_id, "us-east-1");
+        let state = accts.get(account_id).unwrap_or(&__empty);
         let mut buckets_xml = String::new();
         let mut sorted: Vec<_> = state.buckets.values().collect();
         sorted.sort_by_key(|b| &b.name);
@@ -30,13 +36,14 @@ impl S3Service {
              <Owner><ID>{account}</ID><DisplayName>{account}</DisplayName></Owner>\
              <Buckets>{buckets_xml}</Buckets>\
              </ListAllMyBucketsResult>",
-            account = req.account_id,
+            account = account_id,
         );
         Ok(s3_xml(StatusCode::OK, body))
     }
 
     pub(super) fn create_bucket(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
@@ -121,7 +128,8 @@ impl S3Service {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("private");
 
-        let mut state = self.state.write();
+        let mut accts = self.state.write();
+        let state = accts.get_or_create(account_id);
         if let Some(existing) = state.buckets.get(bucket) {
             // In us-east-1, re-creating same bucket in same region is idempotent (returns 200)
             if existing.region == requested_region && requested_region == "us-east-1" {
@@ -197,10 +205,12 @@ impl S3Service {
 
     pub(super) fn delete_bucket(
         &self,
+        account_id: &str,
         _req: &AwsRequest,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let mut state = self.state.write();
+        let mut accts = self.state.write();
+        let state = accts.get_or_create(account_id);
         let b = state
             .buckets
             .get(bucket)
@@ -228,8 +238,14 @@ impl S3Service {
         })
     }
 
-    pub(super) fn head_bucket(&self, bucket: &str) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+    pub(super) fn head_bucket(
+        &self,
+        account_id: &str,
+        bucket: &str,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let accts = self.state.read();
+        let __empty = crate::state::S3State::new(account_id, "us-east-1");
+        let state = accts.get(account_id).unwrap_or(&__empty);
         if !state.buckets.contains_key(bucket) {
             return Err(AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
@@ -245,8 +261,14 @@ impl S3Service {
         })
     }
 
-    pub(super) fn get_bucket_location(&self, bucket: &str) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+    pub(super) fn get_bucket_location(
+        &self,
+        account_id: &str,
+        bucket: &str,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let accts = self.state.read();
+        let __empty = crate::state::S3State::new(account_id, "us-east-1");
+        let state = accts.get(account_id).unwrap_or(&__empty);
         let b = state
             .buckets
             .get(bucket)

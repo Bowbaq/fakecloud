@@ -116,7 +116,11 @@ async fn main() {
         fakecloud_ssm::state::SsmState::new(&cli.account_id, &cli.region),
     ));
     let dynamodb_state = Arc::new(parking_lot::RwLock::new(
-        fakecloud_dynamodb::state::DynamoDbState::new(&cli.account_id, &cli.region),
+        fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        ),
     ));
     let lambda_state = Arc::new(parking_lot::RwLock::new(
         fakecloud_lambda::state::LambdaState::new(&cli.account_id, &cli.region),
@@ -140,10 +144,13 @@ async fn main() {
     let secretsmanager_state = Arc::new(parking_lot::RwLock::new(
         fakecloud_secretsmanager::state::SecretsManagerState::new(&cli.account_id, &cli.region),
     ));
-    let s3_state = Arc::new(parking_lot::RwLock::new(fakecloud_s3::state::S3State::new(
-        &cli.account_id,
-        &cli.region,
-    )));
+    let s3_state = Arc::new(parking_lot::RwLock::new(
+        fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        ),
+    ));
     let logs_state = Arc::new(parking_lot::RwLock::new(
         fakecloud_logs::state::LogsState::new(&cli.account_id, &cli.region),
     ));
@@ -1006,7 +1013,11 @@ async fn main() {
                             "failed to hydrate s3 persistence snapshot: {err}"
                         )),
                     };
-                    *s3_state.write() = hydrated;
+                    {
+                        let account_id = hydrated.account_id.clone();
+                        let mut mas = s3_state.write();
+                        *mas.get_or_create(&account_id) = hydrated;
+                    }
                     tracing::info!(
                         buckets = bucket_count,
                         objects = object_count,
@@ -1027,7 +1038,7 @@ async fn main() {
     if let Some(ref cache) = shared_body_cache {
         // Share the cache between the S3Store and S3State so read_body honors
         // the persistent LRU on every read site, not just open_object_body.
-        s3_state.write().set_body_cache(cache.clone());
+        s3_state.write().default_mut().set_body_cache(cache.clone());
     }
     registry.register(Arc::new(
         S3Service::with_store(s3_state.clone(), delivery_for_s3, s3_store.clone())
@@ -1052,20 +1063,31 @@ async fn main() {
                     ) {
                         Ok(snapshot) => {
                             if snapshot.schema_version
-                                != fakecloud_dynamodb::state::DYNAMODB_SNAPSHOT_SCHEMA_VERSION
+                                > fakecloud_dynamodb::state::DYNAMODB_SNAPSHOT_SCHEMA_VERSION
                             {
                                 fatal_exit(format_args!(
-                                    "dynamodb persistence schema mismatch: on-disk={}, expected={}",
+                                    "dynamodb persistence schema too new: on-disk={}, max supported={}",
                                     snapshot.schema_version,
                                     fakecloud_dynamodb::state::DYNAMODB_SNAPSHOT_SCHEMA_VERSION,
                                 ));
                             }
-                            let table_count = snapshot.state.tables.len();
-                            *dynamodb_state_for_register.write() = snapshot.state;
-                            tracing::info!(
-                                tables = table_count,
-                                "loaded dynamodb persistence snapshot",
-                            );
+                            if let Some(accounts) = snapshot.accounts {
+                                let account_count = accounts.account_count();
+                                *dynamodb_state_for_register.write() = accounts;
+                                tracing::info!(
+                                    accounts = account_count,
+                                    "loaded dynamodb persistence snapshot (multi-account)",
+                                );
+                            } else if let Some(single_state) = snapshot.state {
+                                let table_count = single_state.tables.len();
+                                let account_id = single_state.account_id.clone();
+                                let mut mas = dynamodb_state_for_register.write();
+                                *mas.get_or_create(&account_id) = single_state;
+                                tracing::info!(
+                                    tables = table_count,
+                                    "loaded dynamodb persistence snapshot (migrated from v1)",
+                                );
+                            }
                         }
                         Err(err) => fatal_exit(format_args!(
                             "failed to parse dynamodb persistence snapshot: {err}"
@@ -1804,7 +1826,8 @@ async fn main() {
                                     storage_class: "STANDARD".to_string(),
                                     ..Default::default()
                                 };
-                                let mut state = s3_for_inbound.write();
+                                let mut mas = s3_for_inbound.write();
+                                let state = mas.default_mut();
                                 if let Some(bucket) = state.buckets.get_mut(bucket_name) {
                                     tracing::info!(
                                         bucket = %bucket_name,
@@ -1814,7 +1837,7 @@ async fn main() {
                                     let meta =
                                         fakecloud_s3::persistence::object_meta_snapshot(&obj);
                                     bucket.objects.insert(key.clone(), obj);
-                                    drop(state);
+                                    drop(mas);
                                     if let Err(err) = s3_store_for_inbound.put_object(
                                         bucket_name,
                                         &key,
@@ -2136,7 +2159,8 @@ async fn main() {
             axum::routing::get({
                 let ss = s3_introspection_state;
                 move || async move {
-                    let state = ss.read();
+                    let mas = ss.read();
+                    let state = mas.default_ref();
                     let notifications = state
                         .notification_events
                         .iter()

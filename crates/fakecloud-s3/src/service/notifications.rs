@@ -653,10 +653,10 @@ pub(crate) fn deliver_notifications(
     // Deliver to EventBridge if enabled for this bucket
     let eventbridge_enabled = s3_state
         .and_then(|st| {
-            let state = st.read();
-            state
-                .buckets
-                .get(bucket_name)
+            let mas = st.read();
+            let acct = mas.find_account(|s| s.buckets.contains_key(bucket_name))?;
+            mas.get(acct)
+                .and_then(|s| s.buckets.get(bucket_name))
                 .map(|b| b.eventbridge_enabled)
         })
         .unwrap_or(false);
@@ -736,12 +736,20 @@ pub(crate) fn deliver_notifications(
     // Record notification event for introspection only if at least one target matched
     if delivered {
         if let Some(state) = s3_state {
-            state.write().notification_events.push(S3NotificationEvent {
-                bucket: bucket_name.to_string(),
-                key: key.to_string(),
-                event_type: s3_event_name,
-                timestamp: Utc::now(),
-            });
+            let mut mas = state.write();
+            let owner_acct = mas
+                .find_account(|s| s.buckets.contains_key(bucket_name))
+                .map(|a| a.to_string());
+            if let Some(acct) = owner_acct {
+                if let Some(acct_state) = mas.get_mut(&acct) {
+                    acct_state.notification_events.push(S3NotificationEvent {
+                        bucket: bucket_name.to_string(),
+                        key: key.to_string(),
+                        event_type: s3_event_name,
+                        timestamp: Utc::now(),
+                    });
+                }
+            }
         }
     }
 }

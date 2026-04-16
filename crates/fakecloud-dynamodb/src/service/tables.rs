@@ -141,7 +141,8 @@ impl DynamoDbService {
             (None, None)
         };
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if state.tables.contains_key(&table_name) {
             return Err(AwsServiceError::aws_error(
@@ -216,7 +217,8 @@ impl DynamoDbService {
         let body = Self::parse_body(req)?;
         let table_name = require_str(&body, "TableName")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         // Refuse if deletion protection is enabled (real AWS returns
         // ResourceInUseException with this message).
         if state
@@ -264,7 +266,9 @@ impl DynamoDbService {
         let body = Self::parse_body(req)?;
         let table_name = require_str(&body, "TableName")?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty_ddb = crate::state::DynamoDbState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty_ddb);
         let table = get_table(&state.tables, table_name)?;
 
         let table_desc = build_table_description(table);
@@ -288,7 +292,9 @@ impl DynamoDbService {
             .as_str()
             .map(|s| s.to_string());
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty_ddb = crate::state::DynamoDbState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty_ddb);
         let mut names: Vec<&String> = state.tables.keys().collect();
         names.sort();
 
@@ -322,7 +328,8 @@ impl DynamoDbService {
         let body = Self::parse_body(req)?;
         let table_name = require_str(&body, "TableName")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         // Snapshot region + account before taking a mutable borrow of
         // `state.tables` — we need them to mint a new stream ARN when the
         // caller flips stream_enabled from false to true mid-update.
@@ -552,7 +559,8 @@ impl DynamoDbService {
             )
         })?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let table = get_table_mut(&mut state.tables, table_name)?;
 
         if enabled {
@@ -577,7 +585,9 @@ impl DynamoDbService {
         let body = Self::parse_body(req)?;
         let table_name = require_str(&body, "TableName")?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty_ddb = crate::state::DynamoDbState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty_ddb);
         let table = get_table(&state.tables, table_name)?;
 
         let status = if table.ttl_enabled {
@@ -606,7 +616,8 @@ impl DynamoDbService {
         let resource_arn = require_str(&body, "ResourceArn")?;
         validate_required("Tags", &body["Tags"])?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let table = find_table_by_arn_mut(&mut state.tables, resource_arn)?;
 
         fakecloud_core::tags::apply_tags(&mut table.tags, &body, "Tags", "Key", "Value").map_err(
@@ -627,7 +638,8 @@ impl DynamoDbService {
         let resource_arn = require_str(&body, "ResourceArn")?;
         validate_required("TagKeys", &body["TagKeys"])?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let table = find_table_by_arn_mut(&mut state.tables, resource_arn)?;
 
         fakecloud_core::tags::remove_tags(&mut table.tags, &body, "TagKeys").map_err(|f| {
@@ -648,7 +660,9 @@ impl DynamoDbService {
         let body = Self::parse_body(req)?;
         let resource_arn = require_str(&body, "ResourceArn")?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty_ddb = crate::state::DynamoDbState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty_ddb);
         let table = find_table_by_arn(&state.tables, resource_arn)?;
 
         let tags = fakecloud_core::tags::tags_to_json(&table.tags, "Key", "Value");
@@ -666,7 +680,8 @@ impl DynamoDbService {
         let resource_arn = require_str(&body, "ResourceArn")?;
         let policy = require_str(&body, "Policy")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let table = find_table_by_arn_mut(&mut state.tables, resource_arn)?;
         table.resource_policy = Some(policy.to_string());
 
@@ -681,7 +696,9 @@ impl DynamoDbService {
         let body = Self::parse_body(req)?;
         let resource_arn = require_str(&body, "ResourceArn")?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty_ddb = crate::state::DynamoDbState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty_ddb);
         let table = find_table_by_arn(&state.tables, resource_arn)?;
 
         match &table.resource_policy {
@@ -703,7 +720,8 @@ impl DynamoDbService {
         let body = Self::parse_body(req)?;
         let resource_arn = require_str(&body, "ResourceArn")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let table = find_table_by_arn_mut(&mut state.tables, resource_arn)?;
         table.resource_policy = None;
 
@@ -717,7 +735,8 @@ impl DynamoDbService {
         let table_name = require_str(&body, "TableName")?;
         let backup_name = require_str(&body, "BackupName")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let table = get_table(&state.tables, table_name)?;
 
         let backup_arn = format!(
@@ -764,7 +783,8 @@ impl DynamoDbService {
         let body = Self::parse_body(req)?;
         let backup_arn = require_str(&body, "BackupArn")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let backup = state.backups.remove(backup_arn).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -809,7 +829,9 @@ impl DynamoDbService {
         let body = Self::parse_body(req)?;
         let backup_arn = require_str(&body, "BackupArn")?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty_ddb = crate::state::DynamoDbState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty_ddb);
         let backup = state.backups.get(backup_arn).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -867,7 +889,9 @@ impl DynamoDbService {
         )?;
         let table_name = body["TableName"].as_str();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty_ddb = crate::state::DynamoDbState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty_ddb);
         let summaries: Vec<Value> = state
             .backups
             .values()
@@ -899,7 +923,8 @@ impl DynamoDbService {
         let backup_arn = require_str(&body, "BackupArn")?;
         let target_table_name = require_str(&body, "TargetTableName")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let backup = state.backups.get(backup_arn).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -974,7 +999,8 @@ impl DynamoDbService {
         let source_table_name = body["SourceTableName"].as_str();
         let source_table_arn = body["SourceTableArn"].as_str();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Resolve source table
         let source = if let Some(name) = source_table_name {
@@ -1069,7 +1095,8 @@ impl DynamoDbService {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let table = get_table_mut(&mut state.tables, table_name)?;
         table.pitr_enabled = enabled;
 
@@ -1093,7 +1120,9 @@ impl DynamoDbService {
         let body = Self::parse_body(req)?;
         let table_name = require_str(&body, "TableName")?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty_ddb = crate::state::DynamoDbState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty_ddb);
         let table = get_table(&state.tables, table_name)?;
 
         let status = if table.pitr_enabled {
@@ -1125,7 +1154,9 @@ impl DynamoDbService {
         let s3_prefix = body["S3Prefix"].as_str();
         let export_format = body["ExportFormat"].as_str().unwrap_or("DYNAMODB_JSON");
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty_ddb = crate::state::DynamoDbState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty_ddb);
         // Verify table exists and get items
         let table = find_table_by_arn(&state.tables, table_arn)?;
         let items = table.items.clone();
@@ -1140,7 +1171,7 @@ impl DynamoDbService {
             uuid::Uuid::new_v4()
         );
 
-        drop(state);
+        drop(accounts);
 
         // Serialize items as JSON Lines and write to S3
         let mut json_lines = String::new();
@@ -1170,7 +1201,13 @@ impl DynamoDbService {
             // Verify the target bucket exists before touching the store —
             // otherwise we would orphan artifacts on disk under a bucket
             // directory that no in-memory bucket references.
-            if !s3_state.read().buckets.contains_key(s3_bucket) {
+            let s3_acct_id = req.account_id.as_str();
+            if !s3_state
+                .read()
+                .get(s3_acct_id)
+                .map(|s| s.buckets.contains_key(s3_bucket))
+                .unwrap_or(false)
+            {
                 export_failed = true;
                 failure_code = "S3NoSuchBucket";
                 failure_reason = format!("S3 bucket does not exist: {s3_bucket}");
@@ -1214,7 +1251,8 @@ impl DynamoDbService {
                 match body_ref_result {
                     Ok(body_ref) => {
                         let mut s3 = s3_state.write();
-                        if let Some(bucket) = s3.buckets.get_mut(s3_bucket) {
+                        let s3_acct = s3.get_or_create(s3_acct_id);
+                        if let Some(bucket) = s3_acct.buckets.get_mut(s3_bucket) {
                             let obj = fakecloud_s3::state::S3Object {
                                 key: s3_key.clone(),
                                 body: body_ref,
@@ -1262,7 +1300,8 @@ impl DynamoDbService {
             billed_size_bytes: data_size,
         };
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         state.exports.insert(export_arn.clone(), export);
 
         let mut response = json!({
@@ -1291,7 +1330,9 @@ impl DynamoDbService {
         let body = Self::parse_body(req)?;
         let export_arn = require_str(&body, "ExportArn")?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty_ddb = crate::state::DynamoDbState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty_ddb);
         let export = state.exports.get(export_arn).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -1323,7 +1364,9 @@ impl DynamoDbService {
         validate_optional_range_i64("maxResults", body["MaxResults"].as_i64(), 1, 25)?;
         let table_arn = body["TableArn"].as_str();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty_ddb = crate::state::DynamoDbState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty_ddb);
         let summaries: Vec<Value> = state
             .exports
             .values()
@@ -1390,7 +1433,15 @@ impl DynamoDbService {
         let mut imported_items: Vec<HashMap<String, Value>> = Vec::new();
         let mut processed_size_bytes: i64 = 0;
         if let Some(ref s3_state) = self.s3_state {
-            let s3 = s3_state.read();
+            let s3_mas = s3_state.read();
+            let s3_acct_id = req.account_id.as_str();
+            let s3 = s3_mas.get(s3_acct_id).ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "ImportConflictException",
+                    format!("S3 bucket does not exist: {s3_bucket}"),
+                )
+            })?;
             let bucket = s3.buckets.get(s3_bucket).ok_or_else(|| {
                 AwsServiceError::aws_error(
                     StatusCode::BAD_REQUEST,
@@ -1442,7 +1493,8 @@ impl DynamoDbService {
             }
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if state.tables.contains_key(table_name) {
             return Err(AwsServiceError::aws_error(
@@ -1559,7 +1611,9 @@ impl DynamoDbService {
         let body = Self::parse_body(req)?;
         let import_arn = require_str(&body, "ImportArn")?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty_ddb = crate::state::DynamoDbState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty_ddb);
         let import = state.imports.get(import_arn).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -1592,7 +1646,9 @@ impl DynamoDbService {
         validate_optional_range_i64("pageSize", body["PageSize"].as_i64(), 1, 25)?;
         let table_arn = body["TableArn"].as_str();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty_ddb = crate::state::DynamoDbState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty_ddb);
         let summaries: Vec<Value> = state
             .imports
             .values()

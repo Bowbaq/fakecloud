@@ -20,11 +20,13 @@ impl S3Service {
 
     pub(super) fn put_bucket_encryption(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
         let body_str = std::str::from_utf8(&req.body).unwrap_or("").to_string();
-        let mut state = self.state.write();
+        let mut accts = self.state.write();
+        let state = accts.get_or_create(account_id);
         let b = state
             .buckets
             .get_mut(bucket)
@@ -48,9 +50,12 @@ impl S3Service {
 
     pub(super) fn get_bucket_encryption(
         &self,
+        account_id: &str,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let accts = self.state.read();
+        let __empty = crate::state::S3State::new(account_id, "us-east-1");
+        let state = accts.get(account_id).unwrap_or(&__empty);
         let b = state
             .buckets
             .get(bucket)
@@ -68,9 +73,11 @@ impl S3Service {
 
     pub(super) fn delete_bucket_encryption(
         &self,
+        account_id: &str,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let mut state = self.state.write();
+        let mut accts = self.state.write();
+        let state = accts.get_or_create(account_id);
         let b = state
             .buckets
             .get_mut(bucket)
@@ -86,6 +93,7 @@ impl S3Service {
 
     pub(super) fn put_bucket_lifecycle(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
@@ -97,7 +105,8 @@ impl S3Service {
         // If there are no <Rule> elements at all, treat as deleting the configuration
         let has_rules = body_str.contains("<Rule>");
 
-        let mut state = self.state.write();
+        let mut accts = self.state.write();
+        let state = accts.get_or_create(account_id);
         let b = state
             .buckets
             .get_mut(bucket)
@@ -118,9 +127,12 @@ impl S3Service {
 
     pub(super) fn get_bucket_lifecycle(
         &self,
+        account_id: &str,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let accts = self.state.read();
+        let __empty = crate::state::S3State::new(account_id, "us-east-1");
+        let state = accts.get(account_id).unwrap_or(&__empty);
         let b = state
             .buckets
             .get(bucket)
@@ -138,9 +150,11 @@ impl S3Service {
 
     pub(super) fn delete_bucket_lifecycle(
         &self,
+        account_id: &str,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let mut state = self.state.write();
+        let mut accts = self.state.write();
+        let state = accts.get_or_create(account_id);
         let b = state
             .buckets
             .get_mut(bucket)
@@ -156,6 +170,7 @@ impl S3Service {
 
     pub(super) fn put_bucket_policy(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
@@ -167,7 +182,8 @@ impl S3Service {
                 "This policy contains invalid Json",
             ));
         }
-        let mut state = self.state.write();
+        let mut accts = self.state.write();
+        let state = accts.get_or_create(account_id);
         let b = state
             .buckets
             .get_mut(bucket)
@@ -179,8 +195,14 @@ impl S3Service {
         Ok(empty_response(StatusCode::NO_CONTENT))
     }
 
-    pub(super) fn get_bucket_policy(&self, bucket: &str) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+    pub(super) fn get_bucket_policy(
+        &self,
+        account_id: &str,
+        bucket: &str,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let accts = self.state.read();
+        let __empty = crate::state::S3State::new(account_id, "us-east-1");
+        let state = accts.get(account_id).unwrap_or(&__empty);
         let b = state
             .buckets
             .get(bucket)
@@ -203,9 +225,11 @@ impl S3Service {
 
     pub(super) fn delete_bucket_policy(
         &self,
+        account_id: &str,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let mut state = self.state.write();
+        let mut accts = self.state.write();
+        let state = accts.get_or_create(account_id);
         let b = state
             .buckets
             .get_mut(bucket)
@@ -221,6 +245,7 @@ impl S3Service {
 
     pub(super) fn put_bucket_cors(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
@@ -258,7 +283,8 @@ impl S3Service {
             }
         }
 
-        let mut state = self.state.write();
+        let mut accts = self.state.write();
+        let state = accts.get_or_create(account_id);
         let b = state
             .buckets
             .get_mut(bucket)
@@ -270,8 +296,14 @@ impl S3Service {
         Ok(empty_response(StatusCode::OK))
     }
 
-    pub(super) fn get_bucket_cors(&self, bucket: &str) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+    pub(super) fn get_bucket_cors(
+        &self,
+        account_id: &str,
+        bucket: &str,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let accts = self.state.read();
+        let __empty = crate::state::S3State::new(account_id, "us-east-1");
+        let state = accts.get(account_id).unwrap_or(&__empty);
         let b = state
             .buckets
             .get(bucket)
@@ -287,8 +319,13 @@ impl S3Service {
         }
     }
 
-    pub(super) fn delete_bucket_cors(&self, bucket: &str) -> Result<AwsResponse, AwsServiceError> {
-        let mut state = self.state.write();
+    pub(super) fn delete_bucket_cors(
+        &self,
+        account_id: &str,
+        bucket: &str,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let mut accts = self.state.write();
+        let state = accts.get_or_create(account_id);
         let b = state
             .buckets
             .get_mut(bucket)
@@ -304,11 +341,13 @@ impl S3Service {
 
     pub(super) fn put_bucket_notification(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
         let body_str = std::str::from_utf8(&req.body).unwrap_or("").to_string();
-        let mut state = self.state.write();
+        let mut accts = self.state.write();
+        let state = accts.get_or_create(account_id);
         let b = state
             .buckets
             .get_mut(bucket)
@@ -330,9 +369,12 @@ impl S3Service {
 
     pub(super) fn get_bucket_notification(
         &self,
+        account_id: &str,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let accts = self.state.read();
+        let __empty = crate::state::S3State::new(account_id, "us-east-1");
+        let state = accts.get(account_id).unwrap_or(&__empty);
         let b = state
             .buckets
             .get(bucket)
@@ -357,11 +399,13 @@ impl S3Service {
 
     pub(super) fn put_bucket_logging(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
         let body_str = std::str::from_utf8(&req.body).unwrap_or("").to_string();
-        let mut state = self.state.write();
+        let mut accts = self.state.write();
+        let state = accts.get_or_create(account_id);
         let b = state
             .buckets
             .get_mut(bucket)
@@ -373,8 +417,14 @@ impl S3Service {
         Ok(empty_response(StatusCode::OK))
     }
 
-    pub(super) fn get_bucket_logging(&self, bucket: &str) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+    pub(super) fn get_bucket_logging(
+        &self,
+        account_id: &str,
+        bucket: &str,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let accts = self.state.read();
+        let __empty = crate::state::S3State::new(account_id, "us-east-1");
+        let state = accts.get(account_id).unwrap_or(&__empty);
         let b = state
             .buckets
             .get(bucket)
@@ -393,11 +443,13 @@ impl S3Service {
 
     pub(super) fn put_bucket_website(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
         let body_str = std::str::from_utf8(&req.body).unwrap_or("").to_string();
-        let mut state = self.state.write();
+        let mut accts = self.state.write();
+        let state = accts.get_or_create(account_id);
         let b = state
             .buckets
             .get_mut(bucket)
@@ -409,8 +461,14 @@ impl S3Service {
         Ok(empty_response(StatusCode::OK))
     }
 
-    pub(super) fn get_bucket_website(&self, bucket: &str) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+    pub(super) fn get_bucket_website(
+        &self,
+        account_id: &str,
+        bucket: &str,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let accts = self.state.read();
+        let __empty = crate::state::S3State::new(account_id, "us-east-1");
+        let state = accts.get(account_id).unwrap_or(&__empty);
         let b = state
             .buckets
             .get(bucket)
@@ -428,9 +486,11 @@ impl S3Service {
 
     pub(super) fn delete_bucket_website(
         &self,
+        account_id: &str,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let mut state = self.state.write();
+        let mut accts = self.state.write();
+        let state = accts.get_or_create(account_id);
         let b = state
             .buckets
             .get_mut(bucket)
@@ -446,6 +506,7 @@ impl S3Service {
 
     pub(super) fn put_bucket_accelerate(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
@@ -458,7 +519,8 @@ impl S3Service {
         }
         let body_str = std::str::from_utf8(&req.body).unwrap_or("");
         let status = extract_xml_value(body_str, "Status");
-        let mut state = self.state.write();
+        let mut accts = self.state.write();
+        let state = accts.get_or_create(account_id);
         let b = state
             .buckets
             .get_mut(bucket)
@@ -487,9 +549,12 @@ impl S3Service {
 
     pub(super) fn get_bucket_accelerate(
         &self,
+        account_id: &str,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let accts = self.state.read();
+        let __empty = crate::state::S3State::new(account_id, "us-east-1");
+        let state = accts.get(account_id).unwrap_or(&__empty);
         let b = state
             .buckets
             .get(bucket)
@@ -511,6 +576,7 @@ impl S3Service {
 
     pub(super) fn put_public_access_block(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
@@ -527,7 +593,8 @@ impl S3Service {
                 "Must specify at least one configuration.",
             ));
         }
-        let mut state = self.state.write();
+        let mut accts = self.state.write();
+        let state = accts.get_or_create(account_id);
         let b = state
             .buckets
             .get_mut(bucket)
@@ -541,9 +608,12 @@ impl S3Service {
 
     pub(super) fn get_public_access_block(
         &self,
+        account_id: &str,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let accts = self.state.read();
+        let __empty = crate::state::S3State::new(account_id, "us-east-1");
+        let state = accts.get(account_id).unwrap_or(&__empty);
         let b = state
             .buckets
             .get(bucket)
@@ -578,9 +648,11 @@ impl S3Service {
 
     pub(super) fn delete_public_access_block(
         &self,
+        account_id: &str,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let mut state = self.state.write();
+        let mut accts = self.state.write();
+        let state = accts.get_or_create(account_id);
         let b = state
             .buckets
             .get_mut(bucket)
@@ -596,6 +668,7 @@ impl S3Service {
 
     pub(super) fn put_object_lock_config(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
@@ -619,7 +692,8 @@ impl S3Service {
             ));
         }
 
-        let mut state = self.state.write();
+        let mut accts = self.state.write();
+        let state = accts.get_or_create(account_id);
         let b = state
             .buckets
             .get_mut(bucket)
@@ -643,10 +717,13 @@ impl S3Service {
 
     pub(super) fn get_bucket_tagging(
         &self,
+        account_id: &str,
         _req: &AwsRequest,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let accts = self.state.read();
+        let __empty = crate::state::S3State::new(account_id, "us-east-1");
+        let state = accts.get(account_id).unwrap_or(&__empty);
         let b = state
             .buckets
             .get(bucket)
@@ -677,6 +754,7 @@ impl S3Service {
 
     pub(super) fn put_bucket_tagging(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
@@ -686,7 +764,8 @@ impl S3Service {
         // Validate tags: no duplicate keys
         validate_tags(&tags)?;
 
-        let mut state = self.state.write();
+        let mut accts = self.state.write();
+        let state = accts.get_or_create(account_id);
         let b = state
             .buckets
             .get_mut(bucket)
@@ -709,10 +788,12 @@ impl S3Service {
 
     pub(super) fn delete_bucket_tagging(
         &self,
+        account_id: &str,
         _req: &AwsRequest,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let mut state = self.state.write();
+        let mut accts = self.state.write();
+        let state = accts.get_or_create(account_id);
         let b = state
             .buckets
             .get_mut(bucket)
@@ -733,10 +814,13 @@ impl S3Service {
 
     pub(super) fn get_bucket_acl(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let accts = self.state.read();
+        let __empty = crate::state::S3State::new(account_id, "us-east-1");
+        let state = accts.get(account_id).unwrap_or(&__empty);
         let b = state
             .buckets
             .get(bucket)
@@ -748,6 +832,7 @@ impl S3Service {
 
     pub(super) fn put_bucket_acl(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
@@ -758,7 +843,8 @@ impl S3Service {
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
 
-        let mut state = self.state.write();
+        let mut accts = self.state.write();
+        let state = accts.get_or_create(account_id);
         let b = state
             .buckets
             .get_mut(bucket)
@@ -793,13 +879,15 @@ impl S3Service {
 
     pub(super) fn put_bucket_versioning(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
         let body_str = std::str::from_utf8(&req.body).unwrap_or("");
         let status_val = extract_xml_value(body_str, "Status").unwrap_or_default();
 
-        let mut state = self.state.write();
+        let mut accts = self.state.write();
+        let state = accts.get_or_create(account_id);
         let b = state
             .buckets
             .get_mut(bucket)
@@ -821,9 +909,12 @@ impl S3Service {
 
     pub(super) fn get_bucket_versioning(
         &self,
+        account_id: &str,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let accts = self.state.read();
+        let __empty = crate::state::S3State::new(account_id, "us-east-1");
+        let state = accts.get(account_id).unwrap_or(&__empty);
         let b = state
             .buckets
             .get(bucket)
@@ -842,9 +933,12 @@ impl S3Service {
     }
     pub(super) fn get_object_lock_configuration(
         &self,
+        account_id: &str,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let accts = self.state.read();
+        let __empty = crate::state::S3State::new(account_id, "us-east-1");
+        let state = accts.get(account_id).unwrap_or(&__empty);
         let b = state
             .buckets
             .get(bucket)
@@ -861,11 +955,13 @@ impl S3Service {
 
     pub(super) fn put_bucket_replication(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
         let body_str = std::str::from_utf8(&req.body).unwrap_or("").to_string();
-        let mut state = self.state.write();
+        let mut accts = self.state.write();
+        let state = accts.get_or_create(account_id);
         let b = state
             .buckets
             .get_mut(bucket)
@@ -891,9 +987,12 @@ impl S3Service {
 
     pub(super) fn get_bucket_replication(
         &self,
+        account_id: &str,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let accts = self.state.read();
+        let __empty = crate::state::S3State::new(account_id, "us-east-1");
+        let state = accts.get(account_id).unwrap_or(&__empty);
         let b = state
             .buckets
             .get(bucket)
@@ -911,9 +1010,11 @@ impl S3Service {
 
     pub(super) fn delete_bucket_replication(
         &self,
+        account_id: &str,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let mut state = self.state.write();
+        let mut accts = self.state.write();
+        let state = accts.get_or_create(account_id);
         let b = state
             .buckets
             .get_mut(bucket)
@@ -927,11 +1028,13 @@ impl S3Service {
 
     pub(super) fn put_bucket_ownership_controls(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
         let body_str = std::str::from_utf8(&req.body).unwrap_or("").to_string();
-        let mut state = self.state.write();
+        let mut accts = self.state.write();
+        let state = accts.get_or_create(account_id);
         let b = state
             .buckets
             .get_mut(bucket)
@@ -945,9 +1048,12 @@ impl S3Service {
 
     pub(super) fn get_bucket_ownership_controls(
         &self,
+        account_id: &str,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let accts = self.state.read();
+        let __empty = crate::state::S3State::new(account_id, "us-east-1");
+        let state = accts.get(account_id).unwrap_or(&__empty);
         let b = state
             .buckets
             .get(bucket)
@@ -965,9 +1071,11 @@ impl S3Service {
 
     pub(super) fn delete_bucket_ownership_controls(
         &self,
+        account_id: &str,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let mut state = self.state.write();
+        let mut accts = self.state.write();
+        let state = accts.get_or_create(account_id);
         let b = state
             .buckets
             .get_mut(bucket)
@@ -981,6 +1089,7 @@ impl S3Service {
 
     pub(super) fn put_bucket_inventory(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
@@ -990,7 +1099,8 @@ impl S3Service {
             .or_else(|| req.query_params.get("id").cloned())
             .unwrap_or_default();
         let payload = {
-            let mut state = self.state.write();
+            let mut accts = self.state.write();
+            let state = accts.get_or_create(account_id);
             let b = state
                 .buckets
                 .get_mut(bucket)
@@ -1011,11 +1121,14 @@ impl S3Service {
 
     pub(super) fn get_bucket_inventory(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
         let inv_id = req.query_params.get("id").cloned().unwrap_or_default();
-        let state = self.state.read();
+        let accts = self.state.read();
+        let __empty = crate::state::S3State::new(account_id, "us-east-1");
+        let state = accts.get(account_id).unwrap_or(&__empty);
         let b = state
             .buckets
             .get(bucket)
@@ -1032,9 +1145,12 @@ impl S3Service {
 
     pub(super) fn list_bucket_inventory_configurations(
         &self,
+        account_id: &str,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let accts = self.state.read();
+        let __empty = crate::state::S3State::new(account_id, "us-east-1");
+        let state = accts.get(account_id).unwrap_or(&__empty);
         let b = state
             .buckets
             .get(bucket)
@@ -1058,11 +1174,13 @@ impl S3Service {
 
     pub(super) fn delete_bucket_inventory(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
         let inv_id = req.query_params.get("id").cloned().unwrap_or_default();
-        let mut state = self.state.write();
+        let mut accts = self.state.write();
+        let state = accts.get_or_create(account_id);
         let b = state
             .buckets
             .get_mut(bucket)

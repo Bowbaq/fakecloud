@@ -372,10 +372,15 @@ pub struct DynamoDbState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DynamoDbSnapshot {
     pub schema_version: u32,
-    pub state: DynamoDbState,
+    /// v2+: multi-account state.
+    #[serde(default)]
+    pub accounts: Option<fakecloud_core::multi_account::MultiAccountState<DynamoDbState>>,
+    /// v1 compat: single-account state.
+    #[serde(default)]
+    pub state: Option<DynamoDbState>,
 }
 
-pub const DYNAMODB_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+pub const DYNAMODB_SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 
 impl DynamoDbState {
     pub fn new(account_id: &str, region: &str) -> Self {
@@ -399,4 +404,11 @@ impl DynamoDbState {
     }
 }
 
-pub type SharedDynamoDbState = Arc<RwLock<DynamoDbState>>;
+impl fakecloud_core::multi_account::AccountState for DynamoDbState {
+    fn new_for_account(account_id: &str, region: &str, _endpoint: &str) -> Self {
+        Self::new(account_id, region)
+    }
+}
+
+pub type SharedDynamoDbState =
+    Arc<RwLock<fakecloud_core::multi_account::MultiAccountState<DynamoDbState>>>;

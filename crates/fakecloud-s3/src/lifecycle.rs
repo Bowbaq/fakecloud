@@ -35,7 +35,8 @@ impl LifecycleProcessor {
 
         // Collect bucket names and their lifecycle configs (to avoid holding lock during processing)
         let bucket_configs: Vec<(String, String)> = {
-            let state = self.state.read();
+            let __mas = self.state.read();
+            let state = __mas.default_ref();
             state
                 .buckets
                 .values()
@@ -64,7 +65,8 @@ impl LifecycleProcessor {
     }
 
     fn process_rule(&self, bucket_name: &str, rule: &LifecycleRule, today: NaiveDate) {
-        let mut state = self.state.write();
+        let mut __mas = self.state.write();
+        let state = __mas.default_mut();
         let bucket = match state.buckets.get_mut(bucket_name) {
             Some(b) => b,
             None => return,

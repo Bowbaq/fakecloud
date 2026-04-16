@@ -22,10 +22,13 @@ use super::{
 impl S3Service {
     pub(super) fn list_objects_v1(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let accts = self.state.read();
+        let __empty = crate::state::S3State::new(account_id, "us-east-1");
+        let state = accts.get(account_id).unwrap_or(&__empty);
         let b = state
             .buckets
             .get(bucket)
@@ -173,10 +176,13 @@ impl S3Service {
 
     pub(super) fn list_objects_v2(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let accts = self.state.read();
+        let __empty = crate::state::S3State::new(account_id, "us-east-1");
+        let state = accts.get(account_id).unwrap_or(&__empty);
         let b = state
             .buckets
             .get(bucket)
@@ -368,10 +374,13 @@ impl S3Service {
 
     pub(super) fn list_object_versions(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let accts = self.state.read();
+        let __empty = crate::state::S3State::new(account_id, "us-east-1");
+        let state = accts.get(account_id).unwrap_or(&__empty);
         let b = state
             .buckets
             .get(bucket)
@@ -585,6 +594,7 @@ impl S3Service {
 
     pub(super) fn put_object(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
         key: &str,
@@ -667,7 +677,9 @@ impl S3Service {
             notification_config,
             region,
         ) = {
-            let state = self.state.read();
+            let accts = self.state.read();
+            let __empty = crate::state::S3State::new(account_id, "us-east-1");
+            let state = accts.get(account_id).unwrap_or(&__empty);
             let b = state
                 .buckets
                 .get(bucket)
@@ -954,7 +966,8 @@ impl S3Service {
 
         // --- Write lock phase: insert object and handle versioning/replication ---
         {
-            let mut state = self.state.write();
+            let mut accts = self.state.write();
+            let state = accts.get_or_create(account_id);
             let b = state
                 .buckets
                 .get_mut(bucket)
@@ -1027,7 +1040,7 @@ impl S3Service {
                 }
             }
             // Replicate (in-memory copy) then persist replicas via the store.
-            replicate_through_store(&mut state, &self.store, bucket, key)
+            replicate_through_store(state, &self.store, bucket, key)
                 .map_err(super::persistence_error)?;
         } // write lock dropped
 
@@ -1101,11 +1114,14 @@ impl S3Service {
 
     pub(super) fn get_object(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
         key: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let accts = self.state.read();
+        let __empty = crate::state::S3State::new(account_id, "us-east-1");
+        let state = accts.get(account_id).unwrap_or(&__empty);
         let b = state
             .buckets
             .get(bucket)
@@ -1244,12 +1260,12 @@ impl S3Service {
                     }
                     RangeResult::Ignored => {
                         headers.insert("content-length", total_size.to_string().parse().unwrap());
-                        response_body = full_body_response(&state, &obj.body)?;
+                        response_body = full_body_response(state, &obj.body)?;
                     }
                 }
             } else {
                 headers.insert("content-length", total_size.to_string().parse().unwrap());
-                response_body = full_body_response(&state, &obj.body)?;
+                response_body = full_body_response(state, &obj.body)?;
             }
         } else if let Some(part_num_str) = req.query_params.get("partNumber") {
             if let Ok(part_num) = part_num_str.parse::<u32>() {
@@ -1293,11 +1309,11 @@ impl S3Service {
                 response_status = StatusCode::PARTIAL_CONTENT;
             } else {
                 headers.insert("content-length", total_size.to_string().parse().unwrap());
-                response_body = full_body_response(&state, &obj.body)?;
+                response_body = full_body_response(state, &obj.body)?;
             }
         } else {
             headers.insert("content-length", total_size.to_string().parse().unwrap());
-            response_body = full_body_response(&state, &obj.body)?;
+            response_body = full_body_response(state, &obj.body)?;
         }
         // Only include checksum headers for full (non-range) responses
         if !is_range_request {
@@ -1323,12 +1339,13 @@ impl S3Service {
     /// Serve a website object (index or error document) from the bucket.
     pub(super) fn serve_website_object(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
         key: &str,
         website_config: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let result = self.get_object(req, bucket, key);
+        let result = self.get_object(account_id, req, bucket, key);
         if result.is_err() {
             // If index doc doesn't exist either, try error document
             if let Some(error_key) = extract_xml_value(website_config, "ErrorDocument")
@@ -1341,7 +1358,7 @@ impl S3Service {
                 })
                 .or_else(|| extract_xml_value(website_config, "Key"))
             {
-                return self.serve_website_error(req, bucket, &error_key);
+                return self.serve_website_error(account_id, req, bucket, &error_key);
             }
         }
         result
@@ -1350,11 +1367,12 @@ impl S3Service {
     /// Serve the website error document with a 404 status.
     pub(super) fn serve_website_error(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
         error_key: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        match self.get_object(req, bucket, error_key) {
+        match self.get_object(account_id, req, bucket, error_key) {
             Ok(mut resp) => {
                 resp.status = StatusCode::NOT_FOUND;
                 Ok(resp)
@@ -1365,6 +1383,7 @@ impl S3Service {
 
     pub(super) fn delete_object(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
         key: &str,
@@ -1376,7 +1395,8 @@ impl S3Service {
             .map(|s| s.to_string());
         let version_id_param = req.query_params.get("versionId").cloned();
 
-        let mut state = self.state.write();
+        let mut accts = self.state.write();
+        let state = accts.get_or_create(account_id);
         let region = state.region.clone();
         let b = state
             .buckets
@@ -1567,7 +1587,7 @@ impl S3Service {
             let bucket_name = bucket.to_string();
             let obj_key = key.to_string();
             let region = region.clone();
-            drop(state);
+            drop(accts);
             if let Some(ref config) = notification_config {
                 deliver_notifications(
                     &self.delivery,
@@ -1601,7 +1621,7 @@ impl S3Service {
         self.store
             .delete_object(bucket, key, None)
             .map_err(super::persistence_error)?;
-        drop(state);
+        drop(accts);
 
         // Deliver S3 event notifications
         if let Some(ref config) = notification_config {
@@ -1630,11 +1650,14 @@ impl S3Service {
 
     pub(super) fn head_object(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
         key: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let accts = self.state.read();
+        let __empty = crate::state::S3State::new(account_id, "us-east-1");
+        let state = accts.get(account_id).unwrap_or(&__empty);
         let b = state
             .buckets
             .get(bucket)
@@ -1835,6 +1858,7 @@ impl S3Service {
 
     pub(super) fn copy_object(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         dest_bucket: &str,
         dest_key: &str,
@@ -1940,7 +1964,8 @@ impl S3Service {
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_uppercase());
 
-        let mut state = self.state.write();
+        let mut accts = self.state.write();
+        let state = accts.get_or_create(account_id);
 
         // Resolve source object, possibly a specific version
         let (src_obj, src_version_id_actual) = {
@@ -2253,10 +2278,10 @@ impl S3Service {
         let region = state.region.clone();
 
         // Replicate object if replication is configured on the destination bucket
-        replicate_through_store(&mut state, &self.store, dest_bucket, dest_key)
+        replicate_through_store(state, &self.store, dest_bucket, dest_key)
             .map_err(super::persistence_error)?;
 
-        drop(state);
+        drop(accts);
 
         let body = format!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
@@ -2295,6 +2320,7 @@ impl S3Service {
 
     pub(super) fn delete_objects(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
@@ -2309,7 +2335,8 @@ impl S3Service {
             ));
         }
 
-        let mut state = self.state.write();
+        let mut accts = self.state.write();
+        let state = accts.get_or_create(account_id);
         let b = state
             .buckets
             .get_mut(bucket)
@@ -2447,11 +2474,14 @@ impl S3Service {
 
     pub(super) fn get_object_attributes(
         &self,
+        account_id: &str,
         req: &AwsRequest,
         bucket: &str,
         key: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let accts = self.state.read();
+        let __empty = crate::state::S3State::new(account_id, "us-east-1");
+        let state = accts.get(account_id).unwrap_or(&__empty);
         let b = state
             .buckets
             .get(bucket)
@@ -2536,11 +2566,13 @@ impl S3Service {
 
     pub(super) fn restore_object(
         &self,
+        account_id: &str,
         _req: &AwsRequest,
         bucket: &str,
         key: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let mut state = self.state.write();
+        let mut accts = self.state.write();
+        let state = accts.get_or_create(account_id);
         let b = state
             .buckets
             .get_mut(bucket)

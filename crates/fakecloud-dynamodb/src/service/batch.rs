@@ -37,7 +37,9 @@ impl DynamoDbService {
             })?
             .clone();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty_ddb = crate::state::DynamoDbState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty_ddb);
         let mut responses: HashMap<String, Vec<Value>> = HashMap::new();
         let mut consumed_capacity: Vec<Value> = Vec::new();
 
@@ -114,7 +116,8 @@ impl DynamoDbService {
             })?
             .clone();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let mut consumed_capacity: Vec<Value> = Vec::new();
         let mut item_collection_metrics: HashMap<String, Vec<Value>> = HashMap::new();
 
@@ -201,7 +204,9 @@ impl DynamoDbService {
             )
         })?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty_ddb = crate::state::DynamoDbState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty_ddb);
         let mut responses: Vec<Value> = Vec::new();
 
         for ti in transact_items {
@@ -259,7 +264,8 @@ impl DynamoDbService {
             )
         })?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // First pass: validate all conditions
         let mut cancellation_reasons: Vec<Value> = Vec::new();

@@ -48,7 +48,9 @@ impl ResourcePolicyProvider for S3ResourcePolicyProvider {
             return None;
         }
         let bucket_name = parse_bucket_name(resource_arn)?;
-        let state = self.state.read();
+        let mas = self.state.read();
+        let acct = mas.find_account(|s| s.buckets.contains_key(bucket_name))?;
+        let state = mas.get(acct)?;
         state
             .buckets
             .get(bucket_name)
@@ -84,11 +86,13 @@ mod tests {
     use parking_lot::RwLock;
 
     fn state_with_bucket(name: &str, policy: Option<&str>) -> SharedS3State {
-        let mut s = S3State::new("123456789012", "us-east-1");
+        let mut mas: fakecloud_core::multi_account::MultiAccountState<S3State> =
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", "");
+        let s = mas.get_or_create("123456789012");
         let mut b = S3Bucket::new(name, "us-east-1", "owner");
         b.policy = policy.map(|p| p.to_string());
         s.buckets.insert(name.to_string(), b);
-        Arc::new(RwLock::new(s))
+        Arc::new(RwLock::new(mas))
     }
 
     #[test]

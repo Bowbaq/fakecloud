@@ -16,43 +16,46 @@ pub fn process_ttl_expirations(state: &SharedDynamoDbState) -> usize {
 /// making it easy to test without time manipulation.
 pub fn process_ttl_expirations_at(state: &SharedDynamoDbState, now_epoch: i64) -> usize {
     let mut total_expired = 0;
-    let mut state = state.write();
+    let mut mas = state.write();
 
-    for table in state.tables.values_mut() {
-        if !table.ttl_enabled {
-            continue;
-        }
+    // Process TTL across all accounts
+    for (_, acct_state) in mas.iter_mut() {
+        for table in acct_state.tables.values_mut() {
+            if !table.ttl_enabled {
+                continue;
+            }
 
-        let ttl_attr = match &table.ttl_attribute {
-            Some(attr) => attr.clone(),
-            None => continue,
-        };
-
-        let before = table.items.len();
-        table.items.retain(|item| {
-            let av = match item.get(&ttl_attr) {
-                Some(v) => v,
-                None => return true, // no TTL attribute → keep
+            let ttl_attr = match &table.ttl_attribute {
+                Some(attr) => attr.clone(),
+                None => continue,
             };
 
-            // TTL attribute must be a Number ({"N": "..."})
-            let epoch = match av.as_object().and_then(|obj| obj.get("N")) {
-                Some(n) => match n.as_str().and_then(|s| s.parse::<i64>().ok()) {
+            let before = table.items.len();
+            table.items.retain(|item| {
+                let av = match item.get(&ttl_attr) {
                     Some(v) => v,
-                    None => return true, // non-numeric → keep
-                },
-                None => return true, // not a Number type → keep
-            };
+                    None => return true, // no TTL attribute → keep
+                };
 
-            // Keep if TTL is in the future (or exactly now)
-            epoch >= now_epoch
-        });
-        let removed = before - table.items.len();
-        if removed > 0 {
-            table.recalculate_stats();
+                // TTL attribute must be a Number ({"N": "..."})
+                let epoch = match av.as_object().and_then(|obj| obj.get("N")) {
+                    Some(n) => match n.as_str().and_then(|s| s.parse::<i64>().ok()) {
+                        Some(v) => v,
+                        None => return true, // non-numeric → keep
+                    },
+                    None => return true, // not a Number type → keep
+                };
+
+                // Keep if TTL is in the future (or exactly now)
+                epoch >= now_epoch
+            });
+            let removed = before - table.items.len();
+            if removed > 0 {
+                table.recalculate_stats();
+            }
+            total_expired += removed;
         }
-        total_expired += removed;
-    }
+    } // end per-account loop
 
     total_expired
 }
@@ -67,7 +70,9 @@ mod tests {
     use std::sync::Arc;
 
     fn make_state() -> SharedDynamoDbState {
-        Arc::new(RwLock::new(DynamoDbState::new("123456789012", "us-east-1")))
+        Arc::new(RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ))
     }
 
     fn make_table(name: &str, ttl_enabled: bool, ttl_attribute: Option<&str>) -> DynamoTable {
@@ -137,11 +142,15 @@ mod tests {
         table
             .items
             .push(make_item("a", Some(json!({"N": "999999"}))));
-        state.write().tables.insert("t1".to_string(), table);
+        state
+            .write()
+            .default_mut()
+            .tables
+            .insert("t1".to_string(), table);
 
         let count = process_ttl_expirations_at(&state, now);
         assert_eq!(count, 1);
-        assert_eq!(state.read().tables["t1"].items.len(), 0);
+        assert_eq!(state.read().default_ref().tables["t1"].items.len(), 0);
     }
 
     #[test]
@@ -154,11 +163,15 @@ mod tests {
         table
             .items
             .push(make_item("a", Some(json!({"N": "2000000"}))));
-        state.write().tables.insert("t1".to_string(), table);
+        state
+            .write()
+            .default_mut()
+            .tables
+            .insert("t1".to_string(), table);
 
         let count = process_ttl_expirations_at(&state, now);
         assert_eq!(count, 0);
-        assert_eq!(state.read().tables["t1"].items.len(), 1);
+        assert_eq!(state.read().default_ref().tables["t1"].items.len(), 1);
     }
 
     #[test]
@@ -170,11 +183,15 @@ mod tests {
         table
             .items
             .push(make_item("a", Some(json!({"N": "999999"}))));
-        state.write().tables.insert("t1".to_string(), table);
+        state
+            .write()
+            .default_mut()
+            .tables
+            .insert("t1".to_string(), table);
 
         let count = process_ttl_expirations_at(&state, now);
         assert_eq!(count, 0);
-        assert_eq!(state.read().tables["t1"].items.len(), 1);
+        assert_eq!(state.read().default_ref().tables["t1"].items.len(), 1);
     }
 
     #[test]
@@ -185,11 +202,15 @@ mod tests {
         let mut table = make_table("t1", true, Some("ttl"));
         // Item without the TTL attribute at all
         table.items.push(make_item("a", None));
-        state.write().tables.insert("t1".to_string(), table);
+        state
+            .write()
+            .default_mut()
+            .tables
+            .insert("t1".to_string(), table);
 
         let count = process_ttl_expirations_at(&state, now);
         assert_eq!(count, 0);
-        assert_eq!(state.read().tables["t1"].items.len(), 1);
+        assert_eq!(state.read().default_ref().tables["t1"].items.len(), 1);
     }
 
     #[test]
@@ -202,11 +223,15 @@ mod tests {
         table
             .items
             .push(make_item("a", Some(json!({"S": "not-a-number"}))));
-        state.write().tables.insert("t1".to_string(), table);
+        state
+            .write()
+            .default_mut()
+            .tables
+            .insert("t1".to_string(), table);
 
         let count = process_ttl_expirations_at(&state, now);
         assert_eq!(count, 0);
-        assert_eq!(state.read().tables["t1"].items.len(), 1);
+        assert_eq!(state.read().default_ref().tables["t1"].items.len(), 1);
     }
 
     #[test]
@@ -228,11 +253,15 @@ mod tests {
         table
             .items
             .push(make_item("string-ttl", Some(json!({"S": "oops"}))));
-        state.write().tables.insert("t1".to_string(), table);
+        state
+            .write()
+            .default_mut()
+            .tables
+            .insert("t1".to_string(), table);
 
         let count = process_ttl_expirations_at(&state, now);
         assert_eq!(count, 2);
-        assert_eq!(state.read().tables["t1"].items.len(), 3);
+        assert_eq!(state.read().default_ref().tables["t1"].items.len(), 3);
     }
 
     #[test]
@@ -249,10 +278,14 @@ mod tests {
             .push(make_item("b", Some(json!({"N": "2000000"}))));
         table.item_count = 2;
         table.size_bytes = 100;
-        state.write().tables.insert("t1".to_string(), table);
+        state
+            .write()
+            .default_mut()
+            .tables
+            .insert("t1".to_string(), table);
 
         process_ttl_expirations_at(&state, now);
         let s = state.read();
-        assert_eq!(s.tables["t1"].item_count, 1);
+        assert_eq!(s.default_ref().tables["t1"].item_count, 1);
     }
 }
