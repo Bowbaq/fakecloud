@@ -36,10 +36,12 @@ impl IamPolicyEvaluator for IamPolicyEvaluatorImpl {
         principal: &Principal,
         action: &IamAction,
         context: &ConditionContext,
+        session_policies: &[String],
     ) -> IamDecision {
         let state = self.state.read();
         let identity_policies = evaluator::collect_identity_policies(&state, principal);
         let boundary = evaluator::collect_boundary_policies(&state, principal);
+        let session = parse_session_policies(session_policies);
         let request = EvalRequest {
             principal,
             action: action.action_string(),
@@ -49,7 +51,7 @@ impl IamPolicyEvaluator for IamPolicyEvaluatorImpl {
         decision_to_core(evaluator::evaluate_with_gates(
             &identity_policies,
             boundary.as_deref(),
-            None,
+            session.as_deref(),
             &request,
         ))
     }
@@ -61,10 +63,12 @@ impl IamPolicyEvaluator for IamPolicyEvaluatorImpl {
         context: &ConditionContext,
         resource_policy_json: Option<&str>,
         resource_account_id: &str,
+        session_policies: &[String],
     ) -> IamDecision {
         let state = self.state.read();
         let identity_policies = evaluator::collect_identity_policies(&state, principal);
         let boundary = evaluator::collect_boundary_policies(&state, principal);
+        let session = parse_session_policies(session_policies);
         let request = EvalRequest {
             principal,
             action: action.action_string(),
@@ -75,12 +79,23 @@ impl IamPolicyEvaluator for IamPolicyEvaluatorImpl {
         decision_to_core(evaluator::evaluate_with_resource_policy_and_gates(
             &identity_policies,
             boundary.as_deref(),
-            None,
+            session.as_deref(),
             resource_policy.as_ref(),
             &request,
             resource_account_id,
         ))
     }
+}
+
+fn parse_session_policies(raw: &[String]) -> Option<Vec<evaluator::PolicyDocument>> {
+    if raw.is_empty() {
+        return None;
+    }
+    Some(
+        raw.iter()
+            .map(|doc| evaluator::PolicyDocument::parse(doc))
+            .collect(),
+    )
 }
 
 fn decision_to_core(decision: Decision) -> IamDecision {
@@ -154,7 +169,7 @@ mod tests {
             resource: "arn:aws:s3:::bucket/key".into(),
         };
         assert_eq!(
-            eval.evaluate(&principal(), &action, &ConditionContext::default()),
+            eval.evaluate(&principal(), &action, &ConditionContext::default(), &[]),
             IamDecision::Allow
         );
     }
@@ -183,7 +198,7 @@ mod tests {
             resource: "arn:aws:s3:::bucket/key".into(),
         };
         assert_eq!(
-            eval.evaluate(&principal(), &action, &ConditionContext::default()),
+            eval.evaluate(&principal(), &action, &ConditionContext::default(), &[]),
             IamDecision::ExplicitDeny
         );
     }
@@ -255,7 +270,8 @@ mod tests {
             eval.evaluate(
                 &principal(),
                 &s3_get_object_action(),
-                &ConditionContext::default()
+                &ConditionContext::default(),
+                &[]
             ),
             IamDecision::Allow
         );
@@ -263,7 +279,8 @@ mod tests {
             eval.evaluate(
                 &principal(),
                 &s3_put_object_action(),
-                &ConditionContext::default()
+                &ConditionContext::default(),
+                &[]
             ),
             IamDecision::ImplicitDeny
         );
@@ -294,7 +311,8 @@ mod tests {
             eval.evaluate(
                 &principal(),
                 &s3_put_object_action(),
-                &ConditionContext::default()
+                &ConditionContext::default(),
+                &[]
             ),
             IamDecision::ExplicitDeny
         );
@@ -322,7 +340,8 @@ mod tests {
             eval.evaluate(
                 &principal(),
                 &s3_get_object_action(),
-                &ConditionContext::default()
+                &ConditionContext::default(),
+                &[]
             ),
             IamDecision::ImplicitDeny
         );
@@ -374,7 +393,8 @@ mod tests {
             eval.evaluate(
                 &principal,
                 &s3_get_object_action(),
-                &ConditionContext::default()
+                &ConditionContext::default(),
+                &[]
             ),
             IamDecision::Allow
         );
@@ -390,7 +410,7 @@ mod tests {
             resource: "arn:aws:s3:::bucket/key".into(),
         };
         assert_eq!(
-            eval.evaluate(&principal(), &action, &ConditionContext::default()),
+            eval.evaluate(&principal(), &action, &ConditionContext::default(), &[]),
             IamDecision::ImplicitDeny
         );
     }

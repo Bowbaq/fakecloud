@@ -131,6 +131,10 @@ pub async fn dispatch(
         None
     };
     let caller_principal = resolved.as_ref().map(|r| r.principal.clone());
+    let caller_session_policies = resolved
+        .as_ref()
+        .map(|r| r.session_policies.clone())
+        .unwrap_or_default();
 
     // Opt-in SigV4 cryptographic verification. Runs before the service
     // handler so a failing signature never reaches business logic. The
@@ -321,6 +325,7 @@ pub async fn dispatch(
                             &condition_context,
                             resource_policy_json.as_deref(),
                             &resource_account_id,
+                            &caller_session_policies,
                         );
                         if !decision.is_allow() {
                             tracing::warn!(

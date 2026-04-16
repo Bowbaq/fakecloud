@@ -9,7 +9,7 @@ use fakecloud_core::validation::*;
 use fakecloud_persistence::SnapshotStore;
 
 use crate::persistence::{save_iam_snapshot, IamSnapshotLock};
-use crate::state::{CredentialIdentity, SharedIamState, StsTempCredential};
+use crate::state::{CredentialIdentity, IamState, SharedIamState, StsTempCredential};
 use crate::xml_responses::{self, StsCredentials};
 
 /// Default duration for AssumeRole and similar operations (1 hour).
@@ -198,6 +198,51 @@ fn partition_for_region(region: &str) -> &str {
     }
 }
 
+/// Collect session policies from the STS request parameters.
+///
+/// Reads the `Policy` parameter (inline JSON) and `PolicyArns.member.N`
+/// (managed-policy ARNs, resolved against `state.policies` at mint time).
+/// Returns the raw JSON documents. Dangling `PolicyArns` entries are stored
+/// as empty strings so they produce `ImplicitDeny` at evaluate time,
+/// matching boundary dangling-ARN semantics.
+fn collect_session_policies(req: &AwsRequest, state: &IamState) -> Vec<String> {
+    let mut docs = Vec::new();
+    if let Some(inline) = req.query_params.get("Policy") {
+        docs.push(inline.clone());
+    }
+    // PolicyArns.member.1, PolicyArns.member.2, ...
+    for i in 1..=12 {
+        let key = format!("PolicyArns.member.{i}.arn");
+        let arn = match req.query_params.get(&key) {
+            Some(a) => a,
+            None => break,
+        };
+        match state
+            .policies
+            .get(arn.as_str())
+            .and_then(|p| {
+                p.versions
+                    .iter()
+                    .find(|v| v.is_default)
+                    .or_else(|| p.versions.first())
+            })
+            .map(|v| v.document.clone())
+        {
+            Some(doc) => docs.push(doc),
+            None => {
+                tracing::debug!(
+                    target: "fakecloud::iam::audit",
+                    arn = %arn,
+                    "PolicyArns entry does not resolve to a known managed policy; \
+                     session will deny all actions covered by this entry"
+                );
+                docs.push(String::new());
+            }
+        }
+    }
+    docs
+}
+
 /// Extract the caller's access key from the SigV4 Authorization header.
 fn extract_access_key(req: &AwsRequest) -> Option<String> {
     let auth = req.headers.get("authorization")?.to_str().ok()?;
@@ -325,6 +370,8 @@ impl StsService {
 
         let mut state = self.state.write();
 
+        let session_policies = collect_session_policies(req, &state);
+
         // Extract account ID from role ARN if present, otherwise use default
         let account_id =
             extract_account_from_arn(role_arn).unwrap_or_else(|| state.account_id.clone());
@@ -352,8 +399,6 @@ impl StsService {
                 account_id: account_id.clone(),
             },
         );
-        // Store full temp credential so SigV4 verification (batch 3) and IAM
-        // enforcement (batch 4+) can look up the secret by access key ID.
         state.sts_temp_credentials.insert(
             creds.access_key_id.clone(),
             StsTempCredential {
@@ -364,6 +409,7 @@ impl StsService {
                 user_id: assumed_role_id,
                 account_id: account_id.clone(),
                 expiration: expiration_at,
+                session_policies,
             },
         );
 
@@ -454,6 +500,7 @@ impl StsService {
         let role_id = xml_responses::generate_role_id();
 
         let mut state = self.state.write();
+        let session_policies = collect_session_policies(req, &state);
         let account_id =
             extract_account_from_arn(role_arn).unwrap_or_else(|| state.account_id.clone());
 
@@ -482,6 +529,7 @@ impl StsService {
                 user_id: assumed_role_id_str,
                 account_id: account_id.clone(),
                 expiration: expiration_at,
+                session_policies,
             },
         );
 
@@ -568,6 +616,7 @@ impl StsService {
         let role_id = xml_responses::generate_role_id();
 
         let mut state = self.state.write();
+        let session_policies = collect_session_policies(req, &state);
         let account_id =
             extract_account_from_arn(role_arn).unwrap_or_else(|| state.account_id.clone());
 
@@ -596,6 +645,7 @@ impl StsService {
                 user_id: assumed_role_id_str,
                 account_id: account_id.clone(),
                 expiration: expiration_at,
+                session_policies,
             },
         );
 
@@ -686,6 +736,8 @@ impl StsService {
                 account_id: account_id.clone(),
             },
         );
+        // GetSessionToken does not accept a Policy parameter per AWS
+        // docs, so session_policies is always empty for this operation.
         state.sts_temp_credentials.insert(
             creds.access_key_id.clone(),
             StsTempCredential {
@@ -696,6 +748,7 @@ impl StsService {
                 user_id,
                 account_id,
                 expiration: expiration_at,
+                session_policies: Vec::new(),
             },
         );
 
@@ -746,6 +799,7 @@ impl StsService {
         let creds = StsCredentials::generate();
 
         let mut state = self.state.write();
+        let session_policies = collect_session_policies(req, &state);
         let account_id = state.account_id.clone();
         let federated_user_arn = format!(
             "arn:{}:sts::{}:federated-user/{}",
@@ -771,6 +825,7 @@ impl StsService {
                 user_id: federated_user_id,
                 account_id: account_id.clone(),
                 expiration: expiration_at,
+                session_policies,
             },
         );
 
