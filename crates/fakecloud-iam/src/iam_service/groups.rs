@@ -22,7 +22,8 @@ impl IamService {
             .cloned()
             .unwrap_or_else(|| "/".to_string());
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if state.groups.contains_key(&group_name) {
             return Err(AwsServiceError::aws_error(
@@ -79,7 +80,8 @@ impl IamService {
     pub(super) fn get_group(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let group_name = required_param(&req.query_params, "GroupName")?;
         validate_string_length("groupName", &group_name, 1, 128)?;
-        let state = self.state.read();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let group = state.groups.get(&group_name).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -136,7 +138,8 @@ impl IamService {
     pub(super) fn delete_group(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let group_name = required_param(&req.query_params, "GroupName")?;
         validate_string_length("groupName", &group_name, 1, 128)?;
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if state.groups.remove(&group_name).is_none() {
             return Err(AwsServiceError::aws_error(
@@ -151,7 +154,8 @@ impl IamService {
     }
 
     pub(super) fn list_groups(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let path_prefix = req.query_params.get("PathPrefix").cloned();
         let mut groups: Vec<&IamGroup> = state.groups.values().collect();
         if let Some(prefix) = &path_prefix {
@@ -192,7 +196,8 @@ impl IamService {
         let new_group_name = req.query_params.get("NewGroupName").cloned();
         let new_path = req.query_params.get("NewPath").cloned();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let group = state.groups.get(&group_name).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -240,7 +245,8 @@ impl IamService {
         let group_name = required_param(&req.query_params, "GroupName")?;
         let user_name = required_param(&req.query_params, "UserName")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if !state.users.contains_key(&user_name) {
             return Err(AwsServiceError::aws_error(
@@ -273,7 +279,8 @@ impl IamService {
         let group_name = required_param(&req.query_params, "GroupName")?;
         let user_name = required_param(&req.query_params, "UserName")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let group = state.groups.get_mut(&group_name).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -302,7 +309,8 @@ impl IamService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let user_name = required_param(&req.query_params, "UserName")?;
-        let state = self.state.read();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if !state.users.contains_key(&user_name) {
             return Err(AwsServiceError::aws_error(
@@ -368,7 +376,8 @@ impl IamService {
             ));
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let group = state.groups.get_mut(&group_name).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -390,7 +399,8 @@ impl IamService {
     ) -> Result<AwsResponse, AwsServiceError> {
         let group_name = required_param(&req.query_params, "GroupName")?;
         let policy_name = required_param(&req.query_params, "PolicyName")?;
-        let state = self.state.read();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let group = state.groups.get(&group_name).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -435,7 +445,8 @@ impl IamService {
         let group_name = required_param(&req.query_params, "GroupName")?;
         let policy_name = required_param(&req.query_params, "PolicyName")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let group = state.groups.get_mut(&group_name).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -456,7 +467,8 @@ impl IamService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let group_name = required_param(&req.query_params, "GroupName")?;
-        let state = self.state.read();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let group = state.groups.get(&group_name).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -498,7 +510,8 @@ impl IamService {
         let group_name = required_param(&req.query_params, "GroupName")?;
         let policy_arn = required_param(&req.query_params, "PolicyArn")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let group = state.groups.get_mut(&group_name).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -526,7 +539,8 @@ impl IamService {
         let group_name = required_param(&req.query_params, "GroupName")?;
         let policy_arn = required_param(&req.query_params, "PolicyArn")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let group = state.groups.get_mut(&group_name).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -561,7 +575,8 @@ impl IamService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let group_name = required_param(&req.query_params, "GroupName")?;
-        let state = self.state.read();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let group = state.groups.get(&group_name).ok_or_else(|| {
             AwsServiceError::aws_error(

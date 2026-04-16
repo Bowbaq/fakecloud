@@ -235,7 +235,11 @@ mod tests {
 
         let state = ResetState {
             iam: Arc::new(parking_lot::RwLock::new(
-                fakecloud_iam::state::IamState::new("123456789012"),
+                fakecloud_core::multi_account::MultiAccountState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "http://localhost:4566",
+                ),
             )),
             sqs: Arc::new(parking_lot::RwLock::new(
                 fakecloud_sqs::state::SqsState::new(

@@ -38,9 +38,12 @@ impl IamPolicyEvaluator for IamPolicyEvaluatorImpl {
         context: &ConditionContext,
         session_policies: &[String],
     ) -> IamDecision {
-        let state = self.state.read();
-        let identity_policies = evaluator::collect_identity_policies(&state, principal);
-        let boundary = evaluator::collect_boundary_policies(&state, principal);
+        let states = self.state.read();
+        let Some(state) = states.get(&principal.account_id) else {
+            return IamDecision::ImplicitDeny;
+        };
+        let identity_policies = evaluator::collect_identity_policies(state, principal);
+        let boundary = evaluator::collect_boundary_policies(state, principal);
         let session = parse_session_policies(session_policies);
         let request = EvalRequest {
             principal,
@@ -65,9 +68,12 @@ impl IamPolicyEvaluator for IamPolicyEvaluatorImpl {
         resource_account_id: &str,
         session_policies: &[String],
     ) -> IamDecision {
-        let state = self.state.read();
-        let identity_policies = evaluator::collect_identity_policies(&state, principal);
-        let boundary = evaluator::collect_boundary_policies(&state, principal);
+        let states = self.state.read();
+        let Some(state) = states.get(&principal.account_id) else {
+            return IamDecision::ImplicitDeny;
+        };
+        let identity_policies = evaluator::collect_identity_policies(state, principal);
+        let boundary = evaluator::collect_boundary_policies(state, principal);
         let session = parse_session_policies(session_policies);
         let request = EvalRequest {
             principal,
@@ -109,9 +115,10 @@ fn decision_to_core(decision: Decision) -> IamDecision {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{IamAccessKey, IamPolicy, IamState, IamUser, PolicyVersion};
+    use crate::state::{IamAccessKey, IamPolicy, IamState, IamUser, PolicyVersion, SharedIamState};
     use chrono::Utc;
     use fakecloud_core::auth::PrincipalType;
+    use fakecloud_core::multi_account::MultiAccountState;
     use parking_lot::RwLock;
 
     fn principal() -> Principal {
@@ -125,8 +132,9 @@ mod tests {
         }
     }
 
-    fn setup() -> Arc<RwLock<IamState>> {
-        let mut state = IamState::new("123456789012");
+    fn setup() -> SharedIamState {
+        let mut mas = MultiAccountState::<IamState>::new("123456789012", "us-east-1", "");
+        let state = mas.get_or_create("123456789012");
         state.users.insert(
             "alice".into(),
             IamUser {
@@ -149,20 +157,24 @@ mod tests {
                 created_at: Utc::now(),
             }],
         );
-        Arc::new(RwLock::new(state))
+        Arc::new(RwLock::new(mas))
     }
 
     #[test]
     fn allow_policy_produces_allow_decision() {
         let state = setup();
-        state.write().user_inline_policies.insert(
-            "alice".into(),
-            std::collections::HashMap::from([(
-                "AllowGet".into(),
-                r#"{"Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"*"}]}"#
-                    .into(),
-            )]),
-        );
+        state
+            .write()
+            .get_or_create("123456789012")
+            .user_inline_policies
+            .insert(
+                "alice".into(),
+                std::collections::HashMap::from([(
+                    "AllowGet".into(),
+                    r#"{"Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"*"}]}"#
+                        .into(),
+                )]),
+            );
         let eval = IamPolicyEvaluatorImpl::new(state);
         let action = IamAction {
             service: "s3",
@@ -178,7 +190,7 @@ mod tests {
     #[test]
     fn explicit_deny_takes_precedence() {
         let state = setup();
-        state.write().user_inline_policies.insert(
+        state.write().get_or_create("123456789012").user_inline_policies.insert(
             "alice".into(),
             std::collections::HashMap::from([
                 (
@@ -250,7 +262,8 @@ mod tests {
         // only permits s3:GetObject → PutObject must be implicit-deny.
         let state = setup();
         {
-            let mut s = state.write();
+            let mut mas = state.write();
+            let s = mas.get_or_create("123456789012");
             s.user_inline_policies.insert(
                 "alice".into(),
                 std::collections::HashMap::from([(
@@ -260,7 +273,7 @@ mod tests {
             );
             let boundary_arn = "arn:aws:iam::123456789012:policy/BoundaryReadOnly";
             insert_managed_policy(
-                &mut s,
+                s,
                 boundary_arn,
                 r#"{"Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"*"}]}"#,
             );
@@ -291,7 +304,8 @@ mod tests {
     fn boundary_explicit_deny_overrides_identity_allow() {
         let state = setup();
         {
-            let mut s = state.write();
+            let mut mas = state.write();
+            let s = mas.get_or_create("123456789012");
             s.user_inline_policies.insert(
                 "alice".into(),
                 std::collections::HashMap::from([(
@@ -301,7 +315,7 @@ mod tests {
             );
             let boundary_arn = "arn:aws:iam::123456789012:policy/BoundaryDenyPut";
             insert_managed_policy(
-                &mut s,
+                s,
                 boundary_arn,
                 r#"{"Statement":[{"Effect":"Deny","Action":"s3:PutObject","Resource":"*"}]}"#,
             );
@@ -325,7 +339,8 @@ mod tests {
         // never existed). Must deny every action, matching AWS.
         let state = setup();
         {
-            let mut s = state.write();
+            let mut mas = state.write();
+            let s = mas.get_or_create("123456789012");
             s.user_inline_policies.insert(
                 "alice".into(),
                 std::collections::HashMap::from([(
@@ -355,7 +370,8 @@ mod tests {
         let state = setup();
         {
             use crate::state::IamRole;
-            let mut s = state.write();
+            let mut mas = state.write();
+            let s = mas.get_or_create("123456789012");
             s.roles.insert(
                 "AWSServiceRoleForLambda".into(),
                 IamRole {

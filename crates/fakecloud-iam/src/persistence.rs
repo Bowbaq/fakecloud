@@ -38,7 +38,8 @@ pub async fn save_iam_snapshot(
     let _guard = lock.lock().await;
     let snapshot = IamSnapshot {
         schema_version: IAM_SNAPSHOT_SCHEMA_VERSION,
-        state: state.read().clone(),
+        accounts: Some(state.read().clone()),
+        state: None,
     };
     let join = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
         let bytes = serde_json::to_vec(&snapshot)

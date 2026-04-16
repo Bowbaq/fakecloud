@@ -849,9 +849,13 @@ mod tests {
                 "123456789012",
                 "us-east-1",
             ))),
-            iam: Arc::new(RwLock::new(fakecloud_iam::state::IamState::new(
-                "123456789012",
-            ))),
+            iam: Arc::new(RwLock::new(
+                fakecloud_core::multi_account::MultiAccountState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "",
+                ),
+            )),
             s3: Arc::new(RwLock::new(fakecloud_s3::state::S3State::new(
                 "123456789012",
                 "us-east-1",

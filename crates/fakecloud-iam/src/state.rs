@@ -3,6 +3,8 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use fakecloud_core::multi_account::{AccountState, MultiAccountState};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IamUser {
     pub user_name: String,
@@ -453,17 +455,31 @@ impl IamState {
     }
 }
 
-pub type SharedIamState = std::sync::Arc<RwLock<IamState>>;
+impl AccountState for IamState {
+    fn new_for_account(account_id: &str, _region: &str, _endpoint: &str) -> Self {
+        Self::new(account_id)
+    }
+}
+
+pub type SharedIamState = std::sync::Arc<RwLock<MultiAccountState<IamState>>>;
 
 /// On-disk snapshot envelope for IAM state. Versioned so future schema
 /// changes fail loudly instead of silently corrupting state.
+///
+/// Schema v2 stores multi-account state. v1 snapshots are migrated on
+/// load by wrapping the single `IamState` as the default account.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IamSnapshot {
     pub schema_version: u32,
-    pub state: IamState,
+    /// v2+: multi-account state. Present when `schema_version >= 2`.
+    #[serde(default)]
+    pub accounts: Option<MultiAccountState<IamState>>,
+    /// v1 compat: single-account state. Present when `schema_version == 1`.
+    #[serde(default)]
+    pub state: Option<IamState>,
 }
 
-pub const IAM_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+pub const IAM_SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 
 #[cfg(test)]
 mod tests {

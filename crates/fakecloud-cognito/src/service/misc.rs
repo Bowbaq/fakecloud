@@ -215,7 +215,7 @@ impl CognitoService {
         })?;
 
         let mut devices: Vec<&Device> = user.devices.values().collect();
-        devices.sort_by(|a, b| a.device_create_date.cmp(&b.device_create_date));
+        devices.sort_by_key(|a| a.device_create_date);
 
         let start = pagination_token
             .and_then(|t| devices.iter().position(|d| d.device_key == t))
@@ -502,7 +502,7 @@ impl CognitoService {
             })?;
 
         let mut devices: Vec<&Device> = user.devices.values().collect();
-        devices.sort_by(|a, b| a.device_create_date.cmp(&b.device_create_date));
+        devices.sort_by_key(|a| a.device_create_date);
 
         let start = pagination_token
             .and_then(|t| devices.iter().position(|d| d.device_key == t))
@@ -890,7 +890,7 @@ impl CognitoService {
             .get(pool_id)
             .map(|m| m.values().collect())
             .unwrap_or_default();
-        jobs.sort_by(|a, b| a.creation_date.cmp(&b.creation_date));
+        jobs.sort_by_key(|a| a.creation_date);
 
         let start = pagination_token
             .and_then(|t| jobs.iter().position(|j| j.job_id == t))

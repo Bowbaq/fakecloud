@@ -95,7 +95,8 @@ impl IamService {
         let saml_metadata_document = required_param(&req.query_params, "SAMLMetadataDocument")?;
         let tags = parse_tags(&req.query_params);
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let arn =
             Arn::global("iam", &state.account_id, &format!("saml-provider/{name}")).to_string();
@@ -131,7 +132,8 @@ impl IamService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let arn = required_param(&req.query_params, "SAMLProviderArn")?;
-        let state = self.state.read();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let provider = state.saml_providers.get(&arn).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -170,7 +172,8 @@ impl IamService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let arn = required_param(&req.query_params, "SAMLProviderArn")?;
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if state.saml_providers.remove(&arn).is_none() {
             return Err(AwsServiceError::aws_error(
@@ -188,7 +191,8 @@ impl IamService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let members: String = state
             .saml_providers
@@ -228,7 +232,8 @@ impl IamService {
         let arn = required_param(&req.query_params, "SAMLProviderArn")?;
         let saml_metadata_document = required_param(&req.query_params, "SAMLMetadataDocument")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let provider = state.saml_providers.get_mut(&arn).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -280,7 +285,8 @@ impl IamService {
 
         validate_oidc_provider_input(&url, &thumbprints, &client_ids)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Store URL without scheme for responses (AWS behavior)
         let url_without_scheme = url
@@ -338,7 +344,8 @@ impl IamService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let arn = required_param(&req.query_params, "OpenIDConnectProviderArn")?;
-        let state = self.state.read();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let provider = state.oidc_providers.get(&arn).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -396,7 +403,8 @@ impl IamService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let arn = required_param(&req.query_params, "OpenIDConnectProviderArn")?;
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // AWS silently succeeds when deleting a non-existing OIDC provider
         state.oidc_providers.remove(&arn);
@@ -409,7 +417,8 @@ impl IamService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let members: String = state
             .oidc_providers
@@ -453,7 +462,8 @@ impl IamService {
             i += 1;
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let provider = state.oidc_providers.get_mut(&arn).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -476,7 +486,8 @@ impl IamService {
         let arn = required_param(&req.query_params, "OpenIDConnectProviderArn")?;
         let client_id = required_param(&req.query_params, "ClientID")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let provider = state.oidc_providers.get_mut(&arn).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -501,7 +512,8 @@ impl IamService {
         let arn = required_param(&req.query_params, "OpenIDConnectProviderArn")?;
         let client_id = required_param(&req.query_params, "ClientID")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let provider = state.oidc_providers.get_mut(&arn).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -523,7 +535,8 @@ impl IamService {
     ) -> Result<AwsResponse, AwsServiceError> {
         let arn = required_param(&req.query_params, "OpenIDConnectProviderArn")?;
         let new_tags = parse_tags(&req.query_params);
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let provider = state.oidc_providers.get_mut(&arn).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -551,7 +564,8 @@ impl IamService {
     ) -> Result<AwsResponse, AwsServiceError> {
         let arn = required_param(&req.query_params, "OpenIDConnectProviderArn")?;
         let tag_keys = parse_tag_keys(&req.query_params);
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let provider = state.oidc_providers.get_mut(&arn).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -572,7 +586,8 @@ impl IamService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let arn = required_param(&req.query_params, "OpenIDConnectProviderArn")?;
-        let state = self.state.read();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let provider = state.oidc_providers.get(&arn).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -603,7 +618,8 @@ impl IamService {
         let certificate_chain = req.query_params.get("CertificateChain").cloned();
         let tags = parse_tags(&req.query_params);
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if state.server_certificates.contains_key(&name) {
             return Err(AwsServiceError::aws_error(
@@ -665,7 +681,8 @@ impl IamService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let name = required_param(&req.query_params, "ServerCertificateName")?;
-        let state = self.state.read();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let cert = state.server_certificates.get(&name).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -724,7 +741,8 @@ impl IamService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let name = required_param(&req.query_params, "ServerCertificateName")?;
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if state.server_certificates.remove(&name).is_none() {
             return Err(AwsServiceError::aws_error(
@@ -742,7 +760,8 @@ impl IamService {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let members: String = state
             .server_certificates

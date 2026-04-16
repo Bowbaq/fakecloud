@@ -262,7 +262,10 @@ pub async fn dispatch(
         service: detected.service.clone(),
         action: detected.action.clone(),
         region,
-        account_id: config.account_id.clone(),
+        account_id: caller_principal
+            .as_ref()
+            .map(|p| p.account_id.clone())
+            .unwrap_or_else(|| config.account_id.clone()),
         request_id: request_id.clone(),
         headers: parts.headers,
         query_params: all_params,

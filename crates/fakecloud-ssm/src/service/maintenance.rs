@@ -160,10 +160,8 @@ impl SsmService {
                             .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
                             .unwrap_or_default();
                         match key {
-                            "Name" => {
-                                if !values.iter().any(|v| *v == mw.name) {
-                                    return false;
-                                }
+                            "Name" if !values.iter().any(|v| *v == mw.name) => {
+                                return false;
                             }
                             "Enabled" => {
                                 let enabled_str = if mw.enabled { "true" } else { "false" };

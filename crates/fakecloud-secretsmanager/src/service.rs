@@ -870,7 +870,7 @@ impl SecretsManagerService {
                 true
             })
             .collect();
-        secrets.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        secrets.sort_by_key(|a| a.created_at);
 
         // Simple pagination with name-based token
         let start_idx = if let Some(token) = next_token {
