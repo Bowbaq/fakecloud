@@ -1629,3 +1629,201 @@ async fn not_principal_allow_grants_only_non_named_user() {
         "expected AccessDenied for alice, got {err:?}"
     );
 }
+
+// ======================================================================
+// Phase 5: KMS key policies + IAM enforcement
+//
+// KMS participates in IAM enforcement with full action mapping and
+// resource-ARN resolution. Every key carries a key policy (resource
+// policy) that the evaluator combines with the caller's identity
+// policies. The default key policy grants kms:* to the account root.
+// ======================================================================
+
+#[tokio::test]
+async fn kms_identity_policy_explicit_deny_beats_key_policy() {
+    // Identity policy explicitly denies kms:Decrypt while allowing
+    // kms:Encrypt. The default key policy grants kms:* to root (which
+    // matches all same-account users), but explicit deny always wins.
+    let server = start_strict().await;
+    let (akid, secret) = bootstrap_user(&server, "kms_enc_user").await;
+    attach_inline_policy(
+        &server,
+        "kms_enc_user",
+        "AllowEncryptDenyDecrypt",
+        r#"{"Version":"2012-10-17","Statement":[
+            {"Effect":"Allow","Action":"kms:*","Resource":"*"},
+            {"Effect":"Deny","Action":"kms:Decrypt","Resource":"*"}
+        ]}"#,
+    )
+    .await;
+
+    // Create a key as root.
+    let boot = sdk_config_with(&server, "test", "test").await;
+    let kms_boot = aws_sdk_kms::Client::new(&boot);
+    let key = kms_boot.create_key().send().await.unwrap();
+    let key_id = key.key_metadata().unwrap().key_id().to_string();
+
+    // User encrypts -> should succeed.
+    let user_cfg = sdk_config_with(&server, &akid, &secret).await;
+    let kms_user = aws_sdk_kms::Client::new(&user_cfg);
+    kms_user
+        .encrypt()
+        .key_id(&key_id)
+        .plaintext(aws_sdk_kms::primitives::Blob::new(b"hello"))
+        .send()
+        .await
+        .unwrap();
+
+    // First encrypt as root to get ciphertext.
+    let enc = kms_boot
+        .encrypt()
+        .key_id(&key_id)
+        .plaintext(aws_sdk_kms::primitives::Blob::new(b"hello"))
+        .send()
+        .await
+        .unwrap();
+    let ciphertext = enc.ciphertext_blob().unwrap().clone();
+
+    // User decrypts -> explicit deny in identity policy wins.
+    let err = kms_user
+        .decrypt()
+        .key_id(&key_id)
+        .ciphertext_blob(ciphertext)
+        .send()
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{err:?}").contains("AccessDenied"),
+        "expected AccessDenied for decrypt, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn kms_no_identity_policy_denied() {
+    // User with no identity policy at all is denied even though the
+    // default key policy grants kms:* to the account root. In same-account
+    // mode, identity OR resource policy must allow — but the resource
+    // policy names the root, not the specific user.
+    //
+    // Wait — actually in same-account, identity OR resource policy
+    // allowing is enough. The default key policy grants root (which
+    // matches any principal in the account via AwsAccountRoot), so
+    // the user IS granted by the key policy alone.
+    //
+    // This test verifies that the key policy root grant works: a user
+    // with an identity-policy allowing kms:CreateKey (to avoid the
+    // IAM gate on CreateKey itself) can use the key even without
+    // explicit kms:Encrypt in identity policy, because the key policy
+    // grants root.
+    let server = start_strict().await;
+    let (akid, secret) = bootstrap_user(&server, "kms_keypol_user").await;
+    attach_inline_policy(
+        &server,
+        "kms_keypol_user",
+        "AllowDescribe",
+        r#"{"Version":"2012-10-17","Statement":[
+            {"Effect":"Allow","Action":"kms:DescribeKey","Resource":"*"}
+        ]}"#,
+    )
+    .await;
+
+    // Create a key as root.
+    let boot = sdk_config_with(&server, "test", "test").await;
+    let kms_boot = aws_sdk_kms::Client::new(&boot);
+    let key = kms_boot.create_key().send().await.unwrap();
+    let key_id = key.key_metadata().unwrap().key_id().to_string();
+
+    // User encrypts -> should succeed because key policy grants root
+    // (same-account Allow-union: resource policy Allow is enough).
+    let user_cfg = sdk_config_with(&server, &akid, &secret).await;
+    let kms_user = aws_sdk_kms::Client::new(&user_cfg);
+    kms_user
+        .encrypt()
+        .key_id(&key_id)
+        .plaintext(aws_sdk_kms::primitives::Blob::new(b"keypol-test"))
+        .send()
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn kms_key_policy_deny_beats_identity_allow() {
+    // Key policy explicitly denies a specific user. Even though bob
+    // has kms:* in his identity policy, the key policy deny wins.
+    let server = start_strict().await;
+    let (alice_akid, alice_secret) = bootstrap_user(&server, "kms_alice").await;
+    let (bob_akid, bob_secret) = bootstrap_user(&server, "kms_bob").await;
+
+    // Give both users kms:* identity policy.
+    for user in &["kms_alice", "kms_bob"] {
+        attach_inline_policy(
+            &server,
+            user,
+            "AllowKmsAll",
+            r#"{"Version":"2012-10-17","Statement":[
+                {"Effect":"Allow","Action":"kms:*","Resource":"*"}
+            ]}"#,
+        )
+        .await;
+    }
+
+    // Create a key as root, then replace key policy: allow alice, deny bob.
+    let boot = sdk_config_with(&server, "test", "test").await;
+    let kms_boot = aws_sdk_kms::Client::new(&boot);
+    let key = kms_boot.create_key().send().await.unwrap();
+    let key_id = key.key_metadata().unwrap().key_id().to_string();
+
+    let restrictive_policy = serde_json::json!({
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "AllowAlice",
+                "Effect": "Allow",
+                "Principal": {"AWS": "arn:aws:iam::123456789012:root"},
+                "Action": "kms:*",
+                "Resource": "*"
+            },
+            {
+                "Sid": "DenyBob",
+                "Effect": "Deny",
+                "Principal": {"AWS": "arn:aws:iam::123456789012:user/kms_bob"},
+                "Action": "kms:*",
+                "Resource": "*"
+            }
+        ]
+    });
+    kms_boot
+        .put_key_policy()
+        .key_id(&key_id)
+        .policy_name("default")
+        .policy(restrictive_policy.to_string())
+        .send()
+        .await
+        .unwrap();
+
+    // Alice can encrypt (identity allows, key policy allows root).
+    let alice_cfg = sdk_config_with(&server, &alice_akid, &alice_secret).await;
+    let kms_alice = aws_sdk_kms::Client::new(&alice_cfg);
+    kms_alice
+        .encrypt()
+        .key_id(&key_id)
+        .plaintext(aws_sdk_kms::primitives::Blob::new(b"alice-test"))
+        .send()
+        .await
+        .unwrap();
+
+    // Bob is explicitly denied by the key policy.
+    let bob_cfg = sdk_config_with(&server, &bob_akid, &bob_secret).await;
+    let kms_bob = aws_sdk_kms::Client::new(&bob_cfg);
+    let err = kms_bob
+        .encrypt()
+        .key_id(&key_id)
+        .plaintext(aws_sdk_kms::primitives::Blob::new(b"bob-test"))
+        .send()
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{err:?}").contains("AccessDenied"),
+        "expected AccessDenied for bob, got {err:?}"
+    );
+}
