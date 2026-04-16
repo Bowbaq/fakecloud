@@ -3875,4 +3875,673 @@ mod tests {
         assert!(session.challenge_results[0].challenge_result);
         assert_eq!(session.challenge_metadata.as_deref(), Some("meta"));
     }
+
+    // ── Helpers for auth/user tests ──
+
+    fn make_svc() -> (CognitoService, crate::state::SharedCognitoState) {
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
+            "123456789012",
+            "us-east-1",
+        )));
+        let svc = CognitoService::new(state.clone());
+        (svc, state)
+    }
+
+    fn expect_err(result: Result<AwsResponse, AwsServiceError>) -> AwsServiceError {
+        match result {
+            Err(e) => e,
+            Ok(_) => panic!("expected error, got Ok"),
+        }
+    }
+
+    fn resp_json(resp: &AwsResponse) -> Value {
+        serde_json::from_slice(resp.body.expect_bytes()).unwrap()
+    }
+
+    /// Create a user pool and return the pool ID.
+    fn create_pool(svc: &CognitoService) -> String {
+        let req = make_req("CreateUserPool", r#"{"PoolName":"test-pool"}"#);
+        let resp = svc.create_user_pool(&req).unwrap();
+        let b = resp_json(&resp);
+        b["UserPool"]["Id"].as_str().unwrap().to_string()
+    }
+
+    /// Create a user pool client and return the client ID.
+    fn create_client(svc: &CognitoService, pool_id: &str) -> String {
+        let body = json!({
+            "UserPoolId": pool_id,
+            "ClientName": "test-client",
+            "ExplicitAuthFlows": ["ADMIN_NO_SRP_AUTH", "ALLOW_USER_PASSWORD_AUTH"],
+        });
+        let req = make_req("CreateUserPoolClient", &body.to_string());
+        let resp = svc.create_user_pool_client(&req).unwrap();
+        let b = resp_json(&resp);
+        b["UserPoolClient"]["ClientId"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    /// Admin-create a user with a temporary password.
+    fn admin_create_user_helper(svc: &CognitoService, pool_id: &str, username: &str) {
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Username": username,
+            "TemporaryPassword": "TempPass1!",
+            "UserAttributes": [
+                {"Name": "email", "Value": format!("{username}@example.com")},
+            ],
+        });
+        let req = make_req("AdminCreateUser", &body.to_string());
+        block_on(svc.admin_create_user(&req)).unwrap();
+    }
+
+    /// Set a confirmed password for a user.
+    fn set_user_password(svc: &CognitoService, pool_id: &str, username: &str, password: &str) {
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Username": username,
+            "Password": password,
+            "Permanent": true,
+        });
+        let req = make_req("AdminSetUserPassword", &body.to_string());
+        svc.admin_set_user_password(&req).unwrap();
+    }
+
+    // ── AdminCreateUser ──
+
+    #[test]
+    fn admin_create_user_basic() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Username": "alice",
+            "TemporaryPassword": "TempPass1!",
+            "UserAttributes": [{"Name": "email", "Value": "alice@example.com"}],
+        });
+        let req = make_req("AdminCreateUser", &body.to_string());
+        let resp = block_on(svc.admin_create_user(&req)).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["User"]["Username"], "alice");
+        assert_eq!(b["User"]["UserStatus"], "FORCE_CHANGE_PASSWORD");
+        assert!(b["User"]["Enabled"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn admin_create_user_duplicate_fails() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "bob");
+
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Username": "bob",
+        });
+        let req = make_req("AdminCreateUser", &body.to_string());
+        let err = expect_err(block_on(svc.admin_create_user(&req)));
+        assert_eq!(err.code(), "UsernameExistsException");
+    }
+
+    #[test]
+    fn admin_create_user_missing_pool() {
+        let (svc, _) = make_svc();
+
+        let body = json!({
+            "UserPoolId": "us-east-1_NONEXIST",
+            "Username": "alice",
+        });
+        let req = make_req("AdminCreateUser", &body.to_string());
+        let err = expect_err(block_on(svc.admin_create_user(&req)));
+        assert_eq!(err.code(), "ResourceNotFoundException");
+    }
+
+    #[test]
+    fn admin_create_user_missing_username() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+
+        let body = json!({"UserPoolId": pool_id});
+        let req = make_req("AdminCreateUser", &body.to_string());
+        let err = expect_err(block_on(svc.admin_create_user(&req)));
+        assert_eq!(err.code(), "InvalidParameterException");
+    }
+
+    // ── AdminGetUser ──
+
+    #[test]
+    fn admin_get_user_found() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "carol");
+
+        let body = json!({"UserPoolId": pool_id, "Username": "carol"});
+        let req = make_req("AdminGetUser", &body.to_string());
+        let resp = svc.admin_get_user(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["Username"], "carol");
+        assert_eq!(b["UserStatus"], "FORCE_CHANGE_PASSWORD");
+        // Has email attribute
+        let attrs = b["UserAttributes"].as_array().unwrap();
+        assert!(attrs.iter().any(|a| a["Name"] == "email"));
+    }
+
+    #[test]
+    fn admin_get_user_not_found() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+
+        let body = json!({"UserPoolId": pool_id, "Username": "ghost"});
+        let req = make_req("AdminGetUser", &body.to_string());
+        let err = expect_err(svc.admin_get_user(&req));
+        assert_eq!(err.code(), "UserNotFoundException");
+    }
+
+    // ── AdminDeleteUser ──
+
+    #[test]
+    fn admin_delete_user_removes_user() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "dave");
+
+        let body = json!({"UserPoolId": pool_id, "Username": "dave"});
+        let req = make_req("AdminDeleteUser", &body.to_string());
+        svc.admin_delete_user(&req).unwrap();
+
+        // Get should fail
+        let body = json!({"UserPoolId": pool_id, "Username": "dave"});
+        let req = make_req("AdminGetUser", &body.to_string());
+        let err = expect_err(svc.admin_get_user(&req));
+        assert_eq!(err.code(), "UserNotFoundException");
+    }
+
+    #[test]
+    fn admin_delete_user_not_found() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+
+        let body = json!({"UserPoolId": pool_id, "Username": "ghost"});
+        let req = make_req("AdminDeleteUser", &body.to_string());
+        let err = expect_err(svc.admin_delete_user(&req));
+        assert_eq!(err.code(), "UserNotFoundException");
+    }
+
+    // ── AdminUpdateUserAttributes ──
+
+    #[test]
+    fn admin_update_user_attributes() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "eve");
+
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Username": "eve",
+            "UserAttributes": [
+                {"Name": "custom:role", "Value": "admin"},
+                {"Name": "email", "Value": "eve-new@example.com"},
+            ],
+        });
+        let req = make_req("AdminUpdateUserAttributes", &body.to_string());
+        svc.admin_update_user_attributes(&req).unwrap();
+
+        // Verify
+        let body = json!({"UserPoolId": pool_id, "Username": "eve"});
+        let req = make_req("AdminGetUser", &body.to_string());
+        let resp = svc.admin_get_user(&req).unwrap();
+        let b = resp_json(&resp);
+        let attrs = b["UserAttributes"].as_array().unwrap();
+        assert!(attrs
+            .iter()
+            .any(|a| a["Name"] == "custom:role" && a["Value"] == "admin"));
+        assert!(attrs
+            .iter()
+            .any(|a| a["Name"] == "email" && a["Value"] == "eve-new@example.com"));
+    }
+
+    // ── AdminDisableUser / AdminEnableUser ──
+
+    #[test]
+    fn admin_disable_and_enable_user() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "frank");
+
+        // Disable
+        let body = json!({"UserPoolId": pool_id, "Username": "frank"});
+        let req = make_req("AdminDisableUser", &body.to_string());
+        svc.admin_disable_user(&req).unwrap();
+
+        let body = json!({"UserPoolId": pool_id, "Username": "frank"});
+        let req = make_req("AdminGetUser", &body.to_string());
+        let resp = svc.admin_get_user(&req).unwrap();
+        let b = resp_json(&resp);
+        assert!(!b["Enabled"].as_bool().unwrap());
+
+        // Enable
+        let body = json!({"UserPoolId": pool_id, "Username": "frank"});
+        let req = make_req("AdminEnableUser", &body.to_string());
+        svc.admin_enable_user(&req).unwrap();
+
+        let body = json!({"UserPoolId": pool_id, "Username": "frank"});
+        let req = make_req("AdminGetUser", &body.to_string());
+        let resp = svc.admin_get_user(&req).unwrap();
+        let b = resp_json(&resp);
+        assert!(b["Enabled"].as_bool().unwrap());
+    }
+
+    // ── AdminSetUserPassword ──
+
+    #[test]
+    fn admin_set_user_password_permanent() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "gina");
+
+        set_user_password(&svc, &pool_id, "gina", "NewPass1!");
+
+        let body = json!({"UserPoolId": pool_id, "Username": "gina"});
+        let req = make_req("AdminGetUser", &body.to_string());
+        let resp = svc.admin_get_user(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["UserStatus"], "CONFIRMED");
+    }
+
+    #[test]
+    fn admin_set_user_password_temporary() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "hank");
+
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Username": "hank",
+            "Password": "TempNew1!",
+            "Permanent": false,
+        });
+        let req = make_req("AdminSetUserPassword", &body.to_string());
+        svc.admin_set_user_password(&req).unwrap();
+
+        let body = json!({"UserPoolId": pool_id, "Username": "hank"});
+        let req = make_req("AdminGetUser", &body.to_string());
+        let resp = svc.admin_get_user(&req).unwrap();
+        let b = resp_json(&resp);
+        // Temporary password keeps FORCE_CHANGE_PASSWORD
+        assert_eq!(b["UserStatus"], "FORCE_CHANGE_PASSWORD");
+    }
+
+    // ── AdminInitiateAuth ──
+
+    #[test]
+    fn admin_initiate_auth_success() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        admin_create_user_helper(&svc, &pool_id, "ivan");
+        set_user_password(&svc, &pool_id, "ivan", "SecurePass1!");
+
+        let body = json!({
+            "UserPoolId": pool_id,
+            "ClientId": client_id,
+            "AuthFlow": "ADMIN_NO_SRP_AUTH",
+            "AuthParameters": {
+                "USERNAME": "ivan",
+                "PASSWORD": "SecurePass1!",
+            },
+        });
+        let req = make_req("AdminInitiateAuth", &body.to_string());
+        let resp = block_on(svc.admin_initiate_auth(&req)).unwrap();
+        let b = resp_json(&resp);
+        assert!(b["AuthenticationResult"]["AccessToken"].as_str().is_some());
+        assert!(b["AuthenticationResult"]["IdToken"].as_str().is_some());
+        assert!(b["AuthenticationResult"]["RefreshToken"].as_str().is_some());
+    }
+
+    #[test]
+    fn admin_initiate_auth_wrong_password() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        admin_create_user_helper(&svc, &pool_id, "judy");
+        set_user_password(&svc, &pool_id, "judy", "CorrectPass1!");
+
+        let body = json!({
+            "UserPoolId": pool_id,
+            "ClientId": client_id,
+            "AuthFlow": "ADMIN_NO_SRP_AUTH",
+            "AuthParameters": {
+                "USERNAME": "judy",
+                "PASSWORD": "WrongPass1!",
+            },
+        });
+        let req = make_req("AdminInitiateAuth", &body.to_string());
+        let err = expect_err(block_on(svc.admin_initiate_auth(&req)));
+        assert_eq!(err.code(), "NotAuthorizedException");
+    }
+
+    #[test]
+    fn admin_initiate_auth_user_not_found() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+
+        let body = json!({
+            "UserPoolId": pool_id,
+            "ClientId": client_id,
+            "AuthFlow": "ADMIN_NO_SRP_AUTH",
+            "AuthParameters": {
+                "USERNAME": "nobody",
+                "PASSWORD": "Pass1!",
+            },
+        });
+        let req = make_req("AdminInitiateAuth", &body.to_string());
+        let err = expect_err(block_on(svc.admin_initiate_auth(&req)));
+        assert_eq!(err.code(), "UserNotFoundException");
+    }
+
+    #[test]
+    fn admin_initiate_auth_new_password_required() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        admin_create_user_helper(&svc, &pool_id, "karl");
+        // Don't set permanent password -> user is FORCE_CHANGE_PASSWORD
+
+        let body = json!({
+            "UserPoolId": pool_id,
+            "ClientId": client_id,
+            "AuthFlow": "ADMIN_NO_SRP_AUTH",
+            "AuthParameters": {
+                "USERNAME": "karl",
+                "PASSWORD": "TempPass1!",
+            },
+        });
+        let req = make_req("AdminInitiateAuth", &body.to_string());
+        let resp = block_on(svc.admin_initiate_auth(&req)).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["ChallengeName"], "NEW_PASSWORD_REQUIRED");
+        assert!(b["Session"].as_str().is_some());
+    }
+
+    #[test]
+    fn admin_initiate_auth_unsupported_flow() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+
+        let body = json!({
+            "UserPoolId": pool_id,
+            "ClientId": client_id,
+            "AuthFlow": "USER_SRP_AUTH",
+            "AuthParameters": {
+                "USERNAME": "x",
+                "PASSWORD": "x",
+            },
+        });
+        let req = make_req("AdminInitiateAuth", &body.to_string());
+        let err = expect_err(block_on(svc.admin_initiate_auth(&req)));
+        assert_eq!(err.code(), "InvalidParameterException");
+    }
+
+    // ── SignUp ──
+
+    #[test]
+    fn sign_up_and_confirm() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+
+        let body = json!({
+            "ClientId": client_id,
+            "Username": "selfuser",
+            "Password": "MyPass1!",
+            "UserAttributes": [{"Name": "email", "Value": "self@example.com"}],
+        });
+        let req = make_req("SignUp", &body.to_string());
+        let resp = block_on(svc.sign_up(&req)).unwrap();
+        let b = resp_json(&resp);
+        assert!(!b["UserConfirmed"].as_bool().unwrap());
+        assert!(b["UserSub"].as_str().is_some());
+
+        // Confirm via ConfirmSignUp (accepts any code in current impl)
+        let body = json!({
+            "ClientId": client_id,
+            "Username": "selfuser",
+            "ConfirmationCode": "123456",
+        });
+        let req = make_req("ConfirmSignUp", &body.to_string());
+        block_on(svc.confirm_sign_up(&req)).unwrap();
+
+        // User should be confirmed
+        let body = json!({"UserPoolId": pool_id, "Username": "selfuser"});
+        let req = make_req("AdminGetUser", &body.to_string());
+        let resp = svc.admin_get_user(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["UserStatus"], "CONFIRMED");
+    }
+
+    #[test]
+    fn sign_up_duplicate_username() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+
+        let body = json!({
+            "ClientId": client_id,
+            "Username": "dupuser",
+            "Password": "MyPass1!",
+        });
+        let req = make_req("SignUp", &body.to_string());
+        block_on(svc.sign_up(&req)).unwrap();
+
+        // Same username again -> error
+        let req = make_req("SignUp", &body.to_string());
+        let err = expect_err(block_on(svc.sign_up(&req)));
+        assert_eq!(err.code(), "UsernameExistsException");
+    }
+
+    // ── AdminConfirmSignUp ──
+
+    #[test]
+    fn admin_confirm_sign_up() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+
+        let body = json!({
+            "ClientId": client_id,
+            "Username": "unconfirmed",
+            "Password": "MyPass1!",
+        });
+        let req = make_req("SignUp", &body.to_string());
+        block_on(svc.sign_up(&req)).unwrap();
+
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Username": "unconfirmed",
+        });
+        let req = make_req("AdminConfirmSignUp", &body.to_string());
+        block_on(svc.admin_confirm_sign_up(&req)).unwrap();
+
+        let body = json!({"UserPoolId": pool_id, "Username": "unconfirmed"});
+        let req = make_req("AdminGetUser", &body.to_string());
+        let resp = svc.admin_get_user(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["UserStatus"], "CONFIRMED");
+    }
+
+    // ── AdminResetUserPassword ──
+
+    #[test]
+    fn admin_reset_user_password() {
+        let (svc, _state) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "resetme");
+        set_user_password(&svc, &pool_id, "resetme", "OldPass1!");
+
+        let body = json!({"UserPoolId": pool_id, "Username": "resetme"});
+        let req = make_req("AdminResetUserPassword", &body.to_string());
+        svc.admin_reset_user_password(&req).unwrap();
+
+        let body = json!({"UserPoolId": pool_id, "Username": "resetme"});
+        let req = make_req("AdminGetUser", &body.to_string());
+        let resp = svc.admin_get_user(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["UserStatus"], "RESET_REQUIRED");
+    }
+
+    // ── ListUsers ──
+
+    #[test]
+    fn list_users_returns_created_users() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "user-a");
+        admin_create_user_helper(&svc, &pool_id, "user-b");
+
+        let body = json!({"UserPoolId": pool_id});
+        let req = make_req("ListUsers", &body.to_string());
+        let resp = svc.list_users(&req).unwrap();
+        let b = resp_json(&resp);
+        let users = b["Users"].as_array().unwrap();
+        assert_eq!(users.len(), 2);
+    }
+
+    #[test]
+    fn list_users_with_filter() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "alice");
+        admin_create_user_helper(&svc, &pool_id, "bob");
+
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Filter": r#"username = "alice""#,
+        });
+        let req = make_req("ListUsers", &body.to_string());
+        let resp = svc.list_users(&req).unwrap();
+        let b = resp_json(&resp);
+        let users = b["Users"].as_array().unwrap();
+        assert_eq!(users.len(), 1);
+        assert_eq!(users[0]["Username"], "alice");
+    }
+
+    #[test]
+    fn list_users_with_limit() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        for i in 0..5 {
+            admin_create_user_helper(&svc, &pool_id, &format!("u{i}"));
+        }
+
+        let body = json!({"UserPoolId": pool_id, "Limit": 2});
+        let req = make_req("ListUsers", &body.to_string());
+        let resp = svc.list_users(&req).unwrap();
+        let b = resp_json(&resp);
+        let users = b["Users"].as_array().unwrap();
+        assert_eq!(users.len(), 2);
+        assert!(b["PaginationToken"].as_str().is_some());
+    }
+
+    // ── AdminAddUserToGroup / AdminRemoveUserFromGroup ──
+
+    #[test]
+    fn admin_add_and_remove_user_from_group() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "groupuser");
+
+        // Create group
+        let body = json!({
+            "UserPoolId": pool_id,
+            "GroupName": "admins",
+        });
+        let req = make_req("CreateGroup", &body.to_string());
+        svc.create_group(&req).unwrap();
+
+        // Add to group
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Username": "groupuser",
+            "GroupName": "admins",
+        });
+        let req = make_req("AdminAddUserToGroup", &body.to_string());
+        svc.admin_add_user_to_group(&req).unwrap();
+
+        // List groups for user
+        let body = json!({"UserPoolId": pool_id, "Username": "groupuser"});
+        let req = make_req("AdminListGroupsForUser", &body.to_string());
+        let resp = svc.admin_list_groups_for_user(&req).unwrap();
+        let b = resp_json(&resp);
+        let groups = b["Groups"].as_array().unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0]["GroupName"], "admins");
+
+        // Remove from group
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Username": "groupuser",
+            "GroupName": "admins",
+        });
+        let req = make_req("AdminRemoveUserFromGroup", &body.to_string());
+        svc.admin_remove_user_from_group(&req).unwrap();
+
+        // Verify removal
+        let body = json!({"UserPoolId": pool_id, "Username": "groupuser"});
+        let req = make_req("AdminListGroupsForUser", &body.to_string());
+        let resp = svc.admin_list_groups_for_user(&req).unwrap();
+        let b = resp_json(&resp);
+        let groups = b["Groups"].as_array().unwrap();
+        assert!(groups.is_empty());
+    }
+
+    // ── AdminRespondToAuthChallenge ──
+
+    #[test]
+    fn admin_respond_to_auth_challenge_new_password() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        admin_create_user_helper(&svc, &pool_id, "challenge");
+
+        // Auth -> NEW_PASSWORD_REQUIRED
+        let body = json!({
+            "UserPoolId": pool_id,
+            "ClientId": client_id,
+            "AuthFlow": "ADMIN_NO_SRP_AUTH",
+            "AuthParameters": {
+                "USERNAME": "challenge",
+                "PASSWORD": "TempPass1!",
+            },
+        });
+        let req = make_req("AdminInitiateAuth", &body.to_string());
+        let resp = block_on(svc.admin_initiate_auth(&req)).unwrap();
+        let b = resp_json(&resp);
+        let session = b["Session"].as_str().unwrap().to_string();
+
+        // Respond with new password
+        let body = json!({
+            "UserPoolId": pool_id,
+            "ClientId": client_id,
+            "ChallengeName": "NEW_PASSWORD_REQUIRED",
+            "Session": session,
+            "ChallengeResponses": {
+                "USERNAME": "challenge",
+                "NEW_PASSWORD": "Permanent1!",
+            },
+        });
+        let req = make_req("AdminRespondToAuthChallenge", &body.to_string());
+        let resp = block_on(svc.admin_respond_to_auth_challenge(&req)).unwrap();
+        let b = resp_json(&resp);
+        assert!(b["AuthenticationResult"]["AccessToken"].as_str().is_some());
+
+        // User should now be CONFIRMED
+        let body = json!({"UserPoolId": pool_id, "Username": "challenge"});
+        let req = make_req("AdminGetUser", &body.to_string());
+        let resp = svc.admin_get_user(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["UserStatus"], "CONFIRMED");
+    }
 }
