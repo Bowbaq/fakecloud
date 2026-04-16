@@ -3786,4 +3786,253 @@ mod tests {
         );
         assert!(svc.delete_instance_profile(&req).is_err());
     }
+
+    // ── instance_profiles additional ──
+
+    #[test]
+    fn get_instance_profile_unknown_errors() {
+        let svc = make_service();
+        let req = make_request("GetInstanceProfile", vec![("InstanceProfileName", "ghost")]);
+        assert!(svc.get_instance_profile(&req).is_err());
+    }
+
+    #[test]
+    fn list_instance_profiles_empty_returns_ok() {
+        let svc = make_service();
+        let req = make_request("ListInstanceProfiles", vec![]);
+        let resp = svc.list_instance_profiles(&req).unwrap();
+        assert_eq!(resp.status, http::StatusCode::OK);
+    }
+
+    #[test]
+    fn add_role_to_instance_profile_unknown_profile_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "AddRoleToInstanceProfile",
+            vec![("InstanceProfileName", "ghost"), ("RoleName", "r")],
+        );
+        assert!(svc.add_role_to_instance_profile(&req).is_err());
+    }
+
+    #[test]
+    fn remove_role_from_instance_profile_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "RemoveRoleFromInstanceProfile",
+            vec![("InstanceProfileName", "ghost"), ("RoleName", "r")],
+        );
+        assert!(svc.remove_role_from_instance_profile(&req).is_err());
+    }
+
+    #[test]
+    fn list_instance_profiles_for_role_unknown_errors() {
+        let svc = make_service();
+        let req = make_request("ListInstanceProfilesForRole", vec![("RoleName", "ghost")]);
+        assert!(svc.list_instance_profiles_for_role(&req).is_err());
+    }
+
+    #[test]
+    fn list_instance_profile_tags_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "ListInstanceProfileTags",
+            vec![("InstanceProfileName", "ghost")],
+        );
+        assert!(svc.list_instance_profile_tags(&req).is_err());
+    }
+
+    // ── OIDC/SAML error branches ──
+
+    #[test]
+    fn get_saml_provider_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "GetSAMLProvider",
+            vec![(
+                "SAMLProviderArn",
+                "arn:aws:iam::123456789012:saml-provider/ghost",
+            )],
+        );
+        assert!(svc.get_saml_provider(&req).is_err());
+    }
+
+    #[test]
+    fn delete_saml_provider_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "DeleteSAMLProvider",
+            vec![(
+                "SAMLProviderArn",
+                "arn:aws:iam::123456789012:saml-provider/ghost",
+            )],
+        );
+        assert!(svc.delete_saml_provider(&req).is_err());
+    }
+
+    #[test]
+    fn update_saml_provider_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "UpdateSAMLProvider",
+            vec![
+                (
+                    "SAMLProviderArn",
+                    "arn:aws:iam::123456789012:saml-provider/ghost",
+                ),
+                ("SAMLMetadataDocument", "<xml/>"),
+            ],
+        );
+        assert!(svc.update_saml_provider(&req).is_err());
+    }
+
+    #[test]
+    fn get_oidc_provider_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "GetOpenIDConnectProvider",
+            vec![(
+                "OpenIDConnectProviderArn",
+                "arn:aws:iam::123456789012:oidc-provider/ghost",
+            )],
+        );
+        assert!(svc.get_oidc_provider(&req).is_err());
+    }
+
+    // ── policies: version operations ──
+
+    #[test]
+    fn create_policy_version_unknown_errors() {
+        let svc = make_service();
+        let doc = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}"#;
+        let req = make_request(
+            "CreatePolicyVersion",
+            vec![
+                ("PolicyArn", "arn:aws:iam::123456789012:policy/ghost"),
+                ("PolicyDocument", doc),
+            ],
+        );
+        assert!(svc.create_policy_version(&req).is_err());
+    }
+
+    #[test]
+    fn list_policy_versions_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "ListPolicyVersions",
+            vec![("PolicyArn", "arn:aws:iam::123456789012:policy/ghost")],
+        );
+        assert!(svc.list_policy_versions(&req).is_err());
+    }
+
+    #[test]
+    fn get_policy_version_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "GetPolicyVersion",
+            vec![
+                ("PolicyArn", "arn:aws:iam::123456789012:policy/ghost"),
+                ("VersionId", "v1"),
+            ],
+        );
+        assert!(svc.get_policy_version(&req).is_err());
+    }
+
+    #[test]
+    fn delete_policy_version_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "DeletePolicyVersion",
+            vec![
+                ("PolicyArn", "arn:aws:iam::123456789012:policy/ghost"),
+                ("VersionId", "v1"),
+            ],
+        );
+        assert!(svc.delete_policy_version(&req).is_err());
+    }
+
+    // ── roles: put/get/delete_role_policy inline ──
+
+    #[test]
+    fn put_role_policy_unknown_role_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "PutRolePolicy",
+            vec![
+                ("RoleName", "ghost"),
+                ("PolicyName", "p1"),
+                ("PolicyDocument", "{}"),
+            ],
+        );
+        assert!(svc.put_role_policy(&req).is_err());
+    }
+
+    #[test]
+    fn get_role_policy_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "GetRolePolicy",
+            vec![("RoleName", "ghost"), ("PolicyName", "p1")],
+        );
+        assert!(svc.get_role_policy(&req).is_err());
+    }
+
+    #[test]
+    fn delete_role_policy_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "DeleteRolePolicy",
+            vec![("RoleName", "ghost"), ("PolicyName", "p1")],
+        );
+        assert!(svc.delete_role_policy(&req).is_err());
+    }
+
+    #[test]
+    fn list_role_policies_unknown_errors() {
+        let svc = make_service();
+        let req = make_request("ListRolePolicies", vec![("RoleName", "ghost")]);
+        assert!(svc.list_role_policies(&req).is_err());
+    }
+
+    // ── user inline policies ──
+
+    #[test]
+    fn put_user_policy_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "PutUserPolicy",
+            vec![
+                ("UserName", "ghost"),
+                ("PolicyName", "p"),
+                ("PolicyDocument", "{}"),
+            ],
+        );
+        assert!(svc.put_user_policy(&req).is_err());
+    }
+
+    #[test]
+    fn list_user_policies_unknown_errors() {
+        let svc = make_service();
+        let req = make_request("ListUserPolicies", vec![("UserName", "ghost")]);
+        assert!(svc.list_user_policies(&req).is_err());
+    }
+
+    #[test]
+    fn get_user_policy_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "GetUserPolicy",
+            vec![("UserName", "ghost"), ("PolicyName", "p")],
+        );
+        assert!(svc.get_user_policy(&req).is_err());
+    }
+
+    #[test]
+    fn delete_user_policy_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "DeleteUserPolicy",
+            vec![("UserName", "ghost"), ("PolicyName", "p")],
+        );
+        assert!(svc.delete_user_policy(&req).is_err());
+    }
 }
