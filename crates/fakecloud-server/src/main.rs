@@ -382,7 +382,7 @@ async fn main() {
 
     // Register services
     if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
-        for service in ["rds", "elasticache", "states", "bedrock"] {
+        for service in ["rds", "elasticache", "bedrock"] {
             fakecloud_persistence::warn_unsupported(service);
         }
     }
@@ -1309,6 +1309,59 @@ async fn main() {
     sfn_service = sfn_service
         .with_delivery(sfn_delivery_bus.clone())
         .with_dynamodb(dynamodb_state.clone());
+    let sfn_snapshot_store: Option<Arc<dyn fakecloud_persistence::SnapshotStore>> =
+        if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
+            let data_path = persistence_config
+                .data_path
+                .as_ref()
+                .expect("validated above")
+                .clone();
+            let path = data_path.join("stepfunctions").join("snapshot.json");
+            let store = fakecloud_persistence::DiskSnapshotStore::new(path);
+            match fakecloud_persistence::SnapshotStore::load(&store) {
+                Ok(Some(bytes)) => {
+                    match serde_json::from_slice::<
+                        fakecloud_stepfunctions::state::StepFunctionsSnapshot,
+                    >(&bytes)
+                    {
+                        Ok(snapshot) => {
+                            if snapshot.schema_version
+                                != fakecloud_stepfunctions::state::STEPFUNCTIONS_SNAPSHOT_SCHEMA_VERSION
+                            {
+                                fatal_exit(format_args!(
+                                    "stepfunctions persistence schema mismatch: on-disk={}, expected={}",
+                                    snapshot.schema_version,
+                                    fakecloud_stepfunctions::state::STEPFUNCTIONS_SNAPSHOT_SCHEMA_VERSION,
+                                ));
+                            }
+                            let sm_count = snapshot.state.state_machines.len();
+                            let exec_count = snapshot.state.executions.len();
+                            *stepfunctions_state.write() = snapshot.state;
+                            tracing::info!(
+                                state_machines = sm_count,
+                                executions = exec_count,
+                                "loaded stepfunctions persistence snapshot",
+                            );
+                        }
+                        Err(err) => fatal_exit(format_args!(
+                            "failed to parse stepfunctions persistence snapshot: {err}"
+                        )),
+                    }
+                }
+                Ok(None) => {
+                    tracing::info!("no stepfunctions persistence snapshot found; starting empty");
+                }
+                Err(err) => fatal_exit(format_args!(
+                    "failed to read stepfunctions persistence snapshot: {err}"
+                )),
+            }
+            Some(Arc::new(store) as Arc<dyn fakecloud_persistence::SnapshotStore>)
+        } else {
+            None
+        };
+    if let Some(store) = sfn_snapshot_store {
+        sfn_service = sfn_service.with_snapshot_store(store);
+    }
     registry.register(Arc::new(sfn_service));
 
     let apigw_snapshot_store: Option<Arc<dyn fakecloud_persistence::SnapshotStore>> =
