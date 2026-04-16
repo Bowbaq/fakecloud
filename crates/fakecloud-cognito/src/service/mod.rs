@@ -4233,7 +4233,7 @@ mod tests {
             "AuthFlow": "ADMIN_NO_SRP_AUTH",
             "AuthParameters": {
                 "USERNAME": "nobody",
-                "PASSWORD": "Pass1!",
+                "PASSWORD": "Password1!",
             },
         });
         let req = make_req("AdminInitiateAuth", &body.to_string());
@@ -5301,6 +5301,293 @@ mod tests {
         });
         let req = make_req("SetUserSettings", &body.to_string());
         let err = expect_err(svc.set_user_settings(&req));
+        assert_eq!(err.code(), "NotAuthorizedException");
+    }
+
+    // ── Auth flow: forgot password + confirm ──
+
+    #[test]
+    fn forgot_password_and_confirm() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        admin_create_user_helper(&svc, &pool_id, "forgot-user");
+        set_user_password(&svc, &pool_id, "forgot-user", "OldPass1!");
+
+        // ForgotPassword
+        let body = json!({
+            "ClientId": client_id,
+            "Username": "forgot-user",
+        });
+        let req = make_req("ForgotPassword", &body.to_string());
+        let resp = block_on(svc.forgot_password(&req)).unwrap();
+        let b = resp_json(&resp);
+        assert!(b["CodeDeliveryDetails"]["Destination"].as_str().is_some());
+
+        // Get confirmation code from state
+        let code = {
+            let s = state.read();
+            let users = s.users.get(&pool_id).unwrap();
+            users
+                .get("forgot-user")
+                .unwrap()
+                .confirmation_code
+                .clone()
+                .unwrap()
+        };
+
+        // ConfirmForgotPassword
+        let body = json!({
+            "ClientId": client_id,
+            "Username": "forgot-user",
+            "ConfirmationCode": code,
+            "Password": "NewPass1!",
+        });
+        let req = make_req("ConfirmForgotPassword", &body.to_string());
+        svc.confirm_forgot_password(&req).unwrap();
+
+        // Verify can auth with new password
+        let body = json!({
+            "UserPoolId": pool_id,
+            "ClientId": client_id,
+            "AuthFlow": "ADMIN_NO_SRP_AUTH",
+            "AuthParameters": {"USERNAME": "forgot-user", "PASSWORD": "NewPass1!"},
+        });
+        let req = make_req("AdminInitiateAuth", &body.to_string());
+        let resp = block_on(svc.admin_initiate_auth(&req)).unwrap();
+        let b = resp_json(&resp);
+        assert!(b["AuthenticationResult"]["AccessToken"].as_str().is_some());
+    }
+
+    #[test]
+    fn forgot_password_user_not_found() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+
+        let body = json!({"ClientId": client_id, "Username": "ghost"});
+        let req = make_req("ForgotPassword", &body.to_string());
+        let err = expect_err(block_on(svc.forgot_password(&req)));
+        assert_eq!(err.code(), "UserNotFoundException");
+    }
+
+    #[test]
+    fn confirm_forgot_password_wrong_code() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        admin_create_user_helper(&svc, &pool_id, "badcode");
+        set_user_password(&svc, &pool_id, "badcode", "OldPass1!");
+
+        block_on(svc.forgot_password(&make_req(
+            "ForgotPassword",
+            &json!({"ClientId": client_id, "Username": "badcode"}).to_string(),
+        )))
+        .unwrap();
+
+        let body = json!({
+            "ClientId": client_id,
+            "Username": "badcode",
+            "ConfirmationCode": "000000",
+            "Password": "NewPass1!",
+        });
+        let req = make_req("ConfirmForgotPassword", &body.to_string());
+        let err = expect_err(svc.confirm_forgot_password(&req));
+        assert_eq!(err.code(), "CodeMismatchException");
+    }
+
+    // ── Change password ──
+
+    #[test]
+    fn change_password_success() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        admin_create_user_helper(&svc, &pool_id, "chpw");
+        set_user_password(&svc, &pool_id, "chpw", "OldPass1!");
+
+        // Auth to get access token
+        let body = json!({
+            "UserPoolId": pool_id,
+            "ClientId": client_id,
+            "AuthFlow": "ADMIN_NO_SRP_AUTH",
+            "AuthParameters": {"USERNAME": "chpw", "PASSWORD": "OldPass1!"},
+        });
+        let req = make_req("AdminInitiateAuth", &body.to_string());
+        let resp = block_on(svc.admin_initiate_auth(&req)).unwrap();
+        let b = resp_json(&resp);
+        let token = b["AuthenticationResult"]["AccessToken"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // Change password
+        let body = json!({
+            "AccessToken": token,
+            "PreviousPassword": "OldPass1!",
+            "ProposedPassword": "NewPass1!",
+        });
+        let req = make_req("ChangePassword", &body.to_string());
+        svc.change_password(&req).unwrap();
+    }
+
+    #[test]
+    fn change_password_wrong_old_password() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        admin_create_user_helper(&svc, &pool_id, "chpw2");
+        set_user_password(&svc, &pool_id, "chpw2", "OldPass1!");
+
+        let body = json!({
+            "UserPoolId": pool_id,
+            "ClientId": client_id,
+            "AuthFlow": "ADMIN_NO_SRP_AUTH",
+            "AuthParameters": {"USERNAME": "chpw2", "PASSWORD": "OldPass1!"},
+        });
+        let req = make_req("AdminInitiateAuth", &body.to_string());
+        let resp = block_on(svc.admin_initiate_auth(&req)).unwrap();
+        let b = resp_json(&resp);
+        let token = b["AuthenticationResult"]["AccessToken"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let body = json!({
+            "AccessToken": token,
+            "PreviousPassword": "WrongPass1!",
+            "ProposedPassword": "NewPass1!",
+        });
+        let req = make_req("ChangePassword", &body.to_string());
+        let err = expect_err(svc.change_password(&req));
+        assert_eq!(err.code(), "NotAuthorizedException");
+    }
+
+    #[test]
+    fn change_password_invalid_token() {
+        let (svc, _) = make_svc();
+        let body = json!({
+            "AccessToken": "bad-token",
+            "PreviousPassword": "Old1!",
+            "ProposedPassword": "New1!",
+        });
+        let req = make_req("ChangePassword", &body.to_string());
+        let err = expect_err(svc.change_password(&req));
+        assert_eq!(err.code(), "NotAuthorizedException");
+    }
+
+    // ── Global sign out ──
+
+    #[test]
+    fn global_sign_out_success() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        admin_create_user_helper(&svc, &pool_id, "signout");
+        set_user_password(&svc, &pool_id, "signout", "Password1!");
+
+        let body = json!({
+            "UserPoolId": pool_id,
+            "ClientId": client_id,
+            "AuthFlow": "ADMIN_NO_SRP_AUTH",
+            "AuthParameters": {"USERNAME": "signout", "PASSWORD": "Password1!"},
+        });
+        let req = make_req("AdminInitiateAuth", &body.to_string());
+        let resp = block_on(svc.admin_initiate_auth(&req)).unwrap();
+        let b = resp_json(&resp);
+        let token = b["AuthenticationResult"]["AccessToken"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let body = json!({"AccessToken": token});
+        let req = make_req("GlobalSignOut", &body.to_string());
+        svc.global_sign_out(&req).unwrap();
+    }
+
+    #[test]
+    fn global_sign_out_invalid_token() {
+        let (svc, _) = make_svc();
+        let body = json!({"AccessToken": "bad-token"});
+        let req = make_req("GlobalSignOut", &body.to_string());
+        let err = expect_err(svc.global_sign_out(&req));
+        assert_eq!(err.code(), "NotAuthorizedException");
+    }
+
+    #[test]
+    fn admin_user_global_sign_out() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "adm-signout");
+
+        let body = json!({"UserPoolId": pool_id, "Username": "adm-signout"});
+        let req = make_req("AdminUserGlobalSignOut", &body.to_string());
+        svc.admin_user_global_sign_out(&req).unwrap();
+    }
+
+    #[test]
+    fn admin_user_global_sign_out_user_not_found() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+
+        let body = json!({"UserPoolId": pool_id, "Username": "ghost"});
+        let req = make_req("AdminUserGlobalSignOut", &body.to_string());
+        let err = expect_err(svc.admin_user_global_sign_out(&req));
+        assert_eq!(err.code(), "UserNotFoundException");
+    }
+
+    // ── InitiateAuth (user-facing, not admin) ──
+
+    #[test]
+    fn initiate_auth_user_password() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        admin_create_user_helper(&svc, &pool_id, "userauth");
+        set_user_password(&svc, &pool_id, "userauth", "Password1!");
+
+        let body = json!({
+            "ClientId": client_id,
+            "AuthFlow": "USER_PASSWORD_AUTH",
+            "AuthParameters": {"USERNAME": "userauth", "PASSWORD": "Password1!"},
+        });
+        let req = make_req("InitiateAuth", &body.to_string());
+        let resp = block_on(svc.initiate_auth(&req)).unwrap();
+        let b = resp_json(&resp);
+        assert!(b["AuthenticationResult"]["AccessToken"].as_str().is_some());
+    }
+
+    #[test]
+    fn initiate_auth_wrong_password() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        admin_create_user_helper(&svc, &pool_id, "badpw");
+        set_user_password(&svc, &pool_id, "badpw", "Password1!");
+
+        let body = json!({
+            "ClientId": client_id,
+            "AuthFlow": "USER_PASSWORD_AUTH",
+            "AuthParameters": {"USERNAME": "badpw", "PASSWORD": "Wrong1!"},
+        });
+        let req = make_req("InitiateAuth", &body.to_string());
+        let err = expect_err(block_on(svc.initiate_auth(&req)));
+        assert_eq!(err.code(), "NotAuthorizedException");
+    }
+
+    #[test]
+    fn initiate_auth_user_not_found() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+
+        let body = json!({
+            "ClientId": client_id,
+            "AuthFlow": "USER_PASSWORD_AUTH",
+            "AuthParameters": {"USERNAME": "ghost", "PASSWORD": "Password1!"},
+        });
+        let req = make_req("InitiateAuth", &body.to_string());
+        let err = expect_err(block_on(svc.initiate_auth(&req)));
         assert_eq!(err.code(), "NotAuthorizedException");
     }
 }

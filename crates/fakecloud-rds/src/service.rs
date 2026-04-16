@@ -3532,4 +3532,180 @@ mod tests {
         let req = request("DescribeDBSnapshots", &[("DBSnapshotIdentifier", "ghost")]);
         assert_code(svc.describe_db_snapshots(&req), "DBSnapshotNotFound");
     }
+
+    // ── Error branch tests ──
+
+    #[test]
+    fn describe_db_instances_not_found() {
+        let svc = make_service();
+        let req = request("DescribeDBInstances", &[("DBInstanceIdentifier", "ghost")]);
+        assert_code(svc.describe_db_instances(&req), "DBInstanceNotFound");
+    }
+
+    #[tokio::test]
+    async fn delete_db_instance_not_found() {
+        let svc = make_service();
+        let req = request(
+            "DeleteDBInstance",
+            &[
+                ("DBInstanceIdentifier", "ghost"),
+                ("SkipFinalSnapshot", "true"),
+            ],
+        );
+        assert_code(svc.delete_db_instance(&req).await, "DBInstanceNotFound");
+    }
+
+    #[test]
+    fn modify_db_instance_not_found() {
+        let svc = make_service();
+        let req = request(
+            "ModifyDBInstance",
+            &[
+                ("DBInstanceIdentifier", "ghost"),
+                ("AllocatedStorage", "20"),
+            ],
+        );
+        // Validation fires before existence check
+        assert_code(svc.modify_db_instance(&req), "InvalidParameterCombination");
+    }
+
+    #[tokio::test]
+    async fn reboot_db_instance_not_found() {
+        let svc = make_service();
+        let req = request("RebootDBInstance", &[("DBInstanceIdentifier", "ghost")]);
+        assert_code(svc.reboot_db_instance(&req).await, "DBInstanceNotFound");
+    }
+
+    #[tokio::test]
+    async fn create_db_snapshot_instance_not_found() {
+        let svc = make_service();
+        let req = request(
+            "CreateDBSnapshot",
+            &[
+                ("DBInstanceIdentifier", "ghost"),
+                ("DBSnapshotIdentifier", "snap1"),
+            ],
+        );
+        assert_code(svc.create_db_snapshot(&req).await, "InvalidParameterValue");
+    }
+
+    #[tokio::test]
+    async fn restore_db_instance_snapshot_not_found() {
+        let svc = make_service();
+        let req = request(
+            "RestoreDBInstanceFromDBSnapshot",
+            &[
+                ("DBInstanceIdentifier", "restored"),
+                ("DBSnapshotIdentifier", "ghost-snap"),
+            ],
+        );
+        assert_code(
+            svc.restore_db_instance_from_db_snapshot(&req).await,
+            "InvalidParameterValue",
+        );
+    }
+
+    #[tokio::test]
+    async fn create_db_instance_read_replica_source_not_found() {
+        let svc = make_service();
+        let req = request(
+            "CreateDBInstanceReadReplica",
+            &[
+                ("DBInstanceIdentifier", "replica"),
+                ("SourceDBInstanceIdentifier", "ghost"),
+            ],
+        );
+        assert_code(
+            svc.create_db_instance_read_replica(&req).await,
+            "InvalidParameterValue",
+        );
+    }
+
+    #[test]
+    fn describe_db_engine_versions_basic() {
+        let svc = make_service();
+        let req = request("DescribeDBEngineVersions", &[]);
+        let resp = svc.describe_db_engine_versions(&req).unwrap();
+        let body = body_of(resp);
+        assert!(body.contains("<DBEngineVersions>"));
+    }
+
+    #[test]
+    fn describe_orderable_db_instance_options_basic() {
+        let svc = make_service();
+        let req = request("DescribeOrderableDBInstanceOptions", &[("Engine", "mysql")]);
+        let resp = svc.describe_orderable_db_instance_options(&req).unwrap();
+        let body = body_of(resp);
+        assert!(body.contains("<OrderableDBInstanceOptions>"));
+    }
+
+    #[test]
+    fn describe_db_parameter_group_not_found() {
+        let svc = make_service();
+        let req = request(
+            "DescribeDBParameterGroups",
+            &[("DBParameterGroupName", "ghost")],
+        );
+        assert_code(
+            svc.describe_db_parameter_groups(&req),
+            "DBParameterGroupNotFound",
+        );
+    }
+
+    #[test]
+    fn delete_db_parameter_group_not_found() {
+        let svc = make_service();
+        let req = request(
+            "DeleteDBParameterGroup",
+            &[("DBParameterGroupName", "ghost")],
+        );
+        assert_code(
+            svc.delete_db_parameter_group(&req),
+            "DBParameterGroupNotFound",
+        );
+    }
+
+    #[test]
+    fn describe_db_subnet_group_not_found() {
+        let svc = make_service();
+        let req = request("DescribeDBSubnetGroups", &[("DBSubnetGroupName", "ghost")]);
+        assert_code(
+            svc.describe_db_subnet_groups(&req),
+            "DBSubnetGroupNotFoundFault",
+        );
+    }
+
+    #[test]
+    fn delete_db_subnet_group_not_found() {
+        let svc = make_service();
+        let req = request("DeleteDBSubnetGroup", &[("DBSubnetGroupName", "ghost")]);
+        assert_code(
+            svc.delete_db_subnet_group(&req),
+            "DBSubnetGroupNotFoundFault",
+        );
+    }
+
+    #[test]
+    fn add_tags_resource_not_found() {
+        let svc = make_service();
+        let req = request(
+            "AddTagsToResource",
+            &[
+                ("ResourceName", "arn:aws:rds:us-east-1:123:db:ghost"),
+                ("Tags.member.1.Key", "k"),
+                ("Tags.member.1.Value", "v"),
+            ],
+        );
+        assert_code(svc.add_tags_to_resource(&req), "MissingParameter");
+    }
+
+    #[test]
+    fn list_tags_resource_not_found() {
+        let svc = make_service();
+        let req = request(
+            "ListTagsForResource",
+            &[("ResourceName", "arn:aws:rds:us-east-1:123:db:ghost")],
+        );
+        assert_code(svc.list_tags_for_resource(&req), "DBInstanceNotFound");
+    }
 }
