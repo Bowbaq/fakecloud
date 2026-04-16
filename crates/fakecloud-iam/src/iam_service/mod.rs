@@ -3437,4 +3437,353 @@ mod tests {
         ))
         .unwrap();
     }
+
+    // ── users.rs additional coverage ──
+
+    #[test]
+    fn create_user_missing_name_errors() {
+        let svc = make_service();
+        let req = make_request("CreateUser", vec![]);
+        assert!(svc.create_user(&req).is_err());
+    }
+
+    #[test]
+    fn create_user_duplicate_errors() {
+        let svc = make_service();
+        let req = make_request("CreateUser", vec![("UserName", "dup")]);
+        svc.create_user(&req).unwrap();
+        assert!(svc.create_user(&req).is_err());
+    }
+
+    #[test]
+    fn get_user_unknown_errors() {
+        let svc = make_service();
+        let req = make_request("GetUser", vec![("UserName", "ghost")]);
+        assert!(svc.get_user(&req).is_err());
+    }
+
+    #[test]
+    fn delete_user_unknown_errors() {
+        let svc = make_service();
+        let req = make_request("DeleteUser", vec![("UserName", "ghost")]);
+        assert!(svc.delete_user(&req).is_err());
+    }
+
+    #[test]
+    fn update_user_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "UpdateUser",
+            vec![("UserName", "ghost"), ("NewUserName", "new")],
+        );
+        assert!(svc.update_user(&req).is_err());
+    }
+
+    #[test]
+    fn tag_user_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "TagUser",
+            vec![
+                ("UserName", "ghost"),
+                ("Tags.member.1.Key", "k"),
+                ("Tags.member.1.Value", "v"),
+            ],
+        );
+        assert!(svc.tag_user(&req).is_err());
+    }
+
+    #[test]
+    fn list_user_tags_unknown_errors() {
+        let svc = make_service();
+        let req = make_request("ListUserTags", vec![("UserName", "ghost")]);
+        assert!(svc.list_user_tags(&req).is_err());
+    }
+
+    #[test]
+    fn create_access_key_unknown_user_errors() {
+        let svc = make_service();
+        let req = make_request("CreateAccessKey", vec![("UserName", "ghost")]);
+        assert!(svc.create_access_key(&req).is_err());
+    }
+
+    #[test]
+    fn delete_access_key_unknown_user_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "DeleteAccessKey",
+            vec![("UserName", "ghost"), ("AccessKeyId", "AKIAEXAMPLE")],
+        );
+        assert!(svc.delete_access_key(&req).is_err());
+    }
+
+    #[test]
+    fn create_login_profile_unknown_user_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "CreateLoginProfile",
+            vec![("UserName", "ghost"), ("Password", "Pass123!")],
+        );
+        assert!(svc.create_login_profile(&req).is_err());
+    }
+
+    #[test]
+    fn get_login_profile_not_found() {
+        let svc = make_service();
+        svc.create_user(&make_request("CreateUser", vec![("UserName", "lp")]))
+            .unwrap();
+        let req = make_request("GetLoginProfile", vec![("UserName", "lp")]);
+        assert!(svc.get_login_profile(&req).is_err());
+    }
+
+    #[test]
+    fn delete_login_profile_not_found() {
+        let svc = make_service();
+        let req = make_request("DeleteLoginProfile", vec![("UserName", "ghost")]);
+        assert!(svc.delete_login_profile(&req).is_err());
+    }
+
+    #[test]
+    fn upload_signing_cert_unknown_user_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "UploadSigningCertificate",
+            vec![
+                ("UserName", "ghost"),
+                ("CertificateBody", "-----BEGIN CERT-----"),
+            ],
+        );
+        assert!(svc.upload_signing_certificate(&req).is_err());
+    }
+
+    #[test]
+    fn upload_ssh_public_key_unknown_user_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "UploadSSHPublicKey",
+            vec![("UserName", "ghost"), ("SSHPublicKeyBody", "ssh-rsa AAA")],
+        );
+        assert!(svc.upload_ssh_public_key(&req).is_err());
+    }
+
+    #[test]
+    fn get_ssh_public_key_not_found() {
+        let svc = make_service();
+        let req = make_request(
+            "GetSSHPublicKey",
+            vec![
+                ("UserName", "ghost"),
+                ("SSHPublicKeyId", "ASDF"),
+                ("Encoding", "SSH"),
+            ],
+        );
+        assert!(svc.get_ssh_public_key(&req).is_err());
+    }
+
+    #[test]
+    fn delete_ssh_public_key_not_found() {
+        let svc = make_service();
+        let req = make_request(
+            "DeleteSSHPublicKey",
+            vec![("UserName", "ghost"), ("SSHPublicKeyId", "ASDF")],
+        );
+        assert!(svc.delete_ssh_public_key(&req).is_err());
+    }
+
+    #[test]
+    fn attach_user_policy_unknown_user_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "AttachUserPolicy",
+            vec![
+                ("UserName", "ghost"),
+                ("PolicyArn", "arn:aws:iam::aws:policy/ReadOnlyAccess"),
+            ],
+        );
+        assert!(svc.attach_user_policy(&req).is_err());
+    }
+
+    #[test]
+    fn detach_user_policy_unknown_user_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "DetachUserPolicy",
+            vec![
+                ("UserName", "ghost"),
+                ("PolicyArn", "arn:aws:iam::aws:policy/ReadOnlyAccess"),
+            ],
+        );
+        assert!(svc.detach_user_policy(&req).is_err());
+    }
+
+    #[test]
+    fn list_attached_user_policies_unknown_user_errors() {
+        let svc = make_service();
+        let req = make_request("ListAttachedUserPolicies", vec![("UserName", "ghost")]);
+        assert!(svc.list_attached_user_policies(&req).is_err());
+    }
+
+    // ── roles.rs additional ──
+
+    #[test]
+    fn create_role_missing_trust_errors() {
+        let svc = make_service();
+        let req = make_request("CreateRole", vec![("RoleName", "r1")]);
+        assert!(svc.create_role(&req).is_err());
+    }
+
+    #[test]
+    fn create_role_duplicate_errors() {
+        let svc = make_service();
+        let trust = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}"#;
+        let req = make_request(
+            "CreateRole",
+            vec![("RoleName", "rd"), ("AssumeRolePolicyDocument", trust)],
+        );
+        svc.create_role(&req).unwrap();
+        assert!(svc.create_role(&req).is_err());
+    }
+
+    #[test]
+    fn get_role_unknown_errors() {
+        let svc = make_service();
+        let req = make_request("GetRole", vec![("RoleName", "ghost")]);
+        assert!(svc.get_role(&req).is_err());
+    }
+
+    #[test]
+    fn delete_role_unknown_errors() {
+        let svc = make_service();
+        let req = make_request("DeleteRole", vec![("RoleName", "ghost")]);
+        assert!(svc.delete_role(&req).is_err());
+    }
+
+    #[test]
+    fn update_assume_role_policy_unknown_role_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "UpdateAssumeRolePolicy",
+            vec![("RoleName", "ghost"), ("PolicyDocument", "{}")],
+        );
+        assert!(svc.update_assume_role_policy(&req).is_err());
+    }
+
+    #[test]
+    fn tag_role_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "TagRole",
+            vec![
+                ("RoleName", "ghost"),
+                ("Tags.member.1.Key", "k"),
+                ("Tags.member.1.Value", "v"),
+            ],
+        );
+        assert!(svc.tag_role(&req).is_err());
+    }
+
+    // ── groups.rs additional ──
+
+    #[test]
+    fn create_group_duplicate_errors() {
+        let svc = make_service();
+        let req = make_request("CreateGroup", vec![("GroupName", "g1")]);
+        svc.create_group(&req).unwrap();
+        assert!(svc.create_group(&req).is_err());
+    }
+
+    #[test]
+    fn get_group_unknown_errors() {
+        let svc = make_service();
+        let req = make_request("GetGroup", vec![("GroupName", "ghost")]);
+        assert!(svc.get_group(&req).is_err());
+    }
+
+    #[test]
+    fn delete_group_unknown_errors() {
+        let svc = make_service();
+        let req = make_request("DeleteGroup", vec![("GroupName", "ghost")]);
+        assert!(svc.delete_group(&req).is_err());
+    }
+
+    #[test]
+    fn add_user_to_unknown_group_errors() {
+        let svc = make_service();
+        svc.create_user(&make_request("CreateUser", vec![("UserName", "u1")]))
+            .unwrap();
+        let req = make_request(
+            "AddUserToGroup",
+            vec![("GroupName", "ghost"), ("UserName", "u1")],
+        );
+        assert!(svc.add_user_to_group(&req).is_err());
+    }
+
+    #[test]
+    fn add_unknown_user_to_group_errors() {
+        let svc = make_service();
+        svc.create_group(&make_request("CreateGroup", vec![("GroupName", "ug")]))
+            .unwrap();
+        let req = make_request(
+            "AddUserToGroup",
+            vec![("GroupName", "ug"), ("UserName", "ghost")],
+        );
+        assert!(svc.add_user_to_group(&req).is_err());
+    }
+
+    // ── policies.rs additional ──
+
+    #[test]
+    fn create_policy_duplicate_errors() {
+        let svc = make_service();
+        let doc = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}"#;
+        let req = make_request(
+            "CreatePolicy",
+            vec![("PolicyName", "dp"), ("PolicyDocument", doc)],
+        );
+        svc.create_policy(&req).unwrap();
+        assert!(svc.create_policy(&req).is_err());
+    }
+
+    #[test]
+    fn delete_policy_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "DeletePolicy",
+            vec![("PolicyArn", "arn:aws:iam::123456789012:policy/ghost")],
+        );
+        assert!(svc.delete_policy(&req).is_err());
+    }
+
+    #[test]
+    fn get_policy_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "GetPolicy",
+            vec![("PolicyArn", "arn:aws:iam::123456789012:policy/ghost")],
+        );
+        assert!(svc.get_policy(&req).is_err());
+    }
+
+    // ── instance profiles ──
+
+    #[test]
+    fn create_instance_profile_duplicate() {
+        let svc = make_service();
+        let req = make_request(
+            "CreateInstanceProfile",
+            vec![("InstanceProfileName", "ip1")],
+        );
+        svc.create_instance_profile(&req).unwrap();
+        assert!(svc.create_instance_profile(&req).is_err());
+    }
+
+    #[test]
+    fn delete_instance_profile_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "DeleteInstanceProfile",
+            vec![("InstanceProfileName", "ghost")],
+        );
+        assert!(svc.delete_instance_profile(&req).is_err());
+    }
 }
