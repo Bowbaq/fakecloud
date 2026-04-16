@@ -149,7 +149,7 @@ The resource's owning account is parsed from the ARN; S3 ARNs have an empty acco
 
 - **S3 bucket policies** are stored by `PutBucketPolicy` and updated by `DeleteBucketPolicy`. `GetBucketPolicy` returns the raw JSON.
 - **SNS topic policies** are stored in the topic's `Policy` attribute by `SetTopicAttributes` (full document) or by `AddPermission` / `RemovePermission` (incremental statements). `GetTopicAttributes` returns them.
-- **Lambda function policies** are built incrementally by `AddPermission`: fakecloud composes a canonical `{"Version":"2012-10-17","Statement":[...]}` document from `(StatementId, Action, Principal, SourceArn?, SourceAccount?)` so the existing evaluator reads it without a Lambda-specific fork. `SourceArn` becomes an `ArnLike` `Condition` on `aws:SourceArn`, and `SourceAccount` becomes a `StringEquals` `Condition` on `aws:SourceAccount` — both are already in the Phase 2 operator set. `GetPolicy` returns the composed document; `RemovePermission` strips the matching `Sid` and leaves an empty `Statement` array behind, matching AWS.
+- **Lambda function policies** are built incrementally by `AddPermission`: fakecloud composes a canonical `{"Version":"2012-10-17","Statement":[...]}` document from `(StatementId, Action, Principal, SourceArn?, SourceAccount?)` so the existing evaluator reads it without a Lambda-specific fork. `SourceArn` becomes an `ArnLike` `Condition` on `aws:SourceArn`, and `SourceAccount` becomes a `StringEquals` `Condition` on `aws:SourceAccount` — both are already in the operator set. `GetPolicy` returns the composed document; `RemovePermission` strips the matching `Sid` and leaves an empty `Statement` array behind, matching AWS.
 
 **Principal matching.** Resource policies use `Principal` / `NotPrincipal` keys that identity policies don't. The evaluator supports the shapes resource policies actually use in practice:
 
@@ -169,13 +169,25 @@ The resource's owning account is parsed from the ARN; S3 ARNs have an empty acco
 
 ### Not implemented
 
+Ongoing coverage work:
+
 - Service-specific condition keys for services / operations beyond the ones listed in the table above. The hook is `AwsService::iam_condition_keys_for`; extending coverage is additive and requires no signature changes.
-- **KMS key policies.** KMS has a deny-by-default semantic (no policy means nothing is allowed, including the account root) that is materially different from S3 / SNS / Lambda's allow-on-match-or-fall-through and deserves its own migration story.
-- Permission boundaries.
-- Service control policies (SCPs).
-- Session policies passed to `AssumeRole`.
-- ABAC / tag conditions (`aws:ResourceTag`, `aws:RequestTag`, `aws:TagKeys`).
-- `NotPrincipal` (carrying it on a statement causes the statement to be skipped, never silently granted).
+
+**Phase 3 — policy gates (planned).** These sit alongside the main evaluation path and constrain what an otherwise-valid Allow can grant.
+
+- **Permission boundaries.** A managed policy attached to a user or role that caps the maximum permissions that identity can ever be granted — even by an explicit Allow. Not yet evaluated.
+- **Session policies passed to `AssumeRole`.** Inline policies handed to the STS call that further restrict the resulting temporary credentials below the role's own policies. Stored but not yet evaluated.
+
+**Phase 4 — ABAC (planned).** Tag-based access control: condition keys like `aws:ResourceTag/<k>`, `aws:RequestTag/<k>`, and `aws:TagKeys` that let statements key off resource and request tags. Requires propagating resource tags into the request context before the evaluator runs. Not yet implemented.
+
+**Phase 5 — niche cleanup (planned).**
+
+- **KMS key policies.** KMS has a deny-by-default semantic (no policy means nothing is allowed, including the account root) that is materially different from S3 / SNS / Lambda's allow-on-match-or-fall-through, and lands behind its own migration decision before wiring it into the evaluator.
+- **`NotPrincipal`.** The inverse-principal matcher on resource-policy statements. Statements carrying it are currently skipped with a `fakecloud::iam::audit` debug log and never silently grant — the safe-fail semantics are deliberate and part of the no-gaming invariant.
+
+**Will not ship.**
+
+- **Service control policies (SCPs).** An AWS Organizations construct that gates permissions across accounts in an org. fakecloud is a single-account model, so there is no org boundary for an SCP to attach to.
 
 If you need any of these for your test scenarios, **use real AWS**. fakecloud is a test tool, not a full IAM simulator.
 

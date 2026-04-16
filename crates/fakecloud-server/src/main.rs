@@ -385,7 +385,6 @@ async fn main() {
         for service in [
             "cloudformation",
             "lambda",
-            "ses",
             "cognito-idp",
             "rds",
             "elasticache",
@@ -999,9 +998,58 @@ async fn main() {
         ses_state: ses_state.clone(),
         delivery_bus: delivery_for_ses,
     };
-    registry.register(Arc::new(
-        SesV2Service::new(ses_state).with_delivery(ses_delivery_ctx),
-    ));
+    let ses_snapshot_store: Option<Arc<dyn fakecloud_persistence::SnapshotStore>> =
+        if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
+            let data_path = persistence_config
+                .data_path
+                .as_ref()
+                .expect("validated above")
+                .clone();
+            let path = data_path.join("ses").join("snapshot.json");
+            let store = fakecloud_persistence::DiskSnapshotStore::new(path);
+            match fakecloud_persistence::SnapshotStore::load(&store) {
+                Ok(Some(bytes)) => {
+                    match serde_json::from_slice::<fakecloud_ses::state::SesSnapshot>(&bytes) {
+                        Ok(snapshot) => {
+                            if snapshot.schema_version
+                                != fakecloud_ses::state::SES_SNAPSHOT_SCHEMA_VERSION
+                            {
+                                fatal_exit(format_args!(
+                                    "ses persistence schema mismatch: on-disk={}, expected={}",
+                                    snapshot.schema_version,
+                                    fakecloud_ses::state::SES_SNAPSHOT_SCHEMA_VERSION,
+                                ));
+                            }
+                            let identity_count = snapshot.state.identities.len();
+                            let template_count = snapshot.state.templates.len();
+                            *ses_state.write() = snapshot.state;
+                            tracing::info!(
+                                identities = identity_count,
+                                templates = template_count,
+                                "loaded ses persistence snapshot",
+                            );
+                        }
+                        Err(err) => fatal_exit(format_args!(
+                            "failed to parse ses persistence snapshot: {err}"
+                        )),
+                    }
+                }
+                Ok(None) => {
+                    tracing::info!("no ses persistence snapshot found; starting empty");
+                }
+                Err(err) => fatal_exit(format_args!(
+                    "failed to read ses persistence snapshot: {err}"
+                )),
+            }
+            Some(Arc::new(store) as Arc<dyn fakecloud_persistence::SnapshotStore>)
+        } else {
+            None
+        };
+    let mut ses_service = SesV2Service::new(ses_state).with_delivery(ses_delivery_ctx);
+    if let Some(store) = ses_snapshot_store {
+        ses_service = ses_service.with_snapshot_store(store);
+    }
+    registry.register(Arc::new(ses_service));
     let delivery_for_cognito = {
         let mut bus = DeliveryBus::new();
         if let Some(ref ld) = lambda_delivery {

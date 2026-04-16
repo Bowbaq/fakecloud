@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmailIdentity {
     pub identity_name: String,
     pub identity_type: String,
@@ -25,7 +25,7 @@ pub struct EmailIdentity {
     pub configuration_set_name: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmailTemplate {
     pub template_name: String,
     pub subject: Option<String>,
@@ -34,7 +34,7 @@ pub struct EmailTemplate {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigurationSet {
     pub name: String,
     // Sending options
@@ -55,7 +55,7 @@ pub struct ConfigurationSet {
     pub archive_arn: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CustomVerificationEmailTemplate {
     pub template_name: String,
     pub from_email_address: String,
@@ -66,7 +66,7 @@ pub struct CustomVerificationEmailTemplate {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SentEmail {
     pub message_id: String,
     pub from: String,
@@ -82,7 +82,7 @@ pub struct SentEmail {
     pub timestamp: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContactList {
     pub contact_list_name: String,
     pub description: Option<String>,
@@ -99,7 +99,7 @@ pub struct Topic {
     pub default_subscription_status: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Contact {
     pub email_address: String,
     pub topic_preferences: Vec<TopicPreference>,
@@ -115,7 +115,7 @@ pub struct TopicPreference {
     pub subscription_status: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SuppressedDestination {
     pub email_address: String,
     pub reason: String,
@@ -139,13 +139,13 @@ pub struct EventDestination {
     pub pinpoint_destination: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DedicatedIpPool {
     pub pool_name: String,
     pub scaling_mode: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DedicatedIp {
     pub ip: String,
     pub warmup_status: String,
@@ -153,7 +153,7 @@ pub struct DedicatedIp {
     pub pool_name: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MultiRegionEndpoint {
     pub endpoint_name: String,
     pub endpoint_id: String,
@@ -163,7 +163,7 @@ pub struct MultiRegionEndpoint {
     pub last_updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AccountDetails {
     pub mail_type: Option<String>,
     pub website_url: Option<String>,
@@ -173,7 +173,7 @@ pub struct AccountDetails {
     pub production_access_enabled: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AccountSettings {
     pub sending_enabled: bool,
     pub dedicated_ip_auto_warmup_enabled: bool,
@@ -182,7 +182,7 @@ pub struct AccountSettings {
     pub details: Option<AccountDetails>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImportJob {
     pub job_id: String,
     pub import_destination: serde_json::Value,
@@ -194,7 +194,7 @@ pub struct ImportJob {
     pub failed_records_count: i32,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportJob {
     pub job_id: String,
     pub export_source_type: String,
@@ -205,7 +205,7 @@ pub struct ExportJob {
     pub completed_timestamp: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tenant {
     pub tenant_name: String,
     pub tenant_id: String,
@@ -215,13 +215,13 @@ pub struct Tenant {
     pub tags: Vec<serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TenantResourceAssociation {
     pub resource_arn: String,
     pub associated_timestamp: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReputationEntityState {
     pub reputation_entity_reference: String,
     pub reputation_entity_type: String,
@@ -307,12 +307,17 @@ pub struct InboundEmail {
     pub timestamp: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SesState {
     pub account_id: String,
     pub region: String,
+    #[serde(default)]
     pub identities: HashMap<String, EmailIdentity>,
+    #[serde(default)]
     pub configuration_sets: HashMap<String, ConfigurationSet>,
+    #[serde(default)]
     pub templates: HashMap<String, EmailTemplate>,
+    #[serde(default, skip_serializing)]
     pub sent_emails: Vec<SentEmail>,
     pub contact_lists: HashMap<String, ContactList>,
     pub contacts: HashMap<String, HashMap<String, Contact>>,
@@ -352,7 +357,16 @@ pub struct SesState {
     /// Receipt filters: name → filter.
     pub receipt_filters: HashMap<String, ReceiptFilter>,
     /// Inbound emails processed by the introspection endpoint.
+    #[serde(default, skip_serializing)]
     pub inbound_emails: Vec<InboundEmail>,
+}
+
+pub const SES_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SesSnapshot {
+    pub schema_version: u32,
+    pub state: SesState,
 }
 
 impl SesState {

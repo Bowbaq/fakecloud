@@ -5593,4 +5593,470 @@ mod tests {
         // Plain function name (not an ARN)
         assert_eq!(super::function_name_from_arn("my-func"), "my-func");
     }
+
+    // ── Rules / targets / tags handler tests ────────────────────────
+
+    fn put_rule_simple(svc: &EventBridgeService, name: &str) {
+        let req = make_request(
+            "PutRule",
+            json!({ "Name": name, "EventPattern": r#"{"source":["a"]}"# }),
+        );
+        svc.put_rule(&req).unwrap();
+    }
+
+    #[test]
+    fn put_rule_persists_event_pattern_and_state() {
+        let svc = make_service();
+        put_rule_simple(&svc, "r1");
+        let state = svc.state.read();
+        let rule = state
+            .rules
+            .get(&("default".to_string(), "r1".to_string()))
+            .unwrap();
+        assert_eq!(rule.state, "ENABLED");
+        assert!(rule.event_pattern.is_some());
+        assert!(rule.arn.contains("rule/r1"));
+    }
+
+    #[test]
+    fn put_rule_rejects_schedule_on_non_default_bus() {
+        let svc = make_service();
+        // Create a custom bus first.
+        let bus_req = make_request("CreateEventBus", json!({ "Name": "custom" }));
+        svc.create_event_bus(&bus_req).unwrap();
+
+        let req = make_request(
+            "PutRule",
+            json!({
+                "Name": "r1",
+                "EventBusName": "custom",
+                "ScheduleExpression": "rate(5 minutes)"
+            }),
+        );
+        let err = svc.put_rule(&req).err().expect("expected error");
+        assert_eq!(err.code(), "ValidationException");
+    }
+
+    #[test]
+    fn put_rule_rejects_unknown_event_bus() {
+        let svc = make_service();
+        let req = make_request(
+            "PutRule",
+            json!({ "Name": "r1", "EventBusName": "ghost", "EventPattern": r#"{"source":["a"]}"# }),
+        );
+        let err = svc.put_rule(&req).err().expect("expected error");
+        assert_eq!(err.code(), "ResourceNotFoundException");
+    }
+
+    #[test]
+    fn put_rule_overlay_preserves_existing_targets() {
+        let svc = make_service();
+        put_rule_simple(&svc, "r1");
+        // Inject a target directly.
+        {
+            let mut state = svc.state.write();
+            let rule = state
+                .rules
+                .get_mut(&("default".to_string(), "r1".to_string()))
+                .unwrap();
+            rule.targets.push(crate::state::EventTarget {
+                id: "t1".to_string(),
+                arn: "arn:aws:sqs:us-east-1:123456789012:q".to_string(),
+                input: None,
+                input_path: None,
+                input_transformer: None,
+                sqs_parameters: None,
+            });
+        }
+
+        // Re-PutRule with new description; targets should survive.
+        let req = make_request(
+            "PutRule",
+            json!({ "Name": "r1", "Description": "updated", "EventPattern": r#"{"source":["a"]}"# }),
+        );
+        svc.put_rule(&req).unwrap();
+        let state = svc.state.read();
+        let rule = state
+            .rules
+            .get(&("default".to_string(), "r1".to_string()))
+            .unwrap();
+        assert_eq!(rule.description.as_deref(), Some("updated"));
+        assert_eq!(rule.targets.len(), 1);
+    }
+
+    #[test]
+    fn delete_rule_with_targets_errors() {
+        let svc = make_service();
+        put_rule_simple(&svc, "r1");
+        let put_targets_req = make_request(
+            "PutTargets",
+            json!({
+                "Rule": "r1",
+                "Targets": [{ "Id": "t1", "Arn": "arn:aws:sqs:us-east-1:123456789012:q" }]
+            }),
+        );
+        svc.put_targets(&put_targets_req).unwrap();
+
+        let req = make_request("DeleteRule", json!({ "Name": "r1" }));
+        let err = svc.delete_rule(&req).err().expect("expected error");
+        assert_eq!(err.code(), "ValidationException");
+    }
+
+    #[test]
+    fn delete_rule_after_remove_targets_succeeds() {
+        let svc = make_service();
+        put_rule_simple(&svc, "r1");
+        let put_t = make_request(
+            "PutTargets",
+            json!({
+                "Rule": "r1",
+                "Targets": [{ "Id": "t1", "Arn": "arn:aws:sqs:us-east-1:123456789012:q" }]
+            }),
+        );
+        svc.put_targets(&put_t).unwrap();
+        let rm_t = make_request("RemoveTargets", json!({ "Rule": "r1", "Ids": ["t1"] }));
+        svc.remove_targets(&rm_t).unwrap();
+        let del = make_request("DeleteRule", json!({ "Name": "r1" }));
+        svc.delete_rule(&del).unwrap();
+        assert!(!svc
+            .state
+            .read()
+            .rules
+            .contains_key(&("default".to_string(), "r1".to_string())));
+    }
+
+    #[test]
+    fn enable_disable_rule_toggles_state() {
+        let svc = make_service();
+        put_rule_simple(&svc, "r1");
+        let dis = make_request("DisableRule", json!({ "Name": "r1" }));
+        svc.disable_rule(&dis).unwrap();
+        assert_eq!(
+            svc.state
+                .read()
+                .rules
+                .get(&("default".to_string(), "r1".to_string()))
+                .unwrap()
+                .state,
+            "DISABLED"
+        );
+        let en = make_request("EnableRule", json!({ "Name": "r1" }));
+        svc.enable_rule(&en).unwrap();
+        assert_eq!(
+            svc.state
+                .read()
+                .rules
+                .get(&("default".to_string(), "r1".to_string()))
+                .unwrap()
+                .state,
+            "ENABLED"
+        );
+    }
+
+    #[test]
+    fn enable_rule_unknown_errors() {
+        let svc = make_service();
+        let req = make_request("EnableRule", json!({ "Name": "ghost" }));
+        let err = svc.enable_rule(&req).err().expect("expected error");
+        assert_eq!(err.code(), "ResourceNotFoundException");
+    }
+
+    #[test]
+    fn list_rules_with_name_prefix_filter() {
+        let svc = make_service();
+        put_rule_simple(&svc, "prod-orders");
+        put_rule_simple(&svc, "prod-shipping");
+        put_rule_simple(&svc, "dev-orders");
+
+        let req = make_request("ListRules", json!({ "NamePrefix": "prod-" }));
+        let resp = svc.list_rules(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        let names: Vec<&str> = body["Rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["Name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names.len(), 2);
+        assert!(names.iter().all(|n| n.starts_with("prod-")));
+    }
+
+    #[test]
+    fn list_rules_pagination_emits_next_token() {
+        let svc = make_service();
+        for i in 0..5 {
+            put_rule_simple(&svc, &format!("r{i}"));
+        }
+        let req = make_request("ListRules", json!({ "Limit": 2 }));
+        let resp = svc.list_rules(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["Rules"].as_array().unwrap().len(), 2);
+        assert!(body["NextToken"].is_string());
+    }
+
+    #[test]
+    fn describe_rule_returns_persisted_fields() {
+        let svc = make_service();
+        let put = make_request(
+            "PutRule",
+            json!({
+                "Name": "r1",
+                "EventPattern": r#"{"source":["a"]}"#,
+                "Description": "hi",
+                "State": "DISABLED"
+            }),
+        );
+        svc.put_rule(&put).unwrap();
+        let desc = make_request("DescribeRule", json!({ "Name": "r1" }));
+        let resp = svc.describe_rule(&desc).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["Name"], json!("r1"));
+        assert_eq!(body["State"], json!("DISABLED"));
+        assert_eq!(body["Description"], json!("hi"));
+    }
+
+    #[test]
+    fn describe_rule_unknown_errors() {
+        let svc = make_service();
+        let req = make_request("DescribeRule", json!({ "Name": "ghost" }));
+        let err = svc.describe_rule(&req).err().expect("expected error");
+        assert_eq!(err.code(), "ResourceNotFoundException");
+    }
+
+    #[test]
+    fn put_targets_rejects_fifo_without_sqs_parameters() {
+        let svc = make_service();
+        put_rule_simple(&svc, "r1");
+        let req = make_request(
+            "PutTargets",
+            json!({
+                "Rule": "r1",
+                "Targets": [{ "Id": "t1", "Arn": "arn:aws:sqs:us-east-1:123456789012:q.fifo" }]
+            }),
+        );
+        let err = svc.put_targets(&req).err().expect("expected error");
+        assert_eq!(err.code(), "ValidationException");
+    }
+
+    #[test]
+    fn put_targets_rejects_invalid_arn() {
+        let svc = make_service();
+        put_rule_simple(&svc, "r1");
+        let req = make_request(
+            "PutTargets",
+            json!({
+                "Rule": "r1",
+                "Targets": [{ "Id": "t1", "Arn": "not-an-arn" }]
+            }),
+        );
+        let err = svc.put_targets(&req).err().expect("expected error");
+        assert_eq!(err.code(), "ValidationException");
+    }
+
+    #[test]
+    fn put_targets_unknown_rule_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "PutTargets",
+            json!({
+                "Rule": "ghost",
+                "Targets": [{ "Id": "t1", "Arn": "arn:aws:sqs:us-east-1:123456789012:q" }]
+            }),
+        );
+        let err = svc.put_targets(&req).err().expect("expected error");
+        assert_eq!(err.code(), "ResourceNotFoundException");
+    }
+
+    #[test]
+    fn put_targets_replaces_existing_with_same_id() {
+        let svc = make_service();
+        put_rule_simple(&svc, "r1");
+        let first = make_request(
+            "PutTargets",
+            json!({
+                "Rule": "r1",
+                "Targets": [{ "Id": "t1", "Arn": "arn:aws:sqs:us-east-1:123456789012:q1" }]
+            }),
+        );
+        svc.put_targets(&first).unwrap();
+        let second = make_request(
+            "PutTargets",
+            json!({
+                "Rule": "r1",
+                "Targets": [{ "Id": "t1", "Arn": "arn:aws:sqs:us-east-1:123456789012:q2" }]
+            }),
+        );
+        svc.put_targets(&second).unwrap();
+
+        let state = svc.state.read();
+        let rule = state
+            .rules
+            .get(&("default".to_string(), "r1".to_string()))
+            .unwrap();
+        assert_eq!(rule.targets.len(), 1);
+        assert!(rule.targets[0].arn.ends_with("q2"));
+    }
+
+    #[test]
+    fn list_targets_by_rule_returns_pagination_token() {
+        let svc = make_service();
+        put_rule_simple(&svc, "r1");
+        for i in 0..4 {
+            let req = make_request(
+                "PutTargets",
+                json!({
+                    "Rule": "r1",
+                    "Targets": [{
+                        "Id": format!("t{i}"),
+                        "Arn": format!("arn:aws:sqs:us-east-1:123456789012:q{i}")
+                    }]
+                }),
+            );
+            svc.put_targets(&req).unwrap();
+        }
+        let req = make_request("ListTargetsByRule", json!({ "Rule": "r1", "Limit": 2 }));
+        let resp = svc.list_targets_by_rule(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["Targets"].as_array().unwrap().len(), 2);
+        assert!(body["NextToken"].is_string());
+    }
+
+    #[test]
+    fn list_rule_names_by_target_groups_by_arn() {
+        let svc = make_service();
+        put_rule_simple(&svc, "r1");
+        put_rule_simple(&svc, "r2");
+        for rule in ["r1", "r2"] {
+            let req = make_request(
+                "PutTargets",
+                json!({
+                    "Rule": rule,
+                    "Targets": [{
+                        "Id": "t1",
+                        "Arn": "arn:aws:sqs:us-east-1:123456789012:shared"
+                    }]
+                }),
+            );
+            svc.put_targets(&req).unwrap();
+        }
+        let req = make_request(
+            "ListRuleNamesByTarget",
+            json!({ "TargetArn": "arn:aws:sqs:us-east-1:123456789012:shared" }),
+        );
+        let resp = svc.list_rule_names_by_target(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        let names: Vec<&str> = body["RuleNames"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["r1", "r2"]);
+    }
+
+    // ── Tag operations ───────────────────────────────────────────────
+
+    #[test]
+    fn tag_then_list_tags_for_rule() {
+        let svc = make_service();
+        put_rule_simple(&svc, "r1");
+        let arn = svc
+            .state
+            .read()
+            .rules
+            .get(&("default".to_string(), "r1".to_string()))
+            .unwrap()
+            .arn
+            .clone();
+
+        let tag_req = make_request(
+            "TagResource",
+            json!({
+                "ResourceARN": arn,
+                "Tags": [{ "Key": "env", "Value": "prod" }]
+            }),
+        );
+        svc.tag_resource(&tag_req).unwrap();
+
+        let list_req = make_request("ListTagsForResource", json!({ "ResourceARN": arn }));
+        let resp = svc.list_tags_for_resource(&list_req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        let tags = body["Tags"].as_array().unwrap();
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0]["Key"], json!("env"));
+        assert_eq!(tags[0]["Value"], json!("prod"));
+    }
+
+    #[test]
+    fn untag_resource_removes_listed_keys() {
+        let svc = make_service();
+        put_rule_simple(&svc, "r1");
+        let arn = svc
+            .state
+            .read()
+            .rules
+            .get(&("default".to_string(), "r1".to_string()))
+            .unwrap()
+            .arn
+            .clone();
+        let tag_req = make_request(
+            "TagResource",
+            json!({
+                "ResourceARN": &arn,
+                "Tags": [{ "Key": "env", "Value": "prod" }, { "Key": "team", "Value": "core" }]
+            }),
+        );
+        svc.tag_resource(&tag_req).unwrap();
+
+        let untag = make_request(
+            "UntagResource",
+            json!({ "ResourceARN": &arn, "TagKeys": ["env"] }),
+        );
+        svc.untag_resource(&untag).unwrap();
+
+        let state = svc.state.read();
+        let rule = state
+            .rules
+            .get(&("default".to_string(), "r1".to_string()))
+            .unwrap();
+        assert!(!rule.tags.contains_key("env"));
+        assert_eq!(rule.tags.get("team").map(String::as_str), Some("core"));
+    }
+
+    // ── TestEventPattern ─────────────────────────────────────────────
+
+    #[test]
+    fn test_event_pattern_returns_result_field() {
+        let svc = make_service();
+        let req = make_request(
+            "TestEventPattern",
+            json!({
+                "EventPattern": r#"{"source":["my.app"]}"#,
+                "Event": r#"{"source":"my.app","detail-type":"x","detail":{}}"#
+            }),
+        );
+        let resp = svc.test_event_pattern(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["Result"], json!(true));
+    }
+
+    // ── Event bus describe / delete ──────────────────────────────────
+
+    #[test]
+    fn describe_event_bus_default_returns_arn() {
+        let svc = make_service();
+        let req = make_request("DescribeEventBus", json!({}));
+        let resp = svc.describe_event_bus(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["Name"], json!("default"));
+        assert!(body["Arn"].as_str().unwrap().contains("event-bus/default"));
+    }
+
+    #[test]
+    fn delete_event_bus_default_fails() {
+        let svc = make_service();
+        let req = make_request("DeleteEventBus", json!({ "Name": "default" }));
+        let err = svc.delete_event_bus(&req).err().expect("expected error");
+        assert_eq!(err.code(), "ValidationException");
+    }
 }
