@@ -1010,7 +1010,7 @@ async fn main() {
     }
     registry.register(Arc::new(
         S3Service::with_store(s3_state.clone(), delivery_for_s3, s3_store.clone())
-            .with_kms(kms_state),
+            .with_kms(kms_state.clone()),
     ));
     // Snapshot store is only wired in persistent mode. In memory mode we
     // leave it unset so the service doesn't pay the per-mutation
@@ -1639,6 +1639,9 @@ async fn main() {
                 ),
                 fakecloud_lambda::resource_policy::LambdaResourcePolicyProvider::shared(
                     lambda_state.clone(),
+                ),
+                fakecloud_kms::resource_policy::KmsResourcePolicyProvider::shared(
+                    kms_state.clone(),
                 ),
             ],
         )),

@@ -66,6 +66,7 @@ Opt-in enforcement covers the services most commonly subject to real IAM policie
 | **SQS** | All 20 supported actions | `arn:aws:sqs:<region>:<account>:<queue-name>` |
 | **SNS** | All 34 supported actions | Topic / subscription / platform-app / endpoint ARNs |
 | **S3** | All 74 supported actions | `arn:aws:s3:::<bucket>[/<key>]` (object actions include the key; bucket actions don't) |
+| **KMS** | All 47 supported actions | `arn:aws:kms:<region>:<account>:key/<key-id>` (key-targeted actions) or `*` (account-level actions like CreateKey, ListKeys) |
 
 Other services are not enforced even with `FAKECLOUD_IAM=strict`. The startup log enumerates which services are enforced vs. skipped so you always know the current surface. If a service you need is missing, [open an issue](https://github.com/faiscadev/fakecloud/issues) — the wiring is straightforward per-service.
 
@@ -137,7 +138,7 @@ New services plug in by implementing `iam_condition_keys_for` on their `AwsServi
 
 ### Resource-based policies
 
-S3 bucket policies, SNS topic policies, and Lambda function policies are fully wired into the evaluator. When enforcement is on and a resource has a policy attached, dispatch fetches it and hands it to the evaluator alongside the caller's identity policies; the evaluator combines the two using AWS's cross-account semantics:
+S3 bucket policies, SNS topic policies, Lambda function policies, and KMS key policies are fully wired into the evaluator. When enforcement is on and a resource has a policy attached, dispatch fetches it and hands it to the evaluator alongside the caller's identity policies; the evaluator combines the two using AWS's cross-account semantics:
 
 - **Explicit Deny** from either the identity policy or the resource policy wins immediately.
 - **Same-account** callers (principal account ID equals the resource's owning account): the request is allowed if the identity policy **or** the resource policy grants it.
@@ -197,9 +198,9 @@ Tag-based access control via four condition key families:
 
 | Condition key | Description | Enforced services |
 |---|---|---|
-| `aws:ResourceTag/<key>` | Tags on the target resource | S3, SQS, SNS, IAM |
-| `aws:RequestTag/<key>` | Tags sent in the request (e.g. on CreateQueue, PutObject) | S3, SQS, SNS, IAM |
-| `aws:TagKeys` | List of tag keys in the request (for `ForAllValues`/`ForAnyValue`) | S3, SQS, SNS, IAM |
+| `aws:ResourceTag/<key>` | Tags on the target resource | S3, SQS, SNS, IAM, KMS |
+| `aws:RequestTag/<key>` | Tags sent in the request (e.g. on CreateQueue, PutObject) | S3, SQS, SNS, IAM, KMS |
+| `aws:TagKeys` | List of tag keys in the request (for `ForAllValues`/`ForAnyValue`) | S3, SQS, SNS, IAM, KMS |
 | `aws:PrincipalTag/<key>` | Tags on the calling IAM user or assumed role | All enforced services |
 
 Key semantics:
@@ -208,10 +209,6 @@ Key semantics:
 - `aws:PrincipalTag/<key>` is populated from the IAM user's or assumed role's tags at credential resolution time.
 - Services that don't implement ABAC yet (Lambda, Step Functions, etc.) gracefully skip tag evaluation with a `fakecloud::iam::audit` debug log. No fake tag values are ever returned.
 - Adding ABAC support to a new service requires implementing two trait methods: `resource_tags_for()` and `request_tags_from()`.
-
-**Phase 5 — niche cleanup (planned).**
-
-- **KMS key policies.** KMS has a deny-by-default semantic (no policy means nothing is allowed, including the account root) that is materially different from S3 / SNS / Lambda's allow-on-match-or-fall-through, and lands behind its own migration decision before wiring it into the evaluator.
 
 **Will not ship.**
 

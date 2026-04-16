@@ -174,6 +174,65 @@ fn is_mutating_action(action: &str) -> bool {
     )
 }
 
+/// Single source of truth for supported KMS actions. Referenced by both
+/// `supported_actions()` (used by the dispatch layer) and
+/// `iam_action_for()` (used by the IAM enforcement layer).
+static KMS_ACTIONS: &[&str] = &[
+    "CreateKey",
+    "DescribeKey",
+    "ListKeys",
+    "EnableKey",
+    "DisableKey",
+    "ScheduleKeyDeletion",
+    "CancelKeyDeletion",
+    "Encrypt",
+    "Decrypt",
+    "ReEncrypt",
+    "GenerateDataKey",
+    "GenerateDataKeyWithoutPlaintext",
+    "GenerateRandom",
+    "CreateAlias",
+    "DeleteAlias",
+    "UpdateAlias",
+    "ListAliases",
+    "TagResource",
+    "UntagResource",
+    "ListResourceTags",
+    "UpdateKeyDescription",
+    "GetKeyPolicy",
+    "PutKeyPolicy",
+    "ListKeyPolicies",
+    "GetKeyRotationStatus",
+    "EnableKeyRotation",
+    "DisableKeyRotation",
+    "RotateKeyOnDemand",
+    "ListKeyRotations",
+    "Sign",
+    "Verify",
+    "GetPublicKey",
+    "CreateGrant",
+    "ListGrants",
+    "ListRetirableGrants",
+    "RevokeGrant",
+    "RetireGrant",
+    "GenerateMac",
+    "VerifyMac",
+    "ReplicateKey",
+    "GenerateDataKeyPair",
+    "GenerateDataKeyPairWithoutPlaintext",
+    "DeriveSharedSecret",
+    "GetParametersForImport",
+    "ImportKeyMaterial",
+    "DeleteImportedKeyMaterial",
+    "UpdatePrimaryRegion",
+    "CreateCustomKeyStore",
+    "DeleteCustomKeyStore",
+    "DescribeCustomKeyStores",
+    "ConnectCustomKeyStore",
+    "DisconnectCustomKeyStore",
+    "UpdateCustomKeyStore",
+];
+
 pub struct KmsService {
     state: SharedKmsState,
     snapshot_store: Option<Arc<dyn SnapshotStore>>,
@@ -293,62 +352,122 @@ impl AwsService for KmsService {
     }
 
     fn supported_actions(&self) -> &[&str] {
-        &[
-            "CreateKey",
-            "DescribeKey",
-            "ListKeys",
-            "EnableKey",
-            "DisableKey",
-            "ScheduleKeyDeletion",
-            "CancelKeyDeletion",
-            "Encrypt",
-            "Decrypt",
-            "ReEncrypt",
-            "GenerateDataKey",
-            "GenerateDataKeyWithoutPlaintext",
-            "GenerateRandom",
-            "CreateAlias",
-            "DeleteAlias",
-            "UpdateAlias",
-            "ListAliases",
-            "TagResource",
-            "UntagResource",
-            "ListResourceTags",
-            "UpdateKeyDescription",
-            "GetKeyPolicy",
-            "PutKeyPolicy",
-            "ListKeyPolicies",
-            "GetKeyRotationStatus",
-            "EnableKeyRotation",
-            "DisableKeyRotation",
-            "RotateKeyOnDemand",
-            "ListKeyRotations",
-            "Sign",
-            "Verify",
-            "GetPublicKey",
-            "CreateGrant",
-            "ListGrants",
-            "ListRetirableGrants",
-            "RevokeGrant",
-            "RetireGrant",
-            "GenerateMac",
-            "VerifyMac",
-            "ReplicateKey",
-            "GenerateDataKeyPair",
-            "GenerateDataKeyPairWithoutPlaintext",
-            "DeriveSharedSecret",
-            "GetParametersForImport",
-            "ImportKeyMaterial",
-            "DeleteImportedKeyMaterial",
-            "UpdatePrimaryRegion",
-            "CreateCustomKeyStore",
-            "DeleteCustomKeyStore",
-            "DescribeCustomKeyStores",
-            "ConnectCustomKeyStore",
-            "DisconnectCustomKeyStore",
-            "UpdateCustomKeyStore",
-        ]
+        KMS_ACTIONS
     }
+
+    fn iam_enforceable(&self) -> bool {
+        true
+    }
+
+    fn iam_action_for(&self, request: &AwsRequest) -> Option<fakecloud_core::auth::IamAction> {
+        let action = KMS_ACTIONS.iter().copied().find(|a| *a == request.action)?;
+        let resource = kms_resource_for(action, &self.state, request);
+        Some(fakecloud_core::auth::IamAction {
+            service: "kms",
+            action,
+            resource,
+        })
+    }
+
+    fn resource_tags_for(
+        &self,
+        resource_arn: &str,
+    ) -> Option<std::collections::HashMap<String, String>> {
+        if resource_arn == "*" {
+            return Some(std::collections::HashMap::new());
+        }
+        let key_id = resource_arn.rsplit_once(":key/")?.1;
+        let state = self.state.read();
+        let key = state.keys.get(key_id)?;
+        Some(key.tags.clone())
+    }
+
+    fn request_tags_from(
+        &self,
+        request: &AwsRequest,
+        action: &str,
+    ) -> Option<std::collections::HashMap<String, String>> {
+        match action {
+            "CreateKey" | "TagResource" => {
+                let body = request.json_body();
+                let mut tags = std::collections::HashMap::new();
+                if let Some(arr) = body["Tags"].as_array() {
+                    for tag in arr {
+                        if let (Some(k), Some(v)) =
+                            (tag["TagKey"].as_str(), tag["TagValue"].as_str())
+                        {
+                            tags.insert(k.to_string(), v.to_string());
+                        }
+                    }
+                }
+                Some(tags)
+            }
+            _ => Some(std::collections::HashMap::new()),
+        }
+    }
+}
+
+/// Derive the resource ARN for a KMS IAM action.
+///
+/// Key-targeted operations resolve their `KeyId` parameter (which may
+/// be a UUID, ARN, or alias) to the key's canonical ARN. Operations
+/// that don't target a specific key (CreateKey, ListKeys, etc.) use `*`.
+fn kms_resource_for(action: &str, state: &SharedKmsState, request: &AwsRequest) -> String {
+    // Operations that don't target a specific key.
+    if matches!(
+        action,
+        "CreateKey"
+            | "ListKeys"
+            | "ListAliases"
+            | "GenerateRandom"
+            | "ListRetirableGrants"
+            | "CreateCustomKeyStore"
+            | "DeleteCustomKeyStore"
+            | "DescribeCustomKeyStores"
+            | "ConnectCustomKeyStore"
+            | "DisconnectCustomKeyStore"
+            | "UpdateCustomKeyStore"
+    ) {
+        return "*".to_string();
+    }
+
+    // Alias-targeted operations carry an AliasName instead of KeyId.
+    if matches!(action, "CreateAlias" | "DeleteAlias" | "UpdateAlias") {
+        let body = request.json_body();
+        // Resolve alias -> key ARN when possible.
+        if let Some(alias_name) = body["AliasName"].as_str() {
+            let s = state.read();
+            if let Some(alias) = s.aliases.get(alias_name) {
+                if let Some(key) = s.keys.get(&alias.target_key_id) {
+                    return key.arn.clone();
+                }
+            }
+            // For CreateAlias the target may be in TargetKeyId.
+            if let Some(target) = body["TargetKeyId"].as_str() {
+                if let Some(key_id) = KmsService::resolve_key_id_with_state(&s, target) {
+                    if let Some(key) = s.keys.get(&key_id) {
+                        return key.arn.clone();
+                    }
+                }
+            }
+        }
+        return "*".to_string();
+    }
+
+    // All remaining operations carry a KeyId parameter.
+    let body = request.json_body();
+    if let Some(key_id_input) = body["KeyId"].as_str() {
+        let s = state.read();
+        if let Some(key_id) = KmsService::resolve_key_id_with_state(&s, key_id_input) {
+            if let Some(key) = s.keys.get(&key_id) {
+                return key.arn.clone();
+            }
+        }
+    }
+    // Key not found or no KeyId — fall back to wildcard. The handler
+    // will return NotFoundException anyway; this avoids blocking the
+    // request at the IAM layer with a confusing error.
+    "*".to_string()
 }
 
 fn default_key_policy(account_id: &str) -> String {
@@ -665,7 +784,7 @@ impl KmsService {
         Self::resolve_key_id_with_state(&state, key_id_or_arn)
     }
 
-    fn resolve_key_id_with_state(
+    pub(crate) fn resolve_key_id_with_state(
         state: &crate::state::KmsState,
         key_id_or_arn: &str,
     ) -> Option<String> {
