@@ -3455,4 +3455,315 @@ mod tests {
             "OwnershipControlsNotFoundError",
         );
     }
+
+    // ── Error branch tests: object operations ──
+
+    #[test]
+    fn get_object_nonexistent_bucket() {
+        let svc = make_service();
+        let req = make_request(Method::GET, "/no-bucket/key", &[], b"");
+        assert_aws_err(svc.get_object(&req, "no-bucket", "key"), "NoSuchBucket");
+    }
+
+    #[test]
+    fn get_object_nonexistent_key() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+        let req = make_request(Method::GET, "/b/missing", &[], b"");
+        assert_aws_err(svc.get_object(&req, "b", "missing"), "NoSuchKey");
+    }
+
+    #[test]
+    fn put_object_key_too_long() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+        let long_key = "x".repeat(1025);
+        let req = make_request(Method::PUT, &format!("/b/{long_key}"), &[], b"data");
+        assert_aws_err(svc.put_object(&req, "b", &long_key), "KeyTooLongError");
+    }
+
+    #[test]
+    fn put_object_with_aws_tag_prefix() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+        let mut req = make_request(Method::PUT, "/b/tagged", &[], b"data");
+        req.headers
+            .insert("x-amz-tagging", "aws:reserved=nope".parse().unwrap());
+        assert_aws_err(svc.put_object(&req, "b", "tagged"), "InvalidTag");
+    }
+
+    #[test]
+    fn put_object_acl_and_grant_conflict() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+        let mut req = make_request(Method::PUT, "/b/conflict", &[], b"data");
+        req.headers
+            .insert("x-amz-acl", "public-read".parse().unwrap());
+        req.headers
+            .insert("x-amz-grant-read", "id=abc123".parse().unwrap());
+        assert_aws_err(svc.put_object(&req, "b", "conflict"), "InvalidRequest");
+    }
+
+    #[test]
+    fn head_object_nonexistent_key() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+        let req = make_request(Method::HEAD, "/b/missing", &[], b"");
+        assert_aws_err(svc.head_object(&req, "b", "missing"), "NoSuchKey");
+    }
+
+    #[test]
+    fn head_object_nonexistent_bucket() {
+        let svc = make_service();
+        let req = make_request(Method::HEAD, "/nope/key", &[], b"");
+        assert_aws_err(svc.head_object(&req, "nope", "key"), "NoSuchBucket");
+    }
+
+    #[test]
+    fn delete_object_nonexistent_bucket() {
+        let svc = make_service();
+        let req = make_request(Method::DELETE, "/nope/key", &[], b"");
+        assert_aws_err(svc.delete_object(&req, "nope", "key"), "NoSuchBucket");
+    }
+
+    #[test]
+    fn copy_object_source_not_found() {
+        let svc = make_service();
+        seed_bucket(&svc, "src-b");
+        seed_bucket(&svc, "dst-b");
+        let mut req = make_request(Method::PUT, "/dst-b/copied", &[], b"");
+        req.headers
+            .insert("x-amz-copy-source", "src-b/nonexistent".parse().unwrap());
+        assert_aws_err(svc.copy_object(&req, "dst-b", "copied"), "NoSuchKey");
+    }
+
+    #[test]
+    fn copy_object_source_bucket_not_found() {
+        let svc = make_service();
+        seed_bucket(&svc, "dst-b2");
+        let mut req = make_request(Method::PUT, "/dst-b2/copied", &[], b"");
+        req.headers
+            .insert("x-amz-copy-source", "nope-bucket/key".parse().unwrap());
+        assert_aws_err(svc.copy_object(&req, "dst-b2", "copied"), "NoSuchBucket");
+    }
+
+    #[test]
+    fn list_objects_v2_nonexistent_bucket() {
+        let svc = make_service();
+        let req = make_request(Method::GET, "/nope", &[("list-type", "2")], b"");
+        assert_aws_err(svc.list_objects_v2(&req, "nope"), "NoSuchBucket");
+    }
+
+    #[test]
+    fn list_objects_v2_empty_continuation_token() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+        let req = make_request(
+            Method::GET,
+            "/b",
+            &[("list-type", "2"), ("continuation-token", "")],
+            b"",
+        );
+        assert_aws_err(svc.list_objects_v2(&req, "b"), "InvalidArgument");
+    }
+
+    #[test]
+    fn list_objects_v1_nonexistent_bucket() {
+        let svc = make_service();
+        let req = make_request(Method::GET, "/nope", &[], b"");
+        assert_aws_err(svc.list_objects_v1(&req, "nope"), "NoSuchBucket");
+    }
+
+    #[test]
+    fn list_object_versions_nonexistent_bucket() {
+        let svc = make_service();
+        let req = make_request(Method::GET, "/nope", &[("versions", "")], b"");
+        assert_aws_err(svc.list_object_versions(&req, "nope"), "NoSuchBucket");
+    }
+
+    // ── Error branch tests: multipart operations ──
+
+    #[test]
+    fn create_multipart_nonexistent_bucket() {
+        let svc = make_service();
+        let req = make_request(Method::POST, "/nope/key", &[("uploads", "")], b"");
+        assert_aws_err(
+            svc.create_multipart_upload(&req, "nope", "key"),
+            "NoSuchBucket",
+        );
+    }
+
+    #[test]
+    fn upload_part_nonexistent_upload() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+        let req = make_request(
+            Method::PUT,
+            "/b/key",
+            &[("uploadId", "bogus"), ("partNumber", "1")],
+            b"data",
+        );
+        assert_aws_err(
+            svc.upload_part(&req, "b", "key", "bogus", 1),
+            "NoSuchUpload",
+        );
+    }
+
+    #[test]
+    fn complete_multipart_nonexistent_upload() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+        let req = make_request(
+            Method::POST,
+            "/b/key",
+            &[("uploadId", "bogus")],
+            b"<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>\"abc\"</ETag></Part></CompleteMultipartUpload>",
+        );
+        assert_aws_err(
+            svc.complete_multipart_upload(&req, "b", "key", "bogus"),
+            "NoSuchUpload",
+        );
+    }
+
+    #[test]
+    fn abort_multipart_nonexistent_upload() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+        assert_aws_err(
+            svc.abort_multipart_upload("b", "key", "bogus"),
+            "NoSuchUpload",
+        );
+    }
+
+    #[test]
+    fn list_parts_nonexistent_upload() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+        let req = make_request(Method::GET, "/b/key", &[("uploadId", "bogus")], b"");
+        assert_aws_err(svc.list_parts(&req, "b", "key", "bogus"), "NoSuchUpload");
+    }
+
+    // ── Error branch tests: config operations ──
+
+    #[test]
+    fn get_bucket_acl_nonexistent() {
+        let svc = make_service();
+        let req = make_request(Method::GET, "/nope", &[("acl", "")], b"");
+        assert_aws_err(svc.get_bucket_acl(&req, "nope"), "NoSuchBucket");
+    }
+
+    #[test]
+    fn get_bucket_versioning_nonexistent() {
+        let svc = make_service();
+        assert_aws_err(svc.get_bucket_versioning("nope"), "NoSuchBucket");
+    }
+
+    #[test]
+    fn put_bucket_versioning_nonexistent() {
+        let svc = make_service();
+        let req = make_request(
+            Method::PUT,
+            "/nope",
+            &[("versioning", "")],
+            b"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>",
+        );
+        assert_aws_err(svc.put_bucket_versioning(&req, "nope"), "NoSuchBucket");
+    }
+
+    #[test]
+    fn get_bucket_location_nonexistent() {
+        let svc = make_service();
+        assert_aws_err(svc.get_bucket_location("nope"), "NoSuchBucket");
+    }
+
+    #[test]
+    fn get_bucket_lifecycle_nonexistent() {
+        let svc = make_service();
+        assert_aws_err(svc.get_bucket_lifecycle("nope"), "NoSuchBucket");
+    }
+
+    #[test]
+    fn get_bucket_notification_nonexistent() {
+        let svc = make_service();
+        assert_aws_err(svc.get_bucket_notification("nope"), "NoSuchBucket");
+    }
+
+    #[test]
+    fn get_bucket_encryption_nonexistent() {
+        let svc = make_service();
+        assert_aws_err(svc.get_bucket_encryption("nope"), "NoSuchBucket");
+    }
+
+    #[test]
+    fn get_bucket_logging_nonexistent() {
+        let svc = make_service();
+        assert_aws_err(svc.get_bucket_logging("nope"), "NoSuchBucket");
+    }
+
+    #[test]
+    fn get_object_lock_nonexistent() {
+        let svc = make_service();
+        assert_aws_err(svc.get_object_lock_configuration("nope"), "NoSuchBucket");
+    }
+
+    #[test]
+    fn get_object_attributes_nonexistent_key() {
+        let svc = make_service();
+        seed_bucket(&svc, "b");
+        let req = make_request(Method::GET, "/b/missing", &[("attributes", "")], b"");
+        assert_aws_err(svc.get_object_attributes(&req, "b", "missing"), "NoSuchKey");
+    }
+
+    #[test]
+    fn get_object_attributes_nonexistent_bucket() {
+        let svc = make_service();
+        let req = make_request(Method::GET, "/nope/key", &[("attributes", "")], b"");
+        assert_aws_err(
+            svc.get_object_attributes(&req, "nope", "key"),
+            "NoSuchBucket",
+        );
+    }
+
+    #[test]
+    fn restore_object_nonexistent_bucket() {
+        let svc = make_service();
+        let req = make_request(
+            Method::POST,
+            "/nope/key",
+            &[("restore", "")],
+            b"<RestoreRequest><Days>1</Days></RestoreRequest>",
+        );
+        assert_aws_err(svc.restore_object(&req, "nope", "key"), "NoSuchBucket");
+    }
+
+    #[test]
+    fn get_public_access_block_nonexistent() {
+        let svc = make_service();
+        assert_aws_err(svc.get_public_access_block("nope"), "NoSuchBucket");
+    }
+
+    #[test]
+    fn get_bucket_policy_nonexistent() {
+        let svc = make_service();
+        assert_aws_err(svc.get_bucket_policy("nope"), "NoSuchBucket");
+    }
+
+    #[test]
+    fn get_bucket_cors_nonexistent() {
+        let svc = make_service();
+        assert_aws_err(svc.get_bucket_cors("nope"), "NoSuchBucket");
+    }
+
+    #[test]
+    fn get_bucket_tagging_nonexistent() {
+        let svc = make_service();
+        let req = make_request(Method::GET, "/nope", &[("tagging", "")], b"");
+        assert_aws_err(svc.get_bucket_tagging(&req, "nope"), "NoSuchBucket");
+    }
+
+    #[test]
+    fn get_bucket_website_nonexistent() {
+        let svc = make_service();
+        assert_aws_err(svc.get_bucket_website("nope"), "NoSuchBucket");
+    }
 }
