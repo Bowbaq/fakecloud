@@ -5338,4 +5338,585 @@ mod tests {
             "attribute should be removed when set becomes empty"
         );
     }
+
+    fn body_json(resp: &AwsResponse) -> Value {
+        serde_json::from_slice(resp.body.expect_bytes()).unwrap()
+    }
+
+    fn expect_err(result: Result<AwsResponse, AwsServiceError>) -> AwsServiceError {
+        match result {
+            Err(e) => e,
+            Ok(_) => panic!("expected error, got Ok"),
+        }
+    }
+
+    // ── CreateTable ──
+
+    #[test]
+    fn create_table_basic() {
+        let svc = make_service();
+        let req = make_request(
+            "CreateTable",
+            json!({
+                "TableName": "my-table",
+                "KeySchema": [{"AttributeName": "id", "KeyType": "HASH"}],
+                "AttributeDefinitions": [{"AttributeName": "id", "AttributeType": "S"}],
+                "BillingMode": "PAY_PER_REQUEST",
+            }),
+        );
+        let resp = svc.create_table(&req).unwrap();
+        let b = body_json(&resp);
+        assert_eq!(b["TableDescription"]["TableName"], "my-table");
+        assert_eq!(b["TableDescription"]["TableStatus"], "ACTIVE");
+        assert!(b["TableDescription"]["TableArn"].as_str().is_some());
+    }
+
+    #[test]
+    fn create_table_with_sort_key_and_gsi() {
+        let svc = make_service();
+        let req = make_request(
+            "CreateTable",
+            json!({
+                "TableName": "gsi-table",
+                "KeySchema": [
+                    {"AttributeName": "pk", "KeyType": "HASH"},
+                    {"AttributeName": "sk", "KeyType": "RANGE"},
+                ],
+                "AttributeDefinitions": [
+                    {"AttributeName": "pk", "AttributeType": "S"},
+                    {"AttributeName": "sk", "AttributeType": "S"},
+                    {"AttributeName": "gsi_key", "AttributeType": "N"},
+                ],
+                "GlobalSecondaryIndexes": [{
+                    "IndexName": "gsi1",
+                    "KeySchema": [{"AttributeName": "gsi_key", "KeyType": "HASH"}],
+                    "Projection": {"ProjectionType": "ALL"},
+                }],
+                "BillingMode": "PAY_PER_REQUEST",
+            }),
+        );
+        let resp = svc.create_table(&req).unwrap();
+        let b = body_json(&resp);
+        let gsi = b["TableDescription"]["GlobalSecondaryIndexes"]
+            .as_array()
+            .unwrap();
+        assert_eq!(gsi.len(), 1);
+        assert_eq!(gsi[0]["IndexName"], "gsi1");
+    }
+
+    #[test]
+    fn create_table_duplicate_fails() {
+        let svc = make_service();
+        create_test_table(&svc);
+
+        let req = make_request(
+            "CreateTable",
+            json!({
+                "TableName": "test-table",
+                "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}],
+                "AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}],
+                "BillingMode": "PAY_PER_REQUEST",
+            }),
+        );
+        let err = expect_err(svc.create_table(&req));
+        assert!(err.to_string().contains("ResourceInUseException"));
+    }
+
+    #[test]
+    fn create_table_missing_key_attr_in_definitions() {
+        let svc = make_service();
+        let req = make_request(
+            "CreateTable",
+            json!({
+                "TableName": "bad",
+                "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}],
+                "AttributeDefinitions": [{"AttributeName": "other", "AttributeType": "S"}],
+                "BillingMode": "PAY_PER_REQUEST",
+            }),
+        );
+        let err = expect_err(svc.create_table(&req));
+        assert!(err.to_string().contains("ValidationException"));
+    }
+
+    // ── DescribeTable ──
+
+    #[test]
+    fn describe_table_found() {
+        let svc = make_service();
+        create_test_table(&svc);
+
+        let req = make_request("DescribeTable", json!({"TableName": "test-table"}));
+        let resp = svc.describe_table(&req).unwrap();
+        let b = body_json(&resp);
+        assert_eq!(b["Table"]["TableName"], "test-table");
+        assert_eq!(b["Table"]["TableStatus"], "ACTIVE");
+    }
+
+    #[test]
+    fn describe_table_not_found() {
+        let svc = make_service();
+        let req = make_request("DescribeTable", json!({"TableName": "nope"}));
+        let err = expect_err(svc.describe_table(&req));
+        assert!(err.to_string().contains("ResourceNotFoundException"));
+    }
+
+    // ── DeleteTable ──
+
+    #[test]
+    fn delete_table_removes_table() {
+        let svc = make_service();
+        create_test_table(&svc);
+
+        let req = make_request("DeleteTable", json!({"TableName": "test-table"}));
+        let resp = svc.delete_table(&req).unwrap();
+        let b = body_json(&resp);
+        assert_eq!(b["TableDescription"]["TableName"], "test-table");
+
+        // Should be gone
+        let req = make_request("DescribeTable", json!({"TableName": "test-table"}));
+        assert!(svc.describe_table(&req).is_err());
+    }
+
+    // ── ListTables ──
+
+    #[test]
+    fn list_tables_returns_names() {
+        let svc = make_service();
+        create_test_table(&svc);
+
+        let req = make_request("ListTables", json!({}));
+        let resp = svc.list_tables(&req).unwrap();
+        let b = body_json(&resp);
+        let names = b["TableNames"].as_array().unwrap();
+        assert!(names.iter().any(|n| n == "test-table"));
+    }
+
+    // ── PutItem / GetItem / DeleteItem ──
+
+    #[test]
+    fn put_and_get_item() {
+        let svc = make_service();
+        create_test_table(&svc);
+
+        let req = make_request(
+            "PutItem",
+            json!({
+                "TableName": "test-table",
+                "Item": {
+                    "pk": {"S": "key1"},
+                    "name": {"S": "Alice"},
+                    "age": {"N": "30"},
+                },
+            }),
+        );
+        svc.put_item(&req).unwrap();
+
+        let req = make_request(
+            "GetItem",
+            json!({
+                "TableName": "test-table",
+                "Key": {"pk": {"S": "key1"}},
+            }),
+        );
+        let resp = svc.get_item(&req).unwrap();
+        let b = body_json(&resp);
+        assert_eq!(b["Item"]["name"]["S"], "Alice");
+        assert_eq!(b["Item"]["age"]["N"], "30");
+    }
+
+    #[test]
+    fn get_item_not_found() {
+        let svc = make_service();
+        create_test_table(&svc);
+
+        let req = make_request(
+            "GetItem",
+            json!({
+                "TableName": "test-table",
+                "Key": {"pk": {"S": "nonexistent"}},
+            }),
+        );
+        let resp = svc.get_item(&req).unwrap();
+        let b = body_json(&resp);
+        assert!(b.get("Item").is_none() || b["Item"].is_null());
+    }
+
+    #[test]
+    fn delete_item_removes_item() {
+        let svc = make_service();
+        create_test_table(&svc);
+
+        let req = make_request(
+            "PutItem",
+            json!({
+                "TableName": "test-table",
+                "Item": {"pk": {"S": "del-me"}},
+            }),
+        );
+        svc.put_item(&req).unwrap();
+
+        let req = make_request(
+            "DeleteItem",
+            json!({
+                "TableName": "test-table",
+                "Key": {"pk": {"S": "del-me"}},
+            }),
+        );
+        svc.delete_item(&req).unwrap();
+
+        let req = make_request(
+            "GetItem",
+            json!({
+                "TableName": "test-table",
+                "Key": {"pk": {"S": "del-me"}},
+            }),
+        );
+        let resp = svc.get_item(&req).unwrap();
+        let b = body_json(&resp);
+        assert!(b.get("Item").is_none() || b["Item"].is_null());
+    }
+
+    #[test]
+    fn put_item_returns_old_item() {
+        let svc = make_service();
+        create_test_table(&svc);
+
+        let req = make_request(
+            "PutItem",
+            json!({
+                "TableName": "test-table",
+                "Item": {"pk": {"S": "overwrite"}, "v": {"N": "1"}},
+            }),
+        );
+        svc.put_item(&req).unwrap();
+
+        let req = make_request(
+            "PutItem",
+            json!({
+                "TableName": "test-table",
+                "Item": {"pk": {"S": "overwrite"}, "v": {"N": "2"}},
+                "ReturnValues": "ALL_OLD",
+            }),
+        );
+        let resp = svc.put_item(&req).unwrap();
+        let b = body_json(&resp);
+        assert_eq!(b["Attributes"]["v"]["N"], "1");
+    }
+
+    // ── UpdateItem ──
+
+    #[test]
+    fn update_item_set_attribute() {
+        let svc = make_service();
+        create_test_table(&svc);
+
+        let req = make_request(
+            "PutItem",
+            json!({
+                "TableName": "test-table",
+                "Item": {"pk": {"S": "upd"}, "count": {"N": "0"}},
+            }),
+        );
+        svc.put_item(&req).unwrap();
+
+        let req = make_request(
+            "UpdateItem",
+            json!({
+                "TableName": "test-table",
+                "Key": {"pk": {"S": "upd"}},
+                "UpdateExpression": "SET #c = :val",
+                "ExpressionAttributeNames": {"#c": "count"},
+                "ExpressionAttributeValues": {":val": {"N": "42"}},
+                "ReturnValues": "ALL_NEW",
+            }),
+        );
+        let resp = svc.update_item(&req).unwrap();
+        let b = body_json(&resp);
+        assert_eq!(b["Attributes"]["count"]["N"], "42");
+    }
+
+    // ── Query ──
+
+    #[test]
+    fn query_returns_matching_items() {
+        let svc = make_service();
+        // Table with hash+range
+        let req = make_request(
+            "CreateTable",
+            json!({
+                "TableName": "query-table",
+                "KeySchema": [
+                    {"AttributeName": "pk", "KeyType": "HASH"},
+                    {"AttributeName": "sk", "KeyType": "RANGE"},
+                ],
+                "AttributeDefinitions": [
+                    {"AttributeName": "pk", "AttributeType": "S"},
+                    {"AttributeName": "sk", "AttributeType": "S"},
+                ],
+                "BillingMode": "PAY_PER_REQUEST",
+            }),
+        );
+        svc.create_table(&req).unwrap();
+
+        for i in 0..3 {
+            let req = make_request(
+                "PutItem",
+                json!({
+                    "TableName": "query-table",
+                    "Item": {
+                        "pk": {"S": "user1"},
+                        "sk": {"S": format!("item-{i}")},
+                    },
+                }),
+            );
+            svc.put_item(&req).unwrap();
+        }
+        // Different partition
+        let req = make_request(
+            "PutItem",
+            json!({
+                "TableName": "query-table",
+                "Item": {"pk": {"S": "user2"}, "sk": {"S": "item-0"}},
+            }),
+        );
+        svc.put_item(&req).unwrap();
+
+        let req = make_request(
+            "Query",
+            json!({
+                "TableName": "query-table",
+                "KeyConditionExpression": "pk = :pk",
+                "ExpressionAttributeValues": {":pk": {"S": "user1"}},
+            }),
+        );
+        let resp = svc.query(&req).unwrap();
+        let b = body_json(&resp);
+        assert_eq!(b["Count"], 3);
+        assert_eq!(b["Items"].as_array().unwrap().len(), 3);
+    }
+
+    // ── Scan ──
+
+    #[test]
+    fn scan_returns_all_items() {
+        let svc = make_service();
+        create_test_table(&svc);
+
+        for i in 0..5 {
+            let req = make_request(
+                "PutItem",
+                json!({
+                    "TableName": "test-table",
+                    "Item": {"pk": {"S": format!("scan-{i}")}},
+                }),
+            );
+            svc.put_item(&req).unwrap();
+        }
+
+        let req = make_request("Scan", json!({"TableName": "test-table"}));
+        let resp = svc.scan(&req).unwrap();
+        let b = body_json(&resp);
+        assert_eq!(b["Count"], 5);
+    }
+
+    // ── BatchWriteItem / BatchGetItem ──
+
+    #[test]
+    fn batch_write_and_get_items() {
+        let svc = make_service();
+        create_test_table(&svc);
+
+        let req = make_request(
+            "BatchWriteItem",
+            json!({
+                "RequestItems": {
+                    "test-table": [
+                        {"PutRequest": {"Item": {"pk": {"S": "b1"}, "val": {"S": "v1"}}}},
+                        {"PutRequest": {"Item": {"pk": {"S": "b2"}, "val": {"S": "v2"}}}},
+                        {"PutRequest": {"Item": {"pk": {"S": "b3"}, "val": {"S": "v3"}}}},
+                    ]
+                }
+            }),
+        );
+        let resp = svc.batch_write_item(&req).unwrap();
+        let b = body_json(&resp);
+        // Unprocessed should be empty
+        assert!(
+            b["UnprocessedItems"].as_object().unwrap().is_empty()
+                || b["UnprocessedItems"]["test-table"]
+                    .as_array()
+                    .is_none_or(|a| a.is_empty())
+        );
+
+        // BatchGetItem
+        let req = make_request(
+            "BatchGetItem",
+            json!({
+                "RequestItems": {
+                    "test-table": {
+                        "Keys": [
+                            {"pk": {"S": "b1"}},
+                            {"pk": {"S": "b2"}},
+                            {"pk": {"S": "b3"}},
+                        ]
+                    }
+                }
+            }),
+        );
+        let resp = svc.batch_get_item(&req).unwrap();
+        let b = body_json(&resp);
+        let items = b["Responses"]["test-table"].as_array().unwrap();
+        assert_eq!(items.len(), 3);
+    }
+
+    // ── TransactWriteItems / TransactGetItems ──
+
+    #[test]
+    fn transact_write_and_get() {
+        let svc = make_service();
+        create_test_table(&svc);
+
+        let req = make_request(
+            "TransactWriteItems",
+            json!({
+                "TransactItems": [
+                    {"Put": {"TableName": "test-table", "Item": {"pk": {"S": "tx1"}}}},
+                    {"Put": {"TableName": "test-table", "Item": {"pk": {"S": "tx2"}}}},
+                ]
+            }),
+        );
+        svc.transact_write_items(&req).unwrap();
+
+        let req = make_request(
+            "TransactGetItems",
+            json!({
+                "TransactItems": [
+                    {"Get": {"TableName": "test-table", "Key": {"pk": {"S": "tx1"}}}},
+                    {"Get": {"TableName": "test-table", "Key": {"pk": {"S": "tx2"}}}},
+                ]
+            }),
+        );
+        let resp = svc.transact_get_items(&req).unwrap();
+        let b = body_json(&resp);
+        let responses = b["Responses"].as_array().unwrap();
+        assert_eq!(responses.len(), 2);
+    }
+
+    // ── TagResource / UntagResource / ListTagsOfResource ──
+
+    #[test]
+    fn tag_operations() {
+        let svc = make_service();
+        create_test_table(&svc);
+        let arn = {
+            let s = svc.state.read();
+            s.tables.get("test-table").unwrap().arn.clone()
+        };
+
+        let req = make_request(
+            "TagResource",
+            json!({
+                "ResourceArn": arn,
+                "Tags": [{"Key": "env", "Value": "test"}],
+            }),
+        );
+        svc.tag_resource(&req).unwrap();
+
+        let req = make_request("ListTagsOfResource", json!({"ResourceArn": arn}));
+        let resp = svc.list_tags_of_resource(&req).unwrap();
+        let b = body_json(&resp);
+        let tags = b["Tags"].as_array().unwrap();
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0]["Key"], "env");
+
+        let req = make_request(
+            "UntagResource",
+            json!({
+                "ResourceArn": arn,
+                "TagKeys": ["env"],
+            }),
+        );
+        svc.untag_resource(&req).unwrap();
+
+        let req = make_request("ListTagsOfResource", json!({"ResourceArn": arn}));
+        let resp = svc.list_tags_of_resource(&req).unwrap();
+        let b = body_json(&resp);
+        assert!(b["Tags"].as_array().unwrap().is_empty());
+    }
+
+    // ── UpdateTable ──
+
+    #[test]
+    fn update_table_add_gsi() {
+        let svc = make_service();
+        let req = make_request(
+            "CreateTable",
+            json!({
+                "TableName": "upd-table",
+                "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}],
+                "AttributeDefinitions": [
+                    {"AttributeName": "pk", "AttributeType": "S"},
+                    {"AttributeName": "gk", "AttributeType": "S"},
+                ],
+                "BillingMode": "PAY_PER_REQUEST",
+            }),
+        );
+        svc.create_table(&req).unwrap();
+
+        let req = make_request(
+            "UpdateTable",
+            json!({
+                "TableName": "upd-table",
+                "GlobalSecondaryIndexUpdates": [{
+                    "Create": {
+                        "IndexName": "new-gsi",
+                        "KeySchema": [{"AttributeName": "gk", "KeyType": "HASH"}],
+                        "Projection": {"ProjectionType": "ALL"},
+                    }
+                }],
+            }),
+        );
+        let resp = svc.update_table(&req).unwrap();
+        let b = body_json(&resp);
+        let gsi = b["TableDescription"]["GlobalSecondaryIndexes"]
+            .as_array()
+            .unwrap();
+        assert_eq!(gsi.len(), 1);
+        assert_eq!(gsi[0]["IndexName"], "new-gsi");
+    }
+
+    // ── Scan with FilterExpression ──
+
+    #[test]
+    fn scan_with_filter_expression() {
+        let svc = make_service();
+        create_test_table(&svc);
+
+        for i in 0..5 {
+            let req = make_request(
+                "PutItem",
+                json!({
+                    "TableName": "test-table",
+                    "Item": {
+                        "pk": {"S": format!("f-{i}")},
+                        "status": {"S": if i % 2 == 0 { "active" } else { "inactive" }},
+                    },
+                }),
+            );
+            svc.put_item(&req).unwrap();
+        }
+
+        let req = make_request(
+            "Scan",
+            json!({
+                "TableName": "test-table",
+                "FilterExpression": "#s = :val",
+                "ExpressionAttributeNames": {"#s": "status"},
+                "ExpressionAttributeValues": {":val": {"S": "active"}},
+            }),
+        );
+        let resp = svc.scan(&req).unwrap();
+        let b = body_json(&resp);
+        assert_eq!(b["Count"], 3);
+    }
 }
