@@ -2833,4 +2833,296 @@ mod tests {
         assert_eq!(name, "/a/b");
         assert!(matches!(sel, ParamSelector::None));
     }
+
+    fn expect_err_code(result: Result<AwsResponse, AwsServiceError>, code: &str) {
+        match result {
+            Err(e) => assert!(e.to_string().contains(code), "expected {code}, got: {e}"),
+            Ok(_) => panic!("expected error {code}, got Ok"),
+        }
+    }
+
+    // ── Parameter error branches ──
+
+    #[test]
+    fn put_parameter_missing_name() {
+        let svc = make_service();
+        let req = make_request("PutParameter", json!({"Value": "v", "Type": "String"}));
+        expect_err_code(svc.put_parameter(&req), "ValidationException");
+    }
+
+    #[test]
+    fn put_parameter_missing_value() {
+        let svc = make_service();
+        let req = make_request("PutParameter", json!({"Name": "/test", "Type": "String"}));
+        expect_err_code(svc.put_parameter(&req), "ValidationException");
+    }
+
+    #[test]
+    fn put_parameter_missing_type() {
+        let svc = make_service();
+        let req = make_request("PutParameter", json!({"Name": "/test", "Value": "v"}));
+        expect_err_code(svc.put_parameter(&req), "ValidationException");
+    }
+
+    #[test]
+    fn put_parameter_overwrite_increments_version() {
+        let svc = make_service();
+        let req = make_request(
+            "PutParameter",
+            json!({"Name": "/versioned", "Value": "v1", "Type": "String"}),
+        );
+        let resp = svc.put_parameter(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["Version"], 1);
+
+        let req = make_request(
+            "PutParameter",
+            json!({"Name": "/versioned", "Value": "v2", "Type": "String", "Overwrite": true}),
+        );
+        let resp = svc.put_parameter(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["Version"], 2);
+    }
+
+    #[test]
+    fn put_parameter_already_exists_without_overwrite() {
+        let svc = make_service();
+        let req = make_request(
+            "PutParameter",
+            json!({"Name": "/exists", "Value": "v1", "Type": "String"}),
+        );
+        svc.put_parameter(&req).unwrap();
+
+        let req = make_request(
+            "PutParameter",
+            json!({"Name": "/exists", "Value": "v2", "Type": "String"}),
+        );
+        expect_err_code(svc.put_parameter(&req), "ParameterAlreadyExists");
+    }
+
+    #[test]
+    fn get_parameter_not_found() {
+        let svc = make_service();
+        let req = make_request("GetParameter", json!({"Name": "/nonexistent"}));
+        expect_err_code(svc.get_parameter(&req), "ParameterNotFound");
+    }
+
+    #[test]
+    fn get_parameters_returns_invalid_for_missing() {
+        let svc = make_service();
+        let req = make_request(
+            "GetParameters",
+            json!({"Names": ["/missing1", "/missing2"]}),
+        );
+        let resp = svc.get_parameters(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        let invalid = body["InvalidParameters"].as_array().unwrap();
+        assert_eq!(invalid.len(), 2);
+    }
+
+    #[test]
+    fn delete_parameter_not_found() {
+        let svc = make_service();
+        let req = make_request("DeleteParameter", json!({"Name": "/gone"}));
+        expect_err_code(svc.delete_parameter(&req), "ParameterNotFound");
+    }
+
+    #[test]
+    fn delete_parameters_returns_invalid_for_missing() {
+        let svc = make_service();
+        let req = make_request("DeleteParameters", json!({"Names": ["/miss1", "/miss2"]}));
+        let resp = svc.delete_parameters(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        let invalid = body["InvalidParameters"].as_array().unwrap();
+        assert_eq!(invalid.len(), 2);
+    }
+
+    #[test]
+    fn get_parameter_history_not_found() {
+        let svc = make_service();
+        let req = make_request("GetParameterHistory", json!({"Name": "/nope"}));
+        expect_err_code(svc.get_parameter_history(&req), "ParameterNotFound");
+    }
+
+    #[test]
+    fn label_parameter_version_missing_param() {
+        let svc = make_service();
+        let req = make_request(
+            "LabelParameterVersion",
+            json!({"Name": "/nope", "Labels": ["prod"], "ParameterVersion": 1}),
+        );
+        expect_err_code(svc.label_parameter_version(&req), "ParameterNotFound");
+    }
+
+    #[test]
+    fn unlabel_parameter_version_missing_param() {
+        let svc = make_service();
+        let req = make_request(
+            "UnlabelParameterVersion",
+            json!({"Name": "/nope", "Labels": ["prod"], "ParameterVersion": 1}),
+        );
+        expect_err_code(svc.unlabel_parameter_version(&req), "ParameterNotFound");
+    }
+
+    #[test]
+    fn get_parameters_by_path_invalid_path() {
+        let svc = make_service();
+        let req = make_request("GetParametersByPath", json!({"Path": "no-leading-slash"}));
+        assert!(svc.get_parameters_by_path(&req).is_err());
+    }
+
+    // ── Document error branches ──
+
+    #[test]
+    fn get_document_not_found() {
+        let svc = make_service();
+        let req = make_request("GetDocument", json!({"Name": "nonexistent-doc"}));
+        expect_err_code(svc.get_document(&req), "InvalidDocument");
+    }
+
+    #[test]
+    fn update_document_not_found() {
+        let svc = make_service();
+        let req = make_request(
+            "UpdateDocument",
+            json!({"Name": "nope", "Content": "{}", "DocumentVersion": "$LATEST"}),
+        );
+        expect_err_code(svc.update_document(&req), "InvalidDocument");
+    }
+
+    #[test]
+    fn delete_document_not_found() {
+        let svc = make_service();
+        let req = make_request("DeleteDocument", json!({"Name": "nope"}));
+        expect_err_code(svc.delete_document(&req), "InvalidDocument");
+    }
+
+    #[test]
+    fn describe_document_not_found() {
+        let svc = make_service();
+        let req = make_request("DescribeDocument", json!({"Name": "nope"}));
+        expect_err_code(svc.describe_document(&req), "InvalidDocument");
+    }
+
+    // ── Maintenance window error branches ──
+
+    // ── Maintenance window — create and get lifecycle ──
+
+    #[test]
+    fn maintenance_window_create_and_get() {
+        let svc = make_service();
+        let req = make_request(
+            "CreateMaintenanceWindow",
+            json!({
+                "Name": "test-window",
+                "Schedule": "cron(0 2 * * ? *)",
+                "Duration": 2,
+                "Cutoff": 1,
+                "AllowUnassociatedTargets": false,
+            }),
+        );
+        let resp = svc.create_maintenance_window(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        let window_id = body["WindowId"].as_str().unwrap().to_string();
+
+        let req = make_request("GetMaintenanceWindow", json!({"WindowId": window_id}));
+        let resp = svc.get_maintenance_window(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["Name"], "test-window");
+    }
+
+    // ── Patch baseline — create and get lifecycle ──
+
+    #[test]
+    fn patch_baseline_create_and_get() {
+        let svc = make_service();
+        let req = make_request(
+            "CreatePatchBaseline",
+            json!({
+                "Name": "test-baseline",
+                "OperatingSystem": "AMAZON_LINUX_2",
+            }),
+        );
+        let resp = svc.create_patch_baseline(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        let baseline_id = body["BaselineId"].as_str().unwrap().to_string();
+
+        let req = make_request("GetPatchBaseline", json!({"BaselineId": baseline_id}));
+        let resp = svc.get_patch_baseline(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["Name"], "test-baseline");
+    }
+
+    // ── Command — send and get invocation ──
+
+    #[test]
+    fn send_command_and_list() {
+        let svc = make_service();
+        // Create a document first
+        let req = make_request(
+            "CreateDocument",
+            json!({
+                "Name": "RunShellScript",
+                "Content": "{\"schemaVersion\":\"2.2\",\"mainSteps\":[]}",
+                "DocumentType": "Command",
+            }),
+        );
+        svc.create_document(&req).unwrap();
+
+        let req = make_request(
+            "SendCommand",
+            json!({
+                "DocumentName": "RunShellScript",
+                "InstanceIds": ["i-12345"],
+            }),
+        );
+        let resp = svc.send_command(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(body["Command"]["CommandId"].as_str().is_some());
+
+        let req = make_request("ListCommands", json!({}));
+        let resp = svc.list_commands(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(!body["Commands"].as_array().unwrap().is_empty());
+    }
+
+    // ── Automation error branches ──
+
+    #[test]
+    fn get_automation_execution_not_found() {
+        let svc = make_service();
+        let req = make_request(
+            "GetAutomationExecution",
+            json!({"AutomationExecutionId": "exec-nope"}),
+        );
+        expect_err_code(
+            svc.get_automation_execution(&req),
+            "AutomationExecutionNotFoundException",
+        );
+    }
+
+    #[test]
+    fn stop_automation_execution_not_found() {
+        let svc = make_service();
+        let req = make_request(
+            "StopAutomationExecution",
+            json!({"AutomationExecutionId": "exec-nope"}),
+        );
+        expect_err_code(
+            svc.stop_automation_execution(&req),
+            "AutomationExecutionNotFoundException",
+        );
+    }
+
+    // ── OpsItem error branches ──
+
+    #[test]
+    fn update_ops_item_not_found() {
+        let svc = make_service();
+        let req = make_request(
+            "UpdateOpsItem",
+            json!({"OpsItemId": "oi-nope", "Status": "Resolved"}),
+        );
+        expect_err_code(svc.update_ops_item(&req), "OpsItemNotFoundException");
+    }
 }
