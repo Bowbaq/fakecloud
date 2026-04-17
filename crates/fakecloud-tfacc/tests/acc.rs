@@ -1,5 +1,6 @@
-//! One `#[tokio::test]` per allow-listed service. Each runs every
-//! `TestAcc*` test matching the service's `run_regex` minus its deny-list.
+//! One `#[tokio::test]` per CI matrix shard. Each runs the `TestAcc*`
+//! tests selected by its `Shard` (filtered by `run_regex` minus the
+//! merged deny-list).
 //!
 //! Hard-fails if the `go` or `terraform` binaries are missing. Running
 //! this crate is an opt-in signal that the caller wants the upstream
@@ -7,16 +8,15 @@
 //! run it would just hide regressions.
 
 use fakecloud_tfacc::{
-    allowlist::{Service, SERVICES},
-    require_toolchain, setup_provider_source, GoTestRunner, TestServer,
+    require_toolchain, setup_provider_source, GoTestRunner, Shard, TestServer, SHARDS,
 };
 
-async fn run_service(name: &str) {
+async fn run_shard(name: &str) {
     require_toolchain();
-    let service: &Service = SERVICES
+    let shard: &Shard = SHARDS
         .iter()
         .find(|s| s.name == name)
-        .unwrap_or_else(|| panic!("service `{name}` not in SERVICES allow-list"));
+        .unwrap_or_else(|| panic!("shard `{name}` not in SHARDS list"));
 
     let provider_root = setup_provider_source().expect("setup terraform-provider-aws");
     let server = TestServer::start().await;
@@ -24,70 +24,80 @@ async fn run_service(name: &str) {
         provider_root: &provider_root,
         endpoint: server.endpoint(),
     };
-    runner.run_service(service).assert_pass(name);
+    runner.run_shard(shard).assert_pass(name);
 }
 
 #[tokio::test]
 async fn cognitoidp_acceptance() {
-    run_service("cognitoidp").await;
+    run_shard("cognitoidp").await;
 }
 
 #[tokio::test]
 async fn bedrock_acceptance() {
-    run_service("bedrock").await;
+    run_shard("bedrock").await;
 }
 
 #[tokio::test]
 async fn apigatewayv2_acceptance() {
-    run_service("apigatewayv2").await;
+    run_shard("apigatewayv2").await;
 }
 
 #[tokio::test]
 async fn kinesis_acceptance() {
-    run_service("kinesis").await;
+    run_shard("kinesis").await;
 }
 
 #[tokio::test]
 async fn sns_acceptance() {
-    run_service("sns").await;
+    run_shard("sns").await;
 }
 
 #[tokio::test]
 async fn events_acceptance() {
-    run_service("events").await;
+    run_shard("events").await;
 }
 
 #[tokio::test]
 async fn kms_acceptance() {
-    run_service("kms").await;
+    run_shard("kms").await;
 }
 
 #[tokio::test]
 async fn logs_acceptance() {
-    run_service("logs").await;
+    run_shard("logs").await;
 }
 
 #[tokio::test]
 async fn iam_acceptance() {
-    run_service("iam").await;
+    run_shard("iam").await;
 }
 
 #[tokio::test]
 async fn ssm_acceptance() {
-    run_service("ssm").await;
+    run_shard("ssm").await;
 }
 
 #[tokio::test]
 async fn secretsmanager_acceptance() {
-    run_service("secretsmanager").await;
+    run_shard("secretsmanager").await;
 }
 
 #[tokio::test]
-async fn sqs_acceptance() {
-    run_service("sqs").await;
+async fn sqs_core_acceptance() {
+    run_shard("sqs-core").await;
 }
 
 #[tokio::test]
-async fn dynamodb_acceptance() {
-    run_service("dynamodb").await;
+async fn sqs_encryption_acceptance() {
+    run_shard("sqs-encryption").await;
+}
+
+#[tokio::test]
+async fn dynamodb_a_g_acceptance() {
+    run_shard("dynamodb-a-g").await;
+}
+
+#[tokio::test]
+async fn dynamodb_h_z_acceptance() {
+    run_shard("dynamodb-h-z").await;
 }
