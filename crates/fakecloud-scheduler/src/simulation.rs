@@ -78,6 +78,33 @@ pub struct ScheduleRow {
     pub last_fired: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+/// Ready-to-serialize response for the fire-once introspection endpoint.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct FireScheduleResponse {
+    #[serde(rename = "scheduleArn")]
+    pub schedule_arn: String,
+    #[serde(rename = "targetArn")]
+    pub target_arn: String,
+}
+
+/// Fire a schedule and assemble the response body the introspection
+/// endpoint echoes back. Extracted so the HTTP route closure is a
+/// one-liner and the interesting logic has unit coverage.
+pub fn fire_schedule_response(
+    state: &SharedSchedulerState,
+    delivery: &Arc<DeliveryBus>,
+    region: &str,
+    account_id: &str,
+    group: &str,
+    name: &str,
+) -> Result<FireScheduleResponse, String> {
+    let target_arn = fire_once(state, delivery, account_id, group, name)?;
+    Ok(FireScheduleResponse {
+        schedule_arn: format!("arn:aws:scheduler:{region}:{account_id}:schedule/{group}/{name}"),
+        target_arn,
+    })
+}
+
 pub fn list_all_schedules(state: &SharedSchedulerState) -> Vec<ScheduleRow> {
     let accounts = state.read();
     let mut rows: Vec<ScheduleRow> = accounts
@@ -221,6 +248,32 @@ mod tests {
         let state = make_state();
         let bus = Arc::new(DeliveryBus::new());
         let err = fire_once(&state, &bus, "000000000000", "default", "nope")
+            .err()
+            .unwrap();
+        assert!(err.contains("not found"));
+    }
+
+    #[test]
+    fn fire_schedule_response_builds_arn_and_target() {
+        let state = make_state();
+        seed(&state, "s", "rate(1 day)", "NONE");
+        let rec = Arc::new(Recorder::default());
+        let bus = Arc::new(DeliveryBus::new().with_sqs(rec.clone()));
+        let resp =
+            fire_schedule_response(&state, &bus, "us-east-1", "000000000000", "default", "s")
+                .unwrap();
+        assert_eq!(
+            resp.schedule_arn,
+            "arn:aws:scheduler:us-east-1:000000000000:schedule/default/s"
+        );
+        assert_eq!(resp.target_arn, "arn:aws:sqs:us-east-1:000000000000:q");
+    }
+
+    #[test]
+    fn fire_schedule_response_propagates_missing_error() {
+        let state = make_state();
+        let bus = Arc::new(DeliveryBus::new());
+        let err = fire_schedule_response(&state, &bus, "us-east-1", "000000000000", "g", "none")
             .err()
             .unwrap();
         assert!(err.contains("not found"));

@@ -1805,39 +1805,14 @@ async fn main() {
                 .clone();
             let path = data_path.join("scheduler").join("snapshot.json");
             let store = fakecloud_persistence::DiskSnapshotStore::new(path);
-            match fakecloud_persistence::SnapshotStore::load(&store) {
-                Ok(Some(bytes)) => {
-                    match serde_json::from_slice::<fakecloud_scheduler::state::SchedulerSnapshot>(
-                        &bytes,
-                    ) {
-                        Ok(snapshot) => {
-                            if snapshot.schema_version
-                                > fakecloud_scheduler::state::SCHEDULER_SNAPSHOT_SCHEMA_VERSION
-                            {
-                                fatal_exit(format_args!(
-                                    "scheduler persistence schema too new: on-disk={}, max supported={}",
-                                    snapshot.schema_version,
-                                    fakecloud_scheduler::state::SCHEDULER_SNAPSHOT_SCHEMA_VERSION,
-                                ));
-                            }
-                            let account_count = snapshot.accounts.account_count();
-                            *scheduler_state.write() = snapshot.accounts;
-                            tracing::info!(
-                                accounts = account_count,
-                                "loaded scheduler persistence snapshot"
-                            );
-                        }
-                        Err(err) => fatal_exit(format_args!(
-                            "failed to parse scheduler persistence snapshot: {err}"
-                        )),
-                    }
+            match fakecloud_scheduler::persistence::load_into(&store, &scheduler_state) {
+                Ok(fakecloud_scheduler::persistence::LoadOutcome::Loaded(accounts)) => {
+                    tracing::info!(accounts, "loaded scheduler persistence snapshot");
                 }
-                Ok(None) => {
+                Ok(fakecloud_scheduler::persistence::LoadOutcome::Empty) => {
                     tracing::info!("no scheduler persistence snapshot found; starting empty");
                 }
-                Err(err) => fatal_exit(format_args!(
-                    "failed to read scheduler persistence snapshot: {err}"
-                )),
+                Err(err) => fatal_exit(format_args!("{err}")),
             }
             Some(Arc::new(store) as Arc<dyn fakecloud_persistence::SnapshotStore>)
         } else {
@@ -2533,22 +2508,17 @@ async fn main() {
                     let default_account = default_account.clone();
                     let default_region = default_region.clone();
                     async move {
-                        match fakecloud_scheduler::simulation::fire_once(
+                        match fakecloud_scheduler::simulation::fire_schedule_response(
                             &state,
                             &delivery,
+                            &default_region,
                             &default_account,
                             &group,
                             &name,
                         ) {
-                            Ok(target_arn) => (
+                            Ok(body) => (
                                 axum::http::StatusCode::OK,
-                                axum::Json(serde_json::json!(types::FireScheduleResponse {
-                                    schedule_arn: format!(
-                                        "arn:aws:scheduler:{}:{}:schedule/{}/{}",
-                                        default_region, default_account, group, name
-                                    ),
-                                    target_arn,
-                                })),
+                                axum::Json(serde_json::json!(body)),
                             ),
                             Err(msg) => (
                                 axum::http::StatusCode::NOT_FOUND,
