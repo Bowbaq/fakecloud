@@ -3194,7 +3194,13 @@ impl EventBridgeService {
             let event_str = event_json.to_string();
 
             for target in targets {
-                self.deliver_replay_event_to_target(&target, &event, &event_json, &event_str);
+                self.deliver_replay_event_to_target(
+                    &target,
+                    &event,
+                    &event_json,
+                    &event_str,
+                    &req.account_id,
+                );
             }
         }
 
@@ -3211,6 +3217,7 @@ impl EventBridgeService {
         event: &PutEvent,
         event_json: &Value,
         event_str: &str,
+        account_id: &str,
     ) {
         let target_arn = &target.arn;
         let body_str = if let Some(ref transformer) = target.input_transformer {
@@ -3248,7 +3255,7 @@ impl EventBridgeService {
                 .publish_to_sns(target_arn, &body_str, Some(&event.detail_type));
         } else if target_arn.contains(":lambda:") {
             let mut accounts = self.state.write();
-            let state = accounts.default_mut();
+            let state = accounts.get_or_create(account_id);
             state
                 .lambda_invocations
                 .push(crate::state::LambdaInvocation {
@@ -3258,12 +3265,15 @@ impl EventBridgeService {
                 });
             drop(accounts);
             if let Some(ref ls) = self.lambda_state {
-                ls.write().default_mut().invocations.push(LambdaInvocation {
-                    function_arn: target_arn.clone(),
-                    payload: body_str.clone(),
-                    timestamp: Utc::now(),
-                    source: "aws:events".to_string(),
-                });
+                ls.write()
+                    .get_or_create(account_id)
+                    .invocations
+                    .push(LambdaInvocation {
+                        function_arn: target_arn.clone(),
+                        payload: body_str.clone(),
+                        timestamp: Utc::now(),
+                        source: "aws:events".to_string(),
+                    });
             }
             invoke_lambda_async(
                 &self.container_runtime,
@@ -3273,7 +3283,7 @@ impl EventBridgeService {
             );
         } else if target_arn.contains(":logs:") {
             let mut accounts = self.state.write();
-            let state = accounts.default_mut();
+            let state = accounts.get_or_create(account_id);
             state.log_deliveries.push(crate::state::LogDelivery {
                 log_group_arn: target_arn.clone(),
                 payload: body_str.clone(),
@@ -3287,7 +3297,7 @@ impl EventBridgeService {
             self.delivery
                 .start_stepfunctions_execution(target_arn, &body_str);
             let mut accounts = self.state.write();
-            let state = accounts.default_mut();
+            let state = accounts.get_or_create(account_id);
             state
                 .step_function_executions
                 .push(crate::state::StepFunctionExecution {

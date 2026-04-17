@@ -490,7 +490,7 @@ impl ResourceProvisioner {
             .unwrap_or("default");
 
         let mut eb_accounts = self.eventbridge_state.write();
-        let state = eb_accounts.default_mut();
+        let state = eb_accounts.get_or_create(&self.account_id);
 
         // Validate that the event bus exists
         if !state.buses.contains_key(event_bus_name) {
@@ -764,7 +764,7 @@ impl ResourceProvisioner {
             .map(|v| v as i32);
 
         let mut logs_accounts = self.logs_state.write();
-        let state = logs_accounts.default_mut();
+        let state = logs_accounts.get_or_create(&self.account_id);
         let arn = format!(
             "arn:aws:logs:{}:{}:log-group:{}:*",
             state.region, state.account_id, log_group_name

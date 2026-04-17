@@ -284,9 +284,10 @@ impl LambdaService {
         &self,
         function_name: &str,
         account_id: &str,
+        region: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
         let accounts = self.state.read();
-        let empty = LambdaState::new(account_id, "");
+        let empty = LambdaState::new(account_id, region);
         let state = accounts.get(account_id).unwrap_or(&empty);
         let func = state.functions.get(function_name).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -889,7 +890,11 @@ impl AwsService for LambdaService {
         let result = match action {
             "CreateFunction" => self.create_function(&req),
             "ListFunctions" => self.list_functions(aid),
-            "GetFunction" => self.get_function(resource_name.as_deref().unwrap_or(""), aid),
+            "GetFunction" => self.get_function(
+                resource_name.as_deref().unwrap_or(""),
+                aid,
+                req.region.as_str(),
+            ),
             "DeleteFunction" => self.delete_function(resource_name.as_deref().unwrap_or(""), aid),
             "Invoke" => {
                 self.invoke(resource_name.as_deref().unwrap_or(""), &req.body, aid)
@@ -1693,7 +1698,9 @@ mod tests {
     #[tokio::test]
     async fn get_function_unknown_errors() {
         let svc = LambdaService::new(make_state());
-        assert!(svc.get_function("ghost", "123456789012").is_err());
+        assert!(svc
+            .get_function("ghost", "123456789012", "us-east-1")
+            .is_err());
     }
 
     #[tokio::test]

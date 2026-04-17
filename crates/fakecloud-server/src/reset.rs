@@ -65,7 +65,7 @@ impl ResetState {
                 self.dynamodb.write().reset();
             }
             "lambda" => {
-                self.lambda.write().default_mut().reset();
+                self.lambda.write().reset();
                 if let Some(ref rt) = self.container_runtime {
                     let rt = rt.clone();
                     tokio::spawn(async move { rt.stop_all().await });
@@ -78,7 +78,7 @@ impl ResetState {
                 self.s3.write().reset();
             }
             "logs" => {
-                self.logs.write().default_mut().reset();
+                self.logs.write().reset();
             }
             "kms" => {
                 self.kms.write().reset();

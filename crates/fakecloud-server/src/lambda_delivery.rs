@@ -38,13 +38,14 @@ impl LambdaDelivery for LambdaDeliveryImpl {
             }
         };
 
-        // Extract account ID from ARN
+        // Extract account ID from ARN, falling back to the default account
         let account_id = {
             let parts: Vec<&str> = function_arn.split(':').collect();
-            if parts.len() >= 5 {
-                parts[4].to_string()
+            let parsed = if parts.len() >= 5 { parts[4] } else { "" };
+            if parsed.is_empty() {
+                self.lambda_state.read().default_account_id().to_string()
             } else {
-                String::new()
+                parsed.to_string()
             }
         };
 

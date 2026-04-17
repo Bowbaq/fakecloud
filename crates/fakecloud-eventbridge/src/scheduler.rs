@@ -155,77 +155,81 @@ impl Scheduler {
         let now = Utc::now();
 
         // Collect rules that need to fire (to avoid holding lock during delivery)
-        let mut to_fire: Vec<(String, Vec<crate::state::EventTarget>)> = Vec::new();
+        // Each entry includes the account_id that owns the rule
+        let mut to_fire: Vec<(String, String, String, Vec<crate::state::EventTarget>)> = Vec::new();
 
         {
             let mut accounts = self.state.write();
-            let state = accounts.default_mut();
-            let rule_keys: Vec<crate::state::RuleKey> = state.rules.keys().cloned().collect();
+            for (account_id, state) in accounts.iter_mut() {
+                let account_id = account_id.to_string();
+                let region = state.region.clone();
+                let rule_keys: Vec<crate::state::RuleKey> = state.rules.keys().cloned().collect();
 
-            for key in rule_keys {
-                let rule = match state.rules.get(&key) {
-                    Some(r) => r,
-                    None => continue,
-                };
-                let name = rule.name.clone();
+                for key in rule_keys {
+                    let rule = match state.rules.get(&key) {
+                        Some(r) => r,
+                        None => continue,
+                    };
+                    let name = rule.name.clone();
 
-                if rule.state != "ENABLED" {
-                    continue;
-                }
+                    if rule.state != "ENABLED" {
+                        continue;
+                    }
 
-                let schedule_expr = match &rule.schedule_expression {
-                    Some(s) => s.clone(),
-                    None => continue,
-                };
+                    let schedule_expr = match &rule.schedule_expression {
+                        Some(s) => s.clone(),
+                        None => continue,
+                    };
 
-                if rule.targets.is_empty() {
-                    continue;
-                }
+                    if rule.targets.is_empty() {
+                        continue;
+                    }
 
-                let schedule = match parse_schedule(&schedule_expr) {
-                    Some(s) => s,
-                    None => continue,
-                };
+                    let schedule = match parse_schedule(&schedule_expr) {
+                        Some(s) => s,
+                        None => continue,
+                    };
 
-                let should_fire = match &schedule {
-                    Schedule::Rate(duration) => match rule.last_fired {
-                        Some(last) => {
-                            let elapsed = now.signed_duration_since(last);
-                            elapsed.to_std().unwrap_or(Duration::ZERO) >= *duration
-                        }
-                        None => true, // Never fired, fire immediately
-                    },
-                    Schedule::Cron(cron) => {
-                        if !cron_matches_now(cron) {
-                            false
-                        } else {
-                            // Avoid firing multiple times in the same minute
-                            let current = (now.hour(), now.minute());
-                            let last = cron_last_minute.get(&key);
-                            if last == Some(&current) {
+                    let should_fire = match &schedule {
+                        Schedule::Rate(duration) => match rule.last_fired {
+                            Some(last) => {
+                                let elapsed = now.signed_duration_since(last);
+                                elapsed.to_std().unwrap_or(Duration::ZERO) >= *duration
+                            }
+                            None => true, // Never fired, fire immediately
+                        },
+                        Schedule::Cron(cron) => {
+                            if !cron_matches_now(cron) {
                                 false
                             } else {
-                                cron_last_minute.insert(key.clone(), current);
-                                true
+                                // Avoid firing multiple times in the same minute
+                                let current = (now.hour(), now.minute());
+                                let last = cron_last_minute.get(&key);
+                                if last == Some(&current) {
+                                    false
+                                } else {
+                                    cron_last_minute.insert(key.clone(), current);
+                                    true
+                                }
                             }
                         }
-                    }
-                };
+                    };
 
-                if should_fire {
-                    let targets = rule.targets.clone();
-                    // Update last_fired while we hold the write lock
-                    if let Some(r) = state.rules.get_mut(&key) {
-                        r.last_fired = Some(now);
+                    if should_fire {
+                        let targets = rule.targets.clone();
+                        // Update last_fired while we hold the write lock
+                        if let Some(r) = state.rules.get_mut(&key) {
+                            r.last_fired = Some(now);
+                        }
+                        to_fire.push((account_id.clone(), region.clone(), name, targets));
                     }
-                    to_fire.push((name, targets));
                 }
             }
         }
         // Lock is dropped here
 
         // Deliver events
-        for (rule_name, targets) in to_fire {
+        for (account_id, region, rule_name, targets) in to_fire {
             let event_id = uuid::Uuid::new_v4().to_string();
             let event_json = json!({
                 "version": "0",
@@ -234,7 +238,7 @@ impl Scheduler {
                 "detail-type": "Scheduled Event",
                 "detail": {},
                 "time": now.to_rfc3339(),
-                "region": "us-east-1",
+                "region": region,
             });
             let event_str = event_json.to_string();
 
@@ -254,7 +258,7 @@ impl Scheduler {
                         "Scheduler delivering to Lambda function"
                     );
                     let mut eb_accounts = self.state.write();
-                    let eb_state = eb_accounts.default_mut();
+                    let eb_state = eb_accounts.get_or_create(&account_id);
                     eb_state
                         .lambda_invocations
                         .push(crate::state::LambdaInvocation {
@@ -264,12 +268,15 @@ impl Scheduler {
                         });
                     drop(eb_accounts);
                     if let Some(ref ls) = self.lambda_state {
-                        ls.write().default_mut().invocations.push(LambdaInvocation {
-                            function_arn: arn.clone(),
-                            payload: event_str.clone(),
-                            timestamp: now,
-                            source: "aws:events".to_string(),
-                        });
+                        ls.write()
+                            .get_or_create(&account_id)
+                            .invocations
+                            .push(LambdaInvocation {
+                                function_arn: arn.clone(),
+                                payload: event_str.clone(),
+                                timestamp: now,
+                                source: "aws:events".to_string(),
+                            });
                     }
                     crate::service::invoke_lambda_async(
                         &self.container_runtime,
@@ -284,7 +291,7 @@ impl Scheduler {
                         "Scheduler delivering to CloudWatch Logs"
                     );
                     let mut eb_accounts = self.state.write();
-                    let eb_state = eb_accounts.default_mut();
+                    let eb_state = eb_accounts.get_or_create(&account_id);
                     eb_state.log_deliveries.push(crate::state::LogDelivery {
                         log_group_arn: arn.clone(),
                         payload: event_str.clone(),
@@ -301,7 +308,7 @@ impl Scheduler {
                     );
                     self.delivery.start_stepfunctions_execution(arn, &event_str);
                     let mut eb_accounts = self.state.write();
-                    let eb_state = eb_accounts.default_mut();
+                    let eb_state = eb_accounts.get_or_create(&account_id);
                     eb_state
                         .step_function_executions
                         .push(crate::state::StepFunctionExecution {

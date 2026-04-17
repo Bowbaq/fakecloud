@@ -393,14 +393,12 @@ impl ContainerRuntime {
     ) -> Vec<serde_json::Value> {
         let containers = self.containers.read();
         let accounts = lambda_state.read();
-        let default_state = accounts.default_ref();
         containers
             .iter()
             .map(|(name, container)| {
-                let runtime = default_state
-                    .functions
-                    .get(name)
-                    .map(|f| f.runtime.clone())
+                let runtime = accounts
+                    .iter()
+                    .find_map(|(_, state)| state.functions.get(name).map(|f| f.runtime.clone()))
                     .unwrap_or_default();
                 let last_used = container.last_used.read();
                 let idle_secs = last_used.elapsed().as_secs();

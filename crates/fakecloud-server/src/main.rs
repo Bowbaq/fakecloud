@@ -874,6 +874,8 @@ async fn main() {
                                     functions = fn_count,
                                     "loaded lambda persistence snapshot (migrated from v1)"
                                 );
+                            } else {
+                                tracing::warn!("lambda persistence snapshot has neither accounts nor state; starting empty");
                             }
                         }
                         Err(err) => fatal_exit(format_args!(
@@ -1008,6 +1010,8 @@ async fn main() {
                                     log_groups = group_count,
                                     "loaded logs persistence snapshot (migrated from v1)"
                                 );
+                            } else {
+                                tracing::warn!("logs persistence snapshot has neither accounts nor state; starting empty");
                             }
                         }
                         Err(err) => fatal_exit(format_args!(
