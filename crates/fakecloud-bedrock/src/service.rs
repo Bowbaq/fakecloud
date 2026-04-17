@@ -2777,4 +2777,32 @@ mod tests {
         let req = make_request(Method::GET, "/", "");
         crate::enforced_guardrails::list_enforced_guardrails_configuration(&state, &req).unwrap();
     }
+
+    #[tokio::test]
+    async fn unknown_route_returns_error_b() {
+        let state = make_state();
+        let svc = BedrockService::new(state);
+        let req = make_request(Method::POST, "/unknown/route", "");
+        assert!(svc.handle(req).await.is_err());
+    }
+
+    #[test]
+    fn automated_reasoning_policy_not_found_get() {
+        let state = make_state();
+        let result = crate::automated_reasoning::get_automated_reasoning_policy(
+            &state,
+            "arn:aws:bedrock:us-east-1:123:automated-reasoning-policy/ghost",
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn automated_reasoning_policy_delete_not_found() {
+        let state = make_state();
+        let result = crate::automated_reasoning::delete_automated_reasoning_policy(
+            &state,
+            "arn:aws:bedrock:us-east-1:123:automated-reasoning-policy/ghost",
+        );
+        assert!(result.is_err());
+    }
 }
