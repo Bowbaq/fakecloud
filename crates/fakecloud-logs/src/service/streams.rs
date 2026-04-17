@@ -2098,4 +2098,76 @@ mod tests {
         );
         assert!(svc.delete_delivery_destination_policy(&req).is_err());
     }
+
+    #[test]
+    fn delete_resource_policy_unknown_errors() {
+        let svc = make_service();
+        let req = make_request("DeleteResourcePolicy", json!({"policyName": "ghost"}));
+        assert!(svc.delete_resource_policy(&req).is_err());
+    }
+
+    #[test]
+    fn delete_account_policy_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "DeleteAccountPolicy",
+            json!({"policyName": "ghost", "policyType": "DATA_PROTECTION_POLICY"}),
+        );
+        assert!(svc.delete_account_policy(&req).is_err());
+    }
+
+    #[test]
+    fn get_data_protection_policy_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "GetDataProtectionPolicy",
+            json!({"logGroupIdentifier": "ghost"}),
+        );
+        assert!(svc.get_data_protection_policy(&req).is_err());
+    }
+
+    #[test]
+    fn delete_data_protection_policy_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "DeleteDataProtectionPolicy",
+            json!({"logGroupIdentifier": "ghost"}),
+        );
+        assert!(svc.delete_data_protection_policy(&req).is_err());
+    }
+
+    #[test]
+    fn list_log_anomaly_detectors_empty_ok() {
+        let svc = make_service();
+        let req = make_request("ListLogAnomalyDetectors", json!({}));
+        let resp = svc.list_log_anomaly_detectors(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(body["anomalyDetectors"].is_array());
+    }
+
+    #[test]
+    fn put_destination_missing_name_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "PutDestination",
+            json!({"targetArn": "arn:foo", "roleArn": "arn:bar"}),
+        );
+        assert!(svc.put_destination(&req).is_err());
+    }
+
+    #[test]
+    fn delete_destination_unknown_errors() {
+        let svc = make_service();
+        let req = make_request("DeleteDestination", json!({"destinationName": "ghost"}));
+        assert!(svc.delete_destination(&req).is_err());
+    }
+
+    #[test]
+    fn describe_destinations_empty_ok() {
+        let svc = make_service();
+        let req = make_request("DescribeDestinations", json!({}));
+        let resp = svc.describe_destinations(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(body["destinations"].is_array());
+    }
 }
