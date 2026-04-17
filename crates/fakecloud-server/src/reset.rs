@@ -333,7 +333,11 @@ mod tests {
                 ),
             )),
             ssm: Arc::new(parking_lot::RwLock::new(
-                fakecloud_ssm::state::SsmState::new("123456789012", "us-east-1"),
+                fakecloud_core::multi_account::MultiAccountState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "http://localhost:4566",
+                ),
             )),
             dynamodb: Arc::new(parking_lot::RwLock::new(
                 fakecloud_core::multi_account::MultiAccountState::new(
@@ -378,9 +382,10 @@ mod tests {
                 ),
             )),
             cloudformation: Arc::new(parking_lot::RwLock::new(
-                fakecloud_cloudformation::state::CloudFormationState::new(
+                fakecloud_core::multi_account::MultiAccountState::new(
                     "123456789012",
                     "us-east-1",
+                    "http://localhost:4566",
                 ),
             )),
             ses: Arc::new(parking_lot::RwLock::new(

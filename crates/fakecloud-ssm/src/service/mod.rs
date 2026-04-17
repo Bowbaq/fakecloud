@@ -154,7 +154,8 @@ impl SsmService {
         let _guard = self.snapshot_lock.lock().await;
         let snapshot = SsmSnapshot {
             schema_version: SSM_SNAPSHOT_SCHEMA_VERSION,
-            state: self.state.read().clone(),
+            state: None,
+            accounts: Some(self.state.read().clone()),
         };
         let join = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
             let bytes = serde_json::to_vec(&snapshot)
@@ -568,10 +569,13 @@ mod tests {
     use std::sync::Arc;
 
     fn make_service() -> SsmService {
-        let state: SharedSsmState = Arc::new(RwLock::new(crate::state::SsmState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state: SharedSsmState = Arc::new(RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4566",
+            ),
+        ));
         SsmService::new(state)
     }
 
@@ -1351,7 +1355,8 @@ mod tests {
         // Manually insert an execution for testing
         {
             let now = chrono::Utc::now();
-            let mut state = svc.state.write();
+            let mut accounts = svc.state.write();
+            let state = accounts.get_or_create("123456789012");
             let exec = crate::state::MaintenanceWindowExecution {
                 window_execution_id: exec_id.to_string(),
                 window_id: window_id.clone(),

@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 use fakecloud_core::validation::*;
 
-use crate::state::ResourceDataSync;
+use crate::state::{ResourceDataSync, SsmState};
 
 use super::{missing, SsmService};
 
@@ -21,7 +21,8 @@ impl SsmService {
             .ok_or_else(|| missing("SyncName"))?
             .to_string();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         if state.resource_data_syncs.contains_key(&sync_name) {
             return Err(AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -57,7 +58,8 @@ impl SsmService {
             .as_str()
             .ok_or_else(|| missing("SyncName"))?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         if state.resource_data_syncs.remove(sync_name).is_none() {
             return Err(AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -76,7 +78,9 @@ impl SsmService {
         let body = req.json_body();
         validate_optional_string_length("SyncType", body["SyncType"].as_str(), 1, 64)?;
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let syncs: Vec<Value> = state
             .resource_data_syncs
             .values()
@@ -128,7 +132,8 @@ impl SsmService {
             .cloned()
             .ok_or_else(|| missing("SyncSource"))?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let sync = state
             .resource_data_syncs
             .get_mut(sync_name)

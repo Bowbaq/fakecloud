@@ -9,6 +9,7 @@ use fakecloud_core::validation::*;
 
 use super::parameters::{lookup_param, lookup_param_mut};
 use super::{missing, SsmService};
+use crate::state::SsmState;
 
 const INVALID_RESOURCE_TYPE_MSG: &str = " is not a valid resource type. \
     Valid resource types are: ManagedInstance, MaintenanceWindow, \
@@ -108,8 +109,9 @@ impl SsmService {
             .ok_or_else(|| missing("ResourceId"))?;
         validate_required("Tags", &body["Tags"])?;
 
-        let mut state = self.state.write();
-        let tag_map = Self::resolve_tags_mut(&mut state, resource_type, resource_id)?;
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
+        let tag_map = Self::resolve_tags_mut(state, resource_type, resource_id)?;
         tags::apply_tags(tag_map, &body, "Tags", "Key", "Value").map_err(|f| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -133,8 +135,9 @@ impl SsmService {
             .ok_or_else(|| missing("ResourceId"))?;
         validate_required("TagKeys", &body["TagKeys"])?;
 
-        let mut state = self.state.write();
-        let tag_map = Self::resolve_tags_mut(&mut state, resource_type, resource_id)?;
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
+        let tag_map = Self::resolve_tags_mut(state, resource_type, resource_id)?;
         tags::remove_tags(tag_map, &body, "TagKeys").map_err(|f| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -156,8 +159,10 @@ impl SsmService {
             .as_str()
             .ok_or_else(|| missing("ResourceId"))?;
 
-        let state = self.state.read();
-        let tag_map = Self::resolve_tags(&state, resource_type, resource_id)?;
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
+        let tag_map = Self::resolve_tags(state, resource_type, resource_id)?;
         let result = tags::tags_to_json(tag_map, "Key", "Value");
 
         Ok(AwsResponse::ok_json(json!({ "TagList": result })))

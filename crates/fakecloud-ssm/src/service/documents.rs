@@ -8,7 +8,7 @@ use fakecloud_core::pagination::paginate;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 use fakecloud_core::validation::*;
 
-use crate::state::{SsmDocument, SsmDocumentVersion, SsmResourcePolicy};
+use crate::state::{SsmDocument, SsmDocumentVersion, SsmResourcePolicy, SsmState};
 use sha2::{Digest, Sha256};
 
 use super::{missing, SsmService};
@@ -200,7 +200,8 @@ impl SsmService {
             })
             .unwrap_or_default();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if state.documents.contains_key(&name) {
             return Err(AwsServiceError::aws_error(
@@ -309,7 +310,9 @@ impl SsmService {
         let version_name = body["VersionName"].as_str();
         let requested_format = body["DocumentFormat"].as_str();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let doc = state
             .documents
             .get(name)
@@ -346,7 +349,8 @@ impl SsmService {
         let doc_version = body["DocumentVersion"].as_str();
         let version_name = body["VersionName"].as_str();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if doc_version.is_some() || version_name.is_some() {
             // Deleting a specific version
@@ -408,7 +412,8 @@ impl SsmService {
         let doc_format = body["DocumentFormat"].as_str();
         let target_version = body["DocumentVersion"].as_str();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let doc = state
             .documents
             .get_mut(name)
@@ -475,7 +480,9 @@ impl SsmService {
         let body = req.json_body();
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let doc = state
             .documents
             .get(name)
@@ -547,7 +554,8 @@ impl SsmService {
             .as_str()
             .ok_or_else(|| missing("DocumentVersion"))?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let doc = state
             .documents
             .get_mut(name)
@@ -589,7 +597,9 @@ impl SsmService {
         let max_results = body["MaxResults"].as_i64().unwrap_or(10) as usize;
         let filters = body["Filters"].as_array();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let all_docs: Vec<Value> = state
             .documents
             .values()
@@ -611,7 +621,9 @@ impl SsmService {
         let body = req.json_body();
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let doc = state.documents.get(name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -705,7 +717,8 @@ impl SsmService {
             Ok(result)
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let doc = state.documents.get_mut(name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -744,7 +757,9 @@ impl SsmService {
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
         let max_results = body["MaxResults"].as_i64().unwrap_or(50) as usize;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let doc = state
             .documents
             .get(name)
@@ -804,7 +819,9 @@ impl SsmService {
         let body = req.json_body();
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         if !state.documents.contains_key(name) {
             return Err(doc_not_found(name));
         }
@@ -833,7 +850,8 @@ impl SsmService {
         let policy_id = body["PolicyId"].as_str().map(|s| s.to_string());
         let policy_hash = body["PolicyHash"].as_str().map(|s| s.to_string());
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // If PolicyId is provided, update existing
         if let Some(ref pid) = policy_id {
@@ -889,7 +907,9 @@ impl SsmService {
             .as_str()
             .ok_or_else(|| missing("ResourceArn"))?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let policies: Vec<Value> = state
             .resource_policies
             .iter()
@@ -921,7 +941,8 @@ impl SsmService {
             .as_str()
             .ok_or_else(|| missing("PolicyHash"))?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let idx = state
             .resource_policies
             .iter()

@@ -126,7 +126,11 @@ async fn main() {
         ),
     ));
     let ssm_state = Arc::new(parking_lot::RwLock::new(
-        fakecloud_ssm::state::SsmState::new(&cli.account_id, &cli.region),
+        fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        ),
     ));
     let dynamodb_state = Arc::new(parking_lot::RwLock::new(
         fakecloud_core::multi_account::MultiAccountState::new(
@@ -187,7 +191,11 @@ async fn main() {
         ),
     ));
     let cloudformation_state = Arc::new(parking_lot::RwLock::new(
-        fakecloud_cloudformation::state::CloudFormationState::new(&cli.account_id, &cli.region),
+        fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        ),
     ));
     let ses_state = Arc::new(parking_lot::RwLock::new(
         fakecloud_ses::state::SesState::new(&cli.account_id, &cli.region),
@@ -447,7 +455,7 @@ async fn main() {
                     {
                         Ok(snapshot) => {
                             if snapshot.schema_version
-                                != fakecloud_cloudformation::state::CLOUDFORMATION_SNAPSHOT_SCHEMA_VERSION
+                                > fakecloud_cloudformation::state::CLOUDFORMATION_SNAPSHOT_SCHEMA_VERSION
                             {
                                 fatal_exit(format_args!(
                                     "cloudformation persistence schema mismatch: on-disk={}, expected={}",
@@ -455,12 +463,23 @@ async fn main() {
                                     fakecloud_cloudformation::state::CLOUDFORMATION_SNAPSHOT_SCHEMA_VERSION,
                                 ));
                             }
-                            let stack_count = snapshot.state.stacks.len();
-                            *cloudformation_state.write() = snapshot.state;
-                            tracing::info!(
-                                stacks = stack_count,
-                                "loaded cloudformation persistence snapshot",
-                            );
+                            if let Some(accounts) = snapshot.accounts {
+                                let account_count = accounts.account_count();
+                                *cloudformation_state.write() = accounts;
+                                tracing::info!(
+                                    accounts = account_count,
+                                    "loaded cloudformation persistence snapshot (multi-account)"
+                                );
+                            } else if let Some(single_state) = snapshot.state {
+                                let stack_count = single_state.stacks.len();
+                                let account_id = single_state.account_id.clone();
+                                let mut mas = cloudformation_state.write();
+                                *mas.get_or_create(&account_id) = single_state;
+                                tracing::info!(
+                                    stacks = stack_count,
+                                    "loaded cloudformation persistence snapshot (migrated from v1)"
+                                );
+                            }
                         }
                         Err(err) => fatal_exit(format_args!(
                             "failed to parse cloudformation persistence snapshot: {err}"
@@ -790,7 +809,7 @@ async fn main() {
                     match serde_json::from_slice::<fakecloud_ssm::state::SsmSnapshot>(&bytes) {
                         Ok(snapshot) => {
                             if snapshot.schema_version
-                                != fakecloud_ssm::state::SSM_SNAPSHOT_SCHEMA_VERSION
+                                > fakecloud_ssm::state::SSM_SNAPSHOT_SCHEMA_VERSION
                             {
                                 fatal_exit(format_args!(
                                     "ssm persistence schema mismatch: on-disk={}, expected={}",
@@ -798,12 +817,23 @@ async fn main() {
                                     fakecloud_ssm::state::SSM_SNAPSHOT_SCHEMA_VERSION,
                                 ));
                             }
-                            let param_count = snapshot.state.parameters.len();
-                            *ssm_state.write() = snapshot.state;
-                            tracing::info!(
-                                parameters = param_count,
-                                "loaded ssm persistence snapshot",
-                            );
+                            if let Some(accounts) = snapshot.accounts {
+                                let account_count = accounts.account_count();
+                                *ssm_state.write() = accounts;
+                                tracing::info!(
+                                    accounts = account_count,
+                                    "loaded ssm persistence snapshot (multi-account)"
+                                );
+                            } else if let Some(single_state) = snapshot.state {
+                                let param_count = single_state.parameters.len();
+                                let account_id = single_state.account_id.clone();
+                                let mut mas = ssm_state.write();
+                                *mas.get_or_create(&account_id) = single_state;
+                                tracing::info!(
+                                    parameters = param_count,
+                                    "loaded ssm persistence snapshot (migrated from v1)"
+                                );
+                            }
                         }
                         Err(err) => fatal_exit(format_args!(
                             "failed to parse ssm persistence snapshot: {err}"
