@@ -308,7 +308,14 @@ mod tests {
         let s = shared();
         let body = json!({"jobName": "my-eval"});
         create_evaluation_job(&s, &req(), &body).unwrap();
-        let arn = s.read().default_ref().evaluation_jobs.keys().next().unwrap().clone();
+        let arn = s
+            .read()
+            .default_ref()
+            .evaluation_jobs
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
         let id = arn.rsplit('/').next().unwrap().to_string();
         assert!(get_evaluation_job(&s, &req(), &arn).is_ok());
         assert!(get_evaluation_job(&s, &req(), &id).is_ok());
@@ -342,16 +349,33 @@ mod tests {
     fn stop_evaluation_job_transitions_to_stopped() {
         let s = shared();
         create_evaluation_job(&s, &req(), &json!({})).unwrap();
-        let arn = s.read().default_ref().evaluation_jobs.keys().next().unwrap().clone();
+        let arn = s
+            .read()
+            .default_ref()
+            .evaluation_jobs
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
         stop_evaluation_job(&s, &req(), &arn).unwrap();
-        assert_eq!(s.read().default_ref().evaluation_jobs[&arn].status, "Stopped");
+        assert_eq!(
+            s.read().default_ref().evaluation_jobs[&arn].status,
+            "Stopped"
+        );
     }
 
     #[test]
     fn stop_evaluation_job_conflict_when_not_in_progress() {
         let s = shared();
         create_evaluation_job(&s, &req(), &json!({})).unwrap();
-        let arn = s.read().default_ref().evaluation_jobs.keys().next().unwrap().clone();
+        let arn = s
+            .read()
+            .default_ref()
+            .evaluation_jobs
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
         stop_evaluation_job(&s, &req(), &arn).unwrap();
         let err = stop_evaluation_job(&s, &req(), &arn).err().unwrap();
         assert_eq!(err.status(), StatusCode::CONFLICT);
@@ -382,7 +406,9 @@ mod tests {
     #[test]
     fn batch_delete_missing_identifiers_returns_validation_error() {
         let s = shared();
-        let err = batch_delete_evaluation_job(&s, &req(), &json!({})).err().unwrap();
+        let err = batch_delete_evaluation_job(&s, &req(), &json!({}))
+            .err()
+            .unwrap();
         assert_eq!(err.status(), StatusCode::BAD_REQUEST);
     }
 }

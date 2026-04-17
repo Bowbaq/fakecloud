@@ -408,7 +408,9 @@ mod tests {
     #[test]
     fn get_unknown_returns_not_found() {
         let s = shared();
-        let err = get_marketplace_model_endpoint(&s, &req(), "missing").err().unwrap();
+        let err = get_marketplace_model_endpoint(&s, &req(), "missing")
+            .err()
+            .unwrap();
         assert_eq!(err.status(), StatusCode::NOT_FOUND);
     }
 
@@ -432,7 +434,8 @@ mod tests {
     fn update_sets_new_config() {
         let s = shared();
         let arn = create(&s, "up-ep");
-        update_marketplace_model_endpoint(&s, &req(), &arn, &json!({"endpointConfig": {"a": 1}})).unwrap();
+        update_marketplace_model_endpoint(&s, &req(), &arn, &json!({"endpointConfig": {"a": 1}}))
+            .unwrap();
         assert_eq!(
             s.read().default_ref().marketplace_endpoints[&arn].endpoint_config,
             json!({"a": 1})
@@ -459,7 +462,9 @@ mod tests {
     #[test]
     fn delete_unknown_returns_not_found() {
         let s = shared();
-        let err = delete_marketplace_model_endpoint(&s, &req(), "miss").err().unwrap();
+        let err = delete_marketplace_model_endpoint(&s, &req(), "miss")
+            .err()
+            .unwrap();
         assert_eq!(err.status(), StatusCode::NOT_FOUND);
     }
 
@@ -468,7 +473,10 @@ mod tests {
         let s = shared();
         let arn = create(&s, "reg-ep");
         register_marketplace_model_endpoint(&s, &req(), &arn).unwrap();
-        assert_eq!(s.read().default_ref().marketplace_endpoints[&arn].status, "Registered");
+        assert_eq!(
+            s.read().default_ref().marketplace_endpoints[&arn].status,
+            "Registered"
+        );
     }
 
     #[test]
@@ -486,7 +494,10 @@ mod tests {
         let arn = create(&s, "dereg");
         register_marketplace_model_endpoint(&s, &req(), &arn).unwrap();
         deregister_marketplace_model_endpoint(&s, &req(), &arn).unwrap();
-        assert_eq!(s.read().default_ref().marketplace_endpoints[&arn].status, "Active");
+        assert_eq!(
+            s.read().default_ref().marketplace_endpoints[&arn].status,
+            "Active"
+        );
     }
 
     #[test]

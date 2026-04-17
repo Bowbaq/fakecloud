@@ -217,7 +217,11 @@ mod tests {
         let s = shared();
         create_foundation_model_agreement(&s, &req(), &json!({"modelId": "m"})).unwrap();
         delete_foundation_model_agreement(&s, &req(), &json!({"modelId": "m"})).unwrap();
-        assert!(s.read().default_ref().foundation_model_agreements.is_empty());
+        assert!(s
+            .read()
+            .default_ref()
+            .foundation_model_agreements
+            .is_empty());
     }
 
     #[test]
@@ -253,7 +257,8 @@ mod tests {
             serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
         assert!(v["useCase"].is_null());
 
-        put_use_case_for_model_access(&s, &req(), &json!({"useCase": {"purpose": "research"}})).unwrap();
+        put_use_case_for_model_access(&s, &req(), &json!({"useCase": {"purpose": "research"}}))
+            .unwrap();
         let resp = get_use_case_for_model_access(&s, &req()).unwrap();
         let v: Value =
             serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
@@ -263,7 +268,9 @@ mod tests {
     #[test]
     fn put_use_case_missing_field_errors() {
         let s = shared();
-        let err = put_use_case_for_model_access(&s, &req(), &json!({})).err().unwrap();
+        let err = put_use_case_for_model_access(&s, &req(), &json!({}))
+            .err()
+            .unwrap();
         assert_eq!(err.status(), StatusCode::BAD_REQUEST);
     }
 }

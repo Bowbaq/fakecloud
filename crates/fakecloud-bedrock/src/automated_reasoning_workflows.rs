@@ -503,20 +503,24 @@ mod tests {
             Uuid::new_v4()
         );
         let now = Utc::now();
-        state.write().default_mut().automated_reasoning_policies.insert(
-            arn.clone(),
-            AutomatedReasoningPolicy {
-                policy_arn: arn.clone(),
-                policy_name: name.to_string(),
-                description: None,
-                policy_document: json!({}),
-                status: "ACTIVE".to_string(),
-                version: "1".to_string(),
-                versions: vec!["1".to_string()],
-                created_at: now,
-                updated_at: now,
-            },
-        );
+        state
+            .write()
+            .default_mut()
+            .automated_reasoning_policies
+            .insert(
+                arn.clone(),
+                AutomatedReasoningPolicy {
+                    policy_arn: arn.clone(),
+                    policy_name: name.to_string(),
+                    description: None,
+                    policy_document: json!({}),
+                    status: "ACTIVE".to_string(),
+                    version: "1".to_string(),
+                    versions: vec!["1".to_string()],
+                    created_at: now,
+                    updated_at: now,
+                },
+            );
         arn
     }
 
@@ -546,7 +550,9 @@ mod tests {
     #[test]
     fn start_build_workflow_unknown_policy_not_found() {
         let s = shared();
-        let err = start_build_workflow(&s, &req(), "missing", "BUILD").err().unwrap();
+        let err = start_build_workflow(&s, &req(), "missing", "BUILD")
+            .err()
+            .unwrap();
         assert_eq!(err.status(), StatusCode::NOT_FOUND);
     }
 
@@ -566,7 +572,9 @@ mod tests {
     fn get_build_workflow_unknown_returns_not_found() {
         let s = shared();
         let arn = seed_policy(&s, "p");
-        let err = get_build_workflow(&s, &req(), &arn, "missing").err().unwrap();
+        let err = get_build_workflow(&s, &req(), &arn, "missing")
+            .err()
+            .unwrap();
         assert_eq!(err.status(), StatusCode::NOT_FOUND);
     }
 
@@ -609,7 +617,9 @@ mod tests {
     fn cancel_build_workflow_unknown_returns_not_found() {
         let s = shared();
         let arn = seed_policy(&s, "p");
-        let err = cancel_build_workflow(&s, &req(), &arn, "miss").err().unwrap();
+        let err = cancel_build_workflow(&s, &req(), &arn, "miss")
+            .err()
+            .unwrap();
         assert_eq!(err.status(), StatusCode::NOT_FOUND);
     }
 
@@ -634,7 +644,9 @@ mod tests {
     fn delete_build_workflow_unknown_returns_not_found() {
         let s = shared();
         let arn = seed_policy(&s, "p");
-        let err = delete_build_workflow(&s, &req(), &arn, "miss").err().unwrap();
+        let err = delete_build_workflow(&s, &req(), &arn, "miss")
+            .err()
+            .unwrap();
         assert_eq!(err.status(), StatusCode::NOT_FOUND);
     }
 
@@ -709,7 +721,9 @@ mod tests {
     fn get_test_result_unknown_workflow_not_found() {
         let s = shared();
         let arn = seed_policy(&s, "p");
-        let err = get_test_result(&s, &req(), &arn, "miss", "tc").err().unwrap();
+        let err = get_test_result(&s, &req(), &arn, "miss", "tc")
+            .err()
+            .unwrap();
         assert_eq!(err.status(), StatusCode::NOT_FOUND);
     }
 
