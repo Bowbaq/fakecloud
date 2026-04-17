@@ -5574,4 +5574,84 @@ mod tests {
         let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
         assert!(body.contains("<ListMultipartUploadsResult"));
     }
+
+    #[test]
+    fn put_public_access_block_bucket_not_found() {
+        let svc = make_service();
+        let xml = b"<PublicAccessBlockConfiguration><BlockPublicAcls>true</BlockPublicAcls></PublicAccessBlockConfiguration>";
+        let req = make_request(Method::PUT, "/ghost", &[("publicAccessBlock", "")], xml);
+        assert!(svc
+            .put_public_access_block("123456789012", &req, "ghost")
+            .is_err());
+    }
+
+    #[test]
+    fn public_access_block_lifecycle() {
+        let svc = make_service();
+        seed_bucket(&svc, "pab");
+        let xml = b"<PublicAccessBlockConfiguration><BlockPublicAcls>true</BlockPublicAcls><IgnorePublicAcls>true</IgnorePublicAcls></PublicAccessBlockConfiguration>";
+        let req = make_request(Method::PUT, "/pab", &[("publicAccessBlock", "")], xml);
+        svc.put_public_access_block("123456789012", &req, "pab")
+            .unwrap();
+
+        let resp = svc.get_public_access_block("123456789012", "pab").unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("BlockPublicAcls"));
+
+        svc.delete_public_access_block("123456789012", "pab")
+            .unwrap();
+    }
+
+    #[test]
+    fn put_bucket_replication_bucket_not_found() {
+        let svc = make_service();
+        let xml = b"<ReplicationConfiguration><Role>arn</Role></ReplicationConfiguration>";
+        let req = make_request(Method::PUT, "/ghost", &[("replication", "")], xml);
+        assert!(svc
+            .put_bucket_replication("123456789012", &req, "ghost")
+            .is_err());
+    }
+
+    #[test]
+    fn put_ownership_controls_bucket_not_found() {
+        let svc = make_service();
+        let xml = b"<OwnershipControls><Rule><ObjectOwnership>BucketOwnerEnforced</ObjectOwnership></Rule></OwnershipControls>";
+        let req = make_request(Method::PUT, "/ghost", &[("ownershipControls", "")], xml);
+        assert!(svc
+            .put_bucket_ownership_controls("123456789012", &req, "ghost")
+            .is_err());
+    }
+
+    #[test]
+    fn put_bucket_accelerate_bucket_not_found() {
+        let svc = make_service();
+        let xml = b"<AccelerateConfiguration><Status>Enabled</Status></AccelerateConfiguration>";
+        let req = make_request(Method::PUT, "/ghost", &[("accelerate", "")], xml);
+        assert!(svc
+            .put_bucket_accelerate("123456789012", &req, "ghost")
+            .is_err());
+    }
+
+    #[test]
+    fn get_bucket_accelerate_lifecycle() {
+        let svc = make_service();
+        seed_bucket(&svc, "acc");
+        let xml = b"<AccelerateConfiguration><Status>Enabled</Status></AccelerateConfiguration>";
+        let req = make_request(Method::PUT, "/acc", &[("accelerate", "")], xml);
+        svc.put_bucket_accelerate("123456789012", &req, "acc")
+            .unwrap();
+        let resp = svc.get_bucket_accelerate("123456789012", "acc").unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("AccelerateConfiguration"));
+    }
+
+    #[test]
+    fn put_bucket_website_bucket_not_found() {
+        let svc = make_service();
+        let xml = b"<WebsiteConfiguration><IndexDocument><Suffix>index.html</Suffix></IndexDocument></WebsiteConfiguration>";
+        let req = make_request(Method::PUT, "/ghost", &[("website", "")], xml);
+        assert!(svc
+            .put_bucket_website("123456789012", &req, "ghost")
+            .is_err());
+    }
 }
