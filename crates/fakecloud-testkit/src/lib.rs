@@ -202,6 +202,34 @@ impl TestServer {
             .expect("failed to run aws cli");
         CliOutput(output)
     }
+
+    /// Create an IAM admin user in a specific account via the
+    /// `/_fakecloud/iam/create-admin` endpoint. Returns (access_key_id,
+    /// secret_access_key). Solves the multi-account bootstrap problem:
+    /// the root bypass only targets the default account, so this endpoint
+    /// lets tests create credentials for any account.
+    pub async fn create_admin(&self, account_id: &str, user_name: &str) -> (String, String) {
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("{}/_fakecloud/iam/create-admin", self.endpoint))
+            .json(&serde_json::json!({
+                "accountId": account_id,
+                "userName": user_name,
+            }))
+            .send()
+            .await
+            .expect("create-admin request failed");
+        assert!(
+            resp.status().is_success(),
+            "create-admin returned {}",
+            resp.status()
+        );
+        let body: serde_json::Value = resp.json().await.unwrap();
+        (
+            body["accessKeyId"].as_str().unwrap().to_string(),
+            body["secretAccessKey"].as_str().unwrap().to_string(),
+        )
+    }
 }
 
 impl Drop for TestServer {

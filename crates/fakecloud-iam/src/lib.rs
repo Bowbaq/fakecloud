@@ -5,6 +5,7 @@ pub mod iam_service;
 pub mod persistence;
 pub mod policy_evaluator;
 pub mod policy_validation;
+pub mod resource_policy;
 pub mod state;
 pub mod sts_service;
 pub mod xml_responses;

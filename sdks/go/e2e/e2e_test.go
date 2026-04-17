@@ -202,11 +202,11 @@ func TestE2EElastiCacheClusters(t *testing.T) {
 	})
 
 	_, err := ecClient.CreateCacheCluster(ctx, &elasticache.CreateCacheClusterInput{
-		CacheClusterId:  aws.String("sdk-go-ec-cluster"),
-		CacheNodeType:   aws.String("cache.t3.micro"),
-		Engine:          aws.String("redis"),
-		EngineVersion:   aws.String("7.1"),
-		NumCacheNodes:   aws.Int32(1),
+		CacheClusterId: aws.String("sdk-go-ec-cluster"),
+		CacheNodeType:  aws.String("cache.t3.micro"),
+		Engine:         aws.String("redis"),
+		EngineVersion:  aws.String("7.1"),
+		NumCacheNodes:  aws.Int32(1),
 	})
 	if err != nil {
 		t.Fatalf("CreateCacheCluster failed: %v", err)
@@ -826,4 +826,3 @@ func TestE2EBedrockFaults(t *testing.T) {
 		t.Errorf("expected 0 faults after clear, got %d", len(after.Faults))
 	}
 }
-

@@ -1875,7 +1875,7 @@ mod tests {
     #[test]
     fn cross_account_identity_only_is_implicit_deny() {
         // Resource lives in B, principal in A. Identity grants, resource
-        // policy silent → cross-account semantics require both.
+        // policy silent -> cross-account semantics require both.
         let p = principal_in(ACCT_A, "alice");
         assert_eq!(
             eval_cross(Some(allow_get_wildcard()), None, &p, ACCT_B),

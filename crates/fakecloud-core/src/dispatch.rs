@@ -345,8 +345,13 @@ pub async fn dispatch(
                             config.resource_policy_provider.as_ref().and_then(|p| {
                                 p.resource_policy(&detected.service, &iam_action.resource)
                             });
+                        // Derive the resource-owning account from the
+                        // resource ARN. Wildcard (`*`) means the action
+                        // isn't scoped to a specific resource (e.g.
+                        // ListQueues, GetCallerIdentity) — treat it as
+                        // same-account by using the caller's account.
                         let resource_account_id = parse_account_from_arn(&iam_action.resource)
-                            .unwrap_or_else(|| config.account_id.clone());
+                            .unwrap_or_else(|| principal.account_id.clone());
                         let decision = evaluator.evaluate_with_resource_policy(
                             principal,
                             &iam_action,

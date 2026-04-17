@@ -1718,6 +1718,9 @@ async fn main() {
                 fakecloud_kms::resource_policy::KmsResourcePolicyProvider::shared(
                     kms_state.clone(),
                 ),
+                fakecloud_iam::resource_policy::StsResourcePolicyProvider::shared(
+                    iam_state.clone(),
+                ),
             ],
         )),
     };
@@ -2866,6 +2869,22 @@ async fn main() {
                     let mut state = bs.write();
                     state.fault_rules.clear();
                     axum::Json(serde_json::json!({ "status": "ok" }))
+                }
+            }),
+        )
+        .route(
+            "/_fakecloud/iam/create-admin",
+            axum::routing::post({
+                let iam = iam_state.clone();
+                move |axum::Json(body): axum::Json<types::CreateAdminRequest>| {
+                    let iam = iam.clone();
+                    async move {
+                        axum::Json(reset::create_admin_in_account(
+                            &iam,
+                            &body.account_id,
+                            &body.user_name,
+                        ))
+                    }
                 }
             }),
         )

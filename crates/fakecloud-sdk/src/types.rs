@@ -620,3 +620,23 @@ pub struct BedrockFaultsResponse {
 pub struct BedrockStatusResponse {
     pub status: String,
 }
+
+/// Request to bootstrap an IAM admin user in a specific account.
+/// Used by `/_fakecloud/iam/create-admin` to solve the multi-account
+/// bootstrap problem: there's no per-account root credential, so this
+/// endpoint creates a user with full admin access in any account.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateAdminRequest {
+    pub account_id: String,
+    pub user_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateAdminResponse {
+    pub access_key_id: String,
+    pub secret_access_key: String,
+    pub account_id: String,
+    pub arn: String,
+}

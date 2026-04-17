@@ -971,6 +971,31 @@ class BedrockStatusResponse:
         return cls(status=data.get("status", ""))
 
 
+# ── IAM ────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class CreateAdminRequest:
+    account_id: str
+    user_name: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"accountId": self.account_id, "userName": self.user_name}
+
+
+@dataclass
+class CreateAdminResponse:
+    access_key_id: str
+    secret_access_key: str
+    account_id: str
+    arn: str
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> CreateAdminResponse:
+        d = _convert_keys(data)
+        return cls(**d)
+
+
 # ── API Gateway v2 ──────────────────────────────────────────────────────
 
 

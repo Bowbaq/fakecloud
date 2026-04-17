@@ -1180,3 +1180,25 @@ final class ApiGatewayV2RequestsResponse
         return new self(array_map(ApiGatewayV2Request::fromArray(...), $data['requests']));
     }
 }
+
+// ── IAM ───────────────────────────────────────────────────────
+
+final class CreateAdminResponse
+{
+    public function __construct(
+        public readonly string $accessKeyId,
+        public readonly string $secretAccessKey,
+        public readonly string $accountId,
+        public readonly string $arn,
+    ) {}
+
+    public static function fromArray(array $data): self
+    {
+        return new self(
+            $data['accessKeyId'],
+            $data['secretAccessKey'],
+            $data['accountId'],
+            $data['arn'],
+        );
+    }
+}

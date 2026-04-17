@@ -38,6 +38,27 @@ impl FakeCloud {
         Self::parse(resp).await
     }
 
+    /// Create an IAM admin user in a specific account. Returns credentials
+    /// for the new user. Solves the multi-account bootstrap problem: the
+    /// root bypass only targets the default account, so this endpoint lets
+    /// callers create credentials for any account.
+    pub async fn create_admin(
+        &self,
+        account_id: &str,
+        user_name: &str,
+    ) -> Result<CreateAdminResponse, Error> {
+        let resp = self
+            .client
+            .post(format!("{}/_fakecloud/iam/create-admin", self.base_url))
+            .json(&CreateAdminRequest {
+                account_id: account_id.to_string(),
+                user_name: user_name.to_string(),
+            })
+            .send()
+            .await?;
+        Self::parse(resp).await
+    }
+
     /// Reset a single service's state.
     pub async fn reset_service(&self, service: &str) -> Result<ResetServiceResponse, Error> {
         let resp = self

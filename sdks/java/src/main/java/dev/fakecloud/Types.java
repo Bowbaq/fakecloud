@@ -382,4 +382,16 @@ public final class Types {
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record ApiGatewayV2RequestsResponse(List<ApiGatewayV2Request> requests) {}
+
+    // ── IAM ───────────────────────────────────────────────────────
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record CreateAdminRequest(String accountId, String userName) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record CreateAdminResponse(
+            String accessKeyId,
+            String secretAccessKey,
+            String accountId,
+            String arn) {}
 }
