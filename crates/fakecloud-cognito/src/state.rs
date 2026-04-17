@@ -5,14 +5,24 @@ use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
-pub type SharedCognitoState = Arc<RwLock<CognitoState>>;
+pub type SharedCognitoState =
+    Arc<RwLock<fakecloud_core::multi_account::MultiAccountState<CognitoState>>>;
 
-pub const COGNITO_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+impl fakecloud_core::multi_account::AccountState for CognitoState {
+    fn new_for_account(account_id: &str, region: &str, _endpoint: &str) -> Self {
+        Self::new(account_id, region)
+    }
+}
+
+pub const COGNITO_SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CognitoSnapshot {
     pub schema_version: u32,
-    pub state: CognitoState,
+    #[serde(default)]
+    pub accounts: Option<fakecloud_core::multi_account::MultiAccountState<CognitoState>>,
+    #[serde(default)]
+    pub state: Option<CognitoState>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

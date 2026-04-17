@@ -8,7 +8,8 @@ use uuid::Uuid;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 
 use crate::state::{
-    AccessTokenData, AuthEvent, ChallengeResult, RefreshTokenData, SessionData, UserAttribute,
+    AccessTokenData, AuthEvent, ChallengeResult, CognitoState, RefreshTokenData, SessionData,
+    UserAttribute,
 };
 use crate::triggers::{self, TriggerSource};
 use crate::user_status;
@@ -104,7 +105,7 @@ impl CognitoService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let input = AdminAuthInput::from_request(&req.json_body())?;
-        let lookup = self.admin_auth_lookup(&input)?;
+        let lookup = self.admin_auth_lookup(&input, req)?;
 
         if let Some(ctx) = self.delivery_ctx.as_ref() {
             if let Some(function_arn) = triggers::get_trigger_arn(
@@ -134,7 +135,7 @@ impl CognitoService {
             }
         }
 
-        let tokens = match self.admin_auth_verify(&input, &lookup.region)? {
+        let tokens = match self.admin_auth_verify(&input, &lookup.region, req)? {
             AdminAuthOutcome::NewPasswordRequired { session } => {
                 return Ok(AwsResponse::ok_json(json!({
                     "ChallengeName": "NEW_PASSWORD_REQUIRED",
@@ -182,10 +183,13 @@ impl CognitoService {
     fn admin_auth_lookup(
         &self,
         input: &AdminAuthInput,
+        req: &AwsRequest,
     ) -> Result<AdminAuthLookup, AwsServiceError> {
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = CognitoState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
-        ensure_user_pool_exists(&state, &input.pool_id)?;
+        ensure_user_pool_exists(state, &input.pool_id)?;
 
         let client = state
             .user_pool_clients
@@ -255,8 +259,10 @@ impl CognitoService {
         &self,
         input: &AdminAuthInput,
         region: &str,
+        req: &AwsRequest,
     ) -> Result<AdminAuthOutcome, AwsServiceError> {
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let user = state
             .users
@@ -363,7 +369,9 @@ impl CognitoService {
 
         // Resolve pool_id and auth flows from client in a scoped lock
         let (pool_id, explicit_auth_flows) = {
-            let state = self.state.read();
+            let accounts = self.state.read();
+            let empty = CognitoState::new(&req.account_id, &req.region);
+            let state = accounts.get(&req.account_id).unwrap_or(&empty);
             let client = state.user_pool_clients.get(client_id).ok_or_else(|| {
                 AwsServiceError::aws_error(
                     StatusCode::BAD_REQUEST,
@@ -379,15 +387,21 @@ impl CognitoService {
 
         match auth_flow {
             "USER_PASSWORD_AUTH" => {
-                self.initiate_user_password_auth(&body, client_id, &pool_id, &explicit_auth_flows)
-                    .await
+                self.initiate_user_password_auth(
+                    &body,
+                    client_id,
+                    &pool_id,
+                    &explicit_auth_flows,
+                    req,
+                )
+                .await
             }
             "CUSTOM_AUTH" => {
-                self.initiate_custom_auth(&body, client_id, &pool_id, &explicit_auth_flows)
+                self.initiate_custom_auth(&body, client_id, &pool_id, &explicit_auth_flows, req)
                     .await
             }
             "REFRESH_TOKEN_AUTH" | "REFRESH_TOKEN" => {
-                self.initiate_refresh_token_auth(&body, client_id, &explicit_auth_flows)
+                self.initiate_refresh_token_auth(&body, client_id, &explicit_auth_flows, req)
             }
             other => Err(AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -403,6 +417,7 @@ impl CognitoService {
         client_id: &str,
         pool_id: &str,
         explicit_auth_flows: &[String],
+        req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         if !explicit_auth_flows
             .iter()
@@ -446,7 +461,9 @@ impl CognitoService {
             })?;
 
         let (user_attrs, region, account_id) = {
-            let state = self.state.read();
+            let accounts = self.state.read();
+            let empty = CognitoState::new(&req.account_id, &req.region);
+            let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
             let user = state
                 .users
@@ -504,7 +521,8 @@ impl CognitoService {
         }
 
         let tokens = {
-            let mut state = self.state.write();
+            let mut accounts = self.state.write();
+            let state = accounts.get_or_create(&req.account_id);
 
             let user = state
                 .users
@@ -638,6 +656,7 @@ impl CognitoService {
         client_id: &str,
         pool_id: &str,
         explicit_auth_flows: &[String],
+        req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         if !explicit_auth_flows.iter().any(|f| f == "ALLOW_CUSTOM_AUTH") {
             return Err(AwsServiceError::aws_error(
@@ -667,7 +686,9 @@ impl CognitoService {
             })?;
 
         let (user_attrs, region, account_id) = {
-            let state = self.state.read();
+            let accounts = self.state.read();
+            let empty = CognitoState::new(&req.account_id, &req.region);
+            let state = accounts.get(&req.account_id).unwrap_or(&empty);
             let user = state
                 .users
                 .get(pool_id)
@@ -747,7 +768,8 @@ impl CognitoService {
             .unwrap_or(false);
 
         if fail_auth {
-            let mut state = self.state.write();
+            let mut accounts = self.state.write();
+            let state = accounts.get_or_create(&req.account_id);
             state.auth_events.push(AuthEvent {
                 event_id: Uuid::new_v4().to_string(),
                 event_type: "SIGN_IN_FAILURE".to_string(),
@@ -766,7 +788,7 @@ impl CognitoService {
         }
 
         if issue_tokens {
-            return self.custom_auth_issue_tokens(pool_id, client_id, username, &region);
+            return self.custom_auth_issue_tokens(pool_id, client_id, username, &region, req);
         }
 
         let challenge_name = define_response["response"]["challengeName"]
@@ -813,7 +835,8 @@ impl CognitoService {
 
         let session = Uuid::new_v4().to_string();
         {
-            let mut state = self.state.write();
+            let mut accounts = self.state.write();
+            let state = accounts.get_or_create(&req.account_id);
             state.sessions.insert(
                 session.clone(),
                 SessionData {
@@ -846,8 +869,10 @@ impl CognitoService {
         client_id: &str,
         username: &str,
         region: &str,
+        req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let user = state
             .users
             .get(pool_id)
@@ -908,6 +933,7 @@ impl CognitoService {
         body: &Value,
         client_id: &str,
         explicit_auth_flows: &[String],
+        req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         if !explicit_auth_flows
             .iter()
@@ -939,7 +965,8 @@ impl CognitoService {
                 )
             })?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let token_data = state.refresh_tokens.get(refresh_token).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -1006,7 +1033,7 @@ impl CognitoService {
         let challenge_name = require_str(&body, "ChallengeName")?;
         let session = require_str(&body, "Session")?;
 
-        self.handle_auth_challenge_response(client_id, challenge_name, session, &body)
+        self.handle_auth_challenge_response(client_id, challenge_name, session, &body, req)
             .await
     }
 
@@ -1023,7 +1050,9 @@ impl CognitoService {
 
         // Validate session's pool ID matches the provided one
         {
-            let state = self.state.read();
+            let accounts = self.state.read();
+            let empty = CognitoState::new(&req.account_id, &req.region);
+            let state = accounts.get(&req.account_id).unwrap_or(&empty);
             if let Some(session_data) = state.sessions.get(session) {
                 if session_data.user_pool_id != pool_id {
                     return Err(AwsServiceError::aws_error(
@@ -1036,7 +1065,7 @@ impl CognitoService {
             // If session doesn't exist, handle_auth_challenge_response will return the error
         }
 
-        self.handle_auth_challenge_response(client_id, challenge_name, session, &body)
+        self.handle_auth_challenge_response(client_id, challenge_name, session, &body, req)
             .await
     }
 
@@ -1046,11 +1075,14 @@ impl CognitoService {
         challenge_name: &str,
         session: &str,
         body: &Value,
+        req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         match challenge_name {
-            "NEW_PASSWORD_REQUIRED" => self.respond_new_password_required(client_id, session, body),
+            "NEW_PASSWORD_REQUIRED" => {
+                self.respond_new_password_required(client_id, session, body, req)
+            }
             "CUSTOM_CHALLENGE" => {
-                self.respond_custom_challenge(client_id, session, body)
+                self.respond_custom_challenge(client_id, session, body, req)
                     .await
             }
             _ => Err(AwsServiceError::aws_error(
@@ -1066,6 +1098,7 @@ impl CognitoService {
         client_id: &str,
         session: &str,
         body: &Value,
+        req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let challenge_responses = body["ChallengeResponses"].as_object().ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -1086,7 +1119,8 @@ impl CognitoService {
                 )
             })?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let session_data = state.sessions.remove(session).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -1182,6 +1216,7 @@ impl CognitoService {
         client_id: &str,
         session: &str,
         body: &Value,
+        req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let challenge_responses = body["ChallengeResponses"].as_object().ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -1203,7 +1238,8 @@ impl CognitoService {
             })?;
 
         let (pool_id, username, session_client_id, mut challenge_results, challenge_metadata) = {
-            let mut state = self.state.write();
+            let mut accounts = self.state.write();
+            let state = accounts.get_or_create(&req.account_id);
             let session_data = state.sessions.remove(session).ok_or_else(|| {
                 AwsServiceError::aws_error(
                     StatusCode::BAD_REQUEST,
@@ -1232,7 +1268,9 @@ impl CognitoService {
         };
 
         let (user_attrs, region, account_id) = {
-            let state = self.state.read();
+            let accounts = self.state.read();
+            let empty = CognitoState::new(&req.account_id, &req.region);
+            let state = accounts.get(&req.account_id).unwrap_or(&empty);
             let user = state
                 .users
                 .get(&pool_id)
@@ -1346,7 +1384,8 @@ impl CognitoService {
             .unwrap_or(false);
 
         if fail_auth {
-            let mut state = self.state.write();
+            let mut accounts = self.state.write();
+            let state = accounts.get_or_create(&req.account_id);
             state.auth_events.push(AuthEvent {
                 event_id: Uuid::new_v4().to_string(),
                 event_type: "SIGN_IN_FAILURE".to_string(),
@@ -1370,6 +1409,7 @@ impl CognitoService {
                 &session_client_id,
                 &username,
                 &region,
+                req,
             );
         }
 
@@ -1417,7 +1457,8 @@ impl CognitoService {
 
         let new_session = Uuid::new_v4().to_string();
         {
-            let mut state = self.state.write();
+            let mut accounts = self.state.write();
+            let state = accounts.get_or_create(&req.account_id);
             state.sessions.insert(
                 new_session.clone(),
                 SessionData {
@@ -1450,8 +1491,10 @@ impl CognitoService {
         client_id: &str,
         username: &str,
         region: &str,
+        req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let user = state
             .users
             .get(pool_id)
@@ -1524,7 +1567,8 @@ impl CognitoService {
             })?;
 
         let (pool_id, sub, user, region, account_id) = {
-            let mut state = self.state.write();
+            let mut accounts = self.state.write();
+            let state = accounts.get_or_create(&req.account_id);
 
             // Find pool from client
             let client = state.user_pool_clients.get(client_id).ok_or_else(|| {
@@ -1631,7 +1675,8 @@ impl CognitoService {
         }
 
         if auto_confirm {
-            let mut state = self.state.write();
+            let mut accounts = self.state.write();
+            let state = accounts.get_or_create(&req.account_id);
             if let Some(u) = state
                 .users
                 .get_mut(&pool_id)
@@ -1666,7 +1711,8 @@ impl CognitoService {
             ));
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let client = state.user_pool_clients.get(client_id).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -1695,7 +1741,7 @@ impl CognitoService {
         let user_attrs = triggers::collect_user_attributes(user);
         let region = state.region.clone();
         let account_id = state.account_id.clone();
-        drop(state);
+        drop(accounts);
 
         // PostConfirmation_ConfirmSignUp trigger (fire-and-forget)
         if let Some(ref ctx) = self.delivery_ctx {
@@ -1729,10 +1775,11 @@ impl CognitoService {
         let pool_id = require_str(&body, "UserPoolId")?;
         let username = require_str(&body, "Username")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Validate pool exists
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         let user = state
             .users
@@ -1752,7 +1799,7 @@ impl CognitoService {
         let user_attrs = triggers::collect_user_attributes(user);
         let region = state.region.clone();
         let account_id = state.account_id.clone();
-        drop(state);
+        drop(accounts);
 
         // PostConfirmation_AdminConfirmSignUp trigger (fire-and-forget)
         if let Some(ref ctx) = self.delivery_ctx {
@@ -1784,7 +1831,8 @@ impl CognitoService {
         let previous_password = require_str(&body, "PreviousPassword")?;
         let proposed_password = require_str(&body, "ProposedPassword")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Look up user from access token
         let token_data = state.access_tokens.get(access_token).ok_or_else(|| {
@@ -1867,7 +1915,8 @@ impl CognitoService {
         let client_id = require_str(&body, "ClientId")?;
         let username = require_str(&body, "Username")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Find pool from client
         let client = state.user_pool_clients.get(client_id).ok_or_else(|| {
@@ -1930,7 +1979,7 @@ impl CognitoService {
             feedback_value: None,
         });
 
-        drop(state);
+        drop(accounts);
 
         // CustomMessage_ForgotPassword trigger (fire-and-forget)
         if let Some(ref ctx) = self.delivery_ctx {
@@ -1972,7 +2021,8 @@ impl CognitoService {
         let confirmation_code = require_str(&body, "ConfirmationCode")?;
         let password = require_str(&body, "Password")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Find pool from client
         let client = state.user_pool_clients.get(client_id).ok_or_else(|| {
@@ -2043,10 +2093,11 @@ impl CognitoService {
         let pool_id = require_str(&body, "UserPoolId")?;
         let username = require_str(&body, "Username")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Validate pool exists
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         let user = state
             .users
@@ -2072,7 +2123,8 @@ impl CognitoService {
 
         let access_token = require_str(&body, "AccessToken")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Look up user from access token
         let token_data = state.access_tokens.get(access_token).ok_or_else(|| {
@@ -2107,10 +2159,11 @@ impl CognitoService {
         let pool_id = require_str(&body, "UserPoolId")?;
         let username = require_str(&body, "Username")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Validate pool exists
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         // Validate user exists
         if !state

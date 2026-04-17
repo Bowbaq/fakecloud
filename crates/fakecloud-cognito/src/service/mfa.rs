@@ -6,7 +6,8 @@ use uuid::Uuid;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 
 use crate::state::{
-    MfaPreferences, SmsConfiguration, SmsMfaConfiguration, SoftwareTokenMfaConfiguration,
+    CognitoState, MfaPreferences, SmsConfiguration, SmsMfaConfiguration,
+    SoftwareTokenMfaConfiguration,
 };
 // AccessTokenData is used via state.access_tokens.get()
 
@@ -20,7 +21,8 @@ impl CognitoService {
         let body = req.json_body();
         let pool_id = require_str(&body, "UserPoolId")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let pool = state.user_pools.get_mut(pool_id).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -106,7 +108,9 @@ impl CognitoService {
         let body = req.json_body();
         let pool_id = require_str(&body, "UserPoolId")?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = CognitoState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let pool = state.user_pools.get(pool_id).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -155,10 +159,11 @@ impl CognitoService {
         let pool_id = require_str(&body, "UserPoolId")?;
         let username = require_str(&body, "Username")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Verify pool exists
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         let user = state
             .users
@@ -201,7 +206,8 @@ impl CognitoService {
         let body = req.json_body();
         let access_token = require_str(&body, "AccessToken")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let token_data = state.access_tokens.get(access_token).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -253,7 +259,8 @@ impl CognitoService {
     ) -> Result<AwsResponse, AwsServiceError> {
         let body = req.json_body();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Identify user from access token or session
         let (pool_id, username) = if let Some(access_token) = body["AccessToken"].as_str() {
@@ -326,7 +333,8 @@ impl CognitoService {
             ));
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Identify user from access token or session
         let (pool_id, username) = if let Some(access_token) = body["AccessToken"].as_str() {
@@ -394,7 +402,9 @@ impl CognitoService {
         let body = req.json_body();
         let access_token = require_str(&body, "AccessToken")?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = CognitoState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let token_data = state.access_tokens.get(access_token).ok_or_else(|| {
             AwsServiceError::aws_error(

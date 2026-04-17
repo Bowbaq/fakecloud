@@ -3,6 +3,8 @@ use serde_json::json;
 
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 
+use crate::state::CognitoState;
+
 use super::{ensure_user_pool_exists, require_str, CognitoService};
 
 impl CognitoService {
@@ -16,9 +18,11 @@ impl CognitoService {
         let pool_id = require_str(&body, "UserPoolId")?;
         let client_id = body["ClientId"].as_str().unwrap_or("");
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = CognitoState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         let key = format!("{pool_id}:{client_id}");
 
@@ -58,9 +62,10 @@ impl CognitoService {
         let css = body["CSS"].as_str().unwrap_or("");
         let image_file = body["ImageFile"].as_str();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         let now = Utc::now();
         let key = format!("{pool_id}:{client_id}");
@@ -100,9 +105,11 @@ impl CognitoService {
         let body = req.json_body();
         let pool_id = require_str(&body, "UserPoolId")?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = CognitoState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         let config = state
             .log_delivery_configs
@@ -128,9 +135,10 @@ impl CognitoService {
         let pool_id = require_str(&body, "UserPoolId")?;
         let log_configs = body["LogConfigurations"].clone();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         let config = json!({
             "UserPoolId": pool_id,
@@ -156,9 +164,11 @@ impl CognitoService {
         let pool_id = require_str(&body, "UserPoolId")?;
         let client_id = body["ClientId"].as_str().unwrap_or("");
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = CognitoState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         let key = format!("{pool_id}:{client_id}");
 
@@ -196,9 +206,10 @@ impl CognitoService {
         let pool_id = require_str(&body, "UserPoolId")?;
         let client_id = body["ClientId"].as_str().unwrap_or("");
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         let key = format!("{pool_id}:{client_id}");
 

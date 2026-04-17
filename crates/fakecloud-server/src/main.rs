@@ -199,10 +199,18 @@ async fn main() {
         ),
     ));
     let ses_state = Arc::new(parking_lot::RwLock::new(
-        fakecloud_ses::state::SesState::new(&cli.account_id, &cli.region),
+        fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        ),
     ));
     let cognito_state = Arc::new(parking_lot::RwLock::new(
-        fakecloud_cognito::state::CognitoState::new(&cli.account_id, &cli.region),
+        fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        ),
     ));
     let kinesis_state = Arc::new(parking_lot::RwLock::new(
         fakecloud_core::multi_account::MultiAccountState::new(
@@ -1307,22 +1315,31 @@ async fn main() {
                     match serde_json::from_slice::<fakecloud_ses::state::SesSnapshot>(&bytes) {
                         Ok(snapshot) => {
                             if snapshot.schema_version
-                                != fakecloud_ses::state::SES_SNAPSHOT_SCHEMA_VERSION
+                                > fakecloud_ses::state::SES_SNAPSHOT_SCHEMA_VERSION
                             {
                                 fatal_exit(format_args!(
-                                    "ses persistence schema mismatch: on-disk={}, expected={}",
+                                    "ses persistence schema too new: on-disk={}, max supported={}",
                                     snapshot.schema_version,
                                     fakecloud_ses::state::SES_SNAPSHOT_SCHEMA_VERSION,
                                 ));
                             }
-                            let identity_count = snapshot.state.identities.len();
-                            let template_count = snapshot.state.templates.len();
-                            *ses_state.write() = snapshot.state;
-                            tracing::info!(
-                                identities = identity_count,
-                                templates = template_count,
-                                "loaded ses persistence snapshot",
-                            );
+                            if let Some(accounts) = snapshot.accounts {
+                                let account_count = accounts.account_count();
+                                *ses_state.write() = accounts;
+                                tracing::info!(
+                                    accounts = account_count,
+                                    "loaded ses persistence snapshot (multi-account)",
+                                );
+                            } else if let Some(single_state) = snapshot.state {
+                                let identity_count = single_state.identities.len();
+                                let account_id = single_state.account_id.clone();
+                                let mut mas = ses_state.write();
+                                *mas.get_or_create(&account_id) = single_state;
+                                tracing::info!(
+                                    identities = identity_count,
+                                    "loaded ses persistence snapshot (migrated from v1)",
+                                );
+                            }
                         }
                         Err(err) => fatal_exit(format_args!(
                             "failed to parse ses persistence snapshot: {err}"
@@ -1371,23 +1388,31 @@ async fn main() {
                     ) {
                         Ok(snapshot) => {
                             if snapshot.schema_version
-                                != fakecloud_cognito::state::COGNITO_SNAPSHOT_SCHEMA_VERSION
+                                > fakecloud_cognito::state::COGNITO_SNAPSHOT_SCHEMA_VERSION
                             {
                                 fatal_exit(format_args!(
-                                    "cognito persistence schema mismatch: on-disk={}, expected={}",
+                                    "cognito persistence schema too new: on-disk={}, max supported={}",
                                     snapshot.schema_version,
                                     fakecloud_cognito::state::COGNITO_SNAPSHOT_SCHEMA_VERSION,
                                 ));
                             }
-                            let pool_count = snapshot.state.user_pools.len();
-                            let user_count: usize =
-                                snapshot.state.users.values().map(|u| u.len()).sum();
-                            *cognito_state.write() = snapshot.state;
-                            tracing::info!(
-                                user_pools = pool_count,
-                                users = user_count,
-                                "loaded cognito persistence snapshot",
-                            );
+                            if let Some(accounts) = snapshot.accounts {
+                                let account_count = accounts.account_count();
+                                *cognito_state.write() = accounts;
+                                tracing::info!(
+                                    accounts = account_count,
+                                    "loaded cognito persistence snapshot (multi-account)",
+                                );
+                            } else if let Some(single_state) = snapshot.state {
+                                let pool_count = single_state.user_pools.len();
+                                let account_id = single_state.account_id.clone();
+                                let mut mas = cognito_state.write();
+                                *mas.get_or_create(&account_id) = single_state;
+                                tracing::info!(
+                                    user_pools = pool_count,
+                                    "loaded cognito persistence snapshot (migrated from v1)",
+                                );
+                            }
                         }
                         Err(err) => fatal_exit(format_args!(
                             "failed to parse cognito persistence snapshot: {err}"
@@ -2006,7 +2031,8 @@ async fn main() {
             axum::routing::get({
                 let ss = ses_emails_state.clone();
                 move || async move {
-                    let state = ss.read();
+                    let mas = ss.read();
+                    let state = mas.default_ref();
                     let emails = state
                         .sent_emails
                         .iter()
@@ -2478,7 +2504,8 @@ async fn main() {
                 )>| {
                     let cs = cs.clone();
                     async move {
-                        let state = cs.read();
+                        let mas = cs.read();
+                        let state = mas.default_ref();
                         let user = state
                             .users
                             .get(&pool_id)
@@ -2502,7 +2529,8 @@ async fn main() {
                 move || {
                     let cs = cs.clone();
                     async move {
-                        let state = cs.read();
+                        let mas = cs.read();
+                        let state = mas.default_ref();
                         let mut codes = Vec::new();
                         for (pool_id, users) in &state.users {
                             for (username, user) in users {
@@ -2538,7 +2566,8 @@ async fn main() {
                 move |axum::Json(body): axum::Json<types::ConfirmUserRequest>| {
                     let cs = cs.clone();
                     async move {
-                        let mut state = cs.write();
+                        let mut mas = cs.write();
+                        let state = mas.default_mut();
                         let user = state
                             .users
                             .get_mut(&body.user_pool_id)
@@ -2575,7 +2604,8 @@ async fn main() {
                 move || {
                     let cs = cs.clone();
                     async move {
-                        let state = cs.read();
+                        let mas = cs.read();
+                        let state = mas.default_ref();
                         let mut tokens = Vec::new();
                         for data in state.access_tokens.values() {
                             tokens.push(types::TokenInfo {
@@ -2607,7 +2637,8 @@ async fn main() {
                 move |axum::Json(body): axum::Json<types::ExpireTokensRequest>| {
                     let cs = cs.clone();
                     async move {
-                        let mut state = cs.write();
+                        let mut mas = cs.write();
+                        let state = mas.default_mut();
                         let mut expired = 0usize;
 
                         let matches = |p: &str, u: &str| -> bool {
@@ -2647,7 +2678,8 @@ async fn main() {
                 move || {
                     let cs = cs.clone();
                     async move {
-                        let state = cs.read();
+                        let mas = cs.read();
+                        let state = mas.default_ref();
                         let events = state
                             .auth_events
                             .iter()

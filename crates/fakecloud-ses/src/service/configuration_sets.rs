@@ -4,6 +4,7 @@ use serde_json::{json, Value};
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 
 use crate::state::ConfigurationSet;
+use crate::state::SesState;
 
 use super::{
     event_destination_to_json, extract_string_array, parse_event_destination_definition,
@@ -27,7 +28,8 @@ impl SesV2Service {
             }
         };
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if state.configuration_sets.contains_key(&name) {
             return Ok(Self::json_error(
@@ -56,8 +58,13 @@ impl SesV2Service {
         Ok(AwsResponse::json(StatusCode::OK, "{}"))
     }
 
-    pub(super) fn list_configuration_sets(&self) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+    pub(super) fn list_configuration_sets(
+        &self,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let accounts = self.state.read();
+        let empty = SesState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let sets: Vec<Value> = state
             .configuration_sets
             .keys()
@@ -71,8 +78,14 @@ impl SesV2Service {
         Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
     }
 
-    pub(super) fn get_configuration_set(&self, name: &str) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+    pub(super) fn get_configuration_set(
+        &self,
+        name: &str,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let accounts = self.state.read();
+        let empty = SesState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let cs = match state.configuration_sets.get(name) {
             Some(cs) => cs,
@@ -137,7 +150,8 @@ impl SesV2Service {
         name: &str,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if state.configuration_sets.remove(name).is_none() {
             return Ok(Self::json_error(
@@ -168,7 +182,8 @@ impl SesV2Service {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let body: Value = Self::parse_body(req)?;
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let cs = match state.configuration_sets.get_mut(name) {
             Some(cs) => cs,
@@ -194,7 +209,8 @@ impl SesV2Service {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let body: Value = Self::parse_body(req)?;
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let cs = match state.configuration_sets.get_mut(name) {
             Some(cs) => cs,
@@ -223,7 +239,8 @@ impl SesV2Service {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let body: Value = Self::parse_body(req)?;
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let cs = match state.configuration_sets.get_mut(name) {
             Some(cs) => cs,
@@ -252,7 +269,8 @@ impl SesV2Service {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let body: Value = Self::parse_body(req)?;
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let cs = match state.configuration_sets.get_mut(name) {
             Some(cs) => cs,
@@ -276,7 +294,8 @@ impl SesV2Service {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let body: Value = Self::parse_body(req)?;
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let cs = match state.configuration_sets.get_mut(name) {
             Some(cs) => cs,
@@ -302,7 +321,8 @@ impl SesV2Service {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let body: Value = Self::parse_body(req)?;
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let cs = match state.configuration_sets.get_mut(name) {
             Some(cs) => cs,
@@ -326,7 +346,8 @@ impl SesV2Service {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let body: Value = Self::parse_body(req)?;
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let cs = match state.configuration_sets.get_mut(name) {
             Some(cs) => cs,
@@ -353,7 +374,9 @@ impl SesV2Service {
     ) -> Result<AwsResponse, AwsServiceError> {
         let body: Value = Self::parse_body(req)?;
 
-        let state_read = self.state.read();
+        let accounts_read = self.state.read();
+        let empty = SesState::new(&req.account_id, &req.region);
+        let state_read = accounts_read.get(&req.account_id).unwrap_or(&empty);
         if !state_read.configuration_sets.contains_key(config_set_name) {
             return Ok(Self::json_error(
                 StatusCode::NOT_FOUND,
@@ -361,7 +384,7 @@ impl SesV2Service {
                 &format!("Configuration set {} does not exist", config_set_name),
             ));
         }
-        drop(state_read);
+        drop(accounts_read);
 
         let dest_name = match body["EventDestinationName"].as_str() {
             Some(n) => n.to_string(),
@@ -376,7 +399,8 @@ impl SesV2Service {
 
         let event_dest = parse_event_destination_definition(&dest_name, &body["EventDestination"]);
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let dests = state
             .event_destinations
             .entry(config_set_name.to_string())
@@ -398,8 +422,11 @@ impl SesV2Service {
     pub(super) fn get_configuration_set_event_destinations(
         &self,
         config_set_name: &str,
+        req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SesState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         if !state.configuration_sets.contains_key(config_set_name) {
             return Ok(Self::json_error(
@@ -432,7 +459,8 @@ impl SesV2Service {
     ) -> Result<AwsResponse, AwsServiceError> {
         let body: Value = Self::parse_body(req)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if !state.configuration_sets.contains_key(config_set_name) {
             return Ok(Self::json_error(
@@ -468,8 +496,10 @@ impl SesV2Service {
         &self,
         config_set_name: &str,
         dest_name: &str,
+        req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if !state.configuration_sets.contains_key(config_set_name) {
             return Ok(Self::json_error(

@@ -149,7 +149,8 @@ pub fn classify_recipients(recipients: &[String]) -> (Vec<SesEventType>, bool) {
 /// Check if any recipient is on the suppression list.
 /// Returns the suppressed address if found.
 pub fn check_suppression_list(ses_state: &SharedSesState, recipients: &[String]) -> Option<String> {
-    let state = ses_state.read();
+    let mas = ses_state.read();
+    let state = mas.default_ref();
     for addr in recipients {
         if state.suppressed_destinations.contains_key(addr) {
             return Some(addr.clone());
@@ -170,7 +171,8 @@ pub fn resolve_config_set(
     }
 
     // Check identity's default configuration set
-    let state = ses_state.read();
+    let mas = ses_state.read();
+    let state = mas.default_ref();
     if let Some(identity) = state.identities.get(from_address) {
         return identity.configuration_set_name.clone();
     }
@@ -190,7 +192,8 @@ fn get_matching_destinations(
     config_set_name: &str,
     event_type: SesEventType,
 ) -> Vec<EventDestination> {
-    let state = ses_state.read();
+    let mas = ses_state.read();
+    let state = mas.default_ref();
     let event_type_str = event_type.as_str();
 
     state
@@ -286,7 +289,8 @@ pub fn process_send_events(
 
     // Handle suppression list addition
     if add_to_suppression {
-        let mut state = ctx.ses_state.write();
+        let mut mas = ctx.ses_state.write();
+        let state = mas.default_mut();
         for addr in &email.to {
             if addr == SUPPRESSION_ADDR {
                 state.suppressed_destinations.insert(
@@ -469,17 +473,18 @@ mod tests {
     }
 
     fn shared_state() -> SharedSesState {
-        use crate::state::SesState;
-        Arc::new(parking_lot::RwLock::new(SesState::new(
+        use fakecloud_core::multi_account::MultiAccountState;
+        Arc::new(parking_lot::RwLock::new(MultiAccountState::new(
             "123456789012",
             "us-east-1",
+            "http://localhost:4566",
         )))
     }
 
     #[test]
     fn check_suppression_list_finds_suppressed() {
         let state = shared_state();
-        state.write().suppressed_destinations.insert(
+        state.write().default_mut().suppressed_destinations.insert(
             "blocked@example.com".to_string(),
             SuppressedDestination {
                 email_address: "blocked@example.com".to_string(),
@@ -532,7 +537,7 @@ mod tests {
     #[test]
     fn resolve_config_set_uses_identity_default_when_no_explicit() {
         let state = shared_state();
-        state.write().identities.insert(
+        state.write().default_mut().identities.insert(
             "sender@example.com".to_string(),
             make_identity("sender@example.com", Some("identity-cs")),
         );
@@ -543,7 +548,7 @@ mod tests {
     #[test]
     fn resolve_config_set_falls_back_to_domain_identity() {
         let state = shared_state();
-        state.write().identities.insert(
+        state.write().default_mut().identities.insert(
             "example.com".to_string(),
             make_identity("example.com", Some("domain-cs")),
         );
@@ -560,7 +565,7 @@ mod tests {
     #[test]
     fn get_matching_destinations_filters_by_enabled_and_event_type() {
         let state = shared_state();
-        state.write().event_destinations.insert(
+        state.write().default_mut().event_destinations.insert(
             "cs".to_string(),
             vec![
                 EventDestination {

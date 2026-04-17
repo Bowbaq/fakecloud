@@ -394,10 +394,18 @@ mod tests {
                 ),
             )),
             ses: Arc::new(parking_lot::RwLock::new(
-                fakecloud_ses::state::SesState::new("123456789012", "us-east-1"),
+                fakecloud_core::multi_account::MultiAccountState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "http://localhost:4566",
+                ),
             )),
             cognito: Arc::new(parking_lot::RwLock::new(
-                fakecloud_cognito::state::CognitoState::new("123456789012", "us-east-1"),
+                fakecloud_core::multi_account::MultiAccountState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "http://localhost:4566",
+                ),
             )),
             kinesis: Arc::new(parking_lot::RwLock::new(
                 fakecloud_core::multi_account::MultiAccountState::new(

@@ -5,6 +5,8 @@ use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 
 use crate::state::LinkedProvider;
 
+use crate::state::CognitoState;
+
 use super::{require_str, CognitoService};
 
 impl CognitoService {
@@ -20,7 +22,9 @@ impl CognitoService {
         let username = require_str(&body, "Username")?;
         let _mfa_options = body["MFAOptions"].as_array();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = CognitoState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         // Validate pool and user exist
         let users = state.users.get(pool_id).ok_or_else(|| {
@@ -52,7 +56,9 @@ impl CognitoService {
         let access_token = require_str(&body, "AccessToken")?;
         let _mfa_options = body["MFAOptions"].as_array();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = CognitoState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let token_data = state.access_tokens.get(access_token).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -92,7 +98,8 @@ impl CognitoService {
             .as_str()
             .unwrap_or_default();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let users = state.users.get_mut(pool_id).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -151,7 +158,8 @@ impl CognitoService {
             .as_str()
             .map(|s| s.to_string());
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let users = state.users.get_mut(pool_id).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -202,7 +210,9 @@ impl CognitoService {
         let max_results = body["MaxResults"].as_i64().unwrap_or(10).clamp(1, 60) as usize;
         let next_token = body["NextToken"].as_str();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = CognitoState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         // Validate pool and user
         let users = state.users.get(pool_id).ok_or_else(|| {
@@ -274,7 +284,8 @@ impl CognitoService {
         let event_id = require_str(&body, "EventId")?;
         let feedback_value = require_str(&body, "FeedbackValue")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Validate pool and user
         if !state
@@ -317,7 +328,8 @@ impl CognitoService {
         let _feedback_token = require_str(&body, "FeedbackToken")?;
         let feedback_value = require_str(&body, "FeedbackValue")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Validate pool and user
         if !state

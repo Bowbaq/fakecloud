@@ -7,7 +7,9 @@ use uuid::Uuid;
 
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 
-use crate::state::{AccessTokenData, CustomDomainConfig, Device, UserImportJob, UserPoolDomain};
+use crate::state::{
+    AccessTokenData, CognitoState, CustomDomainConfig, Device, UserImportJob, UserPoolDomain,
+};
 
 use super::{
     device_to_json, domain_description_to_json, ensure_user_pool_exists, import_job_to_json,
@@ -31,9 +33,10 @@ impl CognitoService {
                     certificate_arn: arn.to_string(),
                 });
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         if state.domains.contains_key(domain) {
             return Err(AwsServiceError::aws_error(
@@ -65,7 +68,9 @@ impl CognitoService {
         let domain = require_str(&body, "Domain")?;
         validate_string_length(domain, "domain", 1, 63)?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = CognitoState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         // AWS returns empty DomainDescription if not found (no error)
         let description = match state.domains.get(domain) {
@@ -94,7 +99,8 @@ impl CognitoService {
                     certificate_arn: arn.to_string(),
                 });
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let d = state.domains.get_mut(domain).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -126,7 +132,8 @@ impl CognitoService {
         let pool_id = require_str(&body, "UserPoolId")?;
         let domain = require_str(&body, "Domain")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         match state.domains.get(domain) {
             Some(d) if d.user_pool_id == pool_id => {
@@ -155,7 +162,9 @@ impl CognitoService {
         let username = require_str(&body, "Username")?;
         let device_key = require_str(&body, "DeviceKey")?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = CognitoState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let users = state.users.get(pool_id).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -196,7 +205,9 @@ impl CognitoService {
         let limit = body["Limit"].as_i64().unwrap_or(10).clamp(1, 60) as usize;
         let pagination_token = body["PaginationToken"].as_str();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = CognitoState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let users = state.users.get(pool_id).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -247,7 +258,8 @@ impl CognitoService {
         let username = require_str(&body, "Username")?;
         let device_key = require_str(&body, "DeviceKey")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let users = state.users.get_mut(pool_id).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -288,7 +300,8 @@ impl CognitoService {
             .as_str()
             .map(|s| s.to_string());
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let users = state.users.get_mut(pool_id).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -326,7 +339,8 @@ impl CognitoService {
         let device_key = require_str(&body, "DeviceKey")?;
         let device_name = body["DeviceName"].as_str();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let token_data = state.access_tokens.get(access_token).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -380,7 +394,8 @@ impl CognitoService {
         let access_token = body["AccessToken"].as_str();
         let device_key = require_str(&body, "DeviceKey")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let (pool_id, username) = if let Some(token) = access_token {
             let td = state.access_tokens.get(token).ok_or_else(|| {
@@ -427,7 +442,9 @@ impl CognitoService {
         let access_token = body["AccessToken"].as_str();
         let device_key = require_str(&body, "DeviceKey")?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = CognitoState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let (pool_id, username) = if let Some(token) = access_token {
             let td = state.access_tokens.get(token).ok_or_else(|| {
@@ -477,7 +494,9 @@ impl CognitoService {
         let limit = body["Limit"].as_i64().unwrap_or(10).clamp(1, 60) as usize;
         let pagination_token = body["PaginationToken"].as_str();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = CognitoState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let token_data = state.access_tokens.get(access_token).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -536,7 +555,8 @@ impl CognitoService {
             .as_str()
             .map(|s| s.to_string());
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let token_data = state.access_tokens.get(access_token).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -583,7 +603,8 @@ impl CognitoService {
         // ClientSecret is optional
         let _client_secret = body["ClientSecret"].as_str();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Validate client exists
         if !state.user_pool_clients.contains_key(client_id) {
@@ -611,7 +632,8 @@ impl CognitoService {
         let _client_secret = body["ClientSecret"].as_str();
         let _device_key = body["DeviceKey"].as_str();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Validate client exists
         if !state.user_pool_clients.contains_key(client_id) {
@@ -698,7 +720,8 @@ impl CognitoService {
             })
             .unwrap_or_default();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Validate that the ARN matches a known user pool
         let pool_exists = state.user_pools.values().any(|p| p.arn == resource_arn);
@@ -731,7 +754,8 @@ impl CognitoService {
             })
             .unwrap_or_default();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let pool_exists = state.user_pools.values().any(|p| p.arn == resource_arn);
         if !pool_exists {
@@ -758,7 +782,9 @@ impl CognitoService {
         let body = req.json_body();
         let resource_arn = require_str(&body, "ResourceArn")?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = CognitoState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let pool_exists = state.user_pools.values().any(|p| p.arn == resource_arn);
         if !pool_exists {
@@ -780,7 +806,9 @@ impl CognitoService {
         let body = req.json_body();
         let pool_id = require_str(&body, "UserPoolId")?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = CognitoState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let pool = state.user_pools.get(pool_id).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -811,9 +839,10 @@ impl CognitoService {
         let job_name = require_str(&body, "JobName")?;
         let cw_role_arn = require_str(&body, "CloudWatchLogsRoleArn")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         let job_id = format!("import-{}", Uuid::new_v4());
         let now = Utc::now();
@@ -853,7 +882,9 @@ impl CognitoService {
         let pool_id = require_str(&body, "UserPoolId")?;
         let job_id = require_str(&body, "JobId")?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = CognitoState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let job = state
             .import_jobs
@@ -881,9 +912,11 @@ impl CognitoService {
         let max_results = body["MaxResults"].as_i64().unwrap_or(10).clamp(1, 60) as usize;
         let pagination_token = body["PaginationToken"].as_str();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = CognitoState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         let mut jobs: Vec<&UserImportJob> = state
             .import_jobs
@@ -921,7 +954,8 @@ impl CognitoService {
         let pool_id = require_str(&body, "UserPoolId")?;
         let job_id = require_str(&body, "JobId")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let job = state
             .import_jobs
@@ -963,7 +997,8 @@ impl CognitoService {
         let pool_id = require_str(&body, "UserPoolId")?;
         let job_id = require_str(&body, "JobId")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let job = state
             .import_jobs
