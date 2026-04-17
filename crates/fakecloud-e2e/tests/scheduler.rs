@@ -1,14 +1,65 @@
 //! End-to-end tests for EventBridge Scheduler (`scheduler.amazonaws.com`).
-//!
-//! Batch 1: CRUD round-trips against the AWS SDK. Firing / DLQ /
-//! self-delete tests land in Batch 2.
 
 mod helpers;
 
+use std::time::Duration;
+
 use aws_sdk_scheduler::types::{
-    ActionAfterCompletion, FlexibleTimeWindow, FlexibleTimeWindowMode, ScheduleState, Target,
+    ActionAfterCompletion, DeadLetterConfig, FlexibleTimeWindow, FlexibleTimeWindowMode,
+    ScheduleState, Target,
 };
+use aws_sdk_sqs::types::QueueAttributeName;
 use fakecloud_testkit::TestServer;
+
+async fn wait_for_message(
+    sqs: &aws_sdk_sqs::Client,
+    queue_url: &str,
+    timeout: Duration,
+) -> Option<aws_sdk_sqs::types::Message> {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        let resp = sqs
+            .receive_message()
+            .queue_url(queue_url)
+            .wait_time_seconds(1)
+            .max_number_of_messages(1)
+            .message_attribute_names("All")
+            .send()
+            .await
+            .unwrap();
+        if let Some(msgs) = resp.messages {
+            if let Some(m) = msgs.into_iter().next() {
+                return Some(m);
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    None
+}
+
+async fn queue_url(sqs: &aws_sdk_sqs::Client, name: &str) -> String {
+    sqs.create_queue()
+        .queue_name(name)
+        .send()
+        .await
+        .unwrap()
+        .queue_url
+        .unwrap()
+}
+
+async fn queue_arn(sqs: &aws_sdk_sqs::Client, url: &str) -> String {
+    sqs.get_queue_attributes()
+        .queue_url(url)
+        .attribute_names(QueueAttributeName::QueueArn)
+        .send()
+        .await
+        .unwrap()
+        .attributes
+        .unwrap()
+        .get(&QueueAttributeName::QueueArn)
+        .unwrap()
+        .clone()
+}
 
 fn sqs_target() -> Target {
     Target::builder()
@@ -215,4 +266,124 @@ async fn scheduler_group_lifecycle() {
         .await
         .expect_err("group should be gone");
     assert!(format!("{err:?}").contains("ResourceNotFound"));
+}
+
+// ---------------------------------------------------------------------------
+// Firing semantics (Batch 2)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn scheduler_rate_expression_delivers_input_to_sqs() {
+    let server = TestServer::start().await;
+    let sched = server.scheduler_client().await;
+    let sqs = server.sqs_client().await;
+
+    let q_url = queue_url(&sqs, "fire-dest").await;
+    let q_arn = queue_arn(&sqs, &q_url).await;
+
+    let target = Target::builder()
+        .arn(q_arn.clone())
+        .role_arn("arn:aws:iam::000000000000:role/scheduler")
+        .input("{\"msg\":\"hello\"}")
+        .build()
+        .unwrap();
+
+    sched
+        .create_schedule()
+        .name("fire-rate")
+        .schedule_expression("rate(1 minute)")
+        .flexible_time_window(off_window())
+        .target(target)
+        .send()
+        .await
+        .expect("create_schedule");
+
+    let msg = wait_for_message(&sqs, &q_url, Duration::from_secs(10))
+        .await
+        .expect("scheduler should deliver within 10s");
+    assert_eq!(msg.body.unwrap(), "{\"msg\":\"hello\"}");
+}
+
+#[tokio::test]
+async fn scheduler_at_one_shot_delete_removes_schedule_after_fire() {
+    let server = TestServer::start().await;
+    let sched = server.scheduler_client().await;
+    let sqs = server.sqs_client().await;
+
+    let q_url = queue_url(&sqs, "once-dest").await;
+    let q_arn = queue_arn(&sqs, &q_url).await;
+
+    let target = Target::builder()
+        .arn(q_arn)
+        .role_arn("arn:aws:iam::000000000000:role/scheduler")
+        .input("{\"one\":\"shot\"}")
+        .build()
+        .unwrap();
+
+    // Past-dated so it fires on the next tick.
+    sched
+        .create_schedule()
+        .name("once-delete")
+        .schedule_expression("at(2020-01-01T00:00:00)")
+        .flexible_time_window(off_window())
+        .target(target)
+        .action_after_completion(ActionAfterCompletion::Delete)
+        .send()
+        .await
+        .unwrap();
+
+    let msg = wait_for_message(&sqs, &q_url, Duration::from_secs(10))
+        .await
+        .expect("one-shot should fire within 10s");
+    assert_eq!(msg.body.unwrap(), "{\"one\":\"shot\"}");
+
+    // Give the ticker a beat to apply the DELETE post-fire action.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let err = sched
+        .get_schedule()
+        .name("once-delete")
+        .send()
+        .await
+        .expect_err("schedule should be deleted after firing");
+    assert!(format!("{err:?}").contains("ResourceNotFound"));
+}
+
+#[tokio::test]
+async fn scheduler_dlq_routing_on_missing_target_queue() {
+    let server = TestServer::start().await;
+    let sched = server.scheduler_client().await;
+    let sqs = server.sqs_client().await;
+
+    // Create ONLY the DLQ — the target queue ARN is bogus on purpose.
+    let dlq_url = queue_url(&sqs, "dlq-dest").await;
+    let dlq_arn = queue_arn(&sqs, &dlq_url).await;
+
+    let target = Target::builder()
+        .arn("arn:aws:sqs:us-east-1:000000000000:no-such-queue")
+        .role_arn("arn:aws:iam::000000000000:role/scheduler")
+        .input("{\"original\":true}")
+        .dead_letter_config(DeadLetterConfig::builder().arn(dlq_arn.clone()).build())
+        .build()
+        .unwrap();
+
+    sched
+        .create_schedule()
+        .name("dlq-test")
+        .schedule_expression("rate(1 minute)")
+        .flexible_time_window(off_window())
+        .target(target)
+        .send()
+        .await
+        .unwrap();
+
+    let msg = wait_for_message(&sqs, &dlq_url, Duration::from_secs(10))
+        .await
+        .expect("DLQ should receive failed delivery");
+    assert_eq!(msg.body.unwrap(), "{\"original\":true}");
+    let attrs = msg
+        .message_attributes
+        .expect("DLQ message should have attrs");
+    assert!(attrs.contains_key("X-Amz-Scheduler-Attempt"));
+    assert!(attrs.contains_key("X-Amz-Scheduler-Schedule-Arn"));
+    assert!(attrs.contains_key("X-Amz-Scheduler-Error-Code"));
 }

@@ -29,6 +29,29 @@ pub struct SqsMessageAttribute {
     pub binary_value: Option<String>,
 }
 
+/// Error returned by fallible SQS delivery. Used by Scheduler's DLQ
+/// routing, which must distinguish "target queue missing" from
+/// "delivered successfully" to decide whether to send to the
+/// `DeadLetterConfig.Arn`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SqsDeliveryError {
+    /// The target queue ARN did not resolve to any existing queue.
+    QueueNotFound(String),
+    /// The ARN could not be parsed into a valid SQS queue identifier.
+    InvalidArn(String),
+}
+
+impl std::fmt::Display for SqsDeliveryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::QueueNotFound(arn) => write!(f, "queue not found: {arn}"),
+            Self::InvalidArn(arn) => write!(f, "invalid queue ARN: {arn}"),
+        }
+    }
+}
+
+impl std::error::Error for SqsDeliveryError {}
+
 /// Trait for delivering messages to SQS queues.
 pub trait SqsDelivery: Send + Sync {
     fn deliver_to_queue(
@@ -50,6 +73,29 @@ pub trait SqsDelivery: Send + Sync {
         // Default implementation: fall back to simple delivery
         let _ = (message_attributes, message_group_id, message_dedup_id);
         self.deliver_to_queue(queue_arn, message_body, &HashMap::new());
+    }
+
+    /// Fallible variant used by Scheduler's DLQ routing. Default
+    /// implementation assumes the queue exists (preserving the
+    /// fire-and-forget semantics of `deliver_to_queue`); the real SQS
+    /// impl overrides this to actually look up the queue and report
+    /// `QueueNotFound` so the caller can route to a DLQ.
+    fn try_deliver_to_queue_with_attrs(
+        &self,
+        queue_arn: &str,
+        message_body: &str,
+        message_attributes: &HashMap<String, SqsMessageAttribute>,
+        message_group_id: Option<&str>,
+        message_dedup_id: Option<&str>,
+    ) -> Result<(), SqsDeliveryError> {
+        self.deliver_to_queue_with_attrs(
+            queue_arn,
+            message_body,
+            message_attributes,
+            message_group_id,
+            message_dedup_id,
+        );
+        Ok(())
     }
 }
 
@@ -161,6 +207,30 @@ impl DeliveryBus {
                 message_group_id,
                 message_dedup_id,
             );
+        }
+    }
+
+    /// Fallible SQS send — returns `Err` when the target queue does not
+    /// exist, so callers (Scheduler) can route to a DLQ. Returns
+    /// `Err(QueueNotFound)` when no SQS sender is wired up at all,
+    /// matching the "target unreachable" semantics Scheduler relies on.
+    pub fn try_send_to_sqs_with_attrs(
+        &self,
+        queue_arn: &str,
+        message_body: &str,
+        message_attributes: &HashMap<String, SqsMessageAttribute>,
+        message_group_id: Option<&str>,
+        message_dedup_id: Option<&str>,
+    ) -> Result<(), SqsDeliveryError> {
+        match self.sqs_sender {
+            Some(ref sender) => sender.try_deliver_to_queue_with_attrs(
+                queue_arn,
+                message_body,
+                message_attributes,
+                message_group_id,
+                message_dedup_id,
+            ),
+            None => Err(SqsDeliveryError::QueueNotFound(queue_arn.to_string())),
         }
     }
 
