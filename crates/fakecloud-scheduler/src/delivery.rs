@@ -147,14 +147,15 @@ pub fn route_to_dlq(
 
 /// Build a dedup ID for FIFO queues. Returns `Some(...)` only when
 /// the target queue name ends in `.fifo`; standard queues ignore
-/// dedup IDs so we skip the allocation. The ID combines the schedule
-/// ARN with a unique per-fire UUID so repeated fires of the same
-/// schedule aren't deduplicated.
-fn fifo_dedup_id(queue_arn: &str, schedule_arn: &str) -> Option<String> {
+/// dedup IDs so we skip the allocation. SQS caps MessageDeduplicationId
+/// at 128 chars, so we use a bare UUID (36 chars) rather than
+/// concatenating the schedule ARN — schedule ARNs can themselves reach
+/// ~150 chars and would push combined IDs over the limit.
+fn fifo_dedup_id(queue_arn: &str, _schedule_arn: &str) -> Option<String> {
     if !queue_arn.ends_with(".fifo") {
         return None;
     }
-    Some(format!("{}-{}", schedule_arn, uuid::Uuid::new_v4()))
+    Some(uuid::Uuid::new_v4().to_string())
 }
 
 /// Extract the EventBridge bus name from a `:events:` target ARN.
@@ -343,7 +344,22 @@ mod tests {
         let id = fifo_dedup_id("arn:aws:sqs:us-east-1:1:q.fifo", "arn:sched/a");
         assert!(id.is_some());
         let s = id.unwrap();
-        assert!(s.starts_with("arn:sched/a-"));
+        // SQS caps MessageDeduplicationId at 128 chars.
+        assert!(s.len() <= 128);
+        // Two fires must not collide.
+        let id2 = fifo_dedup_id("arn:aws:sqs:us-east-1:1:q.fifo", "arn:sched/a").unwrap();
+        assert_ne!(s, id2);
+    }
+
+    #[test]
+    fn fifo_dedup_id_stays_under_128_char_limit_for_long_arns() {
+        let long_arn = format!(
+            "arn:aws:scheduler:us-east-1:123456789012:schedule/{}/{}",
+            "g".repeat(64),
+            "s".repeat(64)
+        );
+        let id = fifo_dedup_id("arn:aws:sqs:us-east-1:1:q.fifo", &long_arn).unwrap();
+        assert!(id.len() <= 128, "got {} chars", id.len());
     }
 
     #[test]

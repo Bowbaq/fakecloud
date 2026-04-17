@@ -332,6 +332,8 @@ async fn main() {
     let sns_delivery_for_ses = sns_delivery.clone();
     let sns_delivery_for_cf = sns_delivery.clone();
     let sns_delivery_for_scheduler = sns_delivery.clone();
+    let sns_delivery_for_scheduler_eb = sns_delivery.clone();
+    let sns_delivery_for_scheduler_sfn_eb = sns_delivery.clone();
     let eb_delivery_for_s3 = Arc::new(
         fakecloud_eventbridge::delivery::EventBridgeDeliveryImpl::new(
             eb_state.clone(),
@@ -1780,10 +1782,20 @@ async fn main() {
             sns_state.clone(),
             Arc::new(sns_fanout_for_sfn),
         ));
+        // Inner bus for EB rule delivery: matches other call-sites'
+        // surface (SQS + SNS + Lambda) so Scheduler-triggered SFN
+        // executions that hit EB rules fanning to SNS don't get
+        // silently dropped.
+        let mut inner_eb_bus = DeliveryBus::new()
+            .with_sqs(sqs_delivery.clone())
+            .with_sns(sns_delivery_for_scheduler_sfn_eb);
+        if let Some(ref ld) = lambda_delivery {
+            inner_eb_bus = inner_eb_bus.with_lambda(ld.clone());
+        }
         let eb_for_sfn = Arc::new(
             fakecloud_eventbridge::delivery::EventBridgeDeliveryImpl::new(
                 eb_state_for_scheduler.clone(),
-                Arc::new(DeliveryBus::new().with_sqs(sqs_delivery.clone())),
+                Arc::new(inner_eb_bus),
             ),
         );
         let mut sfn_interpreter_bus = DeliveryBus::new()
@@ -1799,12 +1811,20 @@ async fn main() {
             Some(dynamodb_state.clone()),
         ))
     };
-    let eb_delivery_for_scheduler = Arc::new(
-        fakecloud_eventbridge::delivery::EventBridgeDeliveryImpl::new(
-            eb_state_for_scheduler,
-            Arc::new(DeliveryBus::new().with_sqs(sqs_delivery.clone())),
-        ),
-    );
+    let eb_delivery_for_scheduler = {
+        let mut inner = DeliveryBus::new()
+            .with_sqs(sqs_delivery.clone())
+            .with_sns(sns_delivery_for_scheduler_eb);
+        if let Some(ref ld) = lambda_delivery {
+            inner = inner.with_lambda(ld.clone());
+        }
+        Arc::new(
+            fakecloud_eventbridge::delivery::EventBridgeDeliveryImpl::new(
+                eb_state_for_scheduler,
+                Arc::new(inner),
+            ),
+        )
+    };
     let delivery_for_scheduler = {
         let mut bus = DeliveryBus::new()
             .with_sqs(sqs_delivery.clone())
