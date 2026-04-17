@@ -476,7 +476,10 @@ pub struct RdsSnapshot {
 mod tests {
     use chrono::Utc;
 
-    use super::{default_engine_versions, default_orderable_options, DbInstance, RdsState};
+    use super::{
+        default_engine_versions, default_orderable_options, default_parameter_groups, DbInstance,
+        RdsState,
+    };
 
     #[test]
     fn new_initializes_account_and_region() {
@@ -567,5 +570,40 @@ mod tests {
 
         state.cancel_instance_creation("db-1");
         assert!(state.begin_instance_creation("db-1"));
+    }
+
+    #[test]
+    fn arn_helpers_format_correctly() {
+        let state = RdsState::new("123456789012", "eu-west-1");
+        assert!(state.db_instance_arn("mydb").contains(":db:mydb"));
+        assert!(state.db_snapshot_arn("snap1").contains(":snapshot:snap1"));
+        assert!(state.db_subnet_group_arn("sng").contains("sng"));
+        assert!(state.db_parameter_group_arn("pg").contains("pg"));
+    }
+
+    #[test]
+    fn next_dbi_resource_id_format() {
+        let state = RdsState::new("123456789012", "us-east-1");
+        let id = state.next_dbi_resource_id();
+        assert!(id.starts_with("db-"));
+        assert!(id.len() > 3);
+    }
+
+    #[test]
+    fn default_engine_versions_list_not_empty() {
+        let versions = default_engine_versions();
+        assert!(!versions.is_empty());
+    }
+
+    #[test]
+    fn default_orderable_options_list_not_empty() {
+        let opts = default_orderable_options();
+        assert!(!opts.is_empty());
+    }
+
+    #[test]
+    fn default_parameter_groups_returned_per_family() {
+        let groups = default_parameter_groups("123456789012", "us-east-1");
+        assert!(!groups.is_empty());
     }
 }
