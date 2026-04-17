@@ -10,7 +10,7 @@ use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 
 use crate::state::{
     ConfigurationSet, EmailIdentity, EmailTemplate, EventDestination, IpFilter, ReceiptAction,
-    ReceiptFilter, ReceiptRule, ReceiptRuleSet, SentEmail, SharedSesState,
+    ReceiptFilter, ReceiptRule, ReceiptRuleSet, SentEmail, SesState, SharedSesState,
 };
 
 /// XML namespace for SES v1 responses.
@@ -470,7 +470,8 @@ fn verify_email_identity(
     req: &AwsRequest,
 ) -> Result<AwsResponse, AwsServiceError> {
     let email = required_param(&req.query_params, "EmailAddress")?;
-    let mut st = state.write();
+    let mut accounts = state.write();
+    let st = accounts.get_or_create(&req.account_id);
     st.identities
         .entry(email.to_string())
         .or_insert_with(|| EmailIdentity {
@@ -496,7 +497,8 @@ fn verify_domain_identity(
     req: &AwsRequest,
 ) -> Result<AwsResponse, AwsServiceError> {
     let domain = required_param(&req.query_params, "Domain")?;
-    let mut st = state.write();
+    let mut accounts = state.write();
+    let st = accounts.get_or_create(&req.account_id);
     st.identities
         .entry(domain.to_string())
         .or_insert_with(|| EmailIdentity {
@@ -529,7 +531,8 @@ fn verify_domain_dkim(
 ) -> Result<AwsResponse, AwsServiceError> {
     let domain = required_param(&req.query_params, "Domain")?;
     // Ensure identity exists
-    let mut st = state.write();
+    let mut accounts = state.write();
+    let st = accounts.get_or_create(&req.account_id);
     st.identities
         .entry(domain.to_string())
         .or_insert_with(|| EmailIdentity {
@@ -565,7 +568,9 @@ fn list_identities(
     req: &AwsRequest,
 ) -> Result<AwsResponse, AwsServiceError> {
     let identity_type = req.query_params.get("IdentityType");
-    let st = state.read();
+    let accounts = state.read();
+    let empty = SesState::new(&req.account_id, &req.region);
+    let st = accounts.get(&req.account_id).unwrap_or(&empty);
     let mut inner = String::from("<Identities>");
     let mut identities: Vec<&EmailIdentity> = st.identities.values().collect();
     identities.sort_by_key(|i| &i.identity_name);
@@ -593,7 +598,9 @@ fn get_identity_verification_attributes(
     state: &SharedSesState,
     req: &AwsRequest,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let st = state.read();
+    let accounts = state.read();
+    let empty = SesState::new(&req.account_id, &req.region);
+    let st = accounts.get(&req.account_id).unwrap_or(&empty);
     let mut inner = String::from("<VerificationAttributes>");
     for i in 1.. {
         let key = format!("Identities.member.{i}");
@@ -635,7 +642,9 @@ fn get_identity_dkim_attributes(
     state: &SharedSesState,
     req: &AwsRequest,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let st = state.read();
+    let accounts = state.read();
+    let empty = SesState::new(&req.account_id, &req.region);
+    let st = accounts.get(&req.account_id).unwrap_or(&empty);
     let mut inner = String::from("<DkimAttributes>");
     for i in 1.. {
         let key = format!("Identities.member.{i}");
@@ -688,7 +697,11 @@ fn delete_identity(
     req: &AwsRequest,
 ) -> Result<AwsResponse, AwsServiceError> {
     let identity = required_param(&req.query_params, "Identity")?;
-    state.write().identities.remove(identity);
+    state
+        .write()
+        .get_or_create(&req.account_id)
+        .identities
+        .remove(identity);
     Ok(xml_metadata_only("DeleteIdentity", &req.request_id))
 }
 
@@ -698,7 +711,8 @@ fn set_identity_dkim_enabled(
 ) -> Result<AwsResponse, AwsServiceError> {
     let identity = required_param(&req.query_params, "Identity")?;
     let enabled = required_param(&req.query_params, "DkimEnabled")? == "true";
-    let mut st = state.write();
+    let mut accounts = state.write();
+    let st = accounts.get_or_create(&req.account_id);
     if let Some(id) = st.identities.get_mut(identity) {
         id.dkim_signing_enabled = enabled;
     }
@@ -718,7 +732,9 @@ fn set_identity_notification_topic(
     // We store this on the identity but currently don't have notification topic fields.
     // For fakecloud, accepting the call is sufficient — notifications aren't sent.
     // Verify identity exists
-    let st = state.read();
+    let accounts = state.read();
+    let empty = SesState::new(&req.account_id, &req.region);
+    let st = accounts.get(&req.account_id).unwrap_or(&empty);
     if !st.identities.contains_key(_identity) {
         return Err(AwsServiceError::aws_error(
             StatusCode::BAD_REQUEST,
@@ -726,7 +742,6 @@ fn set_identity_notification_topic(
             format!("Identity '{_identity}' does not exist"),
         ));
     }
-    drop(st);
     Ok(xml_metadata_only(
         "SetIdentityNotificationTopic",
         &req.request_id,
@@ -739,7 +754,8 @@ fn set_identity_feedback_forwarding_enabled(
 ) -> Result<AwsResponse, AwsServiceError> {
     let identity = required_param(&req.query_params, "Identity")?;
     let enabled = required_param(&req.query_params, "ForwardingEnabled")? == "true";
-    let mut st = state.write();
+    let mut accounts = state.write();
+    let st = accounts.get_or_create(&req.account_id);
     if let Some(id) = st.identities.get_mut(identity) {
         id.email_forwarding_enabled = enabled;
     } else {
@@ -759,7 +775,9 @@ fn get_identity_notification_attributes(
     state: &SharedSesState,
     req: &AwsRequest,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let st = state.read();
+    let accounts = state.read();
+    let empty = SesState::new(&req.account_id, &req.region);
+    let st = accounts.get(&req.account_id).unwrap_or(&empty);
     let mut inner = String::from("<NotificationAttributes>");
     for i in 1.. {
         let key = format!("Identities.member.{i}");
@@ -801,7 +819,9 @@ fn get_identity_mail_from_domain_attributes(
     state: &SharedSesState,
     req: &AwsRequest,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let st = state.read();
+    let accounts = state.read();
+    let empty = SesState::new(&req.account_id, &req.region);
+    let st = accounts.get(&req.account_id).unwrap_or(&empty);
     let mut inner = String::from("<MailFromDomainAttributes>");
     for i in 1.. {
         let key = format!("Identities.member.{i}");
@@ -860,7 +880,8 @@ fn set_identity_mail_from_domain(
         .get("BehaviorOnMXFailure")
         .cloned()
         .unwrap_or_else(|| "UseDefaultValue".to_string());
-    let mut st = state.write();
+    let mut accounts = state.write();
+    let st = accounts.get_or_create(&req.account_id);
     if let Some(id) = st.identities.get_mut(identity) {
         id.mail_from_domain = mail_from_domain.filter(|s| !s.is_empty());
         id.mail_from_behavior_on_mx_failure = behavior;
@@ -925,7 +946,11 @@ fn send_email(state: &SharedSesState, req: &AwsRequest) -> Result<AwsResponse, A
         timestamp: Utc::now(),
     };
 
-    state.write().sent_emails.push(sent);
+    state
+        .write()
+        .get_or_create(&req.account_id)
+        .sent_emails
+        .push(sent);
 
     let inner = format!("<MessageId>{message_id}</MessageId>");
     Ok(AwsResponse::xml(
@@ -965,7 +990,11 @@ fn send_raw_email(
         timestamp: Utc::now(),
     };
 
-    state.write().sent_emails.push(sent);
+    state
+        .write()
+        .get_or_create(&req.account_id)
+        .sent_emails
+        .push(sent);
 
     let inner = format!("<MessageId>{message_id}</MessageId>");
     Ok(AwsResponse::xml(
@@ -986,15 +1015,18 @@ fn send_templated_email(
     let bcc = parse_member_list(&req.query_params, "Destination.BccAddresses");
 
     // Verify template exists
-    let st = state.read();
-    if !st.templates.contains_key(template_name) {
-        return Err(AwsServiceError::aws_error(
-            StatusCode::BAD_REQUEST,
-            "TemplateDoesNotExistException",
-            format!("Template '{template_name}' does not exist"),
-        ));
+    {
+        let accounts = state.read();
+        let empty = SesState::new(&req.account_id, &req.region);
+        let st = accounts.get(&req.account_id).unwrap_or(&empty);
+        if !st.templates.contains_key(template_name) {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "TemplateDoesNotExistException",
+                format!("Template '{template_name}' does not exist"),
+            ));
+        }
     }
-    drop(st);
 
     let message_id = format!(
         "{:016x}{:016x}-{:08x}-{:04x}",
@@ -1019,7 +1051,11 @@ fn send_templated_email(
         timestamp: Utc::now(),
     };
 
-    state.write().sent_emails.push(sent);
+    state
+        .write()
+        .get_or_create(&req.account_id)
+        .sent_emails
+        .push(sent);
 
     let inner = format!("<MessageId>{message_id}</MessageId>");
     Ok(AwsResponse::xml(
@@ -1040,12 +1076,17 @@ fn send_bulk_templated_email(
         .cloned()
         .unwrap_or_else(|| "{}".to_string());
 
-    if !state.read().templates.contains_key(template_name) {
-        return Err(AwsServiceError::aws_error(
-            StatusCode::BAD_REQUEST,
-            "TemplateDoesNotExistException",
-            format!("Template '{template_name}' does not exist"),
-        ));
+    {
+        let accounts_r = state.read();
+        let empty = SesState::new(&req.account_id, &req.region);
+        let st_r = accounts_r.get(&req.account_id).unwrap_or(&empty);
+        if !st_r.templates.contains_key(template_name) {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "TemplateDoesNotExistException",
+                format!("Template '{template_name}' does not exist"),
+            ));
+        }
     }
 
     let mut inner = String::from("<Status>");
@@ -1064,6 +1105,7 @@ fn send_bulk_templated_email(
             from,
             template_name,
             &default_template_data,
+            &req.account_id,
         );
         inner.push_str(&format!(
             "<member><Status>Success</Status><MessageId>{message_id}</MessageId></member>"
@@ -1085,6 +1127,7 @@ fn send_bulk_destination(
     from: &str,
     template_name: &str,
     default_template_data: &str,
+    account_id: &str,
 ) -> String {
     let to = parse_member_list(params, &format!("{dest_prefix}.Destination.ToAddresses"));
     let replacement_data = params
@@ -1115,7 +1158,11 @@ fn send_bulk_destination(
         timestamp: Utc::now(),
     };
 
-    state.write().sent_emails.push(sent);
+    state
+        .write()
+        .get_or_create(account_id)
+        .sent_emails
+        .push(sent);
     message_id
 }
 
@@ -1130,7 +1177,8 @@ fn create_template(
     let html = req.query_params.get("Template.HtmlPart").cloned();
     let text = req.query_params.get("Template.TextPart").cloned();
 
-    let mut st = state.write();
+    let mut accounts = state.write();
+    let st = accounts.get_or_create(&req.account_id);
     if st.templates.contains_key(name) {
         return Err(AwsServiceError::aws_error(
             StatusCode::BAD_REQUEST,
@@ -1153,7 +1201,9 @@ fn create_template(
 
 fn get_template(state: &SharedSesState, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
     let name = required_param(&req.query_params, "TemplateName")?;
-    let st = state.read();
+    let accounts = state.read();
+    let empty = SesState::new(&req.account_id, &req.region);
+    let st = accounts.get(&req.account_id).unwrap_or(&empty);
     let template = st.templates.get(name).ok_or_else(|| {
         AwsServiceError::aws_error(
             StatusCode::BAD_REQUEST,
@@ -1186,7 +1236,9 @@ fn list_templates(
     state: &SharedSesState,
     req: &AwsRequest,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let st = state.read();
+    let accounts = state.read();
+    let empty = SesState::new(&req.account_id, &req.region);
+    let st = accounts.get(&req.account_id).unwrap_or(&empty);
     let mut inner = String::from("<TemplatesMetadata>");
     let mut templates: Vec<&EmailTemplate> = st.templates.values().collect();
     templates.sort_by_key(|t| &t.template_name);
@@ -1209,7 +1261,11 @@ fn delete_template(
     req: &AwsRequest,
 ) -> Result<AwsResponse, AwsServiceError> {
     let name = required_param(&req.query_params, "TemplateName")?;
-    state.write().templates.remove(name);
+    state
+        .write()
+        .get_or_create(&req.account_id)
+        .templates
+        .remove(name);
     // AWS returns success even if template doesn't exist
     Ok(xml_metadata_only("DeleteTemplate", &req.request_id))
 }
@@ -1219,7 +1275,8 @@ fn update_template(
     req: &AwsRequest,
 ) -> Result<AwsResponse, AwsServiceError> {
     let name = required_param(&req.query_params, "Template.TemplateName")?;
-    let mut st = state.write();
+    let mut accounts = state.write();
+    let st = accounts.get_or_create(&req.account_id);
     let template = st.templates.get_mut(name).ok_or_else(|| {
         AwsServiceError::aws_error(
             StatusCode::BAD_REQUEST,
@@ -1246,7 +1303,8 @@ fn create_configuration_set(
     req: &AwsRequest,
 ) -> Result<AwsResponse, AwsServiceError> {
     let name = required_param(&req.query_params, "ConfigurationSet.Name")?;
-    let mut st = state.write();
+    let mut accounts = state.write();
+    let st = accounts.get_or_create(&req.account_id);
     if st.configuration_sets.contains_key(name) {
         return Err(AwsServiceError::aws_error(
             StatusCode::BAD_REQUEST,
@@ -1277,7 +1335,8 @@ fn delete_configuration_set(
     req: &AwsRequest,
 ) -> Result<AwsResponse, AwsServiceError> {
     let name = required_param(&req.query_params, "ConfigurationSetName")?;
-    let mut st = state.write();
+    let mut accounts = state.write();
+    let st = accounts.get_or_create(&req.account_id);
     if st.configuration_sets.remove(name).is_none() {
         return Err(AwsServiceError::aws_error(
             StatusCode::BAD_REQUEST,
@@ -1295,7 +1354,9 @@ fn describe_configuration_set(
     req: &AwsRequest,
 ) -> Result<AwsResponse, AwsServiceError> {
     let name = required_param(&req.query_params, "ConfigurationSetName")?;
-    let st = state.read();
+    let accounts = state.read();
+    let empty = SesState::new(&req.account_id, &req.region);
+    let st = accounts.get(&req.account_id).unwrap_or(&empty);
     let cs = st.configuration_sets.get(name).ok_or_else(|| {
         AwsServiceError::aws_error(
             StatusCode::BAD_REQUEST,
@@ -1334,7 +1395,9 @@ fn list_configuration_sets(
     state: &SharedSesState,
     req: &AwsRequest,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let st = state.read();
+    let accounts = state.read();
+    let empty = SesState::new(&req.account_id, &req.region);
+    let st = accounts.get(&req.account_id).unwrap_or(&empty);
     let mut inner = String::from("<ConfigurationSets>");
     let mut sets: Vec<&ConfigurationSet> = st.configuration_sets.values().collect();
     sets.sort_by_key(|cs| &cs.name);
@@ -1366,15 +1429,18 @@ fn create_configuration_set_event_destination(
         .unwrap_or(true);
     let event_types = parse_member_list(&req.query_params, "EventDestination.MatchingEventTypes");
 
-    let st = state.read();
-    if !st.configuration_sets.contains_key(config_set_name) {
-        return Err(AwsServiceError::aws_error(
-            StatusCode::BAD_REQUEST,
-            "ConfigurationSetDoesNotExistException",
-            format!("Configuration set '{config_set_name}' does not exist"),
-        ));
+    {
+        let accounts = state.read();
+        let empty = SesState::new(&req.account_id, &req.region);
+        let st = accounts.get(&req.account_id).unwrap_or(&empty);
+        if !st.configuration_sets.contains_key(config_set_name) {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "ConfigurationSetDoesNotExistException",
+                format!("Configuration set '{config_set_name}' does not exist"),
+            ));
+        }
     }
-    drop(st);
 
     let dest = EventDestination {
         name: dest_name.to_string(),
@@ -1390,7 +1456,8 @@ fn create_configuration_set_event_destination(
         pinpoint_destination: None,
     };
 
-    let mut st = state.write();
+    let mut accounts = state.write();
+    let st = accounts.get_or_create(&req.account_id);
     st.event_destinations
         .entry(config_set_name.to_string())
         .or_default()
@@ -1408,7 +1475,8 @@ fn update_configuration_set_event_destination(
     let config_set_name = required_param(&req.query_params, "ConfigurationSetName")?;
     let dest_name = required_param(&req.query_params, "EventDestination.Name")?;
 
-    let mut st = state.write();
+    let mut accounts = state.write();
+    let st = accounts.get_or_create(&req.account_id);
     let dests = st
         .event_destinations
         .get_mut(config_set_name)
@@ -1451,7 +1519,8 @@ fn delete_configuration_set_event_destination(
     let config_set_name = required_param(&req.query_params, "ConfigurationSetName")?;
     let dest_name = required_param(&req.query_params, "EventDestinationName")?;
 
-    let mut st = state.write();
+    let mut accounts = state.write();
+    let st = accounts.get_or_create(&req.account_id);
     let dests = st
         .event_destinations
         .get_mut(config_set_name)
@@ -1500,7 +1569,9 @@ fn get_send_statistics(
     state: &SharedSesState,
     req: &AwsRequest,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let st = state.read();
+    let accounts = state.read();
+    let empty = SesState::new(&req.account_id, &req.region);
+    let st = accounts.get(&req.account_id).unwrap_or(&empty);
     let count = st.sent_emails.len();
     let inner = format!(
         "<SendDataPoints>\
@@ -1524,7 +1595,9 @@ fn get_account_sending_enabled(
     state: &SharedSesState,
     req: &AwsRequest,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let st = state.read();
+    let accounts = state.read();
+    let empty = SesState::new(&req.account_id, &req.region);
+    let st = accounts.get(&req.account_id).unwrap_or(&empty);
     let enabled = st.account_settings.sending_enabled;
     let inner = format!("<Enabled>{enabled}</Enabled>");
     Ok(AwsResponse::xml(
@@ -1556,7 +1629,8 @@ fn create_receipt_rule_set(
     req: &AwsRequest,
 ) -> Result<AwsResponse, AwsServiceError> {
     let name = required_param(&req.query_params, "RuleSetName")?;
-    let mut st = state.write();
+    let mut accounts = state.write();
+    let st = accounts.get_or_create(&req.account_id);
     if st.receipt_rule_sets.contains_key(name) {
         return Err(AwsServiceError::aws_error(
             StatusCode::BAD_REQUEST,
@@ -1580,7 +1654,8 @@ fn delete_receipt_rule_set(
     req: &AwsRequest,
 ) -> Result<AwsResponse, AwsServiceError> {
     let name = required_param(&req.query_params, "RuleSetName")?;
-    let mut st = state.write();
+    let mut accounts = state.write();
+    let st = accounts.get_or_create(&req.account_id);
     if !st.receipt_rule_sets.contains_key(name) {
         return Err(AwsServiceError::aws_error(
             StatusCode::BAD_REQUEST,
@@ -1605,7 +1680,9 @@ fn describe_receipt_rule_set(
     req: &AwsRequest,
 ) -> Result<AwsResponse, AwsServiceError> {
     let name = required_param(&req.query_params, "RuleSetName")?;
-    let st = state.read();
+    let accounts = state.read();
+    let empty = SesState::new(&req.account_id, &req.region);
+    let st = accounts.get(&req.account_id).unwrap_or(&empty);
     let rule_set = st.receipt_rule_sets.get(name).ok_or_else(|| {
         AwsServiceError::aws_error(
             StatusCode::BAD_REQUEST,
@@ -1636,7 +1713,9 @@ fn list_receipt_rule_sets(
     state: &SharedSesState,
     req: &AwsRequest,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let st = state.read();
+    let accounts = state.read();
+    let empty = SesState::new(&req.account_id, &req.region);
+    let st = accounts.get(&req.account_id).unwrap_or(&empty);
     let mut inner = String::from("<RuleSets>");
     let mut sets: Vec<&ReceiptRuleSet> = st.receipt_rule_sets.values().collect();
     sets.sort_by_key(|s| &s.name);
@@ -1660,7 +1739,8 @@ fn clone_receipt_rule_set(
 ) -> Result<AwsResponse, AwsServiceError> {
     let new_name = required_param(&req.query_params, "RuleSetName")?;
     let source_name = required_param(&req.query_params, "OriginalRuleSetName")?;
-    let mut st = state.write();
+    let mut accounts = state.write();
+    let st = accounts.get_or_create(&req.account_id);
 
     if st.receipt_rule_sets.contains_key(new_name) {
         return Err(AwsServiceError::aws_error(
@@ -1689,7 +1769,8 @@ fn set_active_receipt_rule_set(
     state: &SharedSesState,
     req: &AwsRequest,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut st = state.write();
+    let mut accounts = state.write();
+    let st = accounts.get_or_create(&req.account_id);
     // If RuleSetName is empty or absent, deactivate.
     match req.query_params.get("RuleSetName") {
         Some(name) if !name.is_empty() => {
@@ -1717,7 +1798,8 @@ fn reorder_receipt_rule_set(
     req: &AwsRequest,
 ) -> Result<AwsResponse, AwsServiceError> {
     let rule_set_name = required_param(&req.query_params, "RuleSetName")?;
-    let mut st = state.write();
+    let mut accounts = state.write();
+    let st = accounts.get_or_create(&req.account_id);
     let rule_set = st.receipt_rule_sets.get_mut(rule_set_name).ok_or_else(|| {
         AwsServiceError::aws_error(
             StatusCode::BAD_REQUEST,
@@ -1771,7 +1853,8 @@ fn create_receipt_rule(
     let rule = parse_receipt_rule(&req.query_params)?;
     let after = req.query_params.get("After").cloned();
 
-    let mut st = state.write();
+    let mut accounts = state.write();
+    let st = accounts.get_or_create(&req.account_id);
     let rule_set = st.receipt_rule_sets.get_mut(rule_set_name).ok_or_else(|| {
         AwsServiceError::aws_error(
             StatusCode::BAD_REQUEST,
@@ -1811,7 +1894,8 @@ fn delete_receipt_rule(
     let rule_set_name = required_param(&req.query_params, "RuleSetName")?;
     let rule_name = required_param(&req.query_params, "RuleName")?;
 
-    let mut st = state.write();
+    let mut accounts = state.write();
+    let st = accounts.get_or_create(&req.account_id);
     let rule_set = st.receipt_rule_sets.get_mut(rule_set_name).ok_or_else(|| {
         AwsServiceError::aws_error(
             StatusCode::BAD_REQUEST,
@@ -1842,7 +1926,9 @@ fn describe_receipt_rule(
     let rule_set_name = required_param(&req.query_params, "RuleSetName")?;
     let rule_name = required_param(&req.query_params, "RuleName")?;
 
-    let st = state.read();
+    let accounts = state.read();
+    let empty = SesState::new(&req.account_id, &req.region);
+    let st = accounts.get(&req.account_id).unwrap_or(&empty);
     let rule_set = st.receipt_rule_sets.get(rule_set_name).ok_or_else(|| {
         AwsServiceError::aws_error(
             StatusCode::BAD_REQUEST,
@@ -1882,7 +1968,8 @@ fn update_receipt_rule(
     let rule_set_name = required_param(&req.query_params, "RuleSetName")?;
     let new_rule = parse_receipt_rule(&req.query_params)?;
 
-    let mut st = state.write();
+    let mut accounts = state.write();
+    let st = accounts.get_or_create(&req.account_id);
     let rule_set = st.receipt_rule_sets.get_mut(rule_set_name).ok_or_else(|| {
         AwsServiceError::aws_error(
             StatusCode::BAD_REQUEST,
@@ -1920,7 +2007,8 @@ fn create_receipt_filter(
     let cidr = required_param(&req.query_params, "Filter.IpFilter.Cidr")?;
     let policy = required_param(&req.query_params, "Filter.IpFilter.Policy")?;
 
-    let mut st = state.write();
+    let mut accounts = state.write();
+    let st = accounts.get_or_create(&req.account_id);
     if st.receipt_filters.contains_key(name) {
         return Err(AwsServiceError::aws_error(
             StatusCode::BAD_REQUEST,
@@ -1947,7 +2035,8 @@ fn delete_receipt_filter(
     req: &AwsRequest,
 ) -> Result<AwsResponse, AwsServiceError> {
     let name = required_param(&req.query_params, "FilterName")?;
-    let mut st = state.write();
+    let mut accounts = state.write();
+    let st = accounts.get_or_create(&req.account_id);
     if st.receipt_filters.remove(name).is_none() {
         return Err(AwsServiceError::aws_error(
             StatusCode::BAD_REQUEST,
@@ -1962,7 +2051,9 @@ fn list_receipt_filters(
     state: &SharedSesState,
     req: &AwsRequest,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let st = state.read();
+    let accounts = state.read();
+    let empty = SesState::new(&req.account_id, &req.region);
+    let st = accounts.get(&req.account_id).unwrap_or(&empty);
     let mut inner = String::from("<Filters>");
     let mut filters: Vec<&ReceiptFilter> = st.receipt_filters.values().collect();
     filters.sort_by_key(|f| &f.name);
@@ -1993,7 +2084,8 @@ pub fn evaluate_inbound_email(
     body: &str,
 ) -> (String, Vec<String>, Vec<(String, ReceiptAction)>) {
     let message_id = uuid::Uuid::new_v4().to_string();
-    let st = state.read();
+    let accounts = state.read();
+    let st = accounts.default_ref();
 
     let active_name = match &st.active_receipt_rule_set {
         Some(name) => name.clone(),
@@ -2040,8 +2132,9 @@ pub fn evaluate_inbound_email(
     }
 
     // Record the inbound email
-    drop(st);
-    let mut st = state.write();
+    drop(accounts);
+    let mut mas_w = state.write();
+    let st = mas_w.default_mut();
     st.inbound_emails.push(crate::state::InboundEmail {
         message_id: message_id.clone(),
         from: from.to_string(),
@@ -2073,7 +2166,6 @@ fn action_type_name(action: &ReceiptAction) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::SesState;
     use bytes::Bytes;
 
     use http::HeaderMap;
@@ -2081,7 +2173,13 @@ mod tests {
     use std::sync::Arc;
 
     fn make_state() -> SharedSesState {
-        Arc::new(RwLock::new(SesState::new("123456789012", "us-east-1")))
+        Arc::new(RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ))
     }
 
     fn make_v1_request(action: &str, params: Vec<(&str, &str)>) -> AwsRequest {
@@ -2223,10 +2321,13 @@ mod tests {
         handle_v1_action(&state, &req).unwrap();
 
         // Verify clone has the rule
-        let st = state.read();
-        let cloned = st.receipt_rule_sets.get("cloned").unwrap();
-        assert_eq!(cloned.rules.len(), 1);
-        assert_eq!(cloned.rules[0].name, "rule1");
+        {
+            let mas = state.read();
+            let st = mas.default_ref();
+            let cloned = st.receipt_rule_sets.get("cloned").unwrap();
+            assert_eq!(cloned.rules.len(), 1);
+            assert_eq!(cloned.rules[0].name, "rule1");
+        }
     }
 
     #[test]
@@ -2245,7 +2346,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            state.read().active_receipt_rule_set.as_deref(),
+            state
+                .read()
+                .default_ref()
+                .active_receipt_rule_set
+                .as_deref(),
             Some("my-set")
         );
 
@@ -2255,7 +2360,7 @@ mod tests {
             &make_v1_request("SetActiveReceiptRuleSet", vec![("RuleSetName", "")]),
         )
         .unwrap();
-        assert!(state.read().active_receipt_rule_set.is_none());
+        assert!(state.read().default_ref().active_receipt_rule_set.is_none());
     }
 
     #[test]
@@ -2336,11 +2441,14 @@ mod tests {
         );
         handle_v1_action(&state, &req).unwrap();
 
-        let st = state.read();
-        let rule = &st.receipt_rule_sets.get("my-set").unwrap().rules[0];
-        assert!(!rule.enabled);
-        assert_eq!(rule.actions.len(), 1);
-        assert!(matches!(&rule.actions[0], ReceiptAction::Sns { .. }));
+        {
+            let mas = state.read();
+            let st = mas.default_ref();
+            let rule = &st.receipt_rule_sets.get("my-set").unwrap().rules[0];
+            assert!(!rule.enabled);
+            assert_eq!(rule.actions.len(), 1);
+            assert!(matches!(&rule.actions[0], ReceiptAction::Sns { .. }));
+        }
     }
 
     #[test]
@@ -2366,8 +2474,11 @@ mod tests {
         );
         handle_v1_action(&state, &req).unwrap();
 
-        let st = state.read();
-        assert!(st.receipt_rule_sets.get("my-set").unwrap().rules.is_empty());
+        {
+            let mas = state.read();
+            let st = mas.default_ref();
+            assert!(st.receipt_rule_sets.get("my-set").unwrap().rules.is_empty());
+        }
     }
 
     #[test]
@@ -2401,16 +2512,19 @@ mod tests {
         );
         handle_v1_action(&state, &req).unwrap();
 
-        let st = state.read();
-        let names: Vec<&str> = st
-            .receipt_rule_sets
-            .get("my-set")
-            .unwrap()
-            .rules
-            .iter()
-            .map(|r| r.name.as_str())
-            .collect();
-        assert_eq!(names, vec!["c", "a", "b"]);
+        {
+            let mas = state.read();
+            let st = mas.default_ref();
+            let names: Vec<&str> = st
+                .receipt_rule_sets
+                .get("my-set")
+                .unwrap()
+                .rules
+                .iter()
+                .map(|r| r.name.as_str())
+                .collect();
+            assert_eq!(names, vec!["c", "a", "b"]);
+        }
     }
 
     #[test]
@@ -2683,15 +2797,18 @@ mod tests {
         );
         handle_v1_action(&state, &req).unwrap();
 
-        let st = state.read();
-        let rule = &st.receipt_rule_sets.get("set").unwrap().rules[0];
-        assert_eq!(rule.actions.len(), 6);
-        assert!(matches!(&rule.actions[0], ReceiptAction::S3 { .. }));
-        assert!(matches!(&rule.actions[1], ReceiptAction::Sns { .. }));
-        assert!(matches!(&rule.actions[2], ReceiptAction::Lambda { .. }));
-        assert!(matches!(&rule.actions[3], ReceiptAction::Bounce { .. }));
-        assert!(matches!(&rule.actions[4], ReceiptAction::AddHeader { .. }));
-        assert!(matches!(&rule.actions[5], ReceiptAction::Stop { .. }));
+        {
+            let mas = state.read();
+            let st = mas.default_ref();
+            let rule = &st.receipt_rule_sets.get("set").unwrap().rules[0];
+            assert_eq!(rule.actions.len(), 6);
+            assert!(matches!(&rule.actions[0], ReceiptAction::S3 { .. }));
+            assert!(matches!(&rule.actions[1], ReceiptAction::Sns { .. }));
+            assert!(matches!(&rule.actions[2], ReceiptAction::Lambda { .. }));
+            assert!(matches!(&rule.actions[3], ReceiptAction::Bounce { .. }));
+            assert!(matches!(&rule.actions[4], ReceiptAction::AddHeader { .. }));
+            assert!(matches!(&rule.actions[5], ReceiptAction::Stop { .. }));
+        }
     }
 
     // ── Identity management tests ──
@@ -2706,10 +2823,13 @@ mod tests {
         let resp = handle_v1_action(&state, &req).unwrap();
         assert_eq!(resp.status, StatusCode::OK);
 
-        let st = state.read();
-        let identity = st.identities.get("test@example.com").unwrap();
-        assert!(identity.verified);
-        assert_eq!(identity.identity_type, "EmailAddress");
+        {
+            let mas = state.read();
+            let st = mas.default_ref();
+            let identity = st.identities.get("test@example.com").unwrap();
+            assert!(identity.verified);
+            assert_eq!(identity.identity_type, "EmailAddress");
+        }
     }
 
     #[test]
@@ -2721,10 +2841,13 @@ mod tests {
         let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<VerificationToken>"));
 
-        let st = state.read();
-        let identity = st.identities.get("example.com").unwrap();
-        assert!(identity.verified);
-        assert_eq!(identity.identity_type, "Domain");
+        {
+            let mas = state.read();
+            let st = mas.default_ref();
+            let identity = st.identities.get("example.com").unwrap();
+            assert!(identity.verified);
+            assert_eq!(identity.identity_type, "Domain");
+        }
     }
 
     #[test]
@@ -2813,7 +2936,11 @@ mod tests {
 
         let req = make_v1_request("DeleteIdentity", vec![("Identity", "a@test.com")]);
         handle_v1_action(&state, &req).unwrap();
-        assert!(!state.read().identities.contains_key("a@test.com"));
+        assert!(!state
+            .read()
+            .default_ref()
+            .identities
+            .contains_key("a@test.com"));
     }
 
     #[test]
@@ -2827,6 +2954,7 @@ mod tests {
         assert!(
             !state
                 .read()
+                .default_ref()
                 .identities
                 .get("a@test.com")
                 .unwrap()
@@ -2844,6 +2972,7 @@ mod tests {
         assert!(
             state
                 .read()
+                .default_ref()
                 .identities
                 .get("a@test.com")
                 .unwrap()
@@ -2893,6 +3022,7 @@ mod tests {
         assert!(
             !state
                 .read()
+                .default_ref()
                 .identities
                 .get("a@test.com")
                 .unwrap()
@@ -2940,10 +3070,13 @@ mod tests {
         )
         .unwrap();
 
-        let st = state.read();
-        let id = st.identities.get("example.com").unwrap();
-        assert_eq!(id.mail_from_domain.as_deref(), Some("mail.example.com"));
-        assert_eq!(id.mail_from_behavior_on_mx_failure, "RejectMessage");
+        {
+            let mas = state.read();
+            let st = mas.default_ref();
+            let id = st.identities.get("example.com").unwrap();
+            assert_eq!(id.mail_from_domain.as_deref(), Some("mail.example.com"));
+            assert_eq!(id.mail_from_behavior_on_mx_failure, "RejectMessage");
+        }
     }
 
     #[test]
@@ -2986,14 +3119,17 @@ mod tests {
         let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<MessageId>"));
 
-        let st = state.read();
-        assert_eq!(st.sent_emails.len(), 1);
-        let sent = &st.sent_emails[0];
-        assert_eq!(sent.from, "sender@example.com");
-        assert_eq!(sent.to, vec!["to@example.com"]);
-        assert_eq!(sent.cc, vec!["cc@example.com"]);
-        assert_eq!(sent.subject.as_deref(), Some("Test Subject"));
-        assert_eq!(sent.html_body.as_deref(), Some("<h1>Hello</h1>"));
+        {
+            let mas = state.read();
+            let st = mas.default_ref();
+            assert_eq!(st.sent_emails.len(), 1);
+            let sent = &st.sent_emails[0];
+            assert_eq!(sent.from, "sender@example.com");
+            assert_eq!(sent.to, vec!["to@example.com"]);
+            assert_eq!(sent.cc, vec!["cc@example.com"]);
+            assert_eq!(sent.subject.as_deref(), Some("Test Subject"));
+            assert_eq!(sent.html_body.as_deref(), Some("<h1>Hello</h1>"));
+        }
     }
 
     #[test]
@@ -3013,9 +3149,12 @@ mod tests {
         let resp = handle_v1_action(&state, &req).unwrap();
         assert_eq!(resp.status, StatusCode::OK);
 
-        let st = state.read();
-        assert_eq!(st.sent_emails.len(), 1);
-        assert!(st.sent_emails[0].raw_data.is_some());
+        {
+            let mas = state.read();
+            let st = mas.default_ref();
+            assert_eq!(st.sent_emails.len(), 1);
+            assert!(st.sent_emails[0].raw_data.is_some());
+        }
     }
 
     #[test]
@@ -3047,12 +3186,15 @@ mod tests {
         let resp = handle_v1_action(&state, &req).unwrap();
         assert_eq!(resp.status, StatusCode::OK);
 
-        let st = state.read();
-        assert_eq!(st.sent_emails.len(), 1);
-        assert_eq!(
-            st.sent_emails[0].template_name.as_deref(),
-            Some("my-template")
-        );
+        {
+            let mas = state.read();
+            let st = mas.default_ref();
+            assert_eq!(st.sent_emails.len(), 1);
+            assert_eq!(
+                st.sent_emails[0].template_name.as_deref(),
+                Some("my-template")
+            );
+        }
     }
 
     #[test]
@@ -3112,8 +3254,11 @@ mod tests {
         let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<Status>Success</Status>"));
 
-        let st = state.read();
-        assert_eq!(st.sent_emails.len(), 2);
+        {
+            let mas = state.read();
+            let st = mas.default_ref();
+            assert_eq!(st.sent_emails.len(), 2);
+        }
     }
 
     // ── Template tests ──
@@ -3173,12 +3318,14 @@ mod tests {
             ),
         )
         .unwrap();
-        let st = state.read();
-        assert_eq!(
-            st.templates.get("t1").unwrap().subject.as_deref(),
-            Some("Updated")
-        );
-        drop(st);
+        {
+            let mas = state.read();
+            let st = mas.default_ref();
+            assert_eq!(
+                st.templates.get("t1").unwrap().subject.as_deref(),
+                Some("Updated")
+            );
+        }
 
         // Delete
         handle_v1_action(
@@ -3186,7 +3333,7 @@ mod tests {
             &make_v1_request("DeleteTemplate", vec![("TemplateName", "t1")]),
         )
         .unwrap();
-        assert!(!state.read().templates.contains_key("t1"));
+        assert!(!state.read().default_ref().templates.contains_key("t1"));
     }
 
     // ── Configuration Set tests ──
@@ -3244,7 +3391,11 @@ mod tests {
             ),
         )
         .unwrap();
-        assert!(!state.read().configuration_sets.contains_key("my-config"));
+        assert!(!state
+            .read()
+            .default_ref()
+            .configuration_sets
+            .contains_key("my-config"));
     }
 
     #[test]
@@ -3279,12 +3430,14 @@ mod tests {
         )
         .unwrap();
 
-        let st = state.read();
-        let dests = st.event_destinations.get("cs").unwrap();
-        assert_eq!(dests.len(), 1);
-        assert_eq!(dests[0].name, "sns-dest");
-        assert_eq!(dests[0].matching_event_types, vec!["send", "bounce"]);
-        drop(st);
+        {
+            let mas = state.read();
+            let st = mas.default_ref();
+            let dests = st.event_destinations.get("cs").unwrap();
+            assert_eq!(dests.len(), 1);
+            assert_eq!(dests[0].name, "sns-dest");
+            assert_eq!(dests[0].matching_event_types, vec!["send", "bounce"]);
+        }
 
         // Update
         handle_v1_action(
@@ -3299,7 +3452,15 @@ mod tests {
             ),
         )
         .unwrap();
-        assert!(!state.read().event_destinations.get("cs").unwrap()[0].enabled);
+        assert!(
+            !state
+                .read()
+                .default_ref()
+                .event_destinations
+                .get("cs")
+                .unwrap()[0]
+                .enabled
+        );
 
         // Delete
         handle_v1_action(
@@ -3315,6 +3476,7 @@ mod tests {
         .unwrap();
         assert!(state
             .read()
+            .default_ref()
             .event_destinations
             .get("cs")
             .unwrap()

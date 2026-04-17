@@ -79,7 +79,11 @@ impl SesV2Service {
             crate::fanout::process_send_events(ctx, &sent, config_set_name.as_deref());
         }
 
-        self.state.write().sent_emails.push(sent);
+        self.state
+            .write()
+            .get_or_create(&req.account_id)
+            .sent_emails
+            .push(sent);
 
         let response = json!({
             "MessageId": message_id,
@@ -143,7 +147,11 @@ impl SesV2Service {
                 crate::fanout::process_send_events(ctx, &sent, config_set_name.as_deref());
             }
 
-            self.state.write().sent_emails.push(sent);
+            self.state
+                .write()
+                .get_or_create(&req.account_id)
+                .sent_emails
+                .push(sent);
 
             results.push(json!({
                 "Status": "SUCCESS",

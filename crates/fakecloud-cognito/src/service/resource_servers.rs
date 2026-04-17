@@ -7,6 +7,8 @@ use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 
 use crate::state::ResourceServer;
 
+use crate::state::CognitoState;
+
 use super::{
     ensure_user_pool_exists, parse_resource_server_scopes, require_str, resource_server_to_json,
     CognitoService,
@@ -25,9 +27,10 @@ impl CognitoService {
 
         let scopes = parse_resource_server_scopes(&body["Scopes"]);
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         let pool_servers = state
             .resource_servers
@@ -66,9 +69,11 @@ impl CognitoService {
         let pool_id = require_str(&body, "UserPoolId")?;
         let identifier = require_str(&body, "Identifier")?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = CognitoState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         let rs = state
             .resource_servers
@@ -98,9 +103,10 @@ impl CognitoService {
         let name = require_str(&body, "Name")?;
         let scopes = parse_resource_server_scopes(&body["Scopes"]);
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         let rs = state
             .resource_servers
@@ -131,9 +137,10 @@ impl CognitoService {
         let pool_id = require_str(&body, "UserPoolId")?;
         let identifier = require_str(&body, "Identifier")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         let removed = state
             .resource_servers
@@ -161,9 +168,11 @@ impl CognitoService {
         let max_results = body["MaxResults"].as_i64().unwrap_or(50).clamp(1, 50) as usize;
         let next_token = body["NextToken"].as_str();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = CognitoState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         let empty = HashMap::new();
         let pool_servers = state.resource_servers.get(pool_id).unwrap_or(&empty);

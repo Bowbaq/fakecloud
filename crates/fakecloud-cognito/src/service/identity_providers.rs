@@ -8,6 +8,8 @@ use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 
 use crate::state::IdentityProvider;
 
+use crate::state::CognitoState;
+
 use super::{
     ensure_user_pool_exists, identity_provider_to_json, parse_string_map, require_str,
     validate_provider_type, CognitoService,
@@ -37,9 +39,10 @@ impl CognitoService {
             })
             .unwrap_or_default();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         let pool_providers = state
             .identity_providers
@@ -83,9 +86,11 @@ impl CognitoService {
         let pool_id = require_str(&body, "UserPoolId")?;
         let provider_name = require_str(&body, "ProviderName")?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = CognitoState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         let idp = state
             .identity_providers
@@ -113,9 +118,10 @@ impl CognitoService {
         let pool_id = require_str(&body, "UserPoolId")?;
         let provider_name = require_str(&body, "ProviderName")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         let idp = state
             .identity_providers
@@ -159,9 +165,10 @@ impl CognitoService {
         let pool_id = require_str(&body, "UserPoolId")?;
         let provider_name = require_str(&body, "ProviderName")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         let removed = state
             .identity_providers
@@ -189,9 +196,11 @@ impl CognitoService {
         let max_results = body["MaxResults"].as_i64().unwrap_or(60).clamp(1, 60) as usize;
         let next_token = body["NextToken"].as_str();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = CognitoState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         let empty = HashMap::new();
         let pool_providers = state.identity_providers.get(pool_id).unwrap_or(&empty);
@@ -242,9 +251,11 @@ impl CognitoService {
         let pool_id = require_str(&body, "UserPoolId")?;
         let idp_identifier = require_str(&body, "IdpIdentifier")?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = CognitoState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         let empty = HashMap::new();
         let pool_providers = state.identity_providers.get(pool_id).unwrap_or(&empty);

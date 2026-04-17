@@ -5,12 +5,15 @@ use serde_json::{json, Value};
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 
 use crate::state::AccountDetails;
+use crate::state::SesState;
 
 use super::SesV2Service;
 
 impl SesV2Service {
-    pub(super) fn get_account(&self) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+    pub(super) fn get_account(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let accounts = self.state.read();
+        let empty = SesState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let acct = &state.account_settings;
         let production_access = acct
             .details
@@ -100,7 +103,8 @@ impl SesV2Service {
             .unwrap_or_default();
         let production_access = body["ProductionAccessEnabled"].as_bool();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         state.account_settings.details = Some(AccountDetails {
             mail_type: Some(mail_type),
             website_url: Some(website_url),
@@ -118,7 +122,11 @@ impl SesV2Service {
     ) -> Result<AwsResponse, AwsServiceError> {
         let body: Value = Self::parse_body(req)?;
         let enabled = body["SendingEnabled"].as_bool().unwrap_or(false);
-        self.state.write().account_settings.sending_enabled = enabled;
+        self.state
+            .write()
+            .get_or_create(&req.account_id)
+            .account_settings
+            .sending_enabled = enabled;
         Ok(AwsResponse::json(StatusCode::OK, "{}"))
     }
 
@@ -135,7 +143,11 @@ impl SesV2Service {
                     .collect()
             })
             .unwrap_or_default();
-        self.state.write().account_settings.suppressed_reasons = reasons;
+        self.state
+            .write()
+            .get_or_create(&req.account_id)
+            .account_settings
+            .suppressed_reasons = reasons;
         Ok(AwsResponse::json(StatusCode::OK, "{}"))
     }
 
@@ -154,7 +166,11 @@ impl SesV2Service {
                 ));
             }
         };
-        self.state.write().account_settings.vdm_attributes = Some(vdm);
+        self.state
+            .write()
+            .get_or_create(&req.account_id)
+            .account_settings
+            .vdm_attributes = Some(vdm);
         Ok(AwsResponse::json(StatusCode::OK, "{}"))
     }
 
@@ -166,6 +182,7 @@ impl SesV2Service {
         let enabled = body["AutoWarmupEnabled"].as_bool().unwrap_or(false);
         self.state
             .write()
+            .get_or_create(&req.account_id)
             .account_settings
             .dedicated_ip_auto_warmup_enabled = enabled;
         Ok(AwsResponse::json(StatusCode::OK, "{}"))

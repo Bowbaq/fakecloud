@@ -361,12 +361,15 @@ pub struct SesState {
     pub inbound_emails: Vec<InboundEmail>,
 }
 
-pub const SES_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+pub const SES_SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SesSnapshot {
     pub schema_version: u32,
-    pub state: SesState,
+    #[serde(default)]
+    pub accounts: Option<fakecloud_core::multi_account::MultiAccountState<SesState>>,
+    #[serde(default)]
+    pub state: Option<SesState>,
 }
 
 impl SesState {
@@ -415,7 +418,13 @@ impl SesState {
     }
 }
 
-pub type SharedSesState = Arc<RwLock<SesState>>;
+pub type SharedSesState = Arc<RwLock<fakecloud_core::multi_account::MultiAccountState<SesState>>>;
+
+impl fakecloud_core::multi_account::AccountState for SesState {
+    fn new_for_account(account_id: &str, region: &str, _endpoint: &str) -> Self {
+        Self::new(account_id, region)
+    }
+}
 
 #[cfg(test)]
 mod tests {

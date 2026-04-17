@@ -72,7 +72,8 @@ impl CognitoService {
         let _guard = self.snapshot_lock.lock().await;
         let snapshot = CognitoSnapshot {
             schema_version: COGNITO_SNAPSHOT_SCHEMA_VERSION,
-            state: self.state.read().clone(),
+            accounts: Some(self.state.read().clone()),
+            state: None,
         };
         let join = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
             let bytes = serde_json::to_vec(&snapshot)
@@ -1481,10 +1482,13 @@ mod tests {
 
     #[test]
     fn create_user_pool_missing_name() {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         let svc = CognitoService::new(state);
         let req = AwsRequest {
             service: "cognito-idp".to_string(),
@@ -1543,10 +1547,13 @@ mod tests {
 
     #[test]
     fn client_secret_not_generated_by_default() {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         let svc = CognitoService::new(state.clone());
 
         // First create a pool
@@ -1605,10 +1612,13 @@ mod tests {
 
     #[test]
     fn client_secret_generated_when_requested() {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         let svc = CognitoService::new(state.clone());
 
         // Create a pool
@@ -1671,10 +1681,13 @@ mod tests {
 
     #[test]
     fn client_belongs_to_correct_pool() {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         let svc = CognitoService::new(state.clone());
 
         // Create two pools
@@ -1701,9 +1714,10 @@ mod tests {
             svc.create_user_pool(&req).unwrap();
         }
 
-        let s = state.read();
+        let _mas = state.read();
+        let s = _mas.default_ref();
         let pool_ids: Vec<String> = s.user_pools.keys().cloned().collect();
-        drop(s);
+        drop(_mas);
 
         // Create client in pool A
         let req = AwsRequest {
@@ -1900,10 +1914,13 @@ mod tests {
     #[test]
     fn user_default_status_is_force_change_password() {
         // When a user is admin-created, the status should be FORCE_CHANGE_PASSWORD
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         let svc = CognitoService::new(state.clone());
 
         // Create a pool
@@ -2166,12 +2183,16 @@ mod tests {
 
     #[test]
     fn access_token_lookup() {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         {
-            let mut s = state.write();
+            let mut _mas_w = state.write();
+            let s: &mut crate::state::CognitoState = _mas_w.default_mut();
             s.access_tokens.insert(
                 "test-access-token".to_string(),
                 AccessTokenData {
@@ -2183,7 +2204,8 @@ mod tests {
             );
         }
 
-        let s = state.read();
+        let _mas = state.read();
+        let s = _mas.default_ref();
         let token_data = s.access_tokens.get("test-access-token");
         assert!(token_data.is_some());
         let data = token_data.unwrap();
@@ -2197,10 +2219,13 @@ mod tests {
 
     #[test]
     fn group_name_uniqueness() {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         let svc = CognitoService::new(state.clone());
 
         // Create a pool first
@@ -2271,10 +2296,13 @@ mod tests {
 
     #[test]
     fn user_group_association() {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         let svc = CognitoService::new(state.clone());
 
         // Create a pool
@@ -2383,7 +2411,8 @@ mod tests {
 
         // Verify membership via state
         {
-            let s = state.read();
+            let _mas = state.read();
+            let s = _mas.default_ref();
             let groups = s.user_groups.get(&pool_id).unwrap();
             let user_groups = groups.get("testuser").unwrap();
             assert!(user_groups.contains(&"admins".to_string()));
@@ -2418,7 +2447,8 @@ mod tests {
 
         // Verify no longer in group
         {
-            let s = state.read();
+            let _mas = state.read();
+            let s = _mas.default_ref();
             let groups = s.user_groups.get(&pool_id).unwrap();
             let user_groups = groups.get("testuser").unwrap();
             assert!(!user_groups.contains(&"admins".to_string()));
@@ -2427,10 +2457,13 @@ mod tests {
 
     #[test]
     fn self_service_get_user_via_access_token() {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         let svc = CognitoService::new(state.clone());
 
         // Create pool
@@ -2488,7 +2521,8 @@ mod tests {
 
         // Manually insert an access token
         {
-            let mut s = state.write();
+            let mut _mas_w = state.write();
+            let s = _mas_w.default_mut();
             s.access_tokens.insert(
                 "test-access-token".to_string(),
                 crate::state::AccessTokenData {
@@ -2553,10 +2587,13 @@ mod tests {
 
     #[test]
     fn self_service_delete_user_cleans_up_tokens() {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         let svc = CognitoService::new(state.clone());
 
         // Create pool
@@ -2611,7 +2648,8 @@ mod tests {
 
         // Insert access token and refresh token
         {
-            let mut s = state.write();
+            let mut _mas_w = state.write();
+            let s = _mas_w.default_mut();
             s.access_tokens.insert(
                 "del-token".to_string(),
                 crate::state::AccessTokenData {
@@ -2655,7 +2693,8 @@ mod tests {
         svc.delete_user(&req).unwrap();
 
         // Verify cleanup
-        let s = state.read();
+        let _mas = state.read();
+        let s = _mas.default_ref();
         assert!(s.access_tokens.is_empty());
         assert!(s.refresh_tokens.is_empty());
         assert!(s
@@ -2667,10 +2706,13 @@ mod tests {
 
     #[test]
     fn verify_user_attribute_with_correct_code() {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         let svc = CognitoService::new(state.clone());
 
         // Create pool
@@ -2726,7 +2768,8 @@ mod tests {
 
         // Insert access token
         {
-            let mut s = state.write();
+            let mut _mas_w = state.write();
+            let s = _mas_w.default_mut();
             s.access_tokens.insert(
                 "verify-token".to_string(),
                 crate::state::AccessTokenData {
@@ -2770,7 +2813,8 @@ mod tests {
 
         // Read the code from state
         let code = {
-            let s = state.read();
+            let _mas = state.read();
+            let s = _mas.default_ref();
             let user = s.users.get(&pool_id).unwrap().get("verifyuser").unwrap();
             user.attribute_verification_codes
                 .get("email")
@@ -2806,7 +2850,8 @@ mod tests {
         svc.verify_user_attribute(&req).unwrap();
 
         // Verify email_verified is set
-        let s = state.read();
+        let _mas = state.read();
+        let s = _mas.default_ref();
         let user = s.users.get(&pool_id).unwrap().get("verifyuser").unwrap();
         let email_verified = user
             .attributes
@@ -2816,7 +2861,7 @@ mod tests {
         assert_eq!(email_verified.value, "true");
 
         // Verify with wrong code should fail
-        drop(s);
+        drop(_mas);
         // First get a new code
         let req = AwsRequest {
             service: "cognito-idp".to_string(),
@@ -2894,13 +2939,15 @@ mod tests {
 
     #[test]
     fn mfa_preference_storage() {
-        use crate::state::CognitoState;
         use std::sync::Arc;
 
-        let state = Arc::new(parking_lot::RwLock::new(CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         let svc = CognitoService::new(state.clone());
 
         // Create a pool and user first
@@ -2987,7 +3034,8 @@ mod tests {
         svc.admin_set_user_mfa_preference(&set_pref_req).unwrap();
 
         // Verify preferences were stored
-        let st = state.read();
+        let _mas = state.read();
+        let st = _mas.default_ref();
         let user = st.users.get(&pool_id).unwrap().get("mfauser").unwrap();
         let prefs = user.mfa_preferences.as_ref().unwrap();
         assert!(prefs.software_token_enabled);
@@ -3017,10 +3065,13 @@ mod tests {
     }
 
     fn setup_svc_with_pool() -> (CognitoService, String) {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         let svc = CognitoService::new(state);
         let req = make_req("CreateUserPool", r#"{"PoolName":"test"}"#);
         let resp = svc.create_user_pool(&req).unwrap();
@@ -3250,7 +3301,8 @@ mod tests {
 
         // Directly insert a device into the user's devices map
         {
-            let mut state = svc.state.write();
+            let mut mas = svc.state.write();
+            let state = mas.default_mut();
             let user = state
                 .users
                 .get_mut(&pool_id)
@@ -3297,9 +3349,15 @@ mod tests {
     #[test]
     fn tag_management() {
         let (svc, pool_id) = setup_svc_with_pool();
-        let state = svc.state.read();
-        let arn = state.user_pools.get(&pool_id).unwrap().arn.clone();
-        drop(state);
+        let arn = {
+            let mas = svc.state.read();
+            mas.default_ref()
+                .user_pools
+                .get(&pool_id)
+                .unwrap()
+                .arn
+                .clone()
+        };
 
         // Tag
         let body = serde_json::to_string(&json!({
@@ -3381,10 +3439,13 @@ mod tests {
 
     #[test]
     fn auth_events_recorded_on_sign_up() {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         let svc = CognitoService::new(state.clone());
 
         // Create pool and client
@@ -3419,7 +3480,8 @@ mod tests {
         block_on(svc.sign_up(&req)).unwrap();
 
         // Check auth events
-        let st = state.read();
+        let _mas = state.read();
+        let st = _mas.default_ref();
         assert_eq!(st.auth_events.len(), 1);
         assert_eq!(st.auth_events[0].event_type, "SIGN_UP");
         assert_eq!(st.auth_events[0].username, "testevuser");
@@ -3428,10 +3490,13 @@ mod tests {
 
     #[test]
     fn auth_events_recorded_on_sign_in_and_failure() {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         let svc = CognitoService::new(state.clone());
 
         // Create pool, client, user
@@ -3497,7 +3562,8 @@ mod tests {
         let _ = block_on(svc.admin_initiate_auth(&req));
 
         // Check events
-        let st = state.read();
+        let _mas = state.read();
+        let st = _mas.default_ref();
         assert_eq!(st.auth_events.len(), 2);
         assert_eq!(st.auth_events[0].event_type, "SIGN_IN");
         assert!(st.auth_events[0].success);
@@ -3507,11 +3573,14 @@ mod tests {
 
     #[test]
     fn auth_events_cleared_on_reset() {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
-        state.write().auth_events.push(AuthEvent {
+        let state: crate::state::SharedCognitoState = std::sync::Arc::new(
+            parking_lot::RwLock::new(fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            )),
+        );
+        state.write().default_mut().auth_events.push(AuthEvent {
             event_id: Uuid::new_v4().to_string(),
             event_type: "SIGN_UP".to_string(),
             username: "test".to_string(),
@@ -3521,17 +3590,20 @@ mod tests {
             success: true,
             feedback_value: None,
         });
-        assert_eq!(state.read().auth_events.len(), 1);
-        state.write().reset();
-        assert!(state.read().auth_events.is_empty());
+        assert_eq!(state.read().default_ref().auth_events.len(), 1);
+        state.write().default_mut().reset();
+        assert!(state.read().default_ref().auth_events.is_empty());
     }
 
     #[test]
     fn custom_auth_rejected_when_not_in_explicit_auth_flows() {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         let svc = CognitoService::new(state.clone());
 
         // Create pool
@@ -3574,10 +3646,13 @@ mod tests {
 
     #[test]
     fn custom_auth_fails_without_delivery_context() {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         // No delivery context — no Lambda support
         let svc = CognitoService::new(state.clone());
 
@@ -3642,10 +3717,13 @@ mod tests {
 
     #[test]
     fn custom_auth_fails_without_define_trigger_configured() {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         let delivery_bus = std::sync::Arc::new(fakecloud_core::delivery::DeliveryBus::new());
         let ctx = triggers::CognitoDeliveryContext {
             delivery_bus: delivery_bus.clone(),
@@ -3712,10 +3790,13 @@ mod tests {
 
     #[test]
     fn custom_challenge_response_fails_without_delivery_context() {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         let svc = CognitoService::new(state.clone());
 
         // Create pool, client, and user so we get past user lookup
@@ -3760,7 +3841,8 @@ mod tests {
         // Manually insert a CUSTOM_CHALLENGE session
         let session_token = "test-session-123".to_string();
         {
-            let mut st = state.write();
+            let mut _mas_w = state.write();
+            let st = _mas_w.default_mut();
             st.sessions.insert(
                 session_token.clone(),
                 SessionData {
@@ -3795,10 +3877,13 @@ mod tests {
 
     #[test]
     fn custom_challenge_response_requires_answer() {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         let svc = CognitoService::new(state.clone());
 
         // Create pool and client so we have valid IDs
@@ -3823,7 +3908,8 @@ mod tests {
 
         let session_token = "test-session-456".to_string();
         {
-            let mut st = state.write();
+            let mut _mas_w = state.write();
+            let st = _mas_w.default_mut();
             st.sessions.insert(
                 session_token.clone(),
                 SessionData {
@@ -3879,10 +3965,13 @@ mod tests {
     // ── Helpers for auth/user tests ──
 
     fn make_svc() -> (CognitoService, crate::state::SharedCognitoState) {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         let svc = CognitoService::new(state.clone());
         (svc, state)
     }
@@ -5093,7 +5182,8 @@ mod tests {
 
         // Describe
         let terms_id = {
-            let s = svc.state.read();
+            let _mas = svc.state.read();
+            let s = _mas.default_ref();
             s.terms.keys().next().unwrap().clone()
         };
         let body = json!({"UserPoolId": pool_id, "TermsId": terms_id});
@@ -5326,7 +5416,8 @@ mod tests {
 
         // Get confirmation code from state
         let code = {
-            let s = state.read();
+            let _mas = state.read();
+            let s = _mas.default_ref();
             let users = s.users.get(&pool_id).unwrap();
             users
                 .get("forgot-user")

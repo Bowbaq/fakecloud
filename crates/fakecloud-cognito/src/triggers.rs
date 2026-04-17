@@ -82,7 +82,8 @@ pub fn get_trigger_arn(
     pool_id: &str,
     trigger_source: TriggerSource,
 ) -> Option<String> {
-    let state = cognito_state.read();
+    let accounts = cognito_state.read();
+    let state = accounts.default_ref();
     let pool = state.user_pools.get(pool_id)?;
     let lambda_config = pool.lambda_config.as_ref()?;
     let key = trigger_source.lambda_config_key();
@@ -517,18 +518,24 @@ mod tests {
 
     #[test]
     fn get_trigger_arn_from_lambda_config() {
-        use crate::state::CognitoState;
         use parking_lot::RwLock;
         use std::sync::Arc;
 
-        let state = Arc::new(RwLock::new(CognitoState::new("123456789012", "us-east-1")));
+        let state = Arc::new(RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
 
         // No pool -> None
         assert!(get_trigger_arn(&state, "pool-1", TriggerSource::PreSignUpSignUp).is_none());
 
         // Add pool with lambda config
         {
-            let mut s = state.write();
+            let mut mas = state.write();
+            let s = mas.default_mut();
             s.user_pools.insert(
                 "pool-1".to_string(),
                 crate::state::UserPool {

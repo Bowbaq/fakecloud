@@ -7,6 +7,8 @@ use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 
 use crate::state::WebAuthnCredential;
 
+use crate::state::CognitoState;
+
 use super::{ensure_user_pool_exists, require_str, CognitoService};
 
 impl CognitoService {
@@ -20,9 +22,10 @@ impl CognitoService {
         let pool_id = require_str(&body, "UserPoolId")?;
         let client_id = require_str(&body, "ClientId")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         if !state.user_pool_clients.contains_key(client_id) {
             return Err(AwsServiceError::aws_error(
@@ -70,9 +73,10 @@ impl CognitoService {
         let branding_id = require_str(&body, "ManagedLoginBrandingId")?;
         let pool_id = require_str(&body, "UserPoolId")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         match state.managed_login_brandings.get(branding_id) {
             Some(b) if b["UserPoolId"].as_str() == Some(pool_id) => {
@@ -99,9 +103,11 @@ impl CognitoService {
         let pool_id = require_str(&body, "UserPoolId")?;
         let return_merged = body["ReturnMergedResources"].as_bool().unwrap_or(false);
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = CognitoState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         let branding = state
             .managed_login_brandings
@@ -135,9 +141,11 @@ impl CognitoService {
         let client_id = require_str(&body, "ClientId")?;
         let return_merged = body["ReturnMergedResources"].as_bool().unwrap_or(false);
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = CognitoState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         let branding = state
             .managed_login_brandings
@@ -174,9 +182,10 @@ impl CognitoService {
         let branding_id = require_str(&body, "ManagedLoginBrandingId")?;
         let pool_id = require_str(&body, "UserPoolId")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         let branding = state
             .managed_login_brandings
@@ -218,9 +227,10 @@ impl CognitoService {
         let terms_name = require_str(&body, "TermsName")?;
         let client_id = body["ClientId"].as_str().unwrap_or("");
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         let terms_id = Uuid::new_v4().to_string();
         let now = Utc::now();
@@ -256,9 +266,10 @@ impl CognitoService {
         let terms_id = require_str(&body, "TermsId")?;
         let pool_id = require_str(&body, "UserPoolId")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         match state.terms.get(terms_id) {
             Some(t) if t["UserPoolId"].as_str() == Some(pool_id) => {
@@ -281,9 +292,11 @@ impl CognitoService {
         let terms_id = require_str(&body, "TermsId")?;
         let pool_id = require_str(&body, "UserPoolId")?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = CognitoState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         let terms = state
             .terms
@@ -308,9 +321,11 @@ impl CognitoService {
         let max_results = body["MaxResults"].as_i64().unwrap_or(10).clamp(1, 60) as usize;
         let next_token = body["NextToken"].as_str();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = CognitoState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         let mut terms_list: Vec<&serde_json::Value> = state
             .terms
@@ -360,9 +375,10 @@ impl CognitoService {
         let terms_id = require_str(&body, "TermsId")?;
         let pool_id = require_str(&body, "UserPoolId")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         let terms = state
             .terms
@@ -408,7 +424,9 @@ impl CognitoService {
         let body = req.json_body();
         let access_token = require_str(&body, "AccessToken")?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = CognitoState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let token_data = state.access_tokens.get(access_token).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -481,7 +499,8 @@ impl CognitoService {
             ));
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let token_data = state.access_tokens.get(access_token).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -565,7 +584,8 @@ impl CognitoService {
         let access_token = require_str(&body, "AccessToken")?;
         let credential_id = require_str(&body, "CredentialId")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let token_data = state.access_tokens.get(access_token).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -610,7 +630,9 @@ impl CognitoService {
         let max_results = body["MaxResults"].as_i64().unwrap_or(10).clamp(1, 60) as usize;
         let next_token = body["NextToken"].as_str();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = CognitoState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let token_data = state.access_tokens.get(access_token).ok_or_else(|| {
             AwsServiceError::aws_error(
