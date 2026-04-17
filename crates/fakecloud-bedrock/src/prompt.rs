@@ -96,3 +96,150 @@ pub fn resolve_override(
     }
     s.custom_responses.get(model_id).cloned()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::BedrockState;
+    use parking_lot::RwLock;
+    use std::sync::Arc;
+
+    fn shared() -> SharedBedrockState {
+        Arc::new(RwLock::new(BedrockState::new("123456789012", "us-east-1")))
+    }
+
+    #[test]
+    fn extract_prompt_from_converse_messages_and_system() {
+        let body = br#"{
+            "system": [{"text": "sys-prompt"}],
+            "messages": [
+                {"role": "user", "content": [{"text": "hello"}, {"text": "world"}]}
+            ]
+        }"#;
+        let text = extract_prompt_text("anthropic.claude-v2", body);
+        assert_eq!(text, "sys-prompt hello world");
+    }
+
+    #[test]
+    fn extract_prompt_from_anthropic_invoke_string_content() {
+        let body = br#"{"messages":[{"role":"user","content":"hi"}]}"#;
+        let text = extract_prompt_text("anthropic.claude-v2", body);
+        assert_eq!(text, "hi");
+    }
+
+    #[test]
+    fn extract_prompt_amazon_input_text() {
+        let body = br#"{"inputText":"amazon-prompt"}"#;
+        let text = extract_prompt_text("amazon.titan-text", body);
+        assert_eq!(text, "amazon-prompt");
+    }
+
+    #[test]
+    fn extract_prompt_generic_prompt_field() {
+        let body = br#"{"prompt":"raw-prompt"}"#;
+        let text = extract_prompt_text("anthropic.claude-v1", body);
+        assert_eq!(text, "raw-prompt");
+    }
+
+    #[test]
+    fn extract_prompt_input_text_fallback_for_non_amazon() {
+        let body = br#"{"inputText":"generic-input"}"#;
+        let text = extract_prompt_text("cohere.command", body);
+        assert_eq!(text, "generic-input");
+    }
+
+    #[test]
+    fn extract_prompt_invalid_json_returns_empty() {
+        let text = extract_prompt_text("any", b"{not-json");
+        assert_eq!(text, "");
+    }
+
+    #[test]
+    fn extract_prompt_empty_object_returns_empty() {
+        let text = extract_prompt_text("any", b"{}");
+        assert_eq!(text, "");
+    }
+
+    #[test]
+    fn match_rule_none_filter_matches_anything() {
+        let rules = vec![ResponseRule {
+            prompt_contains: None,
+            response: "r1".to_string(),
+        }];
+        assert!(match_rule(&rules, "x").is_some());
+    }
+
+    #[test]
+    fn match_rule_empty_filter_matches_anything() {
+        let rules = vec![ResponseRule {
+            prompt_contains: Some(String::new()),
+            response: "r".to_string(),
+        }];
+        assert!(match_rule(&rules, "").is_some());
+    }
+
+    #[test]
+    fn match_rule_substring_match() {
+        let rules = vec![
+            ResponseRule {
+                prompt_contains: Some("Bar".to_string()),
+                response: "B".to_string(),
+            },
+            ResponseRule {
+                prompt_contains: Some("Foo".to_string()),
+                response: "F".to_string(),
+            },
+        ];
+        assert_eq!(match_rule(&rules, "say Foo please").unwrap().response, "F");
+        assert_eq!(match_rule(&rules, "try Bar now").unwrap().response, "B");
+        assert!(match_rule(&rules, "neither").is_none());
+    }
+
+    #[test]
+    fn resolve_override_uses_response_rule_first() {
+        let state = shared();
+        state.write().response_rules.insert(
+            "m".to_string(),
+            vec![ResponseRule {
+                prompt_contains: Some("hello".to_string()),
+                response: "rule-wins".to_string(),
+            }],
+        );
+        state
+            .write()
+            .custom_responses
+            .insert("m".to_string(), "legacy-loses".to_string());
+        let body = br#"{"prompt":"hello world"}"#;
+        assert_eq!(
+            resolve_override(&state, "m", body).as_deref(),
+            Some("rule-wins")
+        );
+    }
+
+    #[test]
+    fn resolve_override_falls_back_to_custom_response() {
+        let state = shared();
+        state.write().response_rules.insert(
+            "m".to_string(),
+            vec![ResponseRule {
+                prompt_contains: Some("notfound".to_string()),
+                response: "rule".to_string(),
+            }],
+        );
+        state
+            .write()
+            .custom_responses
+            .insert("m".to_string(), "fallback".to_string());
+        let body = br#"{"prompt":"hi"}"#;
+        assert_eq!(
+            resolve_override(&state, "m", body).as_deref(),
+            Some("fallback")
+        );
+    }
+
+    #[test]
+    fn resolve_override_none_when_nothing_configured() {
+        let state = shared();
+        assert!(resolve_override(&state, "m", b"{}").is_none());
+    }
+}

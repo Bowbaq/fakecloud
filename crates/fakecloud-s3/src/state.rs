@@ -269,3 +269,106 @@ pub type SharedS3State = Arc<RwLock<fakecloud_core::multi_account::MultiAccountS
 pub fn memory_body(bytes: Bytes) -> BodyRef {
     BodyRef::Memory(bytes)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn new_bucket_seeds_full_control_acl() {
+        let b = S3Bucket::new("my-bucket", "us-east-1", "owner-id");
+        assert_eq!(b.name, "my-bucket");
+        assert_eq!(b.region, "us-east-1");
+        assert_eq!(b.acl_owner_id, "owner-id");
+        assert_eq!(b.acl_grants.len(), 1);
+        assert_eq!(b.acl_grants[0].permission, "FULL_CONTROL");
+        assert_eq!(b.acl_grants[0].grantee_type, "CanonicalUser");
+        assert!(!b.eventbridge_enabled);
+        assert!(b.versioning.is_none());
+    }
+
+    #[test]
+    fn s3state_new_and_reset_clears_buckets() {
+        let mut state = S3State::new("123456789012", "us-east-1");
+        assert!(state.buckets.is_empty());
+        state
+            .buckets
+            .insert("b".to_string(), S3Bucket::new("b", "us-east-1", "owner"));
+        state.notification_events.push(S3NotificationEvent {
+            bucket: "b".to_string(),
+            key: "k".to_string(),
+            event_type: "s3:ObjectCreated:Put".to_string(),
+            timestamp: Utc::now(),
+        });
+        state.reset();
+        assert!(state.buckets.is_empty());
+        assert!(state.notification_events.is_empty());
+    }
+
+    #[test]
+    fn read_body_from_memory_returns_bytes() {
+        let state = S3State::new("123", "us-east-1");
+        let body = memory_body(Bytes::from_static(b"hello"));
+        assert_eq!(state.read_body(&body).unwrap(), &b"hello"[..]);
+    }
+
+    #[test]
+    fn read_body_from_disk_reads_file() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.as_file().write_all(b"file-body").unwrap();
+        let body = BodyRef::Disk {
+            bucket: "b".to_string(),
+            key: "k".to_string(),
+            version: None,
+            path: tmp.path().to_path_buf(),
+            size: 9,
+        };
+        let state = S3State::new("123", "us-east-1");
+        assert_eq!(state.read_body(&body).unwrap(), &b"file-body"[..]);
+    }
+
+    #[test]
+    fn read_body_range_slices_memory() {
+        let state = S3State::new("123", "us-east-1");
+        let body = memory_body(Bytes::from_static(b"abcdefghij"));
+        assert_eq!(state.read_body_range(&body, 2, 4).unwrap(), &b"cdef"[..]);
+    }
+
+    #[test]
+    fn read_body_range_memory_beyond_length_returns_empty() {
+        let state = S3State::new("123", "us-east-1");
+        let body = memory_body(Bytes::from_static(b"abc"));
+        assert!(state.read_body_range(&body, 100, 4).unwrap().is_empty());
+    }
+
+    #[test]
+    fn read_body_range_memory_clamps_to_length() {
+        let state = S3State::new("123", "us-east-1");
+        let body = memory_body(Bytes::from_static(b"abcdef"));
+        assert_eq!(state.read_body_range(&body, 4, 100).unwrap(), &b"ef"[..]);
+    }
+
+    #[test]
+    fn read_body_range_from_disk() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.as_file().write_all(b"0123456789").unwrap();
+        let body = BodyRef::Disk {
+            bucket: "b".to_string(),
+            key: "k".to_string(),
+            version: None,
+            path: tmp.path().to_path_buf(),
+            size: 10,
+        };
+        let state = S3State::new("123", "us-east-1");
+        assert_eq!(state.read_body_range(&body, 3, 4).unwrap(), &b"3456"[..]);
+    }
+
+    #[test]
+    fn account_state_impl_new_for_account() {
+        use fakecloud_core::multi_account::AccountState;
+        let s = S3State::new_for_account("111122223333", "eu-west-1", "http://x");
+        assert_eq!(s.account_id, "111122223333");
+        assert_eq!(s.region, "eu-west-1");
+    }
+}

@@ -510,4 +510,68 @@ mod tests {
         assert!(state.guardrails.is_empty());
         assert!(state.custom_models.is_empty());
     }
+
+    #[test]
+    fn new_initializes_all_collections_empty() {
+        let s = BedrockState::new("123", "us-east-1");
+        assert!(s.tags.is_empty());
+        assert!(s.guardrail_versions.is_empty());
+        assert!(s.customization_jobs.is_empty());
+        assert!(s.provisioned_throughputs.is_empty());
+        assert!(s.logging_config.is_none());
+        assert!(s.invocations.is_empty());
+        assert!(s.custom_responses.is_empty());
+        assert!(s.response_rules.is_empty());
+        assert!(s.fault_rules.is_empty());
+        assert!(s.async_invocations.is_empty());
+        assert!(s.custom_model_deployments.is_empty());
+        assert!(s.model_import_jobs.is_empty());
+        assert!(s.imported_models.is_empty());
+        assert!(s.model_copy_jobs.is_empty());
+        assert!(s.model_invocation_jobs.is_empty());
+        assert!(s.evaluation_jobs.is_empty());
+        assert!(s.inference_profiles.is_empty());
+        assert!(s.prompt_routers.is_empty());
+        assert!(s.resource_policies.is_empty());
+        assert!(s.marketplace_endpoints.is_empty());
+        assert!(s.foundation_model_agreements.is_empty());
+        assert!(s.use_case_for_model_access.is_none());
+        assert!(s.enforced_guardrail_configs.is_empty());
+        assert!(s.automated_reasoning_policies.is_empty());
+        assert!(s.automated_reasoning_test_cases.is_empty());
+        assert!(s.ar_build_workflows.is_empty());
+        assert!(s.ar_test_results.is_empty());
+        assert!(s.ar_annotations.is_empty());
+    }
+
+    #[test]
+    fn reset_clears_all_collections() {
+        let mut s = BedrockState::new("123", "us-east-1");
+        s.tags.insert("arn".to_string(), HashMap::new());
+        s.custom_responses.insert("m".to_string(), "r".to_string());
+        s.fault_rules.push(FaultRule {
+            error_type: "T".to_string(),
+            message: "m".to_string(),
+            http_status: 500,
+            remaining: 1,
+            model_id: None,
+            operation: None,
+        });
+        s.use_case_for_model_access = Some(serde_json::json!({"a": 1}));
+        s.logging_config = Some(LoggingConfig {
+            cloud_watch_config: None,
+            s3_config: None,
+            text_data_delivery_enabled: false,
+            image_data_delivery_enabled: false,
+            embedding_data_delivery_enabled: false,
+        });
+
+        s.reset();
+
+        assert!(s.tags.is_empty());
+        assert!(s.custom_responses.is_empty());
+        assert!(s.fault_rules.is_empty());
+        assert!(s.use_case_for_model_access.is_none());
+        assert!(s.logging_config.is_none());
+    }
 }

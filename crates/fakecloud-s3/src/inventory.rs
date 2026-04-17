@@ -195,4 +195,112 @@ mod tests {
     fn csv_escape_value_with_comma_and_quotes() {
         assert_eq!(csv_escape("a,\"b\""), "\"a,\"\"b\"\"\"");
     }
+
+    #[test]
+    fn parse_inventory_missing_destination_block_is_none() {
+        let xml = "<InventoryConfiguration></InventoryConfiguration>";
+        assert!(parse_inventory_destination(xml).is_none());
+    }
+
+    #[test]
+    fn parse_inventory_missing_bucket_returns_none() {
+        let xml = "<InventoryConfiguration>
+            <Destination>
+                <S3BucketDestination>
+                    <Format>CSV</Format>
+                </S3BucketDestination>
+            </Destination>
+        </InventoryConfiguration>";
+        assert!(parse_inventory_destination(xml).is_none());
+    }
+
+    #[test]
+    fn parse_inventory_without_prefix_field_is_ok() {
+        let xml = "<InventoryConfiguration>
+            <Destination>
+                <S3BucketDestination>
+                    <Bucket>arn:aws:s3:::dest</Bucket>
+                </S3BucketDestination>
+            </Destination>
+        </InventoryConfiguration>";
+        let dest = parse_inventory_destination(xml).unwrap();
+        assert_eq!(dest.bucket_arn, "arn:aws:s3:::dest");
+        assert!(dest.prefix.is_none());
+    }
+
+    #[test]
+    fn generate_inventory_writes_csv_report() {
+        use crate::state::{memory_body, S3Bucket, S3Object, S3State};
+        use fakecloud_core::multi_account::MultiAccountState;
+        use parking_lot::RwLock;
+        use std::sync::Arc;
+
+        let mut s = S3State::new("123456789012", "us-east-1");
+        let mut src = S3Bucket::new("src", "us-east-1", "owner");
+        src.objects.insert(
+            "file.txt".to_string(),
+            S3Object {
+                key: "file.txt".to_string(),
+                body: memory_body(Bytes::from_static(b"abc")),
+                content_type: "text/plain".to_string(),
+                etag: "abc".to_string(),
+                size: 3,
+                last_modified: Utc::now(),
+                storage_class: "STANDARD".to_string(),
+                ..Default::default()
+            },
+        );
+        src.inventory_configs.insert(
+            "cfg".to_string(),
+            r#"<InventoryConfiguration>
+                <Destination>
+                    <S3BucketDestination>
+                        <Bucket>arn:aws:s3:::dest</Bucket>
+                        <Prefix>inv/</Prefix>
+                    </S3BucketDestination>
+                </Destination>
+            </InventoryConfiguration>"#
+                .to_string(),
+        );
+        s.buckets.insert("src".to_string(), src);
+        s.buckets.insert(
+            "dest".to_string(),
+            S3Bucket::new("dest", "us-east-1", "owner"),
+        );
+
+        let mut multi: MultiAccountState<S3State> =
+            MultiAccountState::new("123456789012", "us-east-1", "http://x");
+        *multi.default_mut() = s;
+        let shared: SharedS3State = Arc::new(RwLock::new(multi));
+
+        generate_inventory_report(&shared, "src", "cfg");
+
+        let guard = shared.read();
+        let dest = guard.default_ref().buckets.get("dest").unwrap();
+        assert_eq!(dest.objects.len(), 1);
+        let (key, obj) = dest.objects.iter().next().unwrap();
+        assert!(key.starts_with("inv/src/cfg/data/"));
+        assert_eq!(obj.content_type, "text/csv");
+    }
+
+    #[test]
+    fn generate_inventory_missing_config_is_noop() {
+        use crate::state::{S3Bucket, S3State};
+        use fakecloud_core::multi_account::MultiAccountState;
+        use parking_lot::RwLock;
+        use std::sync::Arc;
+
+        let mut s = S3State::new("123456789012", "us-east-1");
+        s.buckets.insert(
+            "src".to_string(),
+            S3Bucket::new("src", "us-east-1", "owner"),
+        );
+        let mut multi: MultiAccountState<S3State> =
+            MultiAccountState::new("123456789012", "us-east-1", "http://x");
+        *multi.default_mut() = s;
+        let shared: SharedS3State = Arc::new(RwLock::new(multi));
+
+        // Should not panic even though cfg doesn't exist
+        generate_inventory_report(&shared, "src", "missing");
+    }
 }

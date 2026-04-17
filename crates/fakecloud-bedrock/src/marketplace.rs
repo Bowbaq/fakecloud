@@ -316,3 +316,180 @@ pub fn deregister_marketplace_model_endpoint(
         }
     })))
 }
+#[cfg(test)]
+#[allow(clippy::too_many_lines)]
+mod tests {
+    use super::*;
+    use crate::state::BedrockState;
+    use bytes::Bytes;
+    use http::{HeaderMap, Method};
+    use parking_lot::RwLock;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    fn shared() -> SharedBedrockState {
+        Arc::new(RwLock::new(BedrockState::new("123456789012", "us-east-1")))
+    }
+
+    fn req() -> AwsRequest {
+        AwsRequest {
+            service: "bedrock".to_string(),
+            action: "a".to_string(),
+            method: Method::POST,
+            raw_path: "/".to_string(),
+            raw_query: String::new(),
+            path_segments: vec![],
+            query_params: HashMap::new(),
+            headers: HeaderMap::new(),
+            body: Bytes::new(),
+            account_id: "123456789012".to_string(),
+            region: "us-east-1".to_string(),
+            request_id: "req".to_string(),
+            is_query_protocol: false,
+            access_key_id: None,
+            principal: None,
+        }
+    }
+
+    fn create(state: &SharedBedrockState, name: &str) -> String {
+        let body = json!({"endpointName": name, "modelSourceIdentifier": "m"});
+        let resp = create_marketplace_model_endpoint(state, &req(), &body).unwrap();
+        let text = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        let v: Value = serde_json::from_str(text).unwrap();
+        v["marketplaceModelEndpointArn"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    #[test]
+    fn create_missing_name_errors() {
+        let s = shared();
+        let err =
+            create_marketplace_model_endpoint(&s, &req(), &json!({"modelSourceIdentifier": "m"}))
+                .err()
+                .unwrap();
+        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn create_missing_model_source_errors() {
+        let s = shared();
+        let err = create_marketplace_model_endpoint(&s, &req(), &json!({"endpointName": "n"}))
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn create_and_get_by_arn() {
+        let s = shared();
+        let arn = create(&s, "ep-1");
+        let resp = get_marketplace_model_endpoint(&s, &arn).unwrap();
+        let v: Value =
+            serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
+        assert_eq!(v["marketplaceModelEndpoint"]["endpointName"], "ep-1");
+    }
+
+    #[test]
+    fn get_by_name_or_id() {
+        let s = shared();
+        let arn = create(&s, "my-ep");
+        let id = arn.rsplit('/').next().unwrap().to_string();
+        assert!(get_marketplace_model_endpoint(&s, &id).is_ok());
+        assert!(get_marketplace_model_endpoint(&s, "my-ep").is_ok());
+    }
+
+    #[test]
+    fn get_unknown_returns_not_found() {
+        let s = shared();
+        let err = get_marketplace_model_endpoint(&s, "missing").err().unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn list_paginates_over_endpoints() {
+        let s = shared();
+        for i in 0..3 {
+            create(&s, &format!("ep-{i}"));
+        }
+        let mut r = req();
+        r.query_params
+            .insert("maxResults".to_string(), "2".to_string());
+        let resp = list_marketplace_model_endpoints(&s, &r).unwrap();
+        let v: Value =
+            serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
+        assert_eq!(v["marketplaceModelEndpoints"].as_array().unwrap().len(), 2);
+        assert!(v["nextToken"].is_string());
+    }
+
+    #[test]
+    fn update_sets_new_config() {
+        let s = shared();
+        let arn = create(&s, "up-ep");
+        update_marketplace_model_endpoint(&s, &arn, &json!({"endpointConfig": {"a": 1}})).unwrap();
+        assert_eq!(
+            s.read().marketplace_endpoints[&arn].endpoint_config,
+            json!({"a": 1})
+        );
+    }
+
+    #[test]
+    fn update_unknown_returns_not_found() {
+        let s = shared();
+        let err = update_marketplace_model_endpoint(&s, "miss", &json!({}))
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn delete_removes_endpoint() {
+        let s = shared();
+        let arn = create(&s, "del-ep");
+        delete_marketplace_model_endpoint(&s, &arn).unwrap();
+        assert!(s.read().marketplace_endpoints.is_empty());
+    }
+
+    #[test]
+    fn delete_unknown_returns_not_found() {
+        let s = shared();
+        let err = delete_marketplace_model_endpoint(&s, "miss").err().unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn register_transitions_status() {
+        let s = shared();
+        let arn = create(&s, "reg-ep");
+        register_marketplace_model_endpoint(&s, &arn).unwrap();
+        assert_eq!(s.read().marketplace_endpoints[&arn].status, "Registered");
+    }
+
+    #[test]
+    fn register_unknown_returns_not_found() {
+        let s = shared();
+        let err = register_marketplace_model_endpoint(&s, "miss")
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn deregister_resets_to_active() {
+        let s = shared();
+        let arn = create(&s, "dereg");
+        register_marketplace_model_endpoint(&s, &arn).unwrap();
+        deregister_marketplace_model_endpoint(&s, &arn).unwrap();
+        assert_eq!(s.read().marketplace_endpoints[&arn].status, "Active");
+    }
+
+    #[test]
+    fn deregister_unknown_returns_not_found() {
+        let s = shared();
+        let err = deregister_marketplace_model_endpoint(&s, "miss")
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+}

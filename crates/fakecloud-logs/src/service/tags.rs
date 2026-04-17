@@ -365,4 +365,169 @@ mod tests {
         );
         assert!(svc.tag_resource(&req).is_err());
     }
+
+    // ---- Legacy tag_log_group/untag_log_group/list_tags_log_group ----
+
+    #[test]
+    fn legacy_tag_log_group_adds_and_lists_tags() {
+        let svc = make_service();
+        create_group(&svc, "legacy-grp");
+
+        let req = make_request(
+            "TagLogGroup",
+            json!({
+                "logGroupName": "legacy-grp",
+                "tags": { "env": "dev", "owner": "me" },
+            }),
+        );
+        svc.tag_log_group(&req).unwrap();
+
+        let req = make_request("ListTagsLogGroup", json!({ "logGroupName": "legacy-grp" }));
+        let resp = svc.list_tags_log_group(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["tags"]["env"], "dev");
+        assert_eq!(body["tags"]["owner"], "me");
+    }
+
+    #[test]
+    fn legacy_untag_log_group_removes_keys() {
+        let svc = make_service();
+        create_group(&svc, "legacy-u");
+        let req = make_request(
+            "TagLogGroup",
+            json!({"logGroupName": "legacy-u", "tags": {"a": "1", "b": "2"}}),
+        );
+        svc.tag_log_group(&req).unwrap();
+
+        let req = make_request(
+            "UntagLogGroup",
+            json!({"logGroupName": "legacy-u", "tags": ["a"]}),
+        );
+        svc.untag_log_group(&req).unwrap();
+
+        let req = make_request("ListTagsLogGroup", json!({"logGroupName": "legacy-u"}));
+        let resp = svc.list_tags_log_group(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(body["tags"].get("a").is_none());
+        assert_eq!(body["tags"]["b"], "2");
+    }
+
+    #[test]
+    fn legacy_tag_log_group_missing_name_errors() {
+        let svc = make_service();
+        let req = make_request("TagLogGroup", json!({"tags": {}}));
+        assert!(svc.tag_log_group(&req).is_err());
+    }
+
+    #[test]
+    fn legacy_tag_log_group_missing_tags_errors() {
+        let svc = make_service();
+        create_group(&svc, "legacy-m");
+        let req = make_request("TagLogGroup", json!({"logGroupName": "legacy-m"}));
+        assert!(svc.tag_log_group(&req).is_err());
+    }
+
+    #[test]
+    fn legacy_tag_log_group_nonexistent_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "TagLogGroup",
+            json!({"logGroupName": "missing", "tags": {"k": "v"}}),
+        );
+        assert!(svc.tag_log_group(&req).is_err());
+    }
+
+    #[test]
+    fn legacy_untag_log_group_missing_name_errors() {
+        let svc = make_service();
+        let req = make_request("UntagLogGroup", json!({"tags": ["k"]}));
+        assert!(svc.untag_log_group(&req).is_err());
+    }
+
+    #[test]
+    fn legacy_untag_log_group_missing_tags_errors() {
+        let svc = make_service();
+        create_group(&svc, "legacy-n");
+        let req = make_request("UntagLogGroup", json!({"logGroupName": "legacy-n"}));
+        assert!(svc.untag_log_group(&req).is_err());
+    }
+
+    #[test]
+    fn legacy_untag_log_group_nonexistent_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "UntagLogGroup",
+            json!({"logGroupName": "missing", "tags": ["k"]}),
+        );
+        assert!(svc.untag_log_group(&req).is_err());
+    }
+
+    #[test]
+    fn legacy_list_tags_missing_name_errors() {
+        let svc = make_service();
+        let req = make_request("ListTagsLogGroup", json!({}));
+        assert!(svc.list_tags_log_group(&req).is_err());
+    }
+
+    #[test]
+    fn legacy_list_tags_nonexistent_errors() {
+        let svc = make_service();
+        let req = make_request("ListTagsLogGroup", json!({"logGroupName": "missing"}));
+        assert!(svc.list_tags_log_group(&req).is_err());
+    }
+
+    // ---- tag_resource / untag_resource validation paths ----
+
+    #[test]
+    fn tag_resource_missing_arn_errors() {
+        let svc = make_service();
+        let req = make_request("TagResource", json!({"tags": {"k": "v"}}));
+        assert!(svc.tag_resource(&req).is_err());
+    }
+
+    #[test]
+    fn tag_resource_missing_tags_errors() {
+        let svc = make_service();
+        create_group(&svc, "grp");
+        let req = make_request(
+            "TagResource",
+            json!({"resourceArn": "arn:aws:logs:us-east-1:123456789012:log-group:grp:*"}),
+        );
+        assert!(svc.tag_resource(&req).is_err());
+    }
+
+    #[test]
+    fn untag_resource_missing_arn_errors() {
+        let svc = make_service();
+        let req = make_request("UntagResource", json!({"tagKeys": ["k"]}));
+        assert!(svc.untag_resource(&req).is_err());
+    }
+
+    #[test]
+    fn untag_resource_missing_keys_errors() {
+        let svc = make_service();
+        create_group(&svc, "grp");
+        let req = make_request(
+            "UntagResource",
+            json!({"resourceArn": "arn:aws:logs:us-east-1:123456789012:log-group:grp:*"}),
+        );
+        assert!(svc.untag_resource(&req).is_err());
+    }
+
+    #[test]
+    fn list_tags_for_resource_missing_arn_errors() {
+        let svc = make_service();
+        let req = make_request("ListTagsForResource", json!({}));
+        assert!(svc.list_tags_for_resource(&req).is_err());
+    }
+
+    #[test]
+    fn list_tags_for_resource_nonexistent_arn_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "ListTagsForResource",
+            json!({"resourceArn": "arn:aws:logs:us-east-1:123456789012:log-group:nope:*"}),
+        );
+        assert!(svc.list_tags_for_resource(&req).is_err());
+    }
 }

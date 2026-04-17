@@ -457,4 +457,138 @@ mod tests {
         let state = DynamoDbState::new("123", "us-east-1");
         assert!(state.tables.is_empty());
     }
+
+    fn table_with_hash_key(hash: &str) -> DynamoTable {
+        DynamoTable {
+            name: "t".to_string(),
+            arn: "arn:aws:dynamodb:us-east-1:123:table/t".to_string(),
+            table_id: "id".to_string(),
+            key_schema: vec![KeySchemaElement {
+                attribute_name: hash.to_string(),
+                key_type: "HASH".to_string(),
+            }],
+            attribute_definitions: vec![],
+            provisioned_throughput: ProvisionedThroughput {
+                read_capacity_units: 1,
+                write_capacity_units: 1,
+            },
+            items: Vec::new(),
+            gsi: Vec::new(),
+            lsi: Vec::new(),
+            tags: HashMap::new(),
+            created_at: Utc::now(),
+            status: "ACTIVE".to_string(),
+            item_count: 0,
+            size_bytes: 0,
+            billing_mode: "PROVISIONED".to_string(),
+            ttl_attribute: None,
+            ttl_enabled: false,
+            resource_policy: None,
+            pitr_enabled: false,
+            kinesis_destinations: Vec::new(),
+            contributor_insights_status: "DISABLED".to_string(),
+            contributor_insights_counters: HashMap::new(),
+            stream_enabled: false,
+            stream_view_type: None,
+            stream_arn: None,
+            stream_records: empty_stream_records(),
+            sse_type: None,
+            sse_kms_key_arn: None,
+            deletion_protection_enabled: false,
+            on_demand_throughput: None,
+        }
+    }
+
+    #[test]
+    fn hash_key_name_extracts_from_schema() {
+        let t = table_with_hash_key("pk");
+        assert_eq!(t.hash_key_name(), "pk");
+    }
+
+    #[test]
+    fn hash_key_name_empty_when_no_hash_schema() {
+        let mut t = table_with_hash_key("pk");
+        t.key_schema.clear();
+        assert_eq!(t.hash_key_name(), "");
+    }
+
+    #[test]
+    fn record_key_access_noop_when_disabled() {
+        let mut t = table_with_hash_key("pk");
+        let mut key = HashMap::new();
+        key.insert("pk".to_string(), json!({"S": "a"}));
+        t.record_key_access(&key);
+        assert!(t.contributor_insights_counters.is_empty());
+    }
+
+    #[test]
+    fn record_key_access_increments_when_enabled() {
+        let mut t = table_with_hash_key("pk");
+        t.contributor_insights_status = "ENABLED".to_string();
+        let mut key = HashMap::new();
+        key.insert("pk".to_string(), json!({"S": "a"}));
+        t.record_key_access(&key);
+        t.record_key_access(&key);
+        assert_eq!(t.contributor_insights_counters.values().sum::<u64>(), 2);
+    }
+
+    #[test]
+    fn record_item_access_uses_hash_key_from_item() {
+        let mut t = table_with_hash_key("pk");
+        t.contributor_insights_status = "ENABLED".to_string();
+        let mut item = HashMap::new();
+        item.insert("pk".to_string(), json!({"S": "user-1"}));
+        item.insert("other".to_string(), json!({"N": "42"}));
+        t.record_item_access(&item);
+        assert_eq!(t.contributor_insights_counters.values().sum::<u64>(), 1);
+    }
+
+    #[test]
+    fn top_contributors_returns_sorted() {
+        let mut t = table_with_hash_key("pk");
+        t.contributor_insights_counters.insert("a".to_string(), 3);
+        t.contributor_insights_counters.insert("b".to_string(), 10);
+        t.contributor_insights_counters.insert("c".to_string(), 1);
+        let top = t.top_contributors(2);
+        assert_eq!(top.len(), 2);
+        assert_eq!(top[0], ("b", 10));
+        assert_eq!(top[1], ("a", 3));
+    }
+
+    #[test]
+    fn recalculate_stats_matches_items() {
+        let mut t = table_with_hash_key("pk");
+        let mut item1 = HashMap::new();
+        item1.insert("pk".to_string(), json!({"S": "hello"}));
+        let mut item2 = HashMap::new();
+        item2.insert("pk".to_string(), json!({"N": "42"}));
+        item2.insert("flag".to_string(), json!({"BOOL": true}));
+        t.items.push(item1);
+        t.items.push(item2);
+        t.recalculate_stats();
+        assert_eq!(t.item_count, 2);
+        assert!(t.size_bytes > 0);
+    }
+
+    #[test]
+    fn estimate_value_size_covers_all_types() {
+        let s = DynamoTable::estimate_value_size(&json!({"S": "abc"}));
+        assert_eq!(s, 3);
+        let n = DynamoTable::estimate_value_size(&json!({"N": "42"}));
+        assert_eq!(n, 2);
+        let b = DynamoTable::estimate_value_size(&json!({"BOOL": true}));
+        assert_eq!(b, 1);
+        let null = DynamoTable::estimate_value_size(&json!({"NULL": true}));
+        assert_eq!(null, 1);
+        let l = DynamoTable::estimate_value_size(&json!({"L": [{"S": "x"}, {"S": "yy"}]}));
+        assert_eq!(l, 6);
+        let m = DynamoTable::estimate_value_size(&json!({"M": {"key": {"S": "v"}}}));
+        assert_eq!(m, 7);
+        let ss = DynamoTable::estimate_value_size(&json!({"SS": ["ab", "cde"]}));
+        assert_eq!(ss, 5);
+        let ns = DynamoTable::estimate_value_size(&json!({"NS": ["12", "345"]}));
+        assert_eq!(ns, 5);
+        let bin = DynamoTable::estimate_value_size(&json!({"B": "AAAAAAAA"}));
+        assert_eq!(bin, 6);
+    }
 }
