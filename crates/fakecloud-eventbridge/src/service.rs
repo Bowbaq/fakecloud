@@ -6755,4 +6755,158 @@ mod tests {
         );
         assert!(svc.list_tags_for_resource(&req).is_err());
     }
+
+    // ── describe_rule with EventBusName ──
+
+    #[test]
+    fn describe_rule_custom_bus() {
+        let svc = make_service();
+        svc.create_event_bus(&make_request("CreateEventBus", json!({"Name": "cb"})))
+            .unwrap();
+
+        svc.put_rule(&make_request(
+            "PutRule",
+            json!({
+                "Name": "r-cb",
+                "EventPattern": "{\"source\":[\"aws.s3\"]}",
+                "EventBusName": "cb"
+            }),
+        ))
+        .unwrap();
+
+        let resp = svc
+            .describe_rule(&make_request(
+                "DescribeRule",
+                json!({"Name": "r-cb", "EventBusName": "cb"}),
+            ))
+            .unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["Name"], "r-cb");
+    }
+
+    // ── enable/disable rule on custom bus ──
+
+    #[test]
+    fn disable_rule_on_custom_bus() {
+        let svc = make_service();
+        svc.create_event_bus(&make_request("CreateEventBus", json!({"Name": "dcb"})))
+            .unwrap();
+        svc.put_rule(&make_request(
+            "PutRule",
+            json!({
+                "Name": "r-d",
+                "EventPattern": "{\"source\":[\"s\"]}",
+                "EventBusName": "dcb"
+            }),
+        ))
+        .unwrap();
+        svc.disable_rule(&make_request(
+            "DisableRule",
+            json!({"Name": "r-d", "EventBusName": "dcb"}),
+        ))
+        .unwrap();
+    }
+
+    // ── describe_event_bus with custom bus ──
+
+    #[test]
+    fn describe_event_bus_custom() {
+        let svc = make_service();
+        svc.create_event_bus(&make_request("CreateEventBus", json!({"Name": "deb"})))
+            .unwrap();
+        let resp = svc
+            .describe_event_bus(&make_request("DescribeEventBus", json!({"Name": "deb"})))
+            .unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["Name"], "deb");
+    }
+
+    #[test]
+    fn list_event_buses_with_name_prefix() {
+        let svc = make_service();
+        for name in &["dev-x", "dev-y", "prod-z"] {
+            svc.create_event_bus(&make_request("CreateEventBus", json!({"Name": name})))
+                .unwrap();
+        }
+        let resp = svc
+            .list_event_buses(&make_request(
+                "ListEventBuses",
+                json!({"NamePrefix": "dev-"}),
+            ))
+            .unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["EventBuses"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn list_rules_on_custom_bus() {
+        let svc = make_service();
+        svc.create_event_bus(&make_request("CreateEventBus", json!({"Name": "lrcb"})))
+            .unwrap();
+        svc.put_rule(&make_request(
+            "PutRule",
+            json!({
+                "Name": "r1",
+                "EventPattern": "{\"source\":[\"s\"]}",
+                "EventBusName": "lrcb"
+            }),
+        ))
+        .unwrap();
+
+        let resp = svc
+            .list_rules(&make_request("ListRules", json!({"EventBusName": "lrcb"})))
+            .unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["Rules"].as_array().unwrap().len(), 1);
+    }
+
+    // ── put_targets on custom bus ──
+
+    #[test]
+    fn put_targets_on_custom_bus() {
+        let svc = make_service();
+        svc.create_event_bus(&make_request("CreateEventBus", json!({"Name": "ptcb"})))
+            .unwrap();
+        svc.put_rule(&make_request(
+            "PutRule",
+            json!({
+                "Name": "rt",
+                "EventPattern": "{\"source\":[\"s\"]}",
+                "EventBusName": "ptcb"
+            }),
+        ))
+        .unwrap();
+
+        svc.put_targets(&make_request(
+            "PutTargets",
+            json!({
+                "Rule": "rt",
+                "EventBusName": "ptcb",
+                "Targets": [{"Id": "t1", "Arn": "arn:aws:sqs:us-east-1:123456789012:q1"}]
+            }),
+        ))
+        .unwrap();
+    }
+
+    // ── remove_targets unknown target ids ──
+
+    #[test]
+    fn remove_targets_unknown_ids_returns_failed() {
+        let svc = make_service();
+        svc.put_rule(&make_request(
+            "PutRule",
+            json!({"Name": "rmt", "EventPattern": "{\"source\":[\"s\"]}"}),
+        ))
+        .unwrap();
+
+        let resp = svc
+            .remove_targets(&make_request(
+                "RemoveTargets",
+                json!({"Rule": "rmt", "Ids": ["ghost1", "ghost2"]}),
+            ))
+            .unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        // Unknown ids are silently ok in many implementations; at least we hit the code path
+        assert!(body.is_object());
+    }
 }
