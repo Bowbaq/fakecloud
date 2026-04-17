@@ -3899,4 +3899,99 @@ mod tests {
         let b = body_of(resp);
         assert!(b.contains("DescribeDBInstancesResult"));
     }
+
+    #[test]
+    fn describe_db_snapshots_empty_returns_empty_list() {
+        let svc = make_service();
+        let req = request("DescribeDBSnapshots", &[]);
+        let resp = svc.describe_db_snapshots(&req).unwrap();
+        let b = body_of(resp);
+        assert!(b.contains("DescribeDBSnapshotsResult"));
+    }
+
+    #[test]
+    fn add_tags_unknown_resource_errors() {
+        let svc = make_service();
+        let req = request(
+            "AddTagsToResource",
+            &[
+                ("ResourceName", "arn:aws:rds:us-east-1:123:db:ghost"),
+                ("Tags.member.1.Key", "k"),
+                ("Tags.member.1.Value", "v"),
+            ],
+        );
+        assert!(svc.add_tags_to_resource(&req).is_err());
+    }
+
+    #[test]
+    fn remove_tags_unknown_resource_errors() {
+        let svc = make_service();
+        let req = request(
+            "RemoveTagsFromResource",
+            &[
+                ("ResourceName", "arn:aws:rds:us-east-1:123:db:ghost"),
+                ("TagKeys.member.1", "k"),
+            ],
+        );
+        assert!(svc.remove_tags_from_resource(&req).is_err());
+    }
+
+    #[test]
+    fn create_db_parameter_group_missing_name_errors() {
+        let svc = make_service();
+        let req = request(
+            "CreateDBParameterGroup",
+            &[
+                ("DBParameterGroupFamily", "postgres16"),
+                ("Description", "d"),
+            ],
+        );
+        assert!(svc.create_db_parameter_group(&req).is_err());
+    }
+
+    #[test]
+    fn create_db_subnet_group_missing_desc_errors() {
+        let svc = make_service();
+        let req = request(
+            "CreateDBSubnetGroup",
+            &[
+                ("DBSubnetGroupName", "sg1"),
+                ("SubnetIds.SubnetIdentifier.1", "subnet-a"),
+                ("SubnetIds.SubnetIdentifier.2", "subnet-b"),
+            ],
+        );
+        assert!(svc.create_db_subnet_group(&req).is_err());
+    }
+
+    #[tokio::test]
+    async fn create_db_instance_missing_class_errors() {
+        let svc = make_service();
+        let req = request(
+            "CreateDBInstance",
+            &[
+                ("DBInstanceIdentifier", "miss-class"),
+                ("Engine", "postgres"),
+                ("AllocatedStorage", "20"),
+                ("MasterUsername", "admin"),
+                ("MasterUserPassword", "secretpass"),
+            ],
+        );
+        assert!(svc.create_db_instance(&req).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn create_db_instance_missing_master_username_errors() {
+        let svc = make_service();
+        let req = request(
+            "CreateDBInstance",
+            &[
+                ("DBInstanceIdentifier", "miss-mu"),
+                ("Engine", "postgres"),
+                ("DBInstanceClass", "db.t3.micro"),
+                ("AllocatedStorage", "20"),
+                ("MasterUserPassword", "secretpass"),
+            ],
+        );
+        assert!(svc.create_db_instance(&req).await.is_err());
+    }
 }
