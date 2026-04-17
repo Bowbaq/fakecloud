@@ -157,6 +157,16 @@ impl AccountState for SchedulerState {
 
 pub type SharedSchedulerState = Arc<RwLock<MultiAccountState<SchedulerState>>>;
 
+/// Bumped whenever the on-disk shape of `SchedulerSnapshot` changes.
+/// Schema version 1 is the initial format introduced by Batch 3.
+pub const SCHEDULER_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SchedulerSnapshot {
+    pub schema_version: u32,
+    pub accounts: MultiAccountState<SchedulerState>,
+}
+
 /// Build an EventBridge Scheduler schedule ARN.
 /// Format: `arn:aws:scheduler:<region>:<account>:schedule/<group>/<name>`.
 pub fn schedule_arn(region: &str, account_id: &str, group: &str, name: &str) -> String {

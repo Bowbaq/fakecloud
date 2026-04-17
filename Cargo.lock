@@ -2496,6 +2496,7 @@ dependencies = [
  "chrono",
  "fakecloud-aws",
  "fakecloud-core",
+ "fakecloud-persistence",
  "http 1.4.0",
  "parking_lot",
  "percent-encoding",

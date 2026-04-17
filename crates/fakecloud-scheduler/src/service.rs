@@ -9,15 +9,18 @@ use async_trait::async_trait;
 use chrono::{DateTime, TimeZone, Utc};
 use http::{Method, StatusCode};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
+use tokio::sync::Mutex as AsyncMutex;
 
 use fakecloud_core::pagination::paginate;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
+use fakecloud_persistence::SnapshotStore;
 
 use crate::state::{
     group_arn, schedule_arn, DeadLetterConfig, FlexibleTimeWindow, RetryPolicy, Schedule,
-    ScheduleGroup, SharedSchedulerState, SqsParameters, Target, DEFAULT_GROUP,
+    ScheduleGroup, SchedulerSnapshot, SharedSchedulerState, SqsParameters, Target, DEFAULT_GROUP,
+    SCHEDULER_SNAPSHOT_SCHEMA_VERSION,
 };
 
 const NAME_MAX: usize = 64;
@@ -25,11 +28,44 @@ const NAME_PATTERN_DESC: &str = r"^[0-9a-zA-Z-_.]+$";
 
 pub struct SchedulerService {
     state: SharedSchedulerState,
+    snapshot_store: Option<Arc<dyn SnapshotStore>>,
+    snapshot_lock: Arc<AsyncMutex<()>>,
 }
 
 impl SchedulerService {
     pub fn new(state: SharedSchedulerState) -> Self {
-        Self { state }
+        Self {
+            state,
+            snapshot_store: None,
+            snapshot_lock: Arc::new(AsyncMutex::new(())),
+        }
+    }
+
+    pub fn with_snapshot_store(mut self, store: Arc<dyn SnapshotStore>) -> Self {
+        self.snapshot_store = Some(store);
+        self
+    }
+
+    async fn save_snapshot(&self) {
+        let Some(store) = self.snapshot_store.clone() else {
+            return;
+        };
+        let _guard = self.snapshot_lock.lock().await;
+        let snapshot = SchedulerSnapshot {
+            schema_version: SCHEDULER_SNAPSHOT_SCHEMA_VERSION,
+            accounts: self.state.read().clone(),
+        };
+        let join = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            let bytes = serde_json::to_vec(&snapshot)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+            store.save(&bytes)
+        })
+        .await;
+        match join {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => tracing::error!(%err, "failed to write scheduler snapshot"),
+            Err(err) => tracing::error!(%err, "scheduler snapshot task panicked"),
+        }
     }
 
     fn resolve_action(req: &AwsRequest) -> Option<(&'static str, PathArgs)> {
@@ -544,7 +580,18 @@ impl AwsService for SchedulerService {
             )
         })?;
 
-        match (action, &args) {
+        let mutates = matches!(
+            action,
+            "CreateSchedule"
+                | "UpdateSchedule"
+                | "DeleteSchedule"
+                | "CreateScheduleGroup"
+                | "DeleteScheduleGroup"
+                | "TagResource"
+                | "UntagResource"
+        );
+
+        let result = match (action, &args) {
             ("CreateSchedule", PathArgs::Name(n)) => self.create_schedule(&req, n),
             ("GetSchedule", PathArgs::Name(n)) => self.get_schedule(&req, n),
             ("UpdateSchedule", PathArgs::Name(n)) => self.update_schedule(&req, n),
@@ -558,7 +605,12 @@ impl AwsService for SchedulerService {
             ("UntagResource", PathArgs::Arn(a)) => self.untag_resource(&req, a),
             ("ListTagsForResource", PathArgs::Arn(a)) => self.list_tags_for_resource(&req, a),
             _ => Err(AwsServiceError::action_not_implemented("scheduler", action)),
+        };
+
+        if mutates && matches!(result.as_ref(), Ok(resp) if resp.status.is_success()) {
+            self.save_snapshot().await;
         }
+        result
     }
 
     fn supported_actions(&self) -> &[&str] {
@@ -577,6 +629,142 @@ impl AwsService for SchedulerService {
             "ListTagsForResource",
         ]
     }
+
+    fn iam_enforceable(&self) -> bool {
+        true
+    }
+
+    fn iam_action_for(&self, request: &AwsRequest) -> Option<fakecloud_core::auth::IamAction> {
+        let (raw_action, args) = Self::resolve_action(request)?;
+        let action: &'static str = match raw_action {
+            "CreateSchedule" => "CreateSchedule",
+            "GetSchedule" => "GetSchedule",
+            "UpdateSchedule" => "UpdateSchedule",
+            "DeleteSchedule" => "DeleteSchedule",
+            "ListSchedules" => "ListSchedules",
+            "CreateScheduleGroup" => "CreateScheduleGroup",
+            "GetScheduleGroup" => "GetScheduleGroup",
+            "DeleteScheduleGroup" => "DeleteScheduleGroup",
+            "ListScheduleGroups" => "ListScheduleGroups",
+            "TagResource" => "TagResource",
+            "UntagResource" => "UntagResource",
+            "ListTagsForResource" => "ListTagsForResource",
+            _ => return None,
+        };
+        let region = request.region.as_str();
+        let account = request
+            .principal
+            .as_ref()
+            .map(|p| p.account_id.as_str())
+            .unwrap_or(request.account_id.as_str());
+        let resource = match (action, &args) {
+            ("CreateSchedule", PathArgs::Name(n))
+            | ("GetSchedule", PathArgs::Name(n))
+            | ("UpdateSchedule", PathArgs::Name(n))
+            | ("DeleteSchedule", PathArgs::Name(n)) => {
+                let group = schedule_group_from_request(request);
+                schedule_arn(region, account, &group, n)
+            }
+            ("CreateScheduleGroup", PathArgs::Name(n))
+            | ("GetScheduleGroup", PathArgs::Name(n))
+            | ("DeleteScheduleGroup", PathArgs::Name(n)) => group_arn(region, account, n),
+            ("TagResource", PathArgs::Arn(a))
+            | ("UntagResource", PathArgs::Arn(a))
+            | ("ListTagsForResource", PathArgs::Arn(a)) => a.clone(),
+            ("ListSchedules", _) | ("ListScheduleGroups", _) => "*".to_string(),
+            _ => "*".to_string(),
+        };
+        Some(fakecloud_core::auth::IamAction {
+            service: "scheduler",
+            action,
+            resource,
+        })
+    }
+
+    fn iam_condition_keys_for(
+        &self,
+        request: &AwsRequest,
+        action: &fakecloud_core::auth::IamAction,
+    ) -> BTreeMap<String, Vec<String>> {
+        let mut out = BTreeMap::new();
+        // `scheduler:ScheduleGroup` is the only documented service-
+        // specific condition key on Scheduler operations. Emit it
+        // whenever the request targets a specific group.
+        let group = match action.action {
+            "CreateSchedule" | "UpdateSchedule" => Self::body_field(&request.body, "GroupName")
+                .unwrap_or_else(|| DEFAULT_GROUP.to_string()),
+            "GetSchedule" | "DeleteSchedule" => schedule_group_from_request(request),
+            "CreateScheduleGroup" | "GetScheduleGroup" | "DeleteScheduleGroup" => {
+                // The resource ARN already contains the group name.
+                arn_group_name(&action.resource).unwrap_or_default()
+            }
+            _ => return out,
+        };
+        if !group.is_empty() {
+            out.insert("scheduler:schedulegroup".to_string(), vec![group]);
+        }
+        out
+    }
+
+    fn resource_tags_for(&self, resource_arn: &str) -> Option<HashMap<String, String>> {
+        let group_name = group_name_from_tag_arn(resource_arn).ok()?;
+        let accounts = self.state.read();
+        let account_id = arn_account_id(resource_arn)?;
+        let state = accounts.get(&account_id)?;
+        state.groups.get(&group_name).map(|g| g.tags.clone())
+    }
+
+    fn request_tags_from(
+        &self,
+        request: &AwsRequest,
+        action: &str,
+    ) -> Option<HashMap<String, String>> {
+        match action {
+            "CreateScheduleGroup" | "TagResource" => {
+                let body: Value = serde_json::from_slice(&request.body).ok()?;
+                let arr = body.get("Tags").and_then(|v| v.as_array())?;
+                let mut out = HashMap::new();
+                for tag in arr {
+                    if let (Some(k), Some(v)) = (
+                        tag.get("Key").and_then(|v| v.as_str()),
+                        tag.get("Value").and_then(|v| v.as_str()),
+                    ) {
+                        out.insert(k.to_string(), v.to_string());
+                    }
+                }
+                Some(out)
+            }
+            _ => None,
+        }
+    }
+}
+
+impl SchedulerService {
+    fn body_field(body: &[u8], key: &str) -> Option<String> {
+        serde_json::from_slice::<Value>(body)
+            .ok()
+            .and_then(|v| v.get(key).and_then(|f| f.as_str()).map(String::from))
+    }
+}
+
+/// Resolve the schedule group a request targets: explicit `groupName`
+/// query param (Get/Delete) takes priority, otherwise default.
+fn schedule_group_from_request(request: &AwsRequest) -> String {
+    request
+        .query_params
+        .get("groupName")
+        .cloned()
+        .unwrap_or_else(|| DEFAULT_GROUP.to_string())
+}
+
+fn arn_group_name(arn: &str) -> Option<String> {
+    arn.split(':')
+        .nth(5)
+        .and_then(|r| r.strip_prefix("schedule-group/").map(str::to_string))
+}
+
+fn arn_account_id(arn: &str) -> Option<String> {
+    arn.split(':').nth(4).map(str::to_string)
 }
 
 // ---------------------------------------------------------------------------
