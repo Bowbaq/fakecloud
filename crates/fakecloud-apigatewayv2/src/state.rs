@@ -213,3 +213,44 @@ pub struct ApiRequest {
     pub timestamp: DateTime<Utc>,
     pub status_code: u16,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_state_empty() {
+        let state = ApiGatewayV2State::new("123456789012", "us-east-1");
+        assert_eq!(state.account_id, "123456789012");
+        assert_eq!(state.region, "us-east-1");
+        assert!(state.apis.is_empty());
+        assert!(state.routes.is_empty());
+        assert!(state.request_history.is_empty());
+    }
+
+    #[test]
+    fn new_http_api_defaults() {
+        let api = HttpApi::new(
+            "abc123".to_string(),
+            "my-api".to_string(),
+            Some("desc".to_string()),
+            None,
+            "us-east-1",
+        );
+        assert_eq!(api.api_id, "abc123");
+        assert_eq!(api.name, "my-api");
+        assert_eq!(api.protocol_type, "HTTP");
+        assert_eq!(
+            api.api_key_selection_expression,
+            "$request.header.x-api-key"
+        );
+        assert_eq!(
+            api.route_selection_expression,
+            "$request.method $request.path"
+        );
+        assert!(api.api_endpoint.contains("abc123"));
+        assert!(api.api_endpoint.contains("us-east-1"));
+        assert!(!api.disable_execute_api_endpoint);
+        assert_eq!(api.ip_address_type, "ipv4");
+    }
+}
