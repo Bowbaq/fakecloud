@@ -169,3 +169,57 @@ pub struct KinesisSnapshot {
 }
 
 pub const KINESIS_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_has_empty_collections() {
+        let state = KinesisState::new("123456789012", "us-east-1");
+        assert_eq!(state.account_id, "123456789012");
+        assert_eq!(state.region, "us-east-1");
+        assert!(state.streams.is_empty());
+        assert!(state.iterators.is_empty());
+        assert_eq!(state.shard_limit, 500);
+    }
+
+    #[test]
+    fn stream_arn_format() {
+        let state = KinesisState::new("123456789012", "us-east-1");
+        assert_eq!(
+            state.stream_arn("my-stream"),
+            "arn:aws:kinesis:us-east-1:123456789012:stream/my-stream"
+        );
+    }
+
+    #[test]
+    fn stream_name_from_arn_unknown_stream_returns_none() {
+        let state = KinesisState::new("123456789012", "us-east-1");
+        assert_eq!(
+            state.stream_name_from_arn("arn:aws:kinesis:us-east-1:123:stream/ghost"),
+            None
+        );
+    }
+
+    #[test]
+    fn reset_clears_all() {
+        let mut state = KinesisState::new("123456789012", "us-east-1");
+        state.billing_commitment_status = "ENABLED".to_string();
+        state.reset();
+        assert_eq!(state.billing_commitment_status, "DISABLED");
+    }
+
+    #[test]
+    fn lambda_checkpoint_default_zero() {
+        let state = KinesisState::new("123456789012", "us-east-1");
+        assert_eq!(state.lambda_checkpoint("uuid-1", "shard-0"), 0);
+    }
+
+    #[test]
+    fn set_and_get_lambda_checkpoint() {
+        let mut state = KinesisState::new("123456789012", "us-east-1");
+        state.set_lambda_checkpoint("uuid-1", "shard-0", 42);
+        assert_eq!(state.lambda_checkpoint("uuid-1", "shard-0"), 42);
+    }
+}
