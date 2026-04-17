@@ -416,3 +416,28 @@ impl SesState {
 }
 
 pub type SharedSesState = Arc<RwLock<SesState>>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_initializes_defaults() {
+        let state = SesState::new("123456789012", "us-east-1");
+        assert_eq!(state.account_id, "123456789012");
+        assert_eq!(state.region, "us-east-1");
+        assert!(state.identities.is_empty());
+        assert!(state.configuration_sets.is_empty());
+        assert!(state.account_settings.sending_enabled);
+    }
+
+    #[test]
+    fn reset_preserves_account_region() {
+        let mut state = SesState::new("123456789012", "eu-west-1");
+        state.account_settings.sending_enabled = false;
+        state.reset();
+        assert_eq!(state.account_id, "123456789012");
+        assert_eq!(state.region, "eu-west-1");
+        assert!(state.account_settings.sending_enabled);
+    }
+}
