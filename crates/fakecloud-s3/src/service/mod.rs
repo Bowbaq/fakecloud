@@ -5357,4 +5357,139 @@ mod tests {
             "NoSuchBucket",
         );
     }
+
+    // ── restore_object ──
+
+    #[test]
+    fn restore_object_non_archival_errors() {
+        let svc = make_service();
+        seed_bucket(&svc, "roc");
+        let req = make_request(Method::PUT, "/roc/k", &[], b"x");
+        svc.put_object("123456789012", &req, "roc", "k").unwrap();
+
+        let req = make_request(Method::POST, "/roc/k", &[("restore", "")], b"");
+        assert_aws_err(
+            svc.restore_object("123456789012", &req, "roc", "k"),
+            "InvalidObjectState",
+        );
+    }
+
+    #[test]
+    fn restore_object_glacier_accepted() {
+        let svc = make_service();
+        seed_bucket(&svc, "rog");
+        let mut req = make_request(Method::PUT, "/rog/k", &[], b"x");
+        req.headers
+            .insert("x-amz-storage-class", "GLACIER".parse().unwrap());
+        svc.put_object("123456789012", &req, "rog", "k").unwrap();
+
+        let req = make_request(Method::POST, "/rog/k", &[("restore", "")], b"");
+        let resp = svc
+            .restore_object("123456789012", &req, "rog", "k")
+            .unwrap();
+        assert_eq!(resp.status, StatusCode::ACCEPTED);
+    }
+
+    #[test]
+    fn restore_object_nonexistent_key() {
+        let svc = make_service();
+        seed_bucket(&svc, "rnk");
+        let req = make_request(Method::POST, "/rnk/ghost", &[("restore", "")], b"");
+        assert_aws_err(
+            svc.restore_object("123456789012", &req, "rnk", "ghost"),
+            "NoSuchKey",
+        );
+    }
+
+    // ── list_object_versions ──
+
+    #[test]
+    fn list_object_versions_basic() {
+        let svc = make_service();
+        seed_bucket(&svc, "lov");
+        {
+            let mut mas = svc.state.write();
+            let state = mas.default_mut();
+            let b = state.buckets.get_mut("lov").unwrap();
+            b.versioning = Some("Enabled".to_string());
+        }
+        let req = make_request(Method::PUT, "/lov/k", &[], b"v1");
+        svc.put_object("123456789012", &req, "lov", "k").unwrap();
+        let req = make_request(Method::PUT, "/lov/k", &[], b"v2");
+        svc.put_object("123456789012", &req, "lov", "k").unwrap();
+
+        let req = make_request(Method::GET, "/lov", &[("versions", "")], b"");
+        let resp = svc
+            .list_object_versions("123456789012", &req, "lov")
+            .unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("<ListVersionsResult"));
+    }
+
+    #[test]
+    fn delete_objects_nonexistent_bucket() {
+        let svc = make_service();
+        let xml = b"<Delete><Object><Key>k</Key></Object></Delete>";
+        let req = make_request(Method::POST, "/ghost", &[("delete", "")], xml);
+        assert_aws_err(
+            svc.delete_objects("123456789012", &req, "ghost"),
+            "NoSuchBucket",
+        );
+    }
+
+    #[test]
+    fn put_object_custom_content_type() {
+        let svc = make_service();
+        seed_bucket(&svc, "ct");
+        let mut req = make_request(Method::PUT, "/ct/k", &[], b"hi");
+        req.headers
+            .insert("content-type", "text/plain".parse().unwrap());
+        svc.put_object("123456789012", &req, "ct", "k").unwrap();
+        let req = make_request(Method::GET, "/ct/k", &[], b"");
+        let resp = svc.get_object("123456789012", &req, "ct", "k").unwrap();
+        assert_eq!(resp.content_type, "text/plain");
+    }
+
+    #[test]
+    fn head_object_bucket_not_found() {
+        let svc = make_service();
+        let req = make_request(Method::HEAD, "/ghost/k", &[], b"");
+        let result = svc.head_object("123456789012", &req, "ghost", "k");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn get_object_attributes_basic() {
+        let svc = make_service();
+        seed_bucket(&svc, "goa");
+        let req = make_request(Method::PUT, "/goa/k", &[], b"hi");
+        svc.put_object("123456789012", &req, "goa", "k").unwrap();
+
+        let mut req = make_request(Method::GET, "/goa/k", &[("attributes", "")], b"");
+        req.headers.insert(
+            "x-amz-object-attributes",
+            "ETag,ObjectSize".parse().unwrap(),
+        );
+        let resp = svc
+            .get_object_attributes("123456789012", &req, "goa", "k")
+            .unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+    }
+
+    #[test]
+    fn get_object_attributes_bucket_not_found() {
+        let svc = make_service();
+        let req = make_request(Method::GET, "/ghost/k", &[("attributes", "")], b"");
+        let result = svc.get_object_attributes("123456789012", &req, "ghost", "k");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn get_object_attributes_key_not_found() {
+        let svc = make_service();
+        seed_bucket(&svc, "gak");
+        let req = make_request(Method::GET, "/gak/ghost", &[("attributes", "")], b"");
+        let result = svc.get_object_attributes("123456789012", &req, "gak", "ghost");
+        assert!(result.is_err());
+    }
 }
