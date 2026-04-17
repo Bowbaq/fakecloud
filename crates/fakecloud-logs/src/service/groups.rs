@@ -667,4 +667,200 @@ mod tests {
         let state = _mas.default_ref();
         assert!(state.log_groups["grp"].kms_key_id.is_none());
     }
+
+    // ---- create_log_group ----
+
+    #[test]
+    fn create_log_group_duplicate_errors() {
+        let svc = make_service();
+        create_group(&svc, "dup");
+        let req = make_request("CreateLogGroup", json!({"logGroupName": "dup"}));
+        assert!(svc.create_log_group(&req).is_err());
+    }
+
+    #[test]
+    fn create_log_group_missing_name_errors() {
+        let svc = make_service();
+        let req = make_request("CreateLogGroup", json!({}));
+        assert!(svc.create_log_group(&req).is_err());
+    }
+
+    #[test]
+    fn create_log_group_with_kms_and_tags() {
+        let svc = make_service();
+        let req = make_request(
+            "CreateLogGroup",
+            json!({
+                "logGroupName": "/secure/app",
+                "kmsKeyId": "arn:aws:kms:us-east-1:123:key/k1",
+                "tags": {"env": "prod"}
+            }),
+        );
+        svc.create_log_group(&req).unwrap();
+        let mas = svc.state.read();
+        let state = mas.default_ref();
+        let grp = state.log_groups.get("/secure/app").unwrap();
+        assert_eq!(
+            grp.kms_key_id.as_deref(),
+            Some("arn:aws:kms:us-east-1:123:key/k1")
+        );
+        assert_eq!(grp.tags.get("env").map(String::as_str), Some("prod"));
+    }
+
+    // ---- delete_log_group ----
+
+    #[test]
+    fn delete_log_group_unknown_errors() {
+        let svc = make_service();
+        let req = make_request("DeleteLogGroup", json!({"logGroupName": "missing"}));
+        assert!(svc.delete_log_group(&req).is_err());
+    }
+
+    #[test]
+    fn delete_log_group_missing_name_errors() {
+        let svc = make_service();
+        let req = make_request("DeleteLogGroup", json!({}));
+        assert!(svc.delete_log_group(&req).is_err());
+    }
+
+    #[test]
+    fn delete_log_group_removes_group() {
+        let svc = make_service();
+        create_group(&svc, "gone");
+        let req = make_request("DeleteLogGroup", json!({"logGroupName": "gone"}));
+        svc.delete_log_group(&req).unwrap();
+        assert!(!svc
+            .state
+            .read()
+            .default_ref()
+            .log_groups
+            .contains_key("gone"));
+    }
+
+    // ---- put_retention_policy ----
+
+    #[test]
+    fn put_retention_policy_missing_name_errors() {
+        let svc = make_service();
+        let req = make_request("PutRetentionPolicy", json!({"retentionInDays": 7}));
+        assert!(svc.put_retention_policy(&req).is_err());
+    }
+
+    #[test]
+    fn put_retention_policy_unknown_group_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "PutRetentionPolicy",
+            json!({"logGroupName": "missing", "retentionInDays": 7}),
+        );
+        assert!(svc.put_retention_policy(&req).is_err());
+    }
+
+    #[test]
+    fn put_retention_policy_roundtrip() {
+        let svc = make_service();
+        create_group(&svc, "ret");
+        let req = make_request(
+            "PutRetentionPolicy",
+            json!({"logGroupName": "ret", "retentionInDays": 30}),
+        );
+        svc.put_retention_policy(&req).unwrap();
+        assert_eq!(
+            svc.state.read().default_ref().log_groups["ret"].retention_in_days,
+            Some(30)
+        );
+    }
+
+    #[test]
+    fn delete_retention_policy_clears_retention() {
+        let svc = make_service();
+        create_group(&svc, "dr");
+        let put = make_request(
+            "PutRetentionPolicy",
+            json!({"logGroupName": "dr", "retentionInDays": 30}),
+        );
+        svc.put_retention_policy(&put).unwrap();
+        let del = make_request("DeleteRetentionPolicy", json!({"logGroupName": "dr"}));
+        svc.delete_retention_policy(&del).unwrap();
+        assert!(svc.state.read().default_ref().log_groups["dr"]
+            .retention_in_days
+            .is_none());
+    }
+
+    #[test]
+    fn delete_retention_policy_unknown_group_errors() {
+        let svc = make_service();
+        let req = make_request("DeleteRetentionPolicy", json!({"logGroupName": "missing"}));
+        assert!(svc.delete_retention_policy(&req).is_err());
+    }
+
+    // ---- associate / disassociate error paths ----
+
+    #[test]
+    fn associate_kms_key_missing_kms_key_errors() {
+        let svc = make_service();
+        create_group(&svc, "a");
+        let req = make_request("AssociateKmsKey", json!({"logGroupName": "a"}));
+        assert!(svc.associate_kms_key(&req).is_err());
+    }
+
+    #[test]
+    fn associate_kms_key_missing_group_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "AssociateKmsKey",
+            json!({"logGroupName": "missing", "kmsKeyId": "k"}),
+        );
+        assert!(svc.associate_kms_key(&req).is_err());
+    }
+
+    #[test]
+    fn disassociate_kms_key_missing_group_errors() {
+        let svc = make_service();
+        let req = make_request("DisassociateKmsKey", json!({"logGroupName": "missing"}));
+        assert!(svc.disassociate_kms_key(&req).is_err());
+    }
+
+    // ---- deletion protection ----
+
+    #[test]
+    fn put_log_group_deletion_protection_sets_flag() {
+        let svc = make_service();
+        create_group(&svc, "prot");
+        let req = make_request(
+            "PutLogGroupDeletionProtection",
+            json!({"logGroupIdentifier": "prot", "deletionProtection": "ENABLED"}),
+        );
+        svc.put_log_group_deletion_protection(&req).unwrap();
+    }
+
+    #[test]
+    fn put_log_group_deletion_protection_missing_identifier_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "PutLogGroupDeletionProtection",
+            json!({"deletionProtection": "ENABLED"}),
+        );
+        assert!(svc.put_log_group_deletion_protection(&req).is_err());
+    }
+
+    // ---- list_log_groups / list_aggregate ----
+
+    #[test]
+    fn list_log_groups_returns_all() {
+        let svc = make_service();
+        create_group(&svc, "a");
+        create_group(&svc, "b");
+        let req = make_request("ListLogGroups", json!({}));
+        let resp = svc.list_log_groups(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["logGroups"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn list_aggregate_log_group_summaries_missing_group_by_errors() {
+        let svc = make_service();
+        let req = make_request("ListAggregateLogGroupSummaries", json!({}));
+        assert!(svc.list_aggregate_log_group_summaries(&req).is_err());
+    }
 }
