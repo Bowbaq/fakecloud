@@ -126,4 +126,19 @@ mod tests {
         let result = forward_request("not-a-valid-url", &req, Some(5000)).await;
         assert!(result.is_err());
     }
+
+    #[tokio::test]
+    async fn test_forward_request_unreachable_host_errors() {
+        let req = create_test_request();
+        // Non-existent port on localhost should fail quickly
+        let result = forward_request("http://127.0.0.1:1/unreachable", &req, Some(200)).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_forward_request_default_timeout() {
+        let req = create_test_request();
+        let result = forward_request("http://127.0.0.1:1/x", &req, None).await;
+        assert!(result.is_err());
+    }
 }
