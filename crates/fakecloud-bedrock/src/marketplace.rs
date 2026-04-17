@@ -45,7 +45,8 @@ pub fn create_marketplace_model_endpoint(
         updated_at: now,
     };
 
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     s.marketplace_endpoints
         .insert(endpoint_arn.clone(), endpoint);
 
@@ -57,9 +58,12 @@ pub fn create_marketplace_model_endpoint(
 
 pub fn get_marketplace_model_endpoint(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     identifier: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let endpoint = s
         .marketplace_endpoints
         .get(identifier)
@@ -101,7 +105,9 @@ pub fn list_marketplace_model_endpoints(
         .max(1);
     let next_token = req.query_params.get("nextToken");
 
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let mut items: Vec<&MarketplaceModelEndpoint> = s.marketplace_endpoints.values().collect();
     items.sort_by(|a, b| a.endpoint_arn.cmp(&b.endpoint_arn));
 
@@ -143,10 +149,12 @@ pub fn list_marketplace_model_endpoints(
 
 pub fn update_marketplace_model_endpoint(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     identifier: &str,
     body: &Value,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
 
     let key = s
         .marketplace_endpoints
@@ -190,9 +198,11 @@ pub fn update_marketplace_model_endpoint(
 
 pub fn delete_marketplace_model_endpoint(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     identifier: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
 
     let key = s
         .marketplace_endpoints
@@ -219,9 +229,11 @@ pub fn delete_marketplace_model_endpoint(
 
 pub fn register_marketplace_model_endpoint(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     identifier: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
 
     let key = s
         .marketplace_endpoints
@@ -262,9 +274,11 @@ pub fn register_marketplace_model_endpoint(
 
 pub fn deregister_marketplace_model_endpoint(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     identifier: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
 
     let key = s
         .marketplace_endpoints
@@ -306,7 +320,6 @@ pub fn deregister_marketplace_model_endpoint(
 #[allow(clippy::too_many_lines)]
 mod tests {
     use super::*;
-    use crate::state::BedrockState;
     use bytes::Bytes;
     use http::{HeaderMap, Method};
     use parking_lot::RwLock;
@@ -314,7 +327,13 @@ mod tests {
     use std::sync::Arc;
 
     fn shared() -> SharedBedrockState {
-        Arc::new(RwLock::new(BedrockState::new("123456789012", "us-east-1")))
+        Arc::new(RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4566",
+            ),
+        ))
     }
 
     fn req() -> AwsRequest {
@@ -371,7 +390,7 @@ mod tests {
     fn create_and_get_by_arn() {
         let s = shared();
         let arn = create(&s, "ep-1");
-        let resp = get_marketplace_model_endpoint(&s, &arn).unwrap();
+        let resp = get_marketplace_model_endpoint(&s, &req(), &arn).unwrap();
         let v: Value =
             serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
         assert_eq!(v["marketplaceModelEndpoint"]["endpointName"], "ep-1");
@@ -382,14 +401,16 @@ mod tests {
         let s = shared();
         let arn = create(&s, "my-ep");
         let id = arn.rsplit('/').next().unwrap().to_string();
-        assert!(get_marketplace_model_endpoint(&s, &id).is_ok());
-        assert!(get_marketplace_model_endpoint(&s, "my-ep").is_ok());
+        assert!(get_marketplace_model_endpoint(&s, &req(), &id).is_ok());
+        assert!(get_marketplace_model_endpoint(&s, &req(), "my-ep").is_ok());
     }
 
     #[test]
     fn get_unknown_returns_not_found() {
         let s = shared();
-        let err = get_marketplace_model_endpoint(&s, "missing").err().unwrap();
+        let err = get_marketplace_model_endpoint(&s, &req(), "missing")
+            .err()
+            .unwrap();
         assert_eq!(err.status(), StatusCode::NOT_FOUND);
     }
 
@@ -413,9 +434,10 @@ mod tests {
     fn update_sets_new_config() {
         let s = shared();
         let arn = create(&s, "up-ep");
-        update_marketplace_model_endpoint(&s, &arn, &json!({"endpointConfig": {"a": 1}})).unwrap();
+        update_marketplace_model_endpoint(&s, &req(), &arn, &json!({"endpointConfig": {"a": 1}}))
+            .unwrap();
         assert_eq!(
-            s.read().marketplace_endpoints[&arn].endpoint_config,
+            s.read().default_ref().marketplace_endpoints[&arn].endpoint_config,
             json!({"a": 1})
         );
     }
@@ -423,7 +445,7 @@ mod tests {
     #[test]
     fn update_unknown_returns_not_found() {
         let s = shared();
-        let err = update_marketplace_model_endpoint(&s, "miss", &json!({}))
+        let err = update_marketplace_model_endpoint(&s, &req(), "miss", &json!({}))
             .err()
             .unwrap();
         assert_eq!(err.status(), StatusCode::NOT_FOUND);
@@ -433,14 +455,16 @@ mod tests {
     fn delete_removes_endpoint() {
         let s = shared();
         let arn = create(&s, "del-ep");
-        delete_marketplace_model_endpoint(&s, &arn).unwrap();
-        assert!(s.read().marketplace_endpoints.is_empty());
+        delete_marketplace_model_endpoint(&s, &req(), &arn).unwrap();
+        assert!(s.read().default_ref().marketplace_endpoints.is_empty());
     }
 
     #[test]
     fn delete_unknown_returns_not_found() {
         let s = shared();
-        let err = delete_marketplace_model_endpoint(&s, "miss").err().unwrap();
+        let err = delete_marketplace_model_endpoint(&s, &req(), "miss")
+            .err()
+            .unwrap();
         assert_eq!(err.status(), StatusCode::NOT_FOUND);
     }
 
@@ -448,14 +472,17 @@ mod tests {
     fn register_transitions_status() {
         let s = shared();
         let arn = create(&s, "reg-ep");
-        register_marketplace_model_endpoint(&s, &arn).unwrap();
-        assert_eq!(s.read().marketplace_endpoints[&arn].status, "Registered");
+        register_marketplace_model_endpoint(&s, &req(), &arn).unwrap();
+        assert_eq!(
+            s.read().default_ref().marketplace_endpoints[&arn].status,
+            "Registered"
+        );
     }
 
     #[test]
     fn register_unknown_returns_not_found() {
         let s = shared();
-        let err = register_marketplace_model_endpoint(&s, "miss")
+        let err = register_marketplace_model_endpoint(&s, &req(), "miss")
             .err()
             .unwrap();
         assert_eq!(err.status(), StatusCode::NOT_FOUND);
@@ -465,15 +492,18 @@ mod tests {
     fn deregister_resets_to_active() {
         let s = shared();
         let arn = create(&s, "dereg");
-        register_marketplace_model_endpoint(&s, &arn).unwrap();
-        deregister_marketplace_model_endpoint(&s, &arn).unwrap();
-        assert_eq!(s.read().marketplace_endpoints[&arn].status, "Active");
+        register_marketplace_model_endpoint(&s, &req(), &arn).unwrap();
+        deregister_marketplace_model_endpoint(&s, &req(), &arn).unwrap();
+        assert_eq!(
+            s.read().default_ref().marketplace_endpoints[&arn].status,
+            "Active"
+        );
     }
 
     #[test]
     fn deregister_unknown_returns_not_found() {
         let s = shared();
-        let err = deregister_marketplace_model_endpoint(&s, "miss")
+        let err = deregister_marketplace_model_endpoint(&s, &req(), "miss")
             .err()
             .unwrap();
         assert_eq!(err.status(), StatusCode::NOT_FOUND);

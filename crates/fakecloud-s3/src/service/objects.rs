@@ -836,7 +836,10 @@ impl S3Service {
         if sse_algorithm.as_deref() == Some("aws:kms") {
             if let Some(ref kms) = self.kms_state {
                 if let Some(ref key_id) = sse_kms_key_id {
-                    let kms_state = kms.read();
+                    let kms_accounts = kms.read();
+                    let kms_state = kms_accounts
+                        .get(&req.account_id)
+                        .unwrap_or(kms_accounts.default_ref());
                     let key_exists = kms_state
                         .keys
                         .values()

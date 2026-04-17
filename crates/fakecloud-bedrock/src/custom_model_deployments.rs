@@ -35,7 +35,8 @@ pub fn create_custom_model_deployment(
         last_updated_at: now,
     };
 
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     s.custom_model_deployments
         .insert(deployment_arn.clone(), deployment);
 
@@ -47,9 +48,12 @@ pub fn create_custom_model_deployment(
 
 pub fn get_custom_model_deployment(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     deployment_identifier: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let deployment = find_deployment(&s.custom_model_deployments, deployment_identifier)?;
 
     Ok(AwsResponse::ok_json(deployment_to_json(deployment)))
@@ -67,7 +71,9 @@ pub fn list_custom_model_deployments(
         .max(1);
     let next_token = req.query_params.get("nextToken");
 
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let mut items: Vec<&CustomModelDeployment> = s.custom_model_deployments.values().collect();
     items.sort_by(|a, b| a.deployment_arn.cmp(&b.deployment_arn));
 
@@ -100,10 +106,12 @@ pub fn list_custom_model_deployments(
 
 pub fn update_custom_model_deployment(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     deployment_identifier: &str,
     body: &Value,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     let key = find_deployment_key(&s.custom_model_deployments, deployment_identifier)?;
     let deployment = s
         .custom_model_deployments
@@ -123,9 +131,11 @@ pub fn update_custom_model_deployment(
 
 pub fn delete_custom_model_deployment(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     deployment_identifier: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     let key = find_deployment_key(&s.custom_model_deployments, deployment_identifier)?;
     s.custom_model_deployments.remove(&key);
     Ok(AwsResponse::json(StatusCode::OK, "{}".to_string()))

@@ -40,7 +40,8 @@ pub fn create_evaluation_job(
         last_modified_time: now,
     };
 
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     s.evaluation_jobs.insert(job_arn.clone(), job);
 
     Ok(AwsResponse::json(
@@ -51,9 +52,12 @@ pub fn create_evaluation_job(
 
 pub fn get_evaluation_job(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     job_identifier: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let job = find_job(&s.evaluation_jobs, job_identifier)?;
 
     Ok(AwsResponse::ok_json(json!({
@@ -83,7 +87,9 @@ pub fn list_evaluation_jobs(
         .max(1);
     let next_token = req.query_params.get("nextToken");
 
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let mut items: Vec<&EvaluationJob> = s.evaluation_jobs.values().collect();
     items.sort_by(|a, b| a.job_arn.cmp(&b.job_arn));
 
@@ -124,9 +130,11 @@ pub fn list_evaluation_jobs(
 
 pub fn stop_evaluation_job(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     job_identifier: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     let key = find_job_key(&s.evaluation_jobs, job_identifier)?;
     let job = s
         .evaluation_jobs
@@ -149,6 +157,7 @@ pub fn stop_evaluation_job(
 
 pub fn batch_delete_evaluation_job(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     body: &Value,
 ) -> Result<AwsResponse, AwsServiceError> {
     let job_identifiers = body["jobIdentifiers"].as_array().ok_or_else(|| {
@@ -159,7 +168,8 @@ pub fn batch_delete_evaluation_job(
         )
     })?;
 
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     let mut errors: Vec<Value> = Vec::new();
 
     for identifier in job_identifiers {
@@ -228,7 +238,6 @@ fn find_job_key(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::BedrockState;
     use bytes::Bytes;
     use http::{HeaderMap, Method};
     use parking_lot::RwLock;
@@ -236,7 +245,13 @@ mod tests {
     use std::sync::Arc;
 
     fn shared() -> SharedBedrockState {
-        Arc::new(RwLock::new(BedrockState::new("123456789012", "us-east-1")))
+        Arc::new(RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4566",
+            ),
+        ))
     }
 
     fn req() -> AwsRequest {
@@ -270,8 +285,8 @@ mod tests {
         let resp = create_evaluation_job(&s, &req(), &body).unwrap();
         assert_eq!(resp.status, StatusCode::CREATED);
         let state = s.read();
-        assert_eq!(state.evaluation_jobs.len(), 1);
-        let job = state.evaluation_jobs.values().next().unwrap();
+        assert_eq!(state.default_ref().evaluation_jobs.len(), 1);
+        let job = state.default_ref().evaluation_jobs.values().next().unwrap();
         assert_eq!(job.job_type, "Automated");
         assert_eq!(job.job_name, "auto-eval");
         assert_eq!(job.status, "InProgress");
@@ -283,7 +298,7 @@ mod tests {
         let body = json!({"roleArn": "arn:aws:iam::123:role/b"});
         create_evaluation_job(&s, &req(), &body).unwrap();
         let state = s.read();
-        let job = state.evaluation_jobs.values().next().unwrap();
+        let job = state.default_ref().evaluation_jobs.values().next().unwrap();
         assert_eq!(job.job_type, "Human");
         assert_eq!(job.job_name, "eval-job");
     }
@@ -293,17 +308,24 @@ mod tests {
         let s = shared();
         let body = json!({"jobName": "my-eval"});
         create_evaluation_job(&s, &req(), &body).unwrap();
-        let arn = s.read().evaluation_jobs.keys().next().unwrap().clone();
+        let arn = s
+            .read()
+            .default_ref()
+            .evaluation_jobs
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
         let id = arn.rsplit('/').next().unwrap().to_string();
-        assert!(get_evaluation_job(&s, &arn).is_ok());
-        assert!(get_evaluation_job(&s, &id).is_ok());
-        assert!(get_evaluation_job(&s, "my-eval").is_ok());
+        assert!(get_evaluation_job(&s, &req(), &arn).is_ok());
+        assert!(get_evaluation_job(&s, &req(), &id).is_ok());
+        assert!(get_evaluation_job(&s, &req(), "my-eval").is_ok());
     }
 
     #[test]
     fn get_evaluation_job_unknown_returns_not_found() {
         let s = shared();
-        let err = get_evaluation_job(&s, "missing").err().unwrap();
+        let err = get_evaluation_job(&s, &req(), "missing").err().unwrap();
         assert_eq!(err.status(), StatusCode::NOT_FOUND);
     }
 
@@ -327,25 +349,42 @@ mod tests {
     fn stop_evaluation_job_transitions_to_stopped() {
         let s = shared();
         create_evaluation_job(&s, &req(), &json!({})).unwrap();
-        let arn = s.read().evaluation_jobs.keys().next().unwrap().clone();
-        stop_evaluation_job(&s, &arn).unwrap();
-        assert_eq!(s.read().evaluation_jobs[&arn].status, "Stopped");
+        let arn = s
+            .read()
+            .default_ref()
+            .evaluation_jobs
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
+        stop_evaluation_job(&s, &req(), &arn).unwrap();
+        assert_eq!(
+            s.read().default_ref().evaluation_jobs[&arn].status,
+            "Stopped"
+        );
     }
 
     #[test]
     fn stop_evaluation_job_conflict_when_not_in_progress() {
         let s = shared();
         create_evaluation_job(&s, &req(), &json!({})).unwrap();
-        let arn = s.read().evaluation_jobs.keys().next().unwrap().clone();
-        stop_evaluation_job(&s, &arn).unwrap();
-        let err = stop_evaluation_job(&s, &arn).err().unwrap();
+        let arn = s
+            .read()
+            .default_ref()
+            .evaluation_jobs
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
+        stop_evaluation_job(&s, &req(), &arn).unwrap();
+        let err = stop_evaluation_job(&s, &req(), &arn).err().unwrap();
         assert_eq!(err.status(), StatusCode::CONFLICT);
     }
 
     #[test]
     fn stop_evaluation_job_unknown_returns_not_found() {
         let s = shared();
-        let err = stop_evaluation_job(&s, "missing").err().unwrap();
+        let err = stop_evaluation_job(&s, &req(), "missing").err().unwrap();
         assert_eq!(err.status(), StatusCode::NOT_FOUND);
     }
 
@@ -355,19 +394,21 @@ mod tests {
         create_evaluation_job(&s, &req(), &json!({"jobName": "a"})).unwrap();
         create_evaluation_job(&s, &req(), &json!({"jobName": "b"})).unwrap();
         let body = json!({"jobIdentifiers": ["a", "missing"]});
-        let resp = batch_delete_evaluation_job(&s, &body).unwrap();
+        let resp = batch_delete_evaluation_job(&s, &req(), &body).unwrap();
         let v: Value =
             serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
         let errors = v["errors"].as_array().unwrap();
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0]["jobIdentifier"], "missing");
-        assert_eq!(s.read().evaluation_jobs.len(), 1);
+        assert_eq!(s.read().default_ref().evaluation_jobs.len(), 1);
     }
 
     #[test]
     fn batch_delete_missing_identifiers_returns_validation_error() {
         let s = shared();
-        let err = batch_delete_evaluation_job(&s, &json!({})).err().unwrap();
+        let err = batch_delete_evaluation_job(&s, &req(), &json!({}))
+            .err()
+            .unwrap();
         assert_eq!(err.status(), StatusCode::BAD_REQUEST);
     }
 }

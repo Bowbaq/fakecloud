@@ -3,7 +3,13 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 
-pub type SharedKmsState = Arc<RwLock<KmsState>>;
+pub type SharedKmsState = Arc<RwLock<fakecloud_core::multi_account::MultiAccountState<KmsState>>>;
+
+impl fakecloud_core::multi_account::AccountState for KmsState {
+    fn new_for_account(account_id: &str, region: &str, _endpoint: &str) -> Self {
+        Self::new(account_id, region)
+    }
+}
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct KmsState {
@@ -113,10 +119,13 @@ pub struct CustomKeyStore {
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct KmsSnapshot {
     pub schema_version: u32,
-    pub state: KmsState,
+    #[serde(default)]
+    pub accounts: Option<fakecloud_core::multi_account::MultiAccountState<KmsState>>,
+    #[serde(default)]
+    pub state: Option<KmsState>,
 }
 
-pub const KMS_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+pub const KMS_SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 
 #[cfg(test)]
 mod tests {

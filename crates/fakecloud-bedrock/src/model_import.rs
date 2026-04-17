@@ -49,7 +49,8 @@ pub fn create_model_import_job(
         creation_time: now,
     };
 
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     s.model_import_jobs.insert(job_arn.clone(), job);
     s.imported_models
         .insert(imported_model_arn.clone(), imported_model);
@@ -62,9 +63,12 @@ pub fn create_model_import_job(
 
 pub fn get_model_import_job(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     job_identifier: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let job = s
         .model_import_jobs
         .get(job_identifier)
@@ -106,7 +110,9 @@ pub fn list_model_import_jobs(
         .max(1);
     let next_token = req.query_params.get("nextToken");
 
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let mut items: Vec<&ModelImportJob> = s.model_import_jobs.values().collect();
     items.sort_by(|a, b| a.job_arn.cmp(&b.job_arn));
 
@@ -149,9 +155,12 @@ pub fn list_model_import_jobs(
 
 pub fn get_imported_model(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     model_identifier: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let model = s
         .imported_models
         .get(model_identifier)
@@ -190,7 +199,9 @@ pub fn list_imported_models(
         .max(1);
     let next_token = req.query_params.get("nextToken");
 
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let mut items: Vec<&ImportedModel> = s.imported_models.values().collect();
     items.sort_by(|a, b| a.model_arn.cmp(&b.model_arn));
 
@@ -229,9 +240,17 @@ pub fn list_imported_models(
 
 pub fn delete_imported_model(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     model_identifier: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let Some(s) = accts.get_mut(&req.account_id) else {
+        return Err(AwsServiceError::aws_error(
+            StatusCode::NOT_FOUND,
+            "ResourceNotFoundException",
+            format!("Imported model {model_identifier} not found"),
+        ));
+    };
     let key = s
         .imported_models
         .iter()

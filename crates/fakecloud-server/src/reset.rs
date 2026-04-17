@@ -340,9 +340,10 @@ mod tests {
                 fakecloud_lambda::state::LambdaState::new("123456789012", "us-east-1"),
             )),
             secretsmanager: Arc::new(parking_lot::RwLock::new(
-                fakecloud_secretsmanager::state::SecretsManagerState::new(
+                fakecloud_core::multi_account::MultiAccountState::new(
                     "123456789012",
                     "us-east-1",
+                    "http://localhost:4566",
                 ),
             )),
             s3: Arc::new(parking_lot::RwLock::new(
@@ -356,7 +357,11 @@ mod tests {
                 fakecloud_logs::state::LogsState::new("123456789012", "us-east-1"),
             )),
             kms: Arc::new(parking_lot::RwLock::new(
-                fakecloud_kms::state::KmsState::new("123456789012", "us-east-1"),
+                fakecloud_core::multi_account::MultiAccountState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "http://localhost:4566",
+                ),
             )),
             cloudformation: Arc::new(parking_lot::RwLock::new(
                 fakecloud_cloudformation::state::CloudFormationState::new(
@@ -371,7 +376,11 @@ mod tests {
                 fakecloud_cognito::state::CognitoState::new("123456789012", "us-east-1"),
             )),
             kinesis: Arc::new(parking_lot::RwLock::new(
-                fakecloud_kinesis::state::KinesisState::new("123456789012", "us-east-1"),
+                fakecloud_core::multi_account::MultiAccountState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "http://localhost:4566",
+                ),
             )),
             rds: Arc::new(parking_lot::RwLock::new(rds)),
             elasticache: Arc::new(parking_lot::RwLock::new(
@@ -387,7 +396,11 @@ mod tests {
                 fakecloud_apigatewayv2::state::ApiGatewayV2State::new("123456789012", "us-east-1"),
             )),
             bedrock: Arc::new(parking_lot::RwLock::new(
-                fakecloud_bedrock::state::BedrockState::new("123456789012", "us-east-1"),
+                fakecloud_core::multi_account::MultiAccountState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "http://localhost:4566",
+                ),
             )),
             container_runtime: None,
             rds_runtime: None,

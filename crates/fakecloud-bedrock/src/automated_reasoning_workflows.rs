@@ -47,10 +47,12 @@ fn workflow_to_json(w: &AutomatedReasoningBuildWorkflow) -> Value {
 
 pub fn start_build_workflow(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     policy_identifier: &str,
     workflow_type: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     let policy_arn = require_policy_arn(&s.automated_reasoning_policies, policy_identifier)?;
 
     let workflow_id = Uuid::new_v4().to_string();
@@ -75,10 +77,13 @@ pub fn start_build_workflow(
 
 pub fn get_build_workflow(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     policy_identifier: &str,
     workflow_id: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let policy_arn = require_policy_arn(&s.automated_reasoning_policies, policy_identifier)?;
 
     let workflow = s
@@ -108,7 +113,9 @@ pub fn list_build_workflows(
         .max(1);
     let next_token = req.query_params.get("nextToken");
 
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let policy_arn = require_policy_arn(&s.automated_reasoning_policies, policy_identifier)?;
 
     let mut items: Vec<&AutomatedReasoningBuildWorkflow> = s
@@ -148,10 +155,12 @@ pub fn list_build_workflows(
 
 pub fn cancel_build_workflow(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     policy_identifier: &str,
     workflow_id: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     let policy_arn = require_policy_arn(&s.automated_reasoning_policies, policy_identifier)?;
 
     let workflow = s
@@ -173,10 +182,12 @@ pub fn cancel_build_workflow(
 
 pub fn delete_build_workflow(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     policy_identifier: &str,
     workflow_id: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     let policy_arn = require_policy_arn(&s.automated_reasoning_policies, policy_identifier)?;
 
     let key = (policy_arn.clone(), workflow_id.to_string());
@@ -199,10 +210,13 @@ pub fn delete_build_workflow(
 
 pub fn get_build_workflow_result_assets(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     policy_identifier: &str,
     workflow_id: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let policy_arn = require_policy_arn(&s.automated_reasoning_policies, policy_identifier)?;
 
     if !s
@@ -221,10 +235,13 @@ pub fn get_build_workflow_result_assets(
 
 pub fn start_test_workflow(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     policy_identifier: &str,
     workflow_id: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let policy_arn = require_policy_arn(&s.automated_reasoning_policies, policy_identifier)?;
 
     if !s
@@ -247,11 +264,14 @@ pub fn start_test_workflow(
 
 pub fn get_test_result(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     policy_identifier: &str,
     workflow_id: &str,
     test_case_id: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let policy_arn = require_policy_arn(&s.automated_reasoning_policies, policy_identifier)?;
 
     if !s
@@ -297,7 +317,9 @@ pub fn list_test_results(
         .max(1);
     let next_token = req.query_params.get("nextToken");
 
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let policy_arn = require_policy_arn(&s.automated_reasoning_policies, policy_identifier)?;
 
     if !s
@@ -348,10 +370,13 @@ pub fn list_test_results(
 
 pub fn get_annotations(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     policy_identifier: &str,
     workflow_id: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let policy_arn = require_policy_arn(&s.automated_reasoning_policies, policy_identifier)?;
 
     if !s
@@ -376,11 +401,13 @@ pub fn get_annotations(
 
 pub fn update_annotations(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     policy_identifier: &str,
     workflow_id: &str,
     body: &Value,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     let policy_arn = require_policy_arn(&s.automated_reasoning_policies, policy_identifier)?;
 
     if !s
@@ -402,10 +429,13 @@ pub fn update_annotations(
 
 pub fn get_next_scenario(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     policy_identifier: &str,
     workflow_id: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let policy_arn = require_policy_arn(&s.automated_reasoning_policies, policy_identifier)?;
 
     if !s
@@ -430,7 +460,7 @@ pub fn get_next_scenario(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{AutomatedReasoningPolicy, BedrockState};
+    use crate::state::AutomatedReasoningPolicy;
     use bytes::Bytes;
     use http::{HeaderMap, Method};
     use parking_lot::RwLock;
@@ -438,7 +468,13 @@ mod tests {
     use std::sync::Arc;
 
     fn shared() -> SharedBedrockState {
-        Arc::new(RwLock::new(BedrockState::new("123456789012", "us-east-1")))
+        Arc::new(RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4566",
+            ),
+        ))
     }
 
     fn req() -> AwsRequest {
@@ -467,25 +503,29 @@ mod tests {
             Uuid::new_v4()
         );
         let now = Utc::now();
-        state.write().automated_reasoning_policies.insert(
-            arn.clone(),
-            AutomatedReasoningPolicy {
-                policy_arn: arn.clone(),
-                policy_name: name.to_string(),
-                description: None,
-                policy_document: json!({}),
-                status: "ACTIVE".to_string(),
-                version: "1".to_string(),
-                versions: vec!["1".to_string()],
-                created_at: now,
-                updated_at: now,
-            },
-        );
+        state
+            .write()
+            .default_mut()
+            .automated_reasoning_policies
+            .insert(
+                arn.clone(),
+                AutomatedReasoningPolicy {
+                    policy_arn: arn.clone(),
+                    policy_name: name.to_string(),
+                    description: None,
+                    policy_document: json!({}),
+                    status: "ACTIVE".to_string(),
+                    version: "1".to_string(),
+                    versions: vec!["1".to_string()],
+                    created_at: now,
+                    updated_at: now,
+                },
+            );
         arn
     }
 
     fn start_workflow(state: &SharedBedrockState, policy_id: &str) -> String {
-        let resp = start_build_workflow(state, policy_id, "BUILD").unwrap();
+        let resp = start_build_workflow(state, &req(), policy_id, "BUILD").unwrap();
         let v: Value =
             serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
         v["buildWorkflowId"].as_str().unwrap().to_string()
@@ -498,6 +538,7 @@ mod tests {
         let wid = start_workflow(&s, &arn);
         let w = s
             .read()
+            .default_ref()
             .ar_build_workflows
             .get(&(arn.clone(), wid))
             .unwrap()
@@ -509,7 +550,9 @@ mod tests {
     #[test]
     fn start_build_workflow_unknown_policy_not_found() {
         let s = shared();
-        let err = start_build_workflow(&s, "missing", "BUILD").err().unwrap();
+        let err = start_build_workflow(&s, &req(), "missing", "BUILD")
+            .err()
+            .unwrap();
         assert_eq!(err.status(), StatusCode::NOT_FOUND);
     }
 
@@ -518,7 +561,7 @@ mod tests {
         let s = shared();
         let arn = seed_policy(&s, "p");
         let wid = start_workflow(&s, &arn);
-        let resp = get_build_workflow(&s, &arn, &wid).unwrap();
+        let resp = get_build_workflow(&s, &req(), &arn, &wid).unwrap();
         let v: Value =
             serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
         assert_eq!(v["buildWorkflowId"], wid);
@@ -529,7 +572,9 @@ mod tests {
     fn get_build_workflow_unknown_returns_not_found() {
         let s = shared();
         let arn = seed_policy(&s, "p");
-        let err = get_build_workflow(&s, &arn, "missing").err().unwrap();
+        let err = get_build_workflow(&s, &req(), &arn, "missing")
+            .err()
+            .unwrap();
         assert_eq!(err.status(), StatusCode::NOT_FOUND);
     }
 
@@ -562,8 +607,9 @@ mod tests {
         let s = shared();
         let arn = seed_policy(&s, "p");
         let wid = start_workflow(&s, &arn);
-        cancel_build_workflow(&s, &arn, &wid).unwrap();
-        let w = &s.read().ar_build_workflows[&(arn.clone(), wid.clone())];
+        cancel_build_workflow(&s, &req(), &arn, &wid).unwrap();
+        let guard = s.read();
+        let w = &guard.default_ref().ar_build_workflows[&(arn.clone(), wid.clone())];
         assert_eq!(w.status, "Cancelled");
     }
 
@@ -571,7 +617,9 @@ mod tests {
     fn cancel_build_workflow_unknown_returns_not_found() {
         let s = shared();
         let arn = seed_policy(&s, "p");
-        let err = cancel_build_workflow(&s, &arn, "miss").err().unwrap();
+        let err = cancel_build_workflow(&s, &req(), &arn, "miss")
+            .err()
+            .unwrap();
         assert_eq!(err.status(), StatusCode::NOT_FOUND);
     }
 
@@ -580,23 +628,25 @@ mod tests {
         let s = shared();
         let arn = seed_policy(&s, "p");
         let wid = start_workflow(&s, &arn);
-        update_annotations(&s, &arn, &wid, &json!({"a": 1})).unwrap();
-        s.write().ar_test_results.insert(
+        update_annotations(&s, &req(), &arn, &wid, &json!({"a": 1})).unwrap();
+        s.write().default_mut().ar_test_results.insert(
             (arn.clone(), wid.clone(), "tc1".to_string()),
             json!({"t": 1}),
         );
-        delete_build_workflow(&s, &arn, &wid).unwrap();
+        delete_build_workflow(&s, &req(), &arn, &wid).unwrap();
         let g = s.read();
-        assert!(g.ar_build_workflows.is_empty());
-        assert!(g.ar_test_results.is_empty());
-        assert!(g.ar_annotations.is_empty());
+        assert!(g.default_ref().ar_build_workflows.is_empty());
+        assert!(g.default_ref().ar_test_results.is_empty());
+        assert!(g.default_ref().ar_annotations.is_empty());
     }
 
     #[test]
     fn delete_build_workflow_unknown_returns_not_found() {
         let s = shared();
         let arn = seed_policy(&s, "p");
-        let err = delete_build_workflow(&s, &arn, "miss").err().unwrap();
+        let err = delete_build_workflow(&s, &req(), &arn, "miss")
+            .err()
+            .unwrap();
         assert_eq!(err.status(), StatusCode::NOT_FOUND);
     }
 
@@ -605,7 +655,7 @@ mod tests {
         let s = shared();
         let arn = seed_policy(&s, "p");
         let wid = start_workflow(&s, &arn);
-        let resp = get_build_workflow_result_assets(&s, &arn, &wid).unwrap();
+        let resp = get_build_workflow_result_assets(&s, &req(), &arn, &wid).unwrap();
         let v: Value =
             serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
         assert_eq!(v["assets"].as_array().unwrap().len(), 0);
@@ -615,7 +665,7 @@ mod tests {
     fn get_build_workflow_result_assets_unknown_not_found() {
         let s = shared();
         let arn = seed_policy(&s, "p");
-        let err = get_build_workflow_result_assets(&s, &arn, "miss")
+        let err = get_build_workflow_result_assets(&s, &req(), &arn, "miss")
             .err()
             .unwrap();
         assert_eq!(err.status(), StatusCode::NOT_FOUND);
@@ -626,7 +676,7 @@ mod tests {
         let s = shared();
         let arn = seed_policy(&s, "p");
         let wid = start_workflow(&s, &arn);
-        let resp = start_test_workflow(&s, &arn, &wid).unwrap();
+        let resp = start_test_workflow(&s, &req(), &arn, &wid).unwrap();
         let v: Value =
             serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
         assert!(v["testWorkflowId"].is_string());
@@ -636,7 +686,7 @@ mod tests {
     fn start_test_workflow_unknown_not_found() {
         let s = shared();
         let arn = seed_policy(&s, "p");
-        let err = start_test_workflow(&s, &arn, "miss").err().unwrap();
+        let err = start_test_workflow(&s, &req(), &arn, "miss").err().unwrap();
         assert_eq!(err.status(), StatusCode::NOT_FOUND);
     }
 
@@ -645,7 +695,7 @@ mod tests {
         let s = shared();
         let arn = seed_policy(&s, "p");
         let wid = start_workflow(&s, &arn);
-        let resp = get_test_result(&s, &arn, &wid, "tc-x").unwrap();
+        let resp = get_test_result(&s, &req(), &arn, &wid, "tc-x").unwrap();
         let v: Value =
             serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
         assert_eq!(v["status"], "NotRun");
@@ -657,11 +707,11 @@ mod tests {
         let s = shared();
         let arn = seed_policy(&s, "p");
         let wid = start_workflow(&s, &arn);
-        s.write().ar_test_results.insert(
+        s.write().default_mut().ar_test_results.insert(
             (arn.clone(), wid.clone(), "tc".to_string()),
             json!({"status": "Passed"}),
         );
-        let resp = get_test_result(&s, &arn, &wid, "tc").unwrap();
+        let resp = get_test_result(&s, &req(), &arn, &wid, "tc").unwrap();
         let v: Value =
             serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
         assert_eq!(v["status"], "Passed");
@@ -671,7 +721,9 @@ mod tests {
     fn get_test_result_unknown_workflow_not_found() {
         let s = shared();
         let arn = seed_policy(&s, "p");
-        let err = get_test_result(&s, &arn, "miss", "tc").err().unwrap();
+        let err = get_test_result(&s, &req(), &arn, "miss", "tc")
+            .err()
+            .unwrap();
         assert_eq!(err.status(), StatusCode::NOT_FOUND);
     }
 
@@ -681,7 +733,7 @@ mod tests {
         let arn = seed_policy(&s, "p");
         let wid = start_workflow(&s, &arn);
         for i in 0..3 {
-            s.write().ar_test_results.insert(
+            s.write().default_mut().ar_test_results.insert(
                 (arn.clone(), wid.clone(), format!("tc-{i}")),
                 json!({"testCaseId": format!("tc-{i}"), "status": "Passed"}),
             );
@@ -709,13 +761,13 @@ mod tests {
         let s = shared();
         let arn = seed_policy(&s, "p");
         let wid = start_workflow(&s, &arn);
-        let resp = get_annotations(&s, &arn, &wid).unwrap();
+        let resp = get_annotations(&s, &req(), &arn, &wid).unwrap();
         let v: Value =
             serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
         assert_eq!(v["annotations"].as_array().unwrap().len(), 0);
 
-        update_annotations(&s, &arn, &wid, &json!({"k": "v"})).unwrap();
-        let resp = get_annotations(&s, &arn, &wid).unwrap();
+        update_annotations(&s, &req(), &arn, &wid, &json!({"k": "v"})).unwrap();
+        let resp = get_annotations(&s, &req(), &arn, &wid).unwrap();
         let v: Value =
             serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
         assert_eq!(v["k"], "v");
@@ -725,7 +777,7 @@ mod tests {
     fn get_annotations_unknown_workflow_not_found() {
         let s = shared();
         let arn = seed_policy(&s, "p");
-        let err = get_annotations(&s, &arn, "miss").err().unwrap();
+        let err = get_annotations(&s, &req(), &arn, "miss").err().unwrap();
         assert_eq!(err.status(), StatusCode::NOT_FOUND);
     }
 
@@ -733,7 +785,7 @@ mod tests {
     fn update_annotations_unknown_workflow_not_found() {
         let s = shared();
         let arn = seed_policy(&s, "p");
-        let err = update_annotations(&s, &arn, "miss", &json!({}))
+        let err = update_annotations(&s, &req(), &arn, "miss", &json!({}))
             .err()
             .unwrap();
         assert_eq!(err.status(), StatusCode::NOT_FOUND);
@@ -744,7 +796,7 @@ mod tests {
         let s = shared();
         let arn = seed_policy(&s, "p");
         let wid = start_workflow(&s, &arn);
-        let resp = get_next_scenario(&s, &arn, &wid).unwrap();
+        let resp = get_next_scenario(&s, &req(), &arn, &wid).unwrap();
         let v: Value =
             serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
         assert_eq!(v["status"], "Ready");
@@ -755,7 +807,7 @@ mod tests {
     fn get_next_scenario_unknown_workflow_not_found() {
         let s = shared();
         let arn = seed_policy(&s, "p");
-        let err = get_next_scenario(&s, &arn, "miss").err().unwrap();
+        let err = get_next_scenario(&s, &req(), &arn, "miss").err().unwrap();
         assert_eq!(err.status(), StatusCode::NOT_FOUND);
     }
 }

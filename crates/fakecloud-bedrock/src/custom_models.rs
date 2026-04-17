@@ -31,7 +31,8 @@ pub fn create_custom_model(
         creation_time: Utc::now(),
     };
 
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     s.custom_models.insert(model_arn.clone(), model);
 
     Ok(AwsResponse::json(
@@ -42,9 +43,12 @@ pub fn create_custom_model(
 
 pub fn get_custom_model(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     model_identifier: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let model = s
         .custom_models
         .get(model_identifier)
@@ -82,7 +86,9 @@ pub fn list_custom_models(
         .max(1);
     let next_token = req.query_params.get("nextToken");
 
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let mut items: Vec<&CustomModel> = s.custom_models.values().collect();
     items.sort_by(|a, b| a.model_arn.cmp(&b.model_arn));
 
@@ -122,9 +128,11 @@ pub fn list_custom_models(
 
 pub fn delete_custom_model(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     model_identifier: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
 
     let key = s
         .custom_models

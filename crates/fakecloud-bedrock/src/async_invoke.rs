@@ -64,7 +64,8 @@ pub fn start_async_invoke(
         end_time: Some(now),
     };
 
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     s.async_invocations
         .insert(invocation_arn.clone(), invocation);
 
@@ -76,9 +77,12 @@ pub fn start_async_invoke(
 
 pub fn get_async_invoke(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     invocation_id: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     // Look up by full ARN or by the UUID suffix
     let invocation = s
         .async_invocations
@@ -112,7 +116,9 @@ pub fn list_async_invokes(
     let next_token = req.query_params.get("nextToken");
     let status_filter = req.query_params.get("statusEquals");
 
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let mut items: Vec<&AsyncInvocation> = s
         .async_invocations
         .values()

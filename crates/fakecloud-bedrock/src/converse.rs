@@ -2,18 +2,19 @@ use chrono::Utc;
 use http::StatusCode;
 use serde_json::{json, Value};
 
-use fakecloud_core::service::{AwsResponse, AwsServiceError};
+use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 
 use crate::state::SharedBedrockState;
 
 /// Handle the Converse API — unified conversation format across all models.
 pub fn converse(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     model_id: &str,
     body: &[u8],
 ) -> Result<AwsResponse, AwsServiceError> {
-    if let Some(fault) = crate::faults::take_matching_fault(state, model_id, "Converse") {
-        crate::faults::record_faulted_invocation(state, model_id, body, &fault);
+    if let Some(fault) = crate::faults::take_matching_fault(state, req, model_id, "Converse") {
+        crate::faults::record_faulted_invocation(state, req, model_id, body, &fault);
         return Err(crate::faults::fault_to_error(&fault));
     }
 
@@ -25,7 +26,7 @@ pub fn converse(
         .unwrap_or(u64::MAX);
     let tool_config = input.get("toolConfig");
 
-    let response_text = match crate::prompt::resolve_override(state, model_id, body) {
+    let response_text = match crate::prompt::resolve_override(state, req, model_id, body) {
         Some(custom) => {
             let parsed: Value = serde_json::from_str(&custom).unwrap_or_default();
             if let Some(text) = parsed["output"]["message"]["content"][0]["text"].as_str() {
@@ -107,7 +108,8 @@ pub fn converse(
 
     // Record invocation for introspection
     {
-        let mut s = state.write();
+        let mut accts = state.write();
+        let s = accts.get_or_create(&req.account_id);
         s.invocations.push(crate::state::ModelInvocation {
             model_id: model_id.to_string(),
             input: String::from_utf8_lossy(body).to_string(),

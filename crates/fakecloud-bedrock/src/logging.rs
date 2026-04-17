@@ -1,12 +1,13 @@
 use http::StatusCode;
 use serde_json::{json, Value};
 
-use fakecloud_core::service::{AwsResponse, AwsServiceError};
+use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 
 use crate::state::SharedBedrockState;
 
 pub fn put_model_invocation_logging_configuration(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     body: &Value,
 ) -> Result<AwsResponse, AwsServiceError> {
     let logging_config = body.get("loggingConfig").ok_or_else(|| {
@@ -31,7 +32,8 @@ pub fn put_model_invocation_logging_configuration(
             .unwrap_or(true),
     };
 
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     s.logging_config = Some(config);
 
     Ok(AwsResponse::json(StatusCode::OK, "{}".to_string()))
@@ -39,8 +41,11 @@ pub fn put_model_invocation_logging_configuration(
 
 pub fn get_model_invocation_logging_configuration(
     state: &SharedBedrockState,
+    req: &AwsRequest,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     match &s.logging_config {
         Some(config) => {
             let mut logging_config = json!({
@@ -64,8 +69,10 @@ pub fn get_model_invocation_logging_configuration(
 
 pub fn delete_model_invocation_logging_configuration(
     state: &SharedBedrockState,
+    req: &AwsRequest,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     s.logging_config = None;
     Ok(AwsResponse::json(StatusCode::OK, "{}".to_string()))
 }

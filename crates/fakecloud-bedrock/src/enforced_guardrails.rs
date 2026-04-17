@@ -8,11 +8,13 @@ use crate::state::SharedBedrockState;
 
 pub fn put_enforced_guardrail_configuration(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     body: &Value,
 ) -> Result<AwsResponse, AwsServiceError> {
     let config_id = Uuid::new_v4().to_string();
 
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     s.enforced_guardrail_configs
         .insert(config_id.clone(), body.clone());
 
@@ -33,7 +35,9 @@ pub fn list_enforced_guardrails_configuration(
         .max(1);
     let next_token = req.query_params.get("nextToken");
 
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let mut items: Vec<(&String, &Value)> = s.enforced_guardrail_configs.iter().collect();
     items.sort_by(|a, b| a.0.cmp(b.0));
 
@@ -72,9 +76,11 @@ pub fn list_enforced_guardrails_configuration(
 
 pub fn delete_enforced_guardrail_configuration(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     config_id: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
 
     match s.enforced_guardrail_configs.remove(config_id) {
         Some(_) => Ok(AwsResponse::json(StatusCode::OK, "{}".to_string())),

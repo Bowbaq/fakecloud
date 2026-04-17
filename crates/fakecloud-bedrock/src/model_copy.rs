@@ -34,7 +34,8 @@ pub fn create_model_copy_job(
         creation_time: Utc::now(),
     };
 
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     s.model_copy_jobs.insert(job_arn.clone(), job);
 
     Ok(AwsResponse::json(
@@ -45,9 +46,12 @@ pub fn create_model_copy_job(
 
 pub fn get_model_copy_job(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     job_arn: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let job = s
         .model_copy_jobs
         .get(job_arn)
@@ -86,7 +90,9 @@ pub fn list_model_copy_jobs(
         .max(1);
     let next_token = req.query_params.get("nextToken");
 
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let mut items: Vec<&ModelCopyJob> = s.model_copy_jobs.values().collect();
     items.sort_by(|a, b| a.job_arn.cmp(&b.job_arn));
 

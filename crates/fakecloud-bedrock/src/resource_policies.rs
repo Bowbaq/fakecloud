@@ -2,12 +2,13 @@ use http::StatusCode;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use fakecloud_core::service::{AwsResponse, AwsServiceError};
+use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 
 use crate::state::SharedBedrockState;
 
 pub fn put_resource_policy(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     body: &Value,
 ) -> Result<AwsResponse, AwsServiceError> {
     let resource_arn = body["resourceArn"].as_str().ok_or_else(|| {
@@ -28,7 +29,8 @@ pub fn put_resource_policy(
 
     let revision_id = Uuid::new_v4().to_string();
 
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     s.resource_policies
         .insert(resource_arn.to_string(), policy.to_string());
 
@@ -40,9 +42,12 @@ pub fn put_resource_policy(
 
 pub fn get_resource_policy(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     resource_arn: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let policy = s
         .resource_policies
         .get(resource_arn)
@@ -70,9 +75,11 @@ pub fn get_resource_policy(
 
 pub fn delete_resource_policy(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     resource_arn: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
 
     let key = if s.resource_policies.contains_key(resource_arn) {
         Some(resource_arn.to_string())

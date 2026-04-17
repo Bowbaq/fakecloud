@@ -35,7 +35,8 @@ pub fn create_inference_profile(
         updated_at: now,
     };
 
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
 
     if let Some(tags) = body["tags"].as_array() {
         let tag_map: std::collections::HashMap<String, String> = tags
@@ -62,9 +63,12 @@ pub fn create_inference_profile(
 
 pub fn get_inference_profile(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     identifier: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let profile = s
         .inference_profiles
         .get(identifier)
@@ -106,7 +110,9 @@ pub fn list_inference_profiles(
         .max(1);
     let next_token = req.query_params.get("nextToken");
 
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let mut items: Vec<&InferenceProfile> = s.inference_profiles.values().collect();
     items.sort_by(|a, b| a.inference_profile_arn.cmp(&b.inference_profile_arn));
 
@@ -149,9 +155,11 @@ pub fn list_inference_profiles(
 
 pub fn delete_inference_profile(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     identifier: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
 
     let key = s
         .inference_profiles
