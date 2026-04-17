@@ -47,10 +47,12 @@ fn workflow_to_json(w: &AutomatedReasoningBuildWorkflow) -> Value {
 
 pub fn start_build_workflow(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     policy_identifier: &str,
     workflow_type: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     let policy_arn = require_policy_arn(&s.automated_reasoning_policies, policy_identifier)?;
 
     let workflow_id = Uuid::new_v4().to_string();
@@ -75,10 +77,13 @@ pub fn start_build_workflow(
 
 pub fn get_build_workflow(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     policy_identifier: &str,
     workflow_id: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let policy_arn = require_policy_arn(&s.automated_reasoning_policies, policy_identifier)?;
 
     let workflow = s
@@ -108,7 +113,9 @@ pub fn list_build_workflows(
         .max(1);
     let next_token = req.query_params.get("nextToken");
 
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let policy_arn = require_policy_arn(&s.automated_reasoning_policies, policy_identifier)?;
 
     let mut items: Vec<&AutomatedReasoningBuildWorkflow> = s
@@ -148,10 +155,12 @@ pub fn list_build_workflows(
 
 pub fn cancel_build_workflow(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     policy_identifier: &str,
     workflow_id: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     let policy_arn = require_policy_arn(&s.automated_reasoning_policies, policy_identifier)?;
 
     let workflow = s
@@ -173,10 +182,12 @@ pub fn cancel_build_workflow(
 
 pub fn delete_build_workflow(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     policy_identifier: &str,
     workflow_id: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     let policy_arn = require_policy_arn(&s.automated_reasoning_policies, policy_identifier)?;
 
     let key = (policy_arn.clone(), workflow_id.to_string());
@@ -199,10 +210,13 @@ pub fn delete_build_workflow(
 
 pub fn get_build_workflow_result_assets(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     policy_identifier: &str,
     workflow_id: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let policy_arn = require_policy_arn(&s.automated_reasoning_policies, policy_identifier)?;
 
     if !s
@@ -221,10 +235,13 @@ pub fn get_build_workflow_result_assets(
 
 pub fn start_test_workflow(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     policy_identifier: &str,
     workflow_id: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let policy_arn = require_policy_arn(&s.automated_reasoning_policies, policy_identifier)?;
 
     if !s
@@ -247,11 +264,14 @@ pub fn start_test_workflow(
 
 pub fn get_test_result(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     policy_identifier: &str,
     workflow_id: &str,
     test_case_id: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let policy_arn = require_policy_arn(&s.automated_reasoning_policies, policy_identifier)?;
 
     if !s
@@ -297,7 +317,9 @@ pub fn list_test_results(
         .max(1);
     let next_token = req.query_params.get("nextToken");
 
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let policy_arn = require_policy_arn(&s.automated_reasoning_policies, policy_identifier)?;
 
     if !s
@@ -348,10 +370,13 @@ pub fn list_test_results(
 
 pub fn get_annotations(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     policy_identifier: &str,
     workflow_id: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let policy_arn = require_policy_arn(&s.automated_reasoning_policies, policy_identifier)?;
 
     if !s
@@ -376,11 +401,13 @@ pub fn get_annotations(
 
 pub fn update_annotations(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     policy_identifier: &str,
     workflow_id: &str,
     body: &Value,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     let policy_arn = require_policy_arn(&s.automated_reasoning_policies, policy_identifier)?;
 
     if !s
@@ -402,10 +429,13 @@ pub fn update_annotations(
 
 pub fn get_next_scenario(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     policy_identifier: &str,
     workflow_id: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let policy_arn = require_policy_arn(&s.automated_reasoning_policies, policy_identifier)?;
 
     if !s

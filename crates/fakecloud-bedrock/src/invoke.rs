@@ -2,7 +2,7 @@ use chrono::Utc;
 use http::StatusCode;
 use serde_json::{json, Value};
 
-use fakecloud_core::service::{AwsResponse, AwsServiceError};
+use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 
 use crate::state::SharedBedrockState;
 
@@ -10,6 +10,7 @@ use crate::state::SharedBedrockState;
 /// If a custom response has been configured via simulation endpoint, use that instead.
 pub fn invoke_model(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     model_id: &str,
     body: &[u8],
 ) -> Result<AwsResponse, AwsServiceError> {
@@ -23,19 +24,20 @@ pub fn invoke_model(
     }
 
     // Fault injection: if a matching rule is queued, record the attempt and fail.
-    if let Some(fault) = crate::faults::take_matching_fault(state, model_id, "InvokeModel") {
-        crate::faults::record_faulted_invocation(state, model_id, body, &fault);
+    if let Some(fault) = crate::faults::take_matching_fault(state, req, model_id, "InvokeModel") {
+        crate::faults::record_faulted_invocation(state, req, model_id, body, &fault);
         return Err(crate::faults::fault_to_error(&fault));
     }
 
     let input: Value = serde_json::from_slice(body).unwrap_or_default();
 
-    let response_body = crate::prompt::resolve_override(state, model_id, body)
+    let response_body = crate::prompt::resolve_override(state, req, model_id, body)
         .unwrap_or_else(|| generate_canned_response(model_id, &input));
 
     // Record invocation for introspection
     {
-        let mut s = state.write();
+        let mut accts = state.write();
+        let s = accts.get_or_create(&req.account_id);
         s.invocations.push(crate::state::ModelInvocation {
             model_id: model_id.to_string(),
             input: String::from_utf8_lossy(body).to_string(),
@@ -64,6 +66,7 @@ pub fn invoke_model(
 /// Count tokens for the given input text (rough approximation).
 pub fn count_tokens(
     _state: &SharedBedrockState,
+    _req: &AwsRequest,
     model_id: &str,
     body: &[u8],
 ) -> Result<AwsResponse, AwsServiceError> {

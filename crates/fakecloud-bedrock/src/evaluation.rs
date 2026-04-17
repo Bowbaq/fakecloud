@@ -40,7 +40,8 @@ pub fn create_evaluation_job(
         last_modified_time: now,
     };
 
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     s.evaluation_jobs.insert(job_arn.clone(), job);
 
     Ok(AwsResponse::json(
@@ -51,9 +52,12 @@ pub fn create_evaluation_job(
 
 pub fn get_evaluation_job(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     job_identifier: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let job = find_job(&s.evaluation_jobs, job_identifier)?;
 
     Ok(AwsResponse::ok_json(json!({
@@ -83,7 +87,9 @@ pub fn list_evaluation_jobs(
         .max(1);
     let next_token = req.query_params.get("nextToken");
 
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let mut items: Vec<&EvaluationJob> = s.evaluation_jobs.values().collect();
     items.sort_by(|a, b| a.job_arn.cmp(&b.job_arn));
 
@@ -124,9 +130,11 @@ pub fn list_evaluation_jobs(
 
 pub fn stop_evaluation_job(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     job_identifier: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     let key = find_job_key(&s.evaluation_jobs, job_identifier)?;
     let job = s
         .evaluation_jobs
@@ -149,6 +157,7 @@ pub fn stop_evaluation_job(
 
 pub fn batch_delete_evaluation_job(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     body: &Value,
 ) -> Result<AwsResponse, AwsServiceError> {
     let job_identifiers = body["jobIdentifiers"].as_array().ok_or_else(|| {
@@ -159,7 +168,8 @@ pub fn batch_delete_evaluation_job(
         )
     })?;
 
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     let mut errors: Vec<Value> = Vec::new();
 
     for identifier in job_identifiers {

@@ -1,7 +1,7 @@
 use chrono::Utc;
 use http::StatusCode;
 
-use fakecloud_core::service::AwsServiceError;
+use fakecloud_core::service::{AwsRequest, AwsServiceError};
 
 use crate::state::{FaultRule, ModelInvocation, SharedBedrockState};
 
@@ -11,10 +11,12 @@ use crate::state::{FaultRule, ModelInvocation, SharedBedrockState};
 /// the intended error type/message/status.
 pub fn take_matching_fault(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     model_id: &str,
     operation: &str,
 ) -> Option<FaultRule> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     let idx = s.fault_rules.iter().position(|rule| {
         rule.model_id
             .as_deref()
@@ -42,11 +44,13 @@ pub fn fault_to_error(fault: &FaultRule) -> AwsServiceError {
 /// Record an invocation that was rejected by an injected fault.
 pub fn record_faulted_invocation(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     model_id: &str,
     body: &[u8],
     fault: &FaultRule,
 ) {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     s.invocations.push(ModelInvocation {
         model_id: model_id.to_string(),
         input: String::from_utf8_lossy(body).to_string(),

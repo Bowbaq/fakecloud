@@ -61,7 +61,13 @@ impl KinesisLambdaPoller {
 
         for (mapping_uuid, stream_arn, function_arn, batch_size) in mappings {
             let deliveries = {
-                let kinesis = self.kinesis_state.read();
+                let kinesis_accounts = self.kinesis_state.read();
+                // Extract account_id from stream ARN: arn:aws:kinesis:region:ACCOUNT:stream/Name
+                let account_id = stream_arn.split(':').nth(4).unwrap_or("");
+                let kinesis = match kinesis_accounts.get(account_id) {
+                    Some(k) => k,
+                    None => continue,
+                };
                 let stream = match kinesis
                     .streams
                     .values()
@@ -137,7 +143,9 @@ impl KinesisLambdaPoller {
                 }
 
                 {
-                    let mut kinesis = self.kinesis_state.write();
+                    let account_id = stream_arn.split(':').nth(4).unwrap_or("");
+                    let mut kinesis_accounts = self.kinesis_state.write();
+                    let kinesis = kinesis_accounts.get_or_create(account_id);
                     kinesis.set_lambda_checkpoint(&mapping_uuid, &shard_id, end);
                 }
 

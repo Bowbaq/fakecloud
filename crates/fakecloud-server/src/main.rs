@@ -151,7 +151,11 @@ async fn main() {
     }
 
     let secretsmanager_state = Arc::new(parking_lot::RwLock::new(
-        fakecloud_secretsmanager::state::SecretsManagerState::new(&cli.account_id, &cli.region),
+        fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        ),
     ));
     let s3_state = Arc::new(parking_lot::RwLock::new(
         fakecloud_core::multi_account::MultiAccountState::new(
@@ -164,7 +168,11 @@ async fn main() {
         fakecloud_logs::state::LogsState::new(&cli.account_id, &cli.region),
     ));
     let kms_state = Arc::new(parking_lot::RwLock::new(
-        fakecloud_kms::state::KmsState::new(&cli.account_id, &cli.region),
+        fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        ),
     ));
     let cloudformation_state = Arc::new(parking_lot::RwLock::new(
         fakecloud_cloudformation::state::CloudFormationState::new(&cli.account_id, &cli.region),
@@ -176,7 +184,11 @@ async fn main() {
         fakecloud_cognito::state::CognitoState::new(&cli.account_id, &cli.region),
     ));
     let kinesis_state = Arc::new(parking_lot::RwLock::new(
-        fakecloud_kinesis::state::KinesisState::new(&cli.account_id, &cli.region),
+        fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        ),
     ));
     let rds_state = Arc::new(parking_lot::RwLock::new(
         fakecloud_rds::state::RdsState::new(&cli.account_id, &cli.region),
@@ -194,7 +206,11 @@ async fn main() {
     ));
 
     let bedrock_state = Arc::new(parking_lot::RwLock::new(
-        fakecloud_bedrock::state::BedrockState::new(&cli.account_id, &cli.region),
+        fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        ),
     ));
 
     let rds_runtime = fakecloud_rds::runtime::RdsRuntime::new().map(Arc::new);
@@ -874,20 +890,31 @@ async fn main() {
                     {
                         Ok(snapshot) => {
                             if snapshot.schema_version
-                                != fakecloud_secretsmanager::state::SECRETSMANAGER_SNAPSHOT_SCHEMA_VERSION
+                                > fakecloud_secretsmanager::state::SECRETSMANAGER_SNAPSHOT_SCHEMA_VERSION
                             {
                                 fatal_exit(format_args!(
-                                    "secretsmanager persistence schema mismatch: on-disk={}, expected={}",
+                                    "secretsmanager persistence schema too new: on-disk={}, max supported={}",
                                     snapshot.schema_version,
                                     fakecloud_secretsmanager::state::SECRETSMANAGER_SNAPSHOT_SCHEMA_VERSION,
                                 ));
                             }
-                            let secret_count = snapshot.state.secrets.len();
-                            *secretsmanager_state.write() = snapshot.state;
-                            tracing::info!(
-                                secrets = secret_count,
-                                "loaded secretsmanager persistence snapshot",
-                            );
+                            if let Some(accounts) = snapshot.accounts {
+                                let account_count = accounts.account_count();
+                                *secretsmanager_state.write() = accounts;
+                                tracing::info!(
+                                    accounts = account_count,
+                                    "loaded secretsmanager persistence snapshot (multi-account)"
+                                );
+                            } else if let Some(single_state) = snapshot.state {
+                                let secret_count = single_state.secrets.len();
+                                let account_id = single_state.account_id.clone();
+                                let mut mas = secretsmanager_state.write();
+                                *mas.get_or_create(&account_id) = single_state;
+                                tracing::info!(
+                                    secrets = secret_count,
+                                    "loaded secretsmanager persistence snapshot (migrated from v1)"
+                                );
+                            }
                         }
                         Err(err) => fatal_exit(format_args!(
                             "failed to parse secretsmanager persistence snapshot: {err}"
@@ -975,17 +1002,31 @@ async fn main() {
                     match serde_json::from_slice::<fakecloud_kms::state::KmsSnapshot>(&bytes) {
                         Ok(snapshot) => {
                             if snapshot.schema_version
-                                != fakecloud_kms::state::KMS_SNAPSHOT_SCHEMA_VERSION
+                                > fakecloud_kms::state::KMS_SNAPSHOT_SCHEMA_VERSION
                             {
                                 fatal_exit(format_args!(
-                                    "kms persistence schema mismatch: on-disk={}, expected={}",
+                                    "kms persistence schema too new: on-disk={}, max supported={}",
                                     snapshot.schema_version,
                                     fakecloud_kms::state::KMS_SNAPSHOT_SCHEMA_VERSION,
                                 ));
                             }
-                            let key_count = snapshot.state.keys.len();
-                            *kms_state.write() = snapshot.state;
-                            tracing::info!(keys = key_count, "loaded kms persistence snapshot",);
+                            if let Some(accounts) = snapshot.accounts {
+                                let account_count = accounts.account_count();
+                                *kms_state.write() = accounts;
+                                tracing::info!(
+                                    accounts = account_count,
+                                    "loaded kms persistence snapshot (multi-account)"
+                                );
+                            } else if let Some(single_state) = snapshot.state {
+                                let key_count = single_state.keys.len();
+                                let account_id = single_state.account_id.clone();
+                                let mut mas = kms_state.write();
+                                *mas.get_or_create(&account_id) = single_state;
+                                tracing::info!(
+                                    keys = key_count,
+                                    "loaded kms persistence snapshot (migrated from v1)"
+                                );
+                            }
                         }
                         Err(err) => fatal_exit(format_args!(
                             "failed to parse kms persistence snapshot: {err}"
@@ -1295,20 +1336,31 @@ async fn main() {
                     ) {
                         Ok(snapshot) => {
                             if snapshot.schema_version
-                                != fakecloud_kinesis::state::KINESIS_SNAPSHOT_SCHEMA_VERSION
+                                > fakecloud_kinesis::state::KINESIS_SNAPSHOT_SCHEMA_VERSION
                             {
                                 fatal_exit(format_args!(
-                                    "kinesis persistence schema mismatch: on-disk={}, expected={}",
+                                    "kinesis persistence schema too new: on-disk={}, max supported={}",
                                     snapshot.schema_version,
                                     fakecloud_kinesis::state::KINESIS_SNAPSHOT_SCHEMA_VERSION,
                                 ));
                             }
-                            let stream_count = snapshot.state.streams.len();
-                            *kinesis_state.write() = snapshot.state;
-                            tracing::info!(
-                                streams = stream_count,
-                                "loaded kinesis persistence snapshot",
-                            );
+                            if let Some(accounts) = snapshot.accounts {
+                                let account_count = accounts.account_count();
+                                *kinesis_state.write() = accounts;
+                                tracing::info!(
+                                    accounts = account_count,
+                                    "loaded kinesis persistence snapshot (multi-account)"
+                                );
+                            } else if let Some(single_state) = snapshot.state {
+                                let stream_count = single_state.streams.len();
+                                let account_id = single_state.account_id.clone();
+                                let mut mas = kinesis_state.write();
+                                *mas.get_or_create(&account_id) = single_state;
+                                tracing::info!(
+                                    streams = stream_count,
+                                    "loaded kinesis persistence snapshot (migrated from v1)"
+                                );
+                            }
                         }
                         Err(err) => fatal_exit(format_args!(
                             "failed to parse kinesis persistence snapshot: {err}"
@@ -1605,20 +1657,31 @@ async fn main() {
                     ) {
                         Ok(snapshot) => {
                             if snapshot.schema_version
-                                != fakecloud_bedrock::state::BEDROCK_SNAPSHOT_SCHEMA_VERSION
+                                > fakecloud_bedrock::state::BEDROCK_SNAPSHOT_SCHEMA_VERSION
                             {
                                 fatal_exit(format_args!(
-                                    "bedrock persistence schema mismatch: on-disk={}, expected={}",
+                                    "bedrock persistence schema too new: on-disk={}, max supported={}",
                                     snapshot.schema_version,
                                     fakecloud_bedrock::state::BEDROCK_SNAPSHOT_SCHEMA_VERSION,
                                 ));
                             }
-                            let guardrail_count = snapshot.state.guardrails.len();
-                            *bedrock_state.write() = snapshot.state;
-                            tracing::info!(
-                                guardrails = guardrail_count,
-                                "loaded bedrock persistence snapshot",
-                            );
+                            if let Some(accounts) = snapshot.accounts {
+                                let account_count = accounts.account_count();
+                                *bedrock_state.write() = accounts;
+                                tracing::info!(
+                                    accounts = account_count,
+                                    "loaded bedrock persistence snapshot (multi-account)"
+                                );
+                            } else if let Some(single_state) = snapshot.state {
+                                let guardrail_count = single_state.guardrails.len();
+                                let account_id = single_state.account_id.clone();
+                                let mut mas = bedrock_state.write();
+                                *mas.get_or_create(&account_id) = single_state;
+                                tracing::info!(
+                                    guardrails = guardrail_count,
+                                    "loaded bedrock persistence snapshot (migrated from v1)"
+                                );
+                            }
                         }
                         Err(err) => fatal_exit(format_args!(
                             "failed to parse bedrock persistence snapshot: {err}"
@@ -2674,7 +2737,7 @@ async fn main() {
             axum::routing::get({
                 let bs = bedrock_state.clone();
                 move || async move {
-                    let state = bs.read();
+                    let accounts = bs.read(); let state = accounts.default_ref();
                     let invocations: Vec<serde_json::Value> = state
                         .invocations
                         .iter()
@@ -2699,7 +2762,7 @@ async fn main() {
                 let bs = bedrock_state.clone();
                 move |axum::extract::Path(model_id): axum::extract::Path<String>,
                       body: String| async move {
-                    let mut state = bs.write();
+                    let mut accounts = bs.write(); let state = accounts.default_mut();
                     state.custom_responses.insert(model_id.clone(), body);
                     axum::Json(
                         serde_json::json!({ "status": "ok", "modelId": model_id }),
@@ -2754,7 +2817,7 @@ async fn main() {
                             response,
                         });
                     }
-                    let mut state = bs.write();
+                    let mut accounts = bs.write(); let state = accounts.default_mut();
                     state.response_rules.insert(model_id.clone(), parsed);
                     (
                         axum::http::StatusCode::OK,
@@ -2768,7 +2831,7 @@ async fn main() {
             .delete({
                 let bs = bedrock_state.clone();
                 move |axum::extract::Path(model_id): axum::extract::Path<String>| async move {
-                    let mut state = bs.write();
+                    let mut accounts = bs.write(); let state = accounts.default_mut();
                     state.response_rules.remove(&model_id);
                     axum::Json(serde_json::json!({ "status": "ok", "modelId": model_id }))
                 }
@@ -2825,7 +2888,7 @@ async fn main() {
                             })),
                         );
                     }
-                    let mut state = bs.write();
+                    let mut accounts = bs.write(); let state = accounts.default_mut();
                     state
                         .fault_rules
                         .push(fakecloud_bedrock::state::FaultRule {
@@ -2845,7 +2908,7 @@ async fn main() {
             .get({
                 let bs = bedrock_state.clone();
                 move || async move {
-                    let state = bs.read();
+                    let accounts = bs.read(); let state = accounts.default_ref();
                     let faults: Vec<serde_json::Value> = state
                         .fault_rules
                         .iter()
@@ -2866,7 +2929,7 @@ async fn main() {
             .delete({
                 let bs = bedrock_state.clone();
                 move || async move {
-                    let mut state = bs.write();
+                    let mut accounts = bs.write(); let state = accounts.default_mut();
                     state.fault_rules.clear();
                     axum::Json(serde_json::json!({ "status": "ok" }))
                 }

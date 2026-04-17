@@ -27,7 +27,10 @@ impl KinesisDelivery for KinesisDeliveryImpl {
             stream_arn
         };
 
-        let mut state = self.state.write();
+        // Extract account_id from ARN: arn:aws:kinesis:region:ACCOUNT:stream/Name
+        let account_id = stream_arn.split(':').nth(4).unwrap_or("");
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(account_id);
         if let Some(stream) = state.streams.get_mut(stream_name) {
             // Find the shard to write to based on partition key
             // For simplicity, hash the partition key and mod by shard count

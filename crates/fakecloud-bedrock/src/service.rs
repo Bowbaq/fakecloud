@@ -9,7 +9,9 @@ use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceErr
 use fakecloud_persistence::SnapshotStore;
 
 use crate::models;
-use crate::state::{BedrockSnapshot, SharedBedrockState, BEDROCK_SNAPSHOT_SCHEMA_VERSION};
+use crate::state::{
+    BedrockSnapshot, BedrockState, SharedBedrockState, BEDROCK_SNAPSHOT_SCHEMA_VERSION,
+};
 
 pub struct BedrockService {
     state: SharedBedrockState,
@@ -100,7 +102,8 @@ impl BedrockService {
         let _guard = self.snapshot_lock.lock().await;
         let snapshot = BedrockSnapshot {
             schema_version: BEDROCK_SNAPSHOT_SCHEMA_VERSION,
-            state: self.state.read().clone(),
+            state: None,
+            accounts: Some(self.state.read().clone()),
         };
         let join = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
             let bytes = serde_json::to_vec(&snapshot)
@@ -771,7 +774,7 @@ impl BedrockService {
 
     fn tag_resource(
         &self,
-        _req: &AwsRequest,
+        req: &AwsRequest,
         resource_arn: &str,
         body: &Value,
     ) -> Result<AwsResponse, AwsServiceError> {
@@ -783,7 +786,8 @@ impl BedrockService {
             )
         })?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let resource_tags = state.tags.entry(resource_arn.to_string()).or_default();
         for tag in tags {
             let key = tag["key"].as_str().unwrap_or_default();
@@ -796,10 +800,12 @@ impl BedrockService {
 
     fn untag_resource_from_body(
         &self,
+        account_id: &str,
         resource_arn: &str,
         tag_keys: &[String],
     ) -> Result<AwsResponse, AwsServiceError> {
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(account_id);
         if let Some(resource_tags) = state.tags.get_mut(resource_arn) {
             for key in tag_keys {
                 resource_tags.remove(key);
@@ -811,10 +817,12 @@ impl BedrockService {
 
     fn list_tags_for_resource(
         &self,
-        _req: &AwsRequest,
+        req: &AwsRequest,
         resource_arn: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = BedrockState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let tags = state.tags.get(resource_arn);
         let tags_arr: Vec<Value> = match tags {
             Some(t) => {
@@ -881,7 +889,7 @@ impl AwsService for BedrockService {
                             .collect()
                     })
                     .unwrap_or_default();
-                self.untag_resource_from_body(arn, &tag_keys)
+                self.untag_resource_from_body(&req.account_id, arn, &tag_keys)
             }
             "ListTagsForResource" => {
                 let arn = body["resourceARN"].as_str().unwrap_or_default();
@@ -896,19 +904,24 @@ impl AwsService for BedrockService {
             "ListGuardrails" => crate::guardrails::list_guardrails(&self.state, &req),
             "UpdateGuardrail" => crate::guardrails::update_guardrail(
                 &self.state,
+                &req,
                 &resource_id.unwrap_or_default(),
                 &body,
             ),
-            "DeleteGuardrail" => {
-                crate::guardrails::delete_guardrail(&self.state, &resource_id.unwrap_or_default())
-            }
+            "DeleteGuardrail" => crate::guardrails::delete_guardrail(
+                &self.state,
+                &req,
+                &resource_id.unwrap_or_default(),
+            ),
             "CreateGuardrailVersion" => crate::guardrails::create_guardrail_version(
                 &self.state,
+                &req,
                 &resource_id.unwrap_or_default(),
                 &body,
             ),
             "ApplyGuardrail" => crate::guardrails::apply_guardrail(
                 &self.state,
+                &req,
                 &resource_id.unwrap_or_default(),
                 &extra_id.unwrap_or_default(),
                 &req.body,
@@ -919,11 +932,13 @@ impl AwsService for BedrockService {
             }
             "GetCustomModel" => crate::custom_models::get_custom_model(
                 &self.state,
+                &req,
                 &resource_id.unwrap_or_default(),
             ),
             "ListCustomModels" => crate::custom_models::list_custom_models(&self.state, &req),
             "DeleteCustomModel" => crate::custom_models::delete_custom_model(
                 &self.state,
+                &req,
                 &resource_id.unwrap_or_default(),
             ),
             // Custom model deployments
@@ -937,6 +952,7 @@ impl AwsService for BedrockService {
             "GetCustomModelDeployment" => {
                 crate::custom_model_deployments::get_custom_model_deployment(
                     &self.state,
+                    &req,
                     &resource_id.unwrap_or_default(),
                 )
             }
@@ -946,6 +962,7 @@ impl AwsService for BedrockService {
             "UpdateCustomModelDeployment" => {
                 crate::custom_model_deployments::update_custom_model_deployment(
                     &self.state,
+                    &req,
                     &resource_id.unwrap_or_default(),
                     &body,
                 )
@@ -953,6 +970,7 @@ impl AwsService for BedrockService {
             "DeleteCustomModelDeployment" => {
                 crate::custom_model_deployments::delete_custom_model_deployment(
                     &self.state,
+                    &req,
                     &resource_id.unwrap_or_default(),
                 )
             }
@@ -962,25 +980,30 @@ impl AwsService for BedrockService {
             }
             "GetModelImportJob" => crate::model_import::get_model_import_job(
                 &self.state,
+                &req,
                 &resource_id.unwrap_or_default(),
             ),
             "ListModelImportJobs" => crate::model_import::list_model_import_jobs(&self.state, &req),
             "GetImportedModel" => crate::model_import::get_imported_model(
                 &self.state,
+                &req,
                 &resource_id.unwrap_or_default(),
             ),
             "ListImportedModels" => crate::model_import::list_imported_models(&self.state, &req),
             "DeleteImportedModel" => crate::model_import::delete_imported_model(
                 &self.state,
+                &req,
                 &resource_id.unwrap_or_default(),
             ),
             // Model copy jobs
             "CreateModelCopyJob" => {
                 crate::model_copy::create_model_copy_job(&self.state, &req, &body)
             }
-            "GetModelCopyJob" => {
-                crate::model_copy::get_model_copy_job(&self.state, &resource_id.unwrap_or_default())
-            }
+            "GetModelCopyJob" => crate::model_copy::get_model_copy_job(
+                &self.state,
+                &req,
+                &resource_id.unwrap_or_default(),
+            ),
             "ListModelCopyJobs" => crate::model_copy::list_model_copy_jobs(&self.state, &req),
             // Model invocation jobs
             "CreateModelInvocationJob" => {
@@ -988,6 +1011,7 @@ impl AwsService for BedrockService {
             }
             "GetModelInvocationJob" => crate::invocation_jobs::get_model_invocation_job(
                 &self.state,
+                &req,
                 &resource_id.unwrap_or_default(),
             ),
             "ListModelInvocationJobs" => {
@@ -995,22 +1019,26 @@ impl AwsService for BedrockService {
             }
             "StopModelInvocationJob" => crate::invocation_jobs::stop_model_invocation_job(
                 &self.state,
+                &req,
                 &resource_id.unwrap_or_default(),
             ),
             // Evaluation jobs
             "CreateEvaluationJob" => {
                 crate::evaluation::create_evaluation_job(&self.state, &req, &body)
             }
-            "GetEvaluationJob" => {
-                crate::evaluation::get_evaluation_job(&self.state, &resource_id.unwrap_or_default())
-            }
+            "GetEvaluationJob" => crate::evaluation::get_evaluation_job(
+                &self.state,
+                &req,
+                &resource_id.unwrap_or_default(),
+            ),
             "ListEvaluationJobs" => crate::evaluation::list_evaluation_jobs(&self.state, &req),
             "StopEvaluationJob" => crate::evaluation::stop_evaluation_job(
                 &self.state,
+                &req,
                 &resource_id.unwrap_or_default(),
             ),
             "BatchDeleteEvaluationJob" => {
-                crate::evaluation::batch_delete_evaluation_job(&self.state, &body)
+                crate::evaluation::batch_delete_evaluation_job(&self.state, &req, &body)
             }
             // Inference profiles
             "CreateInferenceProfile" => {
@@ -1018,6 +1046,7 @@ impl AwsService for BedrockService {
             }
             "GetInferenceProfile" => crate::inference_profiles::get_inference_profile(
                 &self.state,
+                &req,
                 &resource_id.unwrap_or_default(),
             ),
             "ListInferenceProfiles" => {
@@ -1025,6 +1054,7 @@ impl AwsService for BedrockService {
             }
             "DeleteInferenceProfile" => crate::inference_profiles::delete_inference_profile(
                 &self.state,
+                &req,
                 &resource_id.unwrap_or_default(),
             ),
             // Prompt routers
@@ -1033,23 +1063,27 @@ impl AwsService for BedrockService {
             }
             "GetPromptRouter" => crate::prompt_routers::get_prompt_router(
                 &self.state,
+                &req,
                 &resource_id.unwrap_or_default(),
             ),
             "ListPromptRouters" => crate::prompt_routers::list_prompt_routers(&self.state, &req),
             "DeletePromptRouter" => crate::prompt_routers::delete_prompt_router(
                 &self.state,
+                &req,
                 &resource_id.unwrap_or_default(),
             ),
             // Resource policies
             "PutResourcePolicy" => {
-                crate::resource_policies::put_resource_policy(&self.state, &body)
+                crate::resource_policies::put_resource_policy(&self.state, &req, &body)
             }
             "GetResourcePolicy" => crate::resource_policies::get_resource_policy(
                 &self.state,
+                &req,
                 &resource_id.unwrap_or_default(),
             ),
             "DeleteResourcePolicy" => crate::resource_policies::delete_resource_policy(
                 &self.state,
+                &req,
                 &resource_id.unwrap_or_default(),
             ),
             // Marketplace model endpoints
@@ -1058,6 +1092,7 @@ impl AwsService for BedrockService {
             }
             "GetMarketplaceModelEndpoint" => crate::marketplace::get_marketplace_model_endpoint(
                 &self.state,
+                &req,
                 &resource_id.unwrap_or_default(),
             ),
             "ListMarketplaceModelEndpoints" => {
@@ -1066,6 +1101,7 @@ impl AwsService for BedrockService {
             "UpdateMarketplaceModelEndpoint" => {
                 crate::marketplace::update_marketplace_model_endpoint(
                     &self.state,
+                    &req,
                     &resource_id.unwrap_or_default(),
                     &body,
                 )
@@ -1073,18 +1109,21 @@ impl AwsService for BedrockService {
             "DeleteMarketplaceModelEndpoint" => {
                 crate::marketplace::delete_marketplace_model_endpoint(
                     &self.state,
+                    &req,
                     &resource_id.unwrap_or_default(),
                 )
             }
             "RegisterMarketplaceModelEndpoint" => {
                 crate::marketplace::register_marketplace_model_endpoint(
                     &self.state,
+                    &req,
                     &resource_id.unwrap_or_default(),
                 )
             }
             "DeregisterMarketplaceModelEndpoint" => {
                 crate::marketplace::deregister_marketplace_model_endpoint(
                     &self.state,
+                    &req,
                     &resource_id.unwrap_or_default(),
                 )
             }
@@ -1099,33 +1138,41 @@ impl AwsService for BedrockService {
             "DeleteFoundationModelAgreement" => {
                 crate::foundation_model_agreements::delete_foundation_model_agreement(
                     &self.state,
+                    &req,
                     &body,
                 )
             }
             "ListFoundationModelAgreementOffers" => {
                 crate::foundation_model_agreements::list_foundation_model_agreement_offers(
                     &self.state,
+                    &req,
                     &resource_id.unwrap_or_default(),
                 )
             }
             "GetFoundationModelAvailability" => {
                 crate::foundation_model_agreements::get_foundation_model_availability(
                     &self.state,
+                    &req,
                     &resource_id.unwrap_or_default(),
                 )
             }
             "GetUseCaseForModelAccess" => {
-                crate::foundation_model_agreements::get_use_case_for_model_access(&self.state)
+                crate::foundation_model_agreements::get_use_case_for_model_access(&self.state, &req)
             }
             "PutUseCaseForModelAccess" => {
                 crate::foundation_model_agreements::put_use_case_for_model_access(
                     &self.state,
+                    &req,
                     &body,
                 )
             }
             // Enforced guardrails
             "PutEnforcedGuardrailConfiguration" => {
-                crate::enforced_guardrails::put_enforced_guardrail_configuration(&self.state, &body)
+                crate::enforced_guardrails::put_enforced_guardrail_configuration(
+                    &self.state,
+                    &req,
+                    &body,
+                )
             }
             "ListEnforcedGuardrailsConfiguration" => {
                 crate::enforced_guardrails::list_enforced_guardrails_configuration(
@@ -1136,6 +1183,7 @@ impl AwsService for BedrockService {
             "DeleteEnforcedGuardrailConfiguration" => {
                 crate::enforced_guardrails::delete_enforced_guardrail_configuration(
                     &self.state,
+                    &req,
                     &resource_id.unwrap_or_default(),
                 )
             }
@@ -1150,6 +1198,7 @@ impl AwsService for BedrockService {
             "GetAutomatedReasoningPolicy" => {
                 crate::automated_reasoning::get_automated_reasoning_policy(
                     &self.state,
+                    &req,
                     &resource_id.unwrap_or_default(),
                 )
             }
@@ -1159,6 +1208,7 @@ impl AwsService for BedrockService {
             "UpdateAutomatedReasoningPolicy" => {
                 crate::automated_reasoning::update_automated_reasoning_policy(
                     &self.state,
+                    &req,
                     &resource_id.unwrap_or_default(),
                     &body,
                 )
@@ -1166,12 +1216,14 @@ impl AwsService for BedrockService {
             "DeleteAutomatedReasoningPolicy" => {
                 crate::automated_reasoning::delete_automated_reasoning_policy(
                     &self.state,
+                    &req,
                     &resource_id.unwrap_or_default(),
                 )
             }
             "CreateAutomatedReasoningPolicyVersion" => {
                 crate::automated_reasoning::create_automated_reasoning_policy_version(
                     &self.state,
+                    &req,
                     &resource_id.unwrap_or_default(),
                     &body,
                 )
@@ -1186,6 +1238,7 @@ impl AwsService for BedrockService {
             "CreateAutomatedReasoningPolicyTestCase" => {
                 crate::automated_reasoning::create_automated_reasoning_policy_test_case(
                     &self.state,
+                    &req,
                     &resource_id.unwrap_or_default(),
                     &body,
                 )
@@ -1193,6 +1246,7 @@ impl AwsService for BedrockService {
             "GetAutomatedReasoningPolicyTestCase" => {
                 crate::automated_reasoning::get_automated_reasoning_policy_test_case(
                     &self.state,
+                    &req,
                     &resource_id.unwrap_or_default(),
                     extra_id.as_deref().unwrap_or_default(),
                 )
@@ -1207,6 +1261,7 @@ impl AwsService for BedrockService {
             "UpdateAutomatedReasoningPolicyTestCase" => {
                 crate::automated_reasoning::update_automated_reasoning_policy_test_case(
                     &self.state,
+                    &req,
                     &resource_id.unwrap_or_default(),
                     extra_id.as_deref().unwrap_or_default(),
                     &body,
@@ -1215,6 +1270,7 @@ impl AwsService for BedrockService {
             "DeleteAutomatedReasoningPolicyTestCase" => {
                 crate::automated_reasoning::delete_automated_reasoning_policy_test_case(
                     &self.state,
+                    &req,
                     &resource_id.unwrap_or_default(),
                     extra_id.as_deref().unwrap_or_default(),
                 )
@@ -1223,6 +1279,7 @@ impl AwsService for BedrockService {
             "StartAutomatedReasoningPolicyBuildWorkflow" => {
                 crate::automated_reasoning_workflows::start_build_workflow(
                     &self.state,
+                    &req,
                     &resource_id.unwrap_or_default(),
                     extra_id.as_deref().unwrap_or_default(),
                 )
@@ -1230,6 +1287,7 @@ impl AwsService for BedrockService {
             "GetAutomatedReasoningPolicyBuildWorkflow" => {
                 crate::automated_reasoning_workflows::get_build_workflow(
                     &self.state,
+                    &req,
                     &resource_id.unwrap_or_default(),
                     extra_id.as_deref().unwrap_or_default(),
                 )
@@ -1244,6 +1302,7 @@ impl AwsService for BedrockService {
             "CancelAutomatedReasoningPolicyBuildWorkflow" => {
                 crate::automated_reasoning_workflows::cancel_build_workflow(
                     &self.state,
+                    &req,
                     &resource_id.unwrap_or_default(),
                     extra_id.as_deref().unwrap_or_default(),
                 )
@@ -1251,6 +1310,7 @@ impl AwsService for BedrockService {
             "DeleteAutomatedReasoningPolicyBuildWorkflow" => {
                 crate::automated_reasoning_workflows::delete_build_workflow(
                     &self.state,
+                    &req,
                     &resource_id.unwrap_or_default(),
                     extra_id.as_deref().unwrap_or_default(),
                 )
@@ -1258,6 +1318,7 @@ impl AwsService for BedrockService {
             "GetAutomatedReasoningPolicyBuildWorkflowResultAssets" => {
                 crate::automated_reasoning_workflows::get_build_workflow_result_assets(
                     &self.state,
+                    &req,
                     &resource_id.unwrap_or_default(),
                     extra_id.as_deref().unwrap_or_default(),
                 )
@@ -1265,6 +1326,7 @@ impl AwsService for BedrockService {
             "StartAutomatedReasoningPolicyTestWorkflow" => {
                 crate::automated_reasoning_workflows::start_test_workflow(
                     &self.state,
+                    &req,
                     &resource_id.unwrap_or_default(),
                     extra_id.as_deref().unwrap_or_default(),
                 )
@@ -1276,6 +1338,7 @@ impl AwsService for BedrockService {
                 let test_case_id = parts.get(1).copied().unwrap_or_default();
                 crate::automated_reasoning_workflows::get_test_result(
                     &self.state,
+                    &req,
                     &resource_id.unwrap_or_default(),
                     workflow_id,
                     test_case_id,
@@ -1292,6 +1355,7 @@ impl AwsService for BedrockService {
             "GetAutomatedReasoningPolicyAnnotations" => {
                 crate::automated_reasoning_workflows::get_annotations(
                     &self.state,
+                    &req,
                     &resource_id.unwrap_or_default(),
                     extra_id.as_deref().unwrap_or_default(),
                 )
@@ -1299,6 +1363,7 @@ impl AwsService for BedrockService {
             "UpdateAutomatedReasoningPolicyAnnotations" => {
                 crate::automated_reasoning_workflows::update_annotations(
                     &self.state,
+                    &req,
                     &resource_id.unwrap_or_default(),
                     extra_id.as_deref().unwrap_or_default(),
                     &body,
@@ -1307,6 +1372,7 @@ impl AwsService for BedrockService {
             "GetAutomatedReasoningPolicyNextScenario" => {
                 crate::automated_reasoning_workflows::get_next_scenario(
                     &self.state,
+                    &req,
                     &resource_id.unwrap_or_default(),
                     extra_id.as_deref().unwrap_or_default(),
                 )
@@ -1325,6 +1391,7 @@ impl AwsService for BedrockService {
             }
             "StopModelCustomizationJob" => crate::customization::stop_model_customization_job(
                 &self.state,
+                &req,
                 &resource_id.unwrap_or_default(),
             ),
             // Provisioned model throughput
@@ -1333,6 +1400,7 @@ impl AwsService for BedrockService {
             }
             "GetProvisionedModelThroughput" => crate::throughput::get_provisioned_model_throughput(
                 &self.state,
+                &req,
                 &resource_id.unwrap_or_default(),
             ),
             "ListProvisionedModelThroughputs" => {
@@ -1341,6 +1409,7 @@ impl AwsService for BedrockService {
             "UpdateProvisionedModelThroughput" => {
                 crate::throughput::update_provisioned_model_throughput(
                     &self.state,
+                    &req,
                     &resource_id.unwrap_or_default(),
                     &body,
                 )
@@ -1348,42 +1417,50 @@ impl AwsService for BedrockService {
             "DeleteProvisionedModelThroughput" => {
                 crate::throughput::delete_provisioned_model_throughput(
                     &self.state,
+                    &req,
                     &resource_id.unwrap_or_default(),
                 )
             }
             // Logging configuration
             "PutModelInvocationLoggingConfiguration" => {
-                crate::logging::put_model_invocation_logging_configuration(&self.state, &body)
+                crate::logging::put_model_invocation_logging_configuration(&self.state, &req, &body)
             }
             "GetModelInvocationLoggingConfiguration" => {
-                crate::logging::get_model_invocation_logging_configuration(&self.state)
+                crate::logging::get_model_invocation_logging_configuration(&self.state, &req)
             }
             "DeleteModelInvocationLoggingConfiguration" => {
-                crate::logging::delete_model_invocation_logging_configuration(&self.state)
+                crate::logging::delete_model_invocation_logging_configuration(&self.state, &req)
             }
             // Runtime operations
             "InvokeModel" => crate::invoke::invoke_model(
                 &self.state,
+                &req,
                 &resource_id.unwrap_or_default(),
                 &req.body,
             ),
             "CountTokens" => crate::invoke::count_tokens(
                 &self.state,
+                &req,
                 &resource_id.unwrap_or_default(),
                 &req.body,
             ),
-            "Converse" => {
-                crate::converse::converse(&self.state, &resource_id.unwrap_or_default(), &req.body)
-            }
+            "Converse" => crate::converse::converse(
+                &self.state,
+                &req,
+                &resource_id.unwrap_or_default(),
+                &req.body,
+            ),
             "InvokeModelWithResponseStream" | "InvokeModelWithBidirectionalStream" => {
                 let model_id = resource_id.unwrap_or_default();
                 if let Some(fault) = crate::faults::take_matching_fault(
                     &self.state,
+                    &req,
                     &model_id,
                     "InvokeModelWithResponseStream",
                 ) {
                     crate::faults::record_faulted_invocation(
                         &self.state,
+                        &req,
                         &model_id,
                         &req.body,
                         &fault,
@@ -1391,13 +1468,14 @@ impl AwsService for BedrockService {
                     return Err(crate::faults::fault_to_error(&fault));
                 }
                 let response_text =
-                    crate::streaming::get_response_text(&self.state, &model_id, &req.body);
+                    crate::streaming::get_response_text(&self.state, &req, &model_id, &req.body);
                 let body =
                     crate::streaming::build_invoke_stream_response(&model_id, &response_text);
 
                 // Record invocation
                 {
-                    let mut s = self.state.write();
+                    let mut accts = self.state.write();
+                    let s = accts.get_or_create(&req.account_id);
                     s.invocations.push(crate::state::ModelInvocation {
                         model_id: model_id.clone(),
                         input: String::from_utf8_lossy(&req.body).to_string(),
@@ -1416,11 +1494,15 @@ impl AwsService for BedrockService {
             }
             "ConverseStream" => {
                 let model_id = resource_id.unwrap_or_default();
-                if let Some(fault) =
-                    crate::faults::take_matching_fault(&self.state, &model_id, "ConverseStream")
-                {
+                if let Some(fault) = crate::faults::take_matching_fault(
+                    &self.state,
+                    &req,
+                    &model_id,
+                    "ConverseStream",
+                ) {
                     crate::faults::record_faulted_invocation(
                         &self.state,
+                        &req,
                         &model_id,
                         &req.body,
                         &fault,
@@ -1428,12 +1510,13 @@ impl AwsService for BedrockService {
                     return Err(crate::faults::fault_to_error(&fault));
                 }
                 let response_text =
-                    crate::streaming::get_response_text(&self.state, &model_id, &req.body);
+                    crate::streaming::get_response_text(&self.state, &req, &model_id, &req.body);
                 let body = crate::streaming::build_converse_stream_response(&response_text);
 
                 // Record invocation
                 {
-                    let mut s = self.state.write();
+                    let mut accts = self.state.write();
+                    let s = accts.get_or_create(&req.account_id);
                     s.invocations.push(crate::state::ModelInvocation {
                         model_id: model_id.clone(),
                         input: String::from_utf8_lossy(&req.body).to_string(),
@@ -1452,9 +1535,11 @@ impl AwsService for BedrockService {
             }
             // Async invoke
             "StartAsyncInvoke" => crate::async_invoke::start_async_invoke(&self.state, &req, &body),
-            "GetAsyncInvoke" => {
-                crate::async_invoke::get_async_invoke(&self.state, &resource_id.unwrap_or_default())
-            }
+            "GetAsyncInvoke" => crate::async_invoke::get_async_invoke(
+                &self.state,
+                &req,
+                &resource_id.unwrap_or_default(),
+            ),
             "ListAsyncInvokes" => crate::async_invoke::list_async_invokes(&self.state, &req),
 
             _ => Err(AwsServiceError::ActionNotImplemented {
@@ -1588,7 +1673,6 @@ impl AwsService for BedrockService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::BedrockState;
     use bytes::Bytes;
     use http::{HeaderMap, Method};
     use parking_lot::RwLock;
@@ -1597,7 +1681,13 @@ mod tests {
     use std::sync::Arc;
 
     fn make_state() -> SharedBedrockState {
-        Arc::new(RwLock::new(BedrockState::new("123456789012", "us-east-1")))
+        Arc::new(RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4566",
+            ),
+        ))
     }
 
     fn make_request(method: Method, path: &str, body: &str) -> AwsRequest {
@@ -2236,7 +2326,8 @@ mod tests {
         );
         svc.handle(req).await.unwrap();
 
-        let s = state.read();
+        let _accts = state.read();
+        let s = _accts.default_ref();
         assert_eq!(s.invocations.len(), 1);
         assert_eq!(s.invocations[0].model_id, "anthropic.claude-v2");
     }
@@ -2473,7 +2564,7 @@ mod tests {
         let b = body_json(&resp);
         let arn = b["modelArn"].as_str().unwrap();
 
-        let resp = crate::custom_models::get_custom_model(&state, arn).unwrap();
+        let resp = crate::custom_models::get_custom_model(&state, &req, arn).unwrap();
         let b = body_json(&resp);
         assert_eq!(b["modelName"], "my-model");
 
@@ -2481,8 +2572,8 @@ mod tests {
         let b = body_json(&resp);
         assert_eq!(b["modelSummaries"].as_array().unwrap().len(), 1);
 
-        crate::custom_models::delete_custom_model(&state, arn).unwrap();
-        assert!(crate::custom_models::get_custom_model(&state, arn).is_err());
+        crate::custom_models::delete_custom_model(&state, &req, arn).unwrap();
+        assert!(crate::custom_models::get_custom_model(&state, &req, arn).is_err());
     }
 
     #[test]
@@ -2500,7 +2591,7 @@ mod tests {
         let b = body_json(&resp);
         let arn = b["customModelDeploymentArn"].as_str().unwrap();
 
-        crate::custom_model_deployments::get_custom_model_deployment(&state, arn).unwrap();
+        crate::custom_model_deployments::get_custom_model_deployment(&state, &req, arn).unwrap();
 
         let resp =
             crate::custom_model_deployments::list_custom_model_deployments(&state, &req).unwrap();
@@ -2508,8 +2599,9 @@ mod tests {
         assert!(!b["modelDeploymentSummaries"].as_array().unwrap().is_empty());
 
         let upd = serde_json::json!({"desiredModelUnits": 2});
-        crate::custom_model_deployments::update_custom_model_deployment(&state, arn, &upd).unwrap();
-        crate::custom_model_deployments::delete_custom_model_deployment(&state, arn).unwrap();
+        crate::custom_model_deployments::update_custom_model_deployment(&state, &req, arn, &upd)
+            .unwrap();
+        crate::custom_model_deployments::delete_custom_model_deployment(&state, &req, arn).unwrap();
     }
 
     #[test]
@@ -2525,7 +2617,7 @@ mod tests {
         let b = body_json(&resp);
         let arn = b["jobArn"].as_str().unwrap();
 
-        crate::model_import::get_model_import_job(&state, arn).unwrap();
+        crate::model_import::get_model_import_job(&state, &req, arn).unwrap();
         let resp = crate::model_import::list_model_import_jobs(&state, &req).unwrap();
         let b = body_json(&resp);
         assert!(!b["modelImportJobSummaries"].as_array().unwrap().is_empty());
@@ -2548,7 +2640,7 @@ mod tests {
         let b = body_json(&resp);
         let arn = b["jobArn"].as_str().unwrap();
 
-        crate::model_copy::get_model_copy_job(&state, arn).unwrap();
+        crate::model_copy::get_model_copy_job(&state, &req, arn).unwrap();
         let resp = crate::model_copy::list_model_copy_jobs(&state, &req).unwrap();
         let b = body_json(&resp);
         assert!(!b["modelCopyJobSummaries"].as_array().unwrap().is_empty());
@@ -2568,11 +2660,11 @@ mod tests {
         let b = body_json(&resp);
         let arn = b["jobArn"].as_str().unwrap();
 
-        crate::invocation_jobs::get_model_invocation_job(&state, arn).unwrap();
+        crate::invocation_jobs::get_model_invocation_job(&state, &req, arn).unwrap();
         let resp = crate::invocation_jobs::list_model_invocation_jobs(&state, &req).unwrap();
         let b = body_json(&resp);
         assert!(!b["invocationJobSummaries"].as_array().unwrap().is_empty());
-        crate::invocation_jobs::stop_model_invocation_job(&state, arn).unwrap();
+        crate::invocation_jobs::stop_model_invocation_job(&state, &req, arn).unwrap();
     }
 
     #[test]
@@ -2588,7 +2680,7 @@ mod tests {
         let b = body_json(&resp);
         let arn = b["jobArn"].as_str().unwrap();
 
-        crate::evaluation::get_evaluation_job(&state, arn).unwrap();
+        crate::evaluation::get_evaluation_job(&state, &req, arn).unwrap();
         let resp = crate::evaluation::list_evaluation_jobs(&state, &req).unwrap();
         let b = body_json(&resp);
         assert!(!b["jobSummaries"].as_array().unwrap().is_empty());
@@ -2608,14 +2700,14 @@ mod tests {
         let b = body_json(&resp);
         let arn = b["inferenceProfileArn"].as_str().unwrap();
 
-        crate::inference_profiles::get_inference_profile(&state, arn).unwrap();
+        crate::inference_profiles::get_inference_profile(&state, &req, arn).unwrap();
         let resp = crate::inference_profiles::list_inference_profiles(&state, &req).unwrap();
         let b = body_json(&resp);
         assert!(!b["inferenceProfileSummaries"]
             .as_array()
             .unwrap()
             .is_empty());
-        crate::inference_profiles::delete_inference_profile(&state, arn).unwrap();
+        crate::inference_profiles::delete_inference_profile(&state, &req, arn).unwrap();
     }
 
     #[test]
@@ -2631,11 +2723,11 @@ mod tests {
         let b = body_json(&resp);
         let arn = b["promptRouterArn"].as_str().unwrap();
 
-        crate::prompt_routers::get_prompt_router(&state, arn).unwrap();
+        crate::prompt_routers::get_prompt_router(&state, &req, arn).unwrap();
         let resp = crate::prompt_routers::list_prompt_routers(&state, &req).unwrap();
         let b = body_json(&resp);
         assert!(!b["promptRouterSummaries"].as_array().unwrap().is_empty());
-        crate::prompt_routers::delete_prompt_router(&state, arn).unwrap();
+        crate::prompt_routers::delete_prompt_router(&state, &req, arn).unwrap();
     }
 
     #[test]
@@ -2675,7 +2767,7 @@ mod tests {
         let b = body_json(&resp);
         let arn = b["provisionedModelArn"].as_str().unwrap();
 
-        crate::throughput::get_provisioned_model_throughput(&state, arn).unwrap();
+        crate::throughput::get_provisioned_model_throughput(&state, &req, arn).unwrap();
         let resp = crate::throughput::list_provisioned_model_throughputs(&state, &req).unwrap();
         let b = body_json(&resp);
         assert!(!b["provisionedModelSummaries"]
@@ -2684,8 +2776,8 @@ mod tests {
             .is_empty());
 
         let upd = serde_json::json!({"desiredModelUnits": 2});
-        crate::throughput::update_provisioned_model_throughput(&state, arn, &upd).unwrap();
-        crate::throughput::delete_provisioned_model_throughput(&state, arn).unwrap();
+        crate::throughput::update_provisioned_model_throughput(&state, &req, arn, &upd).unwrap();
+        crate::throughput::delete_provisioned_model_throughput(&state, &req, arn).unwrap();
     }
 
     #[test]
@@ -2702,14 +2794,14 @@ mod tests {
         let b = body_json(&resp);
         let arn = b["marketplaceModelEndpointArn"].as_str().unwrap();
 
-        crate::marketplace::get_marketplace_model_endpoint(&state, arn).unwrap();
+        crate::marketplace::get_marketplace_model_endpoint(&state, &req, arn).unwrap();
         let resp = crate::marketplace::list_marketplace_model_endpoints(&state, &req).unwrap();
         let b = body_json(&resp);
         assert!(!b["marketplaceModelEndpoints"]
             .as_array()
             .unwrap()
             .is_empty());
-        crate::marketplace::delete_marketplace_model_endpoint(&state, arn).unwrap();
+        crate::marketplace::delete_marketplace_model_endpoint(&state, &req, arn).unwrap();
     }
 
     #[test]
@@ -2725,7 +2817,7 @@ mod tests {
         let b = body_json(&resp);
         let arn = b["invocationArn"].as_str().unwrap();
 
-        crate::async_invoke::get_async_invoke(&state, arn).unwrap();
+        crate::async_invoke::get_async_invoke(&state, &req, arn).unwrap();
         let resp = crate::async_invoke::list_async_invokes(&state, &req).unwrap();
         let b = body_json(&resp);
         assert!(!b["asyncInvokeSummaries"].as_array().unwrap().is_empty());
@@ -2746,15 +2838,16 @@ mod tests {
         let b = body_json(&resp);
         let arn = b["policyArn"].as_str().unwrap();
 
-        crate::automated_reasoning::get_automated_reasoning_policy(&state, arn).unwrap();
+        crate::automated_reasoning::get_automated_reasoning_policy(&state, &req, arn).unwrap();
         let resp =
             crate::automated_reasoning::list_automated_reasoning_policies(&state, &req).unwrap();
         let b = body_json(&resp);
         assert!(!b["policySummaries"].as_array().unwrap().is_empty());
 
         let upd = serde_json::json!({"description": "updated"});
-        crate::automated_reasoning::update_automated_reasoning_policy(&state, arn, &upd).unwrap();
-        crate::automated_reasoning::delete_automated_reasoning_policy(&state, arn).unwrap();
+        crate::automated_reasoning::update_automated_reasoning_policy(&state, &req, arn, &upd)
+            .unwrap();
+        crate::automated_reasoning::delete_automated_reasoning_policy(&state, &req, arn).unwrap();
     }
 
     #[test]
@@ -2765,14 +2858,16 @@ mod tests {
         crate::foundation_model_agreements::create_foundation_model_agreement(&state, &req, &body)
             .unwrap();
 
-        crate::foundation_model_agreements::get_use_case_for_model_access(&state).unwrap();
+        crate::foundation_model_agreements::get_use_case_for_model_access(&state, &req).unwrap();
     }
 
     #[test]
     fn enforced_guardrail_config() {
         let state = make_state();
         let body = serde_json::json!({"guardrailIdentifier":"g1","guardrailVersion":"1","modelArn":"arn:m"});
-        crate::enforced_guardrails::put_enforced_guardrail_configuration(&state, &body).unwrap();
+        let req = make_request(Method::POST, "/", "{}");
+        crate::enforced_guardrails::put_enforced_guardrail_configuration(&state, &req, &body)
+            .unwrap();
 
         let req = make_request(Method::GET, "/", "");
         crate::enforced_guardrails::list_enforced_guardrails_configuration(&state, &req).unwrap();
@@ -2789,8 +2884,10 @@ mod tests {
     #[test]
     fn automated_reasoning_policy_not_found_get() {
         let state = make_state();
+        let req = make_request(Method::GET, "/", "{}");
         let result = crate::automated_reasoning::get_automated_reasoning_policy(
             &state,
+            &req,
             "arn:aws:bedrock:us-east-1:123:automated-reasoning-policy/ghost",
         );
         assert!(result.is_err());
@@ -2799,8 +2896,10 @@ mod tests {
     #[test]
     fn automated_reasoning_policy_delete_not_found() {
         let state = make_state();
+        let req = make_request(Method::DELETE, "/", "{}");
         let result = crate::automated_reasoning::delete_automated_reasoning_policy(
             &state,
+            &req,
             "arn:aws:bedrock:us-east-1:123:automated-reasoning-policy/ghost",
         );
         assert!(result.is_err());

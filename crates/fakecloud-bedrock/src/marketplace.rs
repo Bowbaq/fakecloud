@@ -45,7 +45,8 @@ pub fn create_marketplace_model_endpoint(
         updated_at: now,
     };
 
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     s.marketplace_endpoints
         .insert(endpoint_arn.clone(), endpoint);
 
@@ -57,9 +58,12 @@ pub fn create_marketplace_model_endpoint(
 
 pub fn get_marketplace_model_endpoint(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     identifier: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let endpoint = s
         .marketplace_endpoints
         .get(identifier)
@@ -101,7 +105,9 @@ pub fn list_marketplace_model_endpoints(
         .max(1);
     let next_token = req.query_params.get("nextToken");
 
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let mut items: Vec<&MarketplaceModelEndpoint> = s.marketplace_endpoints.values().collect();
     items.sort_by(|a, b| a.endpoint_arn.cmp(&b.endpoint_arn));
 
@@ -143,10 +149,12 @@ pub fn list_marketplace_model_endpoints(
 
 pub fn update_marketplace_model_endpoint(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     identifier: &str,
     body: &Value,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
 
     let key = s
         .marketplace_endpoints
@@ -190,9 +198,11 @@ pub fn update_marketplace_model_endpoint(
 
 pub fn delete_marketplace_model_endpoint(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     identifier: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
 
     let key = s
         .marketplace_endpoints
@@ -219,9 +229,11 @@ pub fn delete_marketplace_model_endpoint(
 
 pub fn register_marketplace_model_endpoint(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     identifier: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
 
     let key = s
         .marketplace_endpoints
@@ -262,9 +274,11 @@ pub fn register_marketplace_model_endpoint(
 
 pub fn deregister_marketplace_model_endpoint(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     identifier: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
 
     let key = s
         .marketplace_endpoints

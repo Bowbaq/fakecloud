@@ -33,7 +33,9 @@ impl ResourcePolicyProvider for KmsResourcePolicyProvider {
             return None;
         }
         let key_id = parse_key_id_from_arn(resource_arn)?;
-        let state = self.state.read();
+        let account_id = resource_arn.split(':').nth(4)?;
+        let accounts = self.state.read();
+        let state = accounts.get(account_id)?;
         let key = state.keys.get(&key_id)?;
         Some(key.policy.clone())
     }

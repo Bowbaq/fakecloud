@@ -4,14 +4,24 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
 
-pub type SharedBedrockState = Arc<RwLock<BedrockState>>;
+pub type SharedBedrockState =
+    Arc<RwLock<fakecloud_core::multi_account::MultiAccountState<BedrockState>>>;
 
-pub const BEDROCK_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+impl fakecloud_core::multi_account::AccountState for BedrockState {
+    fn new_for_account(account_id: &str, region: &str, _endpoint: &str) -> Self {
+        Self::new(account_id, region)
+    }
+}
+
+pub const BEDROCK_SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct BedrockSnapshot {
     pub schema_version: u32,
-    pub state: BedrockState,
+    #[serde(default)]
+    pub accounts: Option<fakecloud_core::multi_account::MultiAccountState<BedrockState>>,
+    #[serde(default)]
+    pub state: Option<BedrockState>,
 }
 
 /// Serialize/deserialize `HashMap<(String, String), V>` as `Vec<(String, String, V)>`.

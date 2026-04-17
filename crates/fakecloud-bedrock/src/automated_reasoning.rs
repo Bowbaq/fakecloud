@@ -41,7 +41,8 @@ pub fn create_automated_reasoning_policy(
         updated_at: now,
     };
 
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     s.automated_reasoning_policies
         .insert(policy_arn.clone(), policy);
 
@@ -53,9 +54,12 @@ pub fn create_automated_reasoning_policy(
 
 pub fn get_automated_reasoning_policy(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     identifier: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let policy = find_policy(&s.automated_reasoning_policies, identifier).ok_or_else(|| {
         AwsServiceError::aws_error(
             StatusCode::NOT_FOUND,
@@ -79,7 +83,9 @@ pub fn list_automated_reasoning_policies(
         .max(1);
     let next_token = req.query_params.get("nextToken");
 
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let mut items: Vec<&AutomatedReasoningPolicy> =
         s.automated_reasoning_policies.values().collect();
     items.sort_by(|a, b| a.policy_arn.cmp(&b.policy_arn));
@@ -123,10 +129,12 @@ pub fn list_automated_reasoning_policies(
 
 pub fn update_automated_reasoning_policy(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     identifier: &str,
     body: &Value,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
 
     let key = find_policy_key(&s.automated_reasoning_policies, identifier).ok_or_else(|| {
         AwsServiceError::aws_error(
@@ -158,9 +166,11 @@ pub fn update_automated_reasoning_policy(
 
 pub fn delete_automated_reasoning_policy(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     identifier: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
 
     let key = find_policy_key(&s.automated_reasoning_policies, identifier).ok_or_else(|| {
         AwsServiceError::aws_error(
@@ -183,10 +193,12 @@ pub fn delete_automated_reasoning_policy(
 
 pub fn create_automated_reasoning_policy_version(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     identifier: &str,
     _body: &Value,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
 
     let key = find_policy_key(&s.automated_reasoning_policies, identifier).ok_or_else(|| {
         AwsServiceError::aws_error(
@@ -223,7 +235,9 @@ pub fn export_automated_reasoning_policy_version(
     identifier: &str,
     req: &AwsRequest,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let policy = find_policy(&s.automated_reasoning_policies, identifier).ok_or_else(|| {
         AwsServiceError::aws_error(
             StatusCode::NOT_FOUND,
@@ -254,6 +268,7 @@ pub fn export_automated_reasoning_policy_version(
 
 pub fn create_automated_reasoning_policy_test_case(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     policy_identifier: &str,
     body: &Value,
 ) -> Result<AwsResponse, AwsServiceError> {
@@ -265,7 +280,8 @@ pub fn create_automated_reasoning_policy_test_case(
         )
     })?;
 
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
 
     let policy_arn = find_policy_key(&s.automated_reasoning_policies, policy_identifier)
         .ok_or_else(|| {
@@ -300,10 +316,13 @@ pub fn create_automated_reasoning_policy_test_case(
 
 pub fn get_automated_reasoning_policy_test_case(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     policy_identifier: &str,
     test_case_id: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
 
     let policy_arn = find_policy_key(&s.automated_reasoning_policies, policy_identifier)
         .ok_or_else(|| {
@@ -341,7 +360,9 @@ pub fn list_automated_reasoning_policy_test_cases(
         .max(1);
     let next_token = req.query_params.get("nextToken");
 
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
 
     let policy_arn = find_policy_key(&s.automated_reasoning_policies, policy_identifier)
         .ok_or_else(|| {
@@ -397,11 +418,13 @@ pub fn list_automated_reasoning_policy_test_cases(
 
 pub fn update_automated_reasoning_policy_test_case(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     policy_identifier: &str,
     test_case_id: &str,
     body: &Value,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
 
     let policy_arn = find_policy_key(&s.automated_reasoning_policies, policy_identifier)
         .ok_or_else(|| {
@@ -442,10 +465,12 @@ pub fn update_automated_reasoning_policy_test_case(
 
 pub fn delete_automated_reasoning_policy_test_case(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     policy_identifier: &str,
     test_case_id: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
 
     let policy_arn = find_policy_key(&s.automated_reasoning_policies, policy_identifier)
         .ok_or_else(|| {

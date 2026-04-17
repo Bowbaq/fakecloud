@@ -72,7 +72,8 @@ pub fn create_provisioned_model_throughput(
         last_modified_at: now,
     };
 
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     s.provisioned_throughputs
         .insert(provisioned_model_id, throughput);
 
@@ -87,9 +88,12 @@ pub fn create_provisioned_model_throughput(
 
 pub fn get_provisioned_model_throughput(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     provisioned_model_id: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let throughput = find_throughput(&s.provisioned_throughputs, provisioned_model_id)?;
 
     Ok(AwsResponse::ok_json(throughput_to_json(throughput)))
@@ -107,7 +111,9 @@ pub fn list_provisioned_model_throughputs(
         .max(1);
     let next_token = req.query_params.get("nextToken");
 
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let mut items: Vec<&ProvisionedThroughput> = s.provisioned_throughputs.values().collect();
     items.sort_by(|a, b| a.provisioned_model_id.cmp(&b.provisioned_model_id));
 
@@ -153,10 +159,12 @@ pub fn list_provisioned_model_throughputs(
 
 pub fn update_provisioned_model_throughput(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     provisioned_model_id: &str,
     body: &Value,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     let throughput = find_throughput_mut(&mut s.provisioned_throughputs, provisioned_model_id)?;
 
     if let Some(units) = body["desiredModelUnits"].as_i64() {
@@ -173,9 +181,11 @@ pub fn update_provisioned_model_throughput(
 
 pub fn delete_provisioned_model_throughput(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     provisioned_model_id: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
 
     // Find by ID or ARN
     let key = s

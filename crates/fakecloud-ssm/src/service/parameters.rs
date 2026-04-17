@@ -311,7 +311,8 @@ impl SsmService {
             )
         })?;
 
-        let sm = sm_state.read();
+        let sm_accounts = sm_state.read();
+        let sm = sm_accounts.default_ref();
         let secret = sm.secrets.get(secret_name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,

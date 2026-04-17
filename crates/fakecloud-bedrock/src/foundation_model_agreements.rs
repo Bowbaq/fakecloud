@@ -9,7 +9,7 @@ use crate::state::{FoundationModelAgreement, SharedBedrockState};
 
 pub fn create_foundation_model_agreement(
     state: &SharedBedrockState,
-    _req: &AwsRequest,
+    req: &AwsRequest,
     body: &Value,
 ) -> Result<AwsResponse, AwsServiceError> {
     let model_id = body["modelId"].as_str().ok_or_else(|| {
@@ -28,7 +28,8 @@ pub fn create_foundation_model_agreement(
         created_at: Utc::now(),
     };
 
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     s.foundation_model_agreements
         .insert(agreement_id, agreement);
 
@@ -39,6 +40,7 @@ pub fn create_foundation_model_agreement(
 
 pub fn delete_foundation_model_agreement(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     body: &Value,
 ) -> Result<AwsResponse, AwsServiceError> {
     let model_id = body["modelId"].as_str().ok_or_else(|| {
@@ -49,7 +51,8 @@ pub fn delete_foundation_model_agreement(
         )
     })?;
 
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     let key = s
         .foundation_model_agreements
         .iter()
@@ -71,6 +74,7 @@ pub fn delete_foundation_model_agreement(
 
 pub fn list_foundation_model_agreement_offers(
     _state: &SharedBedrockState,
+    _req: &AwsRequest,
     model_id: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
     Ok(AwsResponse::ok_json(json!({
@@ -81,9 +85,12 @@ pub fn list_foundation_model_agreement_offers(
 
 pub fn get_foundation_model_availability(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     model_id: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let has_agreement = s
         .foundation_model_agreements
         .values()
@@ -99,8 +106,11 @@ pub fn get_foundation_model_availability(
 
 pub fn get_use_case_for_model_access(
     state: &SharedBedrockState,
+    req: &AwsRequest,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let use_case = s.use_case_for_model_access.clone().unwrap_or(json!(null));
 
     Ok(AwsResponse::ok_json(json!({
@@ -110,6 +120,7 @@ pub fn get_use_case_for_model_access(
 
 pub fn put_use_case_for_model_access(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     body: &Value,
 ) -> Result<AwsResponse, AwsServiceError> {
     let use_case = body.get("useCase").cloned().ok_or_else(|| {
@@ -120,7 +131,8 @@ pub fn put_use_case_for_model_access(
         )
     })?;
 
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     s.use_case_for_model_access = Some(use_case);
 
     Ok(AwsResponse::json(StatusCode::OK, "{}".to_string()))

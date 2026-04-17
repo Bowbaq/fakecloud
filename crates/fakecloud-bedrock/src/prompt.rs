@@ -1,5 +1,7 @@
 use serde_json::Value;
 
+use fakecloud_core::service::AwsRequest;
+
 use crate::state::{ResponseRule, SharedBedrockState};
 
 /// Extract the user-visible prompt text from a runtime request body.
@@ -77,9 +79,16 @@ pub fn match_rule<'a>(rules: &'a [ResponseRule], prompt: &str) -> Option<&'a Res
 /// Resolve the response body a runtime call should use, applying
 /// rule-based overrides first, then the legacy single-response override.
 /// Returns `None` when neither is configured — caller falls back to canned.
-pub fn resolve_override(state: &SharedBedrockState, model_id: &str, body: &[u8]) -> Option<String> {
+pub fn resolve_override(
+    state: &SharedBedrockState,
+    req: &AwsRequest,
+    model_id: &str,
+    body: &[u8],
+) -> Option<String> {
     let prompt = extract_prompt_text(model_id, body);
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     if let Some(rules) = s.response_rules.get(model_id) {
         if let Some(rule) = match_rule(rules, &prompt) {
             return Some(rule.response.clone());

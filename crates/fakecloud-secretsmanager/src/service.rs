@@ -14,8 +14,8 @@ use fakecloud_core::validation::*;
 use fakecloud_persistence::SnapshotStore;
 
 use crate::state::{
-    RotationRules, Secret, SecretVersion, SecretsManagerSnapshot, SharedSecretsManagerState,
-    SECRETSMANAGER_SNAPSHOT_SCHEMA_VERSION,
+    RotationRules, Secret, SecretVersion, SecretsManagerSnapshot, SecretsManagerState,
+    SharedSecretsManagerState, SECRETSMANAGER_SNAPSHOT_SCHEMA_VERSION,
 };
 
 /// Information needed to invoke the rotation Lambda after releasing state lock.
@@ -118,7 +118,8 @@ impl SecretsManagerService {
         let _guard = self.snapshot_lock.lock().await;
         let snapshot = SecretsManagerSnapshot {
             schema_version: SECRETSMANAGER_SNAPSHOT_SCHEMA_VERSION,
-            state: self.state.read().clone(),
+            state: None,
+            accounts: Some(self.state.read().clone()),
         };
         let join = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
             let bytes = serde_json::to_vec(&snapshot)
@@ -137,7 +138,8 @@ impl SecretsManagerService {
         let input = CreateSecretInput::from_body(&req.json_body())?;
         let has_value = input.secret_string.is_some() || input.secret_binary.is_some();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if let Some(existing) = state.secrets.get(&input.name) {
             if let Some(ref token) = input.client_request_token {
@@ -251,8 +253,9 @@ impl SecretsManagerService {
         validate_optional_string_length("versionId", body["VersionId"].as_str(), 32, 64)?;
         validate_optional_string_length("versionStage", body["VersionStage"].as_str(), 1, 256)?;
 
-        let mut state = self.state.write();
-        let secret = self.find_secret_mut(&mut state, &secret_id)?;
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
+        let secret = self.find_secret_mut(state, &secret_id)?;
 
         if secret.deleted {
             return Err(AwsServiceError::aws_error(
@@ -357,8 +360,9 @@ impl SecretsManagerService {
             ));
         }
 
-        let mut state = self.state.write();
-        let secret = match self.find_secret_mut(&mut state, &secret_id) {
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
+        let secret = match self.find_secret_mut(state, &secret_id) {
             Ok(s) => s,
             Err(_) => {
                 return Err(AwsServiceError::aws_error(
@@ -495,8 +499,9 @@ impl SecretsManagerService {
         validate_optional_string_length("kmsKeyId", body["KmsKeyId"].as_str(), 0, 2048)?;
         validate_optional_string_length("secretString", body["SecretString"].as_str(), 1, 65536)?;
 
-        let mut state = self.state.write();
-        let secret = match self.find_secret_mut(&mut state, &secret_id) {
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
+        let secret = match self.find_secret_mut(state, &secret_id) {
             Ok(s) => s,
             Err(_) => {
                 return Err(AwsServiceError::aws_error(
@@ -626,11 +631,12 @@ impl SecretsManagerService {
             ));
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if force_delete {
             // Force delete: if secret doesn't exist, create a fake response
-            match self.find_secret_mut(&mut state, &secret_id) {
+            match self.find_secret_mut(state, &secret_id) {
                 Ok(secret) => {
                     let arn = secret.arn.clone();
                     let name = secret.name.clone();
@@ -663,7 +669,7 @@ impl SecretsManagerService {
             }
         }
 
-        let secret = self.find_secret_mut(&mut state, &secret_id)?;
+        let secret = self.find_secret_mut(state, &secret_id)?;
 
         if secret.deleted {
             return Err(AwsServiceError::aws_error(
@@ -692,8 +698,9 @@ impl SecretsManagerService {
         let body = req.json_body();
         let secret_id = require_secret_id(&body)?;
 
-        let mut state = self.state.write();
-        let secret = self.find_secret_mut(&mut state, &secret_id)?;
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
+        let secret = self.find_secret_mut(state, &secret_id)?;
 
         // AWS allows restoring a secret that is not deleted (no-op)
         secret.deleted = false;
@@ -711,8 +718,10 @@ impl SecretsManagerService {
         let body = req.json_body();
         let secret_id = require_secret_id(&body)?;
 
-        let state = self.state.read();
-        let secret = self.find_secret_ref(&state, &secret_id)?;
+        let accounts = self.state.read();
+        let empty = SecretsManagerState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
+        let secret = self.find_secret_ref(state, &secret_id)?;
 
         let mut response = json!({
             "ARN": secret.arn,
@@ -832,7 +841,9 @@ impl SecretsManagerService {
             }
         }
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SecretsManagerState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let mut secrets: Vec<&Secret> = state
             .secrets
@@ -941,8 +952,9 @@ impl SecretsManagerService {
 
         let new_tags = parse_tags(&body["Tags"]);
 
-        let mut state = self.state.write();
-        let secret = self.find_secret_mut(&mut state, &secret_id)?;
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
+        let secret = self.find_secret_mut(state, &secret_id)?;
 
         if !new_tags.is_empty() {
             secret.tags_ever_set = true;
@@ -972,8 +984,9 @@ impl SecretsManagerService {
             })
             .unwrap_or_default();
 
-        let mut state = self.state.write();
-        let secret = self.find_secret_mut(&mut state, &secret_id)?;
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
+        let secret = self.find_secret_mut(state, &secret_id)?;
 
         secret.tags.retain(|(k, _)| !tag_keys.contains(k));
 
@@ -985,8 +998,10 @@ impl SecretsManagerService {
         let secret_id = require_secret_id(&body)?;
         validate_optional_string_length("nextToken", body["NextToken"].as_str(), 1, 4096)?;
 
-        let state = self.state.read();
-        let secret = self.find_secret_ref(&state, &secret_id)?;
+        let accounts = self.state.read();
+        let empty = SecretsManagerState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
+        let secret = self.find_secret_ref(state, &secret_id)?;
 
         let versions: Vec<Value> = secret
             .versions
@@ -1181,8 +1196,9 @@ impl SecretsManagerService {
             }
         }
 
-        let mut state = self.state.write();
-        let secret = self.find_secret_mut(&mut state, &secret_id)?;
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
+        let secret = self.find_secret_mut(state, &secret_id)?;
 
         if secret.deleted {
             return Err(AwsServiceError::aws_error(
@@ -1273,8 +1289,9 @@ impl SecretsManagerService {
         let body = req.json_body();
         let secret_id = require_secret_id(&body)?;
 
-        let mut state = self.state.write();
-        let secret = self.find_secret_mut(&mut state, &secret_id)?;
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
+        let secret = self.find_secret_mut(state, &secret_id)?;
 
         if secret.deleted {
             return Err(AwsServiceError::aws_error(
@@ -1335,8 +1352,9 @@ impl SecretsManagerService {
         let move_to = body["MoveToVersionId"].as_str().map(|s| s.to_string());
         let remove_from = body["RemoveFromVersionId"].as_str().map(|s| s.to_string());
 
-        let mut state = self.state.write();
-        let secret = self.find_secret_mut(&mut state, &secret_id)?;
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
+        let secret = self.find_secret_mut(state, &secret_id)?;
 
         // Validate: if moving AWSCURRENT, must specify RemoveFromVersionId
         if version_stage == "AWSCURRENT" && move_to.is_some() && remove_from.is_none() {
@@ -1426,14 +1444,16 @@ impl SecretsManagerService {
             ));
         }
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SecretsManagerState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let mut secret_values: Vec<Value> = Vec::new();
         let mut errors: Vec<Value> = Vec::new();
 
         if let Some(id_list) = secret_id_list {
             for id_val in id_list {
                 let sid = id_val.as_str().unwrap_or("");
-                match self.find_secret_ref(&state, sid) {
+                match self.find_secret_ref(state, sid) {
                     Ok(secret) => {
                         if secret.deleted {
                             errors.push(json!({
@@ -1568,8 +1588,10 @@ impl SecretsManagerService {
         let body = req.json_body();
         let secret_id = require_secret_id(&body)?;
 
-        let state = self.state.read();
-        let secret = self.find_secret_ref(&state, &secret_id)?;
+        let accounts = self.state.read();
+        let empty = SecretsManagerState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
+        let secret = self.find_secret_ref(state, &secret_id)?;
 
         let mut response = json!({
             "ARN": secret.arn,
@@ -1598,8 +1620,10 @@ impl SecretsManagerService {
 
         // If SecretId is provided, verify the secret exists
         if let Some(secret_id) = body["SecretId"].as_str() {
-            let state = self.state.read();
-            self.find_secret_key(&state, secret_id)?;
+            let accounts = self.state.read();
+            let empty = SecretsManagerState::new(&req.account_id, &req.region);
+            let state = accounts.get(&req.account_id).unwrap_or(&empty);
+            self.find_secret_key(state, secret_id)?;
         }
 
         let response = json!({
@@ -1621,8 +1645,9 @@ impl SecretsManagerService {
         )?;
         let policy = body["ResourcePolicy"].as_str().map(|s| s.to_string());
 
-        let mut state = self.state.write();
-        let secret = self.find_secret_mut(&mut state, &secret_id)?;
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
+        let secret = self.find_secret_mut(state, &secret_id)?;
         secret.resource_policy = policy;
 
         let response = json!({
@@ -1637,8 +1662,9 @@ impl SecretsManagerService {
         let body = req.json_body();
         let secret_id = require_secret_id(&body)?;
 
-        let mut state = self.state.write();
-        let secret = self.find_secret_mut(&mut state, &secret_id)?;
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
+        let secret = self.find_secret_mut(state, &secret_id)?;
         secret.resource_policy = None;
 
         let response = json!({
@@ -1656,8 +1682,10 @@ impl SecretsManagerService {
         let body = req.json_body();
         let secret_id = require_secret_id(&body)?;
 
-        let state = self.state.read();
-        let secret = self.find_secret_ref(&state, &secret_id)?;
+        let accounts = self.state.read();
+        let empty = SecretsManagerState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
+        let secret = self.find_secret_ref(state, &secret_id)?;
 
         let response = json!({
             "ARN": secret.arn,
@@ -1673,8 +1701,10 @@ impl SecretsManagerService {
         let body = req.json_body();
         let secret_id = require_secret_id(&body)?;
 
-        let state = self.state.read();
-        let secret = self.find_secret_ref(&state, &secret_id)?;
+        let accounts = self.state.read();
+        let empty = SecretsManagerState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
+        let secret = self.find_secret_ref(state, &secret_id)?;
 
         let response = json!({
             "ARN": secret.arn,
@@ -1690,8 +1720,10 @@ impl SecretsManagerService {
         let body = req.json_body();
         let secret_id = require_secret_id(&body)?;
 
-        let state = self.state.read();
-        let secret = self.find_secret_ref(&state, &secret_id)?;
+        let accounts = self.state.read();
+        let empty = SecretsManagerState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
+        let secret = self.find_secret_ref(state, &secret_id)?;
 
         let response = json!({
             "ARN": secret.arn,
@@ -2235,7 +2267,6 @@ fn base64_encode(input: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::SecretsManagerState;
     use bytes::Bytes;
     use http::{HeaderMap, Method};
     use parking_lot::RwLock;
@@ -2243,10 +2274,13 @@ mod tests {
     use std::sync::Arc;
 
     fn make_state() -> SharedSecretsManagerState {
-        Arc::new(RwLock::new(SecretsManagerState::new(
-            "123456789012",
-            "us-east-1",
-        )))
+        Arc::new(RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4566",
+            ),
+        ))
     }
 
     fn expect_err(result: Result<AwsResponse, AwsServiceError>) -> AwsServiceError {
@@ -2557,7 +2591,8 @@ mod tests {
         // Real AWS leaves the AWSPENDING version creation to the rotation
         // Lambda's createSecret step, so we should NOT pre-create it. Verify
         // that no version with the rotation token exists yet.
-        let s = state.read();
+        let _accts = state.read();
+        let s = _accts.default_ref();
         let secret = s.secrets.get("rotate-me").unwrap();
         assert!(
             !secret.versions.contains_key(token),
@@ -2594,7 +2629,8 @@ mod tests {
         svc.handle(req).await.unwrap();
 
         // Verify the new version is AWSCURRENT (no pending)
-        let s = state.read();
+        let _accts = state.read();
+        let s = _accts.default_ref();
         let secret = s.secrets.get("rotate-no-lambda").unwrap();
         let new_ver = secret.versions.get(token).unwrap();
         assert!(new_ver.stages.contains(&"AWSCURRENT".to_string()));
@@ -2623,7 +2659,8 @@ mod tests {
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
 
-        let s = state.read();
+        let _accts = state.read();
+        let s = _accts.default_ref();
         let secret = s.secrets.get("rot-cfg").unwrap();
         assert_eq!(secret.rotation_enabled, Some(true));
         assert_eq!(
@@ -2653,7 +2690,8 @@ mod tests {
 
         // Get original version id
         let original_vid = {
-            let s = state.read();
+            let _accts = state.read();
+            let s = _accts.default_ref();
             let secret = s.secrets.get("rot-stages").unwrap();
             secret.current_version_id.clone().unwrap()
         };
@@ -2667,7 +2705,8 @@ mod tests {
         let req = make_request("RotateSecret", &body.to_string());
         svc.handle(req).await.unwrap();
 
-        let s = state.read();
+        let _accts = state.read();
+        let s = _accts.default_ref();
         let secret = s.secrets.get("rot-stages").unwrap();
 
         // New version should be AWSCURRENT
@@ -2702,7 +2741,8 @@ mod tests {
 
         // Verify rotation is enabled
         {
-            let s = state.read();
+            let _accts = state.read();
+            let s = _accts.default_ref();
             let secret = s.secrets.get("cancel-rot").unwrap();
             assert_eq!(secret.rotation_enabled, Some(true));
         }
@@ -2715,7 +2755,8 @@ mod tests {
         assert_eq!(body["Name"], "cancel-rot");
 
         // Verify rotation is disabled
-        let s = state.read();
+        let _accts = state.read();
+        let s = _accts.default_ref();
         let secret = s.secrets.get("cancel-rot").unwrap();
         assert_eq!(secret.rotation_enabled, Some(false));
     }
@@ -2952,7 +2993,8 @@ mod tests {
 
         // Get version IDs
         let (v1_id, v2_id) = {
-            let s = state.read();
+            let _accts = state.read();
+            let s = _accts.default_ref();
             let secret = s.secrets.get("stage-test").unwrap();
             let current = secret.current_version_id.clone().unwrap();
             let previous = secret
@@ -2976,7 +3018,8 @@ mod tests {
         assert_eq!(resp.status, StatusCode::OK);
 
         // Verify v1 is now AWSCURRENT
-        let s = state.read();
+        let _accts = state.read();
+        let s = _accts.default_ref();
         let secret = s.secrets.get("stage-test").unwrap();
         let v1 = secret.versions.get(&v1_id).unwrap();
         assert!(v1.stages.contains(&"AWSCURRENT".to_string()));
@@ -3001,7 +3044,8 @@ mod tests {
         svc.handle(req).await.unwrap();
 
         let vid = {
-            let s = state.read();
+            let _accts = state.read();
+            let s = _accts.default_ref();
             s.secrets
                 .get("custom-stage")
                 .unwrap()
@@ -3019,7 +3063,8 @@ mod tests {
         let req = make_request("UpdateSecretVersionStage", &body.to_string());
         svc.handle(req).await.unwrap();
 
-        let s = state.read();
+        let _accts = state.read();
+        let s = _accts.default_ref();
         let secret = s.secrets.get("custom-stage").unwrap();
         let ver = secret.versions.get(&vid).unwrap();
         assert!(ver.stages.contains(&"MYAPP_LIVE".to_string()));
@@ -3441,7 +3486,8 @@ mod tests {
         assert_eq!(b["Name"], "force-del");
 
         // Secret should be gone entirely
-        let s = state.read();
+        let _accts = state.read();
+        let s = _accts.default_ref();
         assert!(!s.secrets.contains_key("force-del"));
     }
 
@@ -3562,7 +3608,8 @@ mod tests {
         svc.handle(req).await.unwrap();
 
         let v1_id = {
-            let s = state.read();
+            let _accts = state.read();
+            let s = _accts.default_ref();
             s.secrets
                 .get("ver-get")
                 .unwrap()
@@ -3601,7 +3648,8 @@ mod tests {
         svc.handle(req).await.unwrap();
 
         let vid = {
-            let s = state.read();
+            let _accts = state.read();
+            let s = _accts.default_ref();
             s.secrets
                 .get("mismatch")
                 .unwrap()
@@ -4038,7 +4086,8 @@ mod tests {
         svc.handle(req).await.unwrap();
 
         let new_vid = {
-            let s = state.read();
+            let _accts = state.read();
+            let s = _accts.default_ref();
             let secret = s.secrets.get("stage-err").unwrap();
             secret
                 .versions

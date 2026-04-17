@@ -35,7 +35,8 @@ pub fn create_prompt_router(
         updated_at: now,
     };
 
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     s.prompt_routers.insert(router_arn.clone(), router);
 
     Ok(AwsResponse::json(
@@ -46,9 +47,12 @@ pub fn create_prompt_router(
 
 pub fn get_prompt_router(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     identifier: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let router = s
         .prompt_routers
         .get(identifier)
@@ -92,7 +96,9 @@ pub fn list_prompt_routers(
         .max(1);
     let next_token = req.query_params.get("nextToken");
 
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let mut items: Vec<&PromptRouter> = s.prompt_routers.values().collect();
     items.sort_by(|a, b| a.prompt_router_arn.cmp(&b.prompt_router_arn));
 
@@ -135,9 +141,11 @@ pub fn list_prompt_routers(
 
 pub fn delete_prompt_router(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     identifier: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
 
     let key = s
         .prompt_routers
