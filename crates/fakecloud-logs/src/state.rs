@@ -365,3 +365,25 @@ pub struct LogsSnapshot {
 }
 
 pub const LOGS_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_initializes_empty() {
+        let state = LogsState::new("123456789012", "us-east-1");
+        assert_eq!(state.account_id, "123456789012");
+        assert_eq!(state.region, "us-east-1");
+        assert!(state.log_groups.is_empty());
+        assert!(state.queries.is_empty());
+    }
+
+    #[test]
+    fn reset_clears_state() {
+        let mut state = LogsState::new("123456789012", "us-east-1");
+        state.bearer_token_auth.insert("g".to_string(), true);
+        state.reset();
+        assert!(state.bearer_token_auth.is_empty());
+    }
+}
