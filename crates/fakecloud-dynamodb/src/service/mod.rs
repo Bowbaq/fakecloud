@@ -1,4 +1,6 @@
 mod batch;
+#[cfg(test)]
+mod expression_corpus_tests;
 mod global_tables;
 mod items;
 mod queries;
@@ -984,28 +986,50 @@ fn extract_function_arg<'a>(expr: &'a str, func_name: &str) -> Option<&'a str> {
     Some(inner.trim())
 }
 
+#[allow(clippy::only_used_in_recursion)]
 fn evaluate_key_condition(
     expr: &str,
     item: &HashMap<String, AttributeValue>,
     hash_key_name: &str,
-    _range_key_name: Option<&str>,
+    range_key_name: Option<&str>,
     expr_attr_names: &HashMap<String, String>,
     expr_attr_values: &HashMap<String, Value>,
 ) -> bool {
-    let parts: Vec<&str> = split_on_and(expr);
-    for part in &parts {
-        let part = part.trim();
-        if !evaluate_single_key_condition(
-            part,
+    let trimmed = expr.trim();
+
+    let parts = split_on_and(trimmed);
+    if parts.len() > 1 {
+        return parts.iter().all(|part| {
+            evaluate_key_condition(
+                part.trim(),
+                item,
+                hash_key_name,
+                range_key_name,
+                expr_attr_names,
+                expr_attr_values,
+            )
+        });
+    }
+
+    let stripped = strip_outer_parens(trimmed);
+    if stripped != trimmed {
+        return evaluate_key_condition(
+            stripped,
             item,
             hash_key_name,
+            range_key_name,
             expr_attr_names,
             expr_attr_values,
-        ) {
-            return false;
-        }
+        );
     }
-    true
+
+    evaluate_single_key_condition(
+        trimmed,
+        item,
+        hash_key_name,
+        expr_attr_names,
+        expr_attr_values,
+    )
 }
 
 /// Split a DynamoDB condition expression on a top-level keyword (``" AND "``,
@@ -1695,6 +1719,19 @@ fn apply_set_assignment(
     };
 
     let left_trimmed = left.trim();
+    let right = right.trim();
+
+    // Dotted paths like `#web.#tab_id` or `profile.email` target a nested
+    // key inside an M-typed attribute. Only plain-value RHS is supported for
+    // now (no `if_not_exists` / `list_append` / arithmetic into a nested
+    // path — those shapes aren't common and can be added when needed).
+    if is_dotted_path(left_trimmed) {
+        if let Some(v) = resolve_value(right, item, expr_attr_names, expr_attr_values) {
+            return assign_nested_path(item, left_trimmed, expr_attr_names, v);
+        }
+        return Ok(());
+    }
+
     // Split off a trailing `[N]` list-index suffix so we can resolve the
     // attribute name ref on its own. Without this, `resolve_attr_name` sees
     // "#items[0]" as a whole and misses the `#items` → `items` mapping.
@@ -1703,7 +1740,6 @@ fn apply_set_assignment(
         None => (left_trimmed, None),
     };
     let attr = resolve_attr_name(attr_ref, expr_attr_names);
-    let right = right.trim();
 
     if let Some(rest) = right
         .strip_prefix("if_not_exists(")
@@ -1931,6 +1967,68 @@ fn resolve_value(
         let attr_name = resolve_attr_name(reference, expr_attr_names);
         item.get(&attr_name).cloned()
     }
+}
+
+/// True if `path` is a dotted path into an M-typed attribute (e.g. `a.b`,
+/// `#a.#b`). List-index suffixes like `a[0]` are not dotted paths, and `a.b[0]`
+/// is not yet supported by the nested-SET writer — callers should check this
+/// before dispatching.
+fn is_dotted_path(path: &str) -> bool {
+    !path.contains('[') && path.contains('.')
+}
+
+/// Write `value` at a dotted path inside an M-typed attribute.
+///
+/// Resolves each `#name` segment through `expr_attr_names`. The top-level
+/// attribute and every intermediate segment must already exist as a Map —
+/// DynamoDB rejects writes through missing parents with ValidationException.
+fn assign_nested_path(
+    item: &mut HashMap<String, AttributeValue>,
+    path: &str,
+    expr_attr_names: &HashMap<String, String>,
+    value: Value,
+) -> Result<(), AwsServiceError> {
+    let segments: Vec<String> = path
+        .split('.')
+        .map(|seg| resolve_attr_name(seg.trim(), expr_attr_names))
+        .collect();
+    if segments.len() < 2 {
+        return Err(AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "ValidationException",
+            "The document path provided in the update expression is invalid for update",
+        ));
+    }
+
+    let (leaf, parents) = segments.split_last().expect("len >= 2");
+    let (top, inner) = parents.split_first().expect("len >= 1");
+
+    let invalid = || {
+        AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "ValidationException",
+            "The document path provided in the update expression is invalid for update",
+        )
+    };
+
+    let Some(top_attr) = item.get_mut(top) else {
+        return Err(invalid());
+    };
+    let mut current = top_attr
+        .get_mut("M")
+        .and_then(|m| m.as_object_mut())
+        .ok_or_else(invalid)?;
+
+    for seg in inner {
+        current = current
+            .get_mut(seg)
+            .and_then(|v| v.get_mut("M"))
+            .and_then(|m| m.as_object_mut())
+            .ok_or_else(invalid)?;
+    }
+
+    current.insert(leaf.clone(), value);
+    Ok(())
 }
 
 fn extract_number(val: &Option<Value>) -> Option<f64> {
@@ -2775,6 +2873,125 @@ mod tests {
 
         assert!(evaluate_key_condition(
             "pk = :pk",
+            &item,
+            "pk",
+            Some("sk"),
+            &HashMap::new(),
+            &expr_values,
+        ));
+    }
+
+    #[test]
+    fn test_evaluate_key_condition_parenthesized_clauses() {
+        // Before fix: (store_id = :s) AND (order_id > :a) was split into two
+        // clauses with the outer parens intact, and evaluate_single_key_condition
+        // read "(store_id" as the attribute name — silent 0 rows match.
+        let mut item = HashMap::new();
+        item.insert("store_id".to_string(), json!({"S": "s"}));
+        item.insert("order_id".to_string(), json!({"S": "zzz-1"}));
+
+        let mut expr_values = HashMap::new();
+        expr_values.insert(":s".to_string(), json!({"S": "s"}));
+        expr_values.insert(":a".to_string(), json!({"S": "aaa"}));
+
+        assert!(
+            evaluate_key_condition(
+                "(store_id = :s) AND (order_id > :a)",
+                &item,
+                "store_id",
+                Some("order_id"),
+                &HashMap::new(),
+                &expr_values,
+            ),
+            "parenthesized key-condition clauses must evaluate like bare clauses"
+        );
+    }
+
+    #[test]
+    fn test_evaluate_key_condition_parenthesized_with_placeholders() {
+        // Repro for the exact shape aws-sdk-go v2's expression builder emits:
+        //   (#0 = :0) AND (#1 > :1)
+        let mut item = HashMap::new();
+        item.insert("store_id".to_string(), json!({"S": "s"}));
+        item.insert("order_id".to_string(), json!({"S": "zzz-1"}));
+
+        let mut expr_names = HashMap::new();
+        expr_names.insert("#0".to_string(), "store_id".to_string());
+        expr_names.insert("#1".to_string(), "order_id".to_string());
+
+        let mut expr_values = HashMap::new();
+        expr_values.insert(":0".to_string(), json!({"S": "s"}));
+        expr_values.insert(":1".to_string(), json!({"S": "aaa"}));
+
+        assert!(
+            evaluate_key_condition(
+                "(#0 = :0) AND (#1 > :1)",
+                &item,
+                "store_id",
+                Some("order_id"),
+                &expr_names,
+                &expr_values,
+            ),
+            "SDK-builder-style parenthesized clauses with placeholders must match"
+        );
+    }
+
+    #[test]
+    fn test_evaluate_key_condition_doubly_wrapped() {
+        // Ensure recursion strips multiple layers of parens.
+        let mut item = HashMap::new();
+        item.insert("pk".to_string(), json!({"S": "u1"}));
+        item.insert("sk".to_string(), json!({"S": "o1"}));
+
+        let mut expr_values = HashMap::new();
+        expr_values.insert(":pk".to_string(), json!({"S": "u1"}));
+        expr_values.insert(":sk".to_string(), json!({"S": "o0"}));
+
+        assert!(evaluate_key_condition(
+            "((pk = :pk) AND (sk > :sk))",
+            &item,
+            "pk",
+            Some("sk"),
+            &HashMap::new(),
+            &expr_values,
+        ));
+    }
+
+    #[test]
+    fn test_evaluate_key_condition_parens_around_whole_expr() {
+        // (pk = :pk AND sk = :sk) — parens wrap the whole compound expression.
+        let mut item = HashMap::new();
+        item.insert("pk".to_string(), json!({"S": "u1"}));
+        item.insert("sk".to_string(), json!({"S": "o1"}));
+
+        let mut expr_values = HashMap::new();
+        expr_values.insert(":pk".to_string(), json!({"S": "u1"}));
+        expr_values.insert(":sk".to_string(), json!({"S": "o1"}));
+
+        assert!(evaluate_key_condition(
+            "(pk = :pk AND sk = :sk)",
+            &item,
+            "pk",
+            Some("sk"),
+            &HashMap::new(),
+            &expr_values,
+        ));
+    }
+
+    #[test]
+    fn test_evaluate_key_condition_parenthesized_mismatch() {
+        // Negative case: parens shouldn't turn a non-matching condition into
+        // a matching one.
+        let mut item = HashMap::new();
+        item.insert("pk".to_string(), json!({"S": "u1"}));
+        item.insert("sk".to_string(), json!({"S": "o1"}));
+
+        let mut expr_values = HashMap::new();
+        expr_values.insert(":pk".to_string(), json!({"S": "u1"}));
+        expr_values.insert(":sk".to_string(), json!({"S": "z9"}));
+
+        assert!(!evaluate_key_condition(
+            "(pk = :pk) AND (sk > :sk)",
             &item,
             "pk",
             Some("sk"),
