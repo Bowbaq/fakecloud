@@ -412,3 +412,49 @@ impl fakecloud_core::multi_account::AccountState for DynamoDbState {
 
 pub type SharedDynamoDbState =
     Arc<RwLock<fakecloud_core::multi_account::MultiAccountState<DynamoDbState>>>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn attribute_type_and_value_valid() {
+        let v = json!({"S": "hi"});
+        let (ty, val) = attribute_type_and_value(&v).unwrap();
+        assert_eq!(ty, "S");
+        assert_eq!(val, &json!("hi"));
+    }
+
+    #[test]
+    fn attribute_type_and_value_empty_returns_none() {
+        let v = json!({});
+        assert!(attribute_type_and_value(&v).is_none());
+    }
+
+    #[test]
+    fn attribute_type_and_value_multiple_entries_returns_none() {
+        let v = json!({"S": "hi", "N": "1"});
+        assert!(attribute_type_and_value(&v).is_none());
+    }
+
+    #[test]
+    fn attribute_type_and_value_non_object_returns_none() {
+        let v = json!("not-object");
+        assert!(attribute_type_and_value(&v).is_none());
+    }
+
+    #[test]
+    fn account_state_trait_impl() {
+        use fakecloud_core::multi_account::AccountState;
+        let state = DynamoDbState::new_for_account("123", "us-east-1", "");
+        assert_eq!(state.account_id, "123");
+        assert_eq!(state.region, "us-east-1");
+    }
+
+    #[test]
+    fn new_and_reset() {
+        let state = DynamoDbState::new("123", "us-east-1");
+        assert!(state.tables.is_empty());
+    }
+}
