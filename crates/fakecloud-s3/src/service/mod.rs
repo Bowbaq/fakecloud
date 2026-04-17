@@ -5654,4 +5654,86 @@ mod tests {
             .put_bucket_website("123456789012", &req, "ghost")
             .is_err());
     }
+
+    #[test]
+    fn put_object_tagging_bucket_not_found() {
+        let svc = make_service();
+        let xml = b"<Tagging><TagSet></TagSet></Tagging>";
+        let req = make_request(Method::PUT, "/ghost/k", &[("tagging", "")], xml);
+        assert!(svc
+            .put_object_tagging("123456789012", &req, "ghost", "k")
+            .is_err());
+    }
+
+    #[test]
+    fn put_object_tagging_key_not_found() {
+        let svc = make_service();
+        seed_bucket(&svc, "pot");
+        let xml = b"<Tagging><TagSet></TagSet></Tagging>";
+        let req = make_request(Method::PUT, "/pot/ghost", &[("tagging", "")], xml);
+        assert!(svc
+            .put_object_tagging("123456789012", &req, "pot", "ghost")
+            .is_err());
+    }
+
+    #[test]
+    fn put_object_tagging_lifecycle() {
+        let svc = make_service();
+        seed_bucket(&svc, "pota");
+        let req = make_request(Method::PUT, "/pota/k", &[], b"x");
+        svc.put_object("123456789012", &req, "pota", "k").unwrap();
+
+        let xml =
+            b"<Tagging><TagSet><Tag><Key>env</Key><Value>prod</Value></Tag></TagSet></Tagging>";
+        let req = make_request(Method::PUT, "/pota/k", &[("tagging", "")], xml);
+        svc.put_object_tagging("123456789012", &req, "pota", "k")
+            .unwrap();
+
+        let req = make_request(Method::GET, "/pota/k", &[("tagging", "")], b"");
+        let resp = svc
+            .get_object_tagging("123456789012", &req, "pota", "k")
+            .unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("<Key>env</Key>"));
+
+        svc.delete_object_tagging("123456789012", "pota", "k")
+            .unwrap();
+    }
+
+    #[test]
+    fn delete_object_tagging_bucket_not_found() {
+        let svc = make_service();
+        assert!(svc
+            .delete_object_tagging("123456789012", "ghost", "k")
+            .is_err());
+    }
+
+    #[test]
+    fn put_bucket_tagging_bucket_not_found() {
+        let svc = make_service();
+        let xml = b"<Tagging><TagSet></TagSet></Tagging>";
+        let req = make_request(Method::PUT, "/ghost", &[("tagging", "")], xml);
+        assert!(svc
+            .put_bucket_tagging("123456789012", &req, "ghost")
+            .is_err());
+    }
+
+    #[test]
+    fn bucket_tagging_lifecycle() {
+        let svc = make_service();
+        seed_bucket(&svc, "bt");
+        let xml =
+            b"<Tagging><TagSet><Tag><Key>env</Key><Value>prod</Value></Tag></TagSet></Tagging>";
+        let req = make_request(Method::PUT, "/bt", &[("tagging", "")], xml);
+        svc.put_bucket_tagging("123456789012", &req, "bt").unwrap();
+
+        let req = make_request(Method::GET, "/bt", &[("tagging", "")], b"");
+        let resp = svc.get_bucket_tagging("123456789012", &req, "bt").unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("<Key>env</Key>"));
+
+        let req = make_request(Method::DELETE, "/bt", &[("tagging", "")], b"");
+        svc.delete_bucket_tagging("123456789012", &req, "bt")
+            .unwrap();
+    }
 }
