@@ -2944,4 +2944,146 @@ mod tests {
             "X",
         );
     }
+
+    // ── consumer operations ──
+
+    #[test]
+    fn register_consumer_unknown_stream_errors() {
+        let (svc, _) = make_service();
+        let req = request(
+            "RegisterStreamConsumer",
+            json!({"StreamARN": "arn:aws:kinesis:us-east-1:123:stream/ghost", "ConsumerName": "c1"}),
+        );
+        assert!(svc.register_stream_consumer(&req).is_err());
+    }
+
+    #[test]
+    fn describe_consumer_missing_errors() {
+        let (svc, _) = make_service();
+        let req = request("DescribeStreamConsumer", json!({}));
+        assert!(svc.describe_stream_consumer(&req).is_err());
+    }
+
+    // ── shard operations ──
+
+    #[test]
+    fn list_shards_missing_stream_errors() {
+        let (svc, _) = make_service();
+        let req = request("ListShards", json!({}));
+        assert!(svc.list_shards(&req).is_err());
+    }
+
+    #[test]
+    fn list_shards_unknown_stream_errors() {
+        let (svc, _) = make_service();
+        let req = request("ListShards", json!({"StreamName": "ghost"}));
+        assert!(svc.list_shards(&req).is_err());
+    }
+
+    #[test]
+    fn split_shard_unknown_stream_errors() {
+        let (svc, _) = make_service();
+        let req = request(
+            "SplitShard",
+            json!({
+                "StreamName": "ghost",
+                "ShardToSplit": "shardId-000000000000",
+                "NewStartingHashKey": "1"
+            }),
+        );
+        assert!(svc.split_shard(&req).is_err());
+    }
+
+    #[test]
+    fn merge_shards_unknown_stream_errors() {
+        let (svc, _) = make_service();
+        let req = request(
+            "MergeShards",
+            json!({
+                "StreamName": "ghost",
+                "ShardToMerge": "shardId-000000000000",
+                "AdjacentShardToMerge": "shardId-000000000001"
+            }),
+        );
+        assert!(svc.merge_shards(&req).is_err());
+    }
+
+    #[test]
+    fn update_shard_count_unknown_stream_errors() {
+        let (svc, _) = make_service();
+        let req = request(
+            "UpdateShardCount",
+            json!({
+                "StreamName": "ghost",
+                "TargetShardCount": 4,
+                "ScalingType": "UNIFORM_SCALING"
+            }),
+        );
+        assert!(svc.update_shard_count(&req).is_err());
+    }
+
+    // ── tags ──
+
+    #[test]
+    fn add_tags_missing_stream_errors() {
+        let (svc, _) = make_service();
+        let req = request("AddTagsToStream", json!({"Tags": {"env": "prod"}}));
+        assert!(svc.add_tags_to_stream(&req).is_err());
+    }
+
+    #[test]
+    fn remove_tags_missing_stream_errors() {
+        let (svc, _) = make_service();
+        let req = request("RemoveTagsFromStream", json!({"TagKeys": ["env"]}));
+        assert!(svc.remove_tags_from_stream(&req).is_err());
+    }
+
+    #[test]
+    fn list_tags_missing_stream_errors() {
+        let (svc, _) = make_service();
+        let req = request("ListTagsForStream", json!({}));
+        assert!(svc.list_tags_for_stream(&req).is_err());
+    }
+
+    // ── resource policy ──
+
+    #[test]
+    fn get_resource_policy_missing_arn_errors() {
+        let (svc, _) = make_service();
+        let req = request("GetResourcePolicy", json!({}));
+        assert!(svc.get_resource_policy(&req).is_err());
+    }
+
+    // ── describe_limits + account ──
+
+    #[test]
+    fn describe_limits_returns_ok() {
+        let (svc, _) = make_service();
+        let req = request("DescribeLimits", json!({}));
+        let resp = svc.describe_limits(&req).unwrap();
+        let body = json_response(resp);
+        assert!(body["ShardLimit"].is_i64() || body["ShardLimit"].is_u64());
+    }
+
+    #[test]
+    fn describe_account_settings_returns_ok() {
+        let (svc, _) = make_service();
+        let req = request("DescribeAccountSettings", json!({}));
+        let resp = svc.describe_account_settings(&req).unwrap();
+        let body = json_response(resp);
+        assert!(body.is_object());
+    }
+
+    #[test]
+    fn update_stream_mode_unknown_stream_errors() {
+        let (svc, _) = make_service();
+        let req = request(
+            "UpdateStreamMode",
+            json!({
+                "StreamARN": "arn:aws:kinesis:us-east-1:123:stream/ghost",
+                "StreamModeDetails": {"StreamMode": "ON_DEMAND"}
+            }),
+        );
+        assert!(svc.update_stream_mode(&req).is_err());
+    }
 }
