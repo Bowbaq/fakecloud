@@ -516,9 +516,13 @@ pub fn evaluate_with_resource_policy_and_gates(
     }
 
     let same_account = request.principal.account_id == resource_account_id;
-    // Same-account with no resource policy: preserve the identity-only
-    // path so rollouts without a bucket/topic policy behave as before.
-    if resource_policy.is_none() && same_account {
+    // No resource policy attached: preserve identity-only evaluation
+    // regardless of account boundary. The cross-account AND requirement
+    // only applies when the resource owner explicitly publishes a
+    // resource-based policy; without one, services like STS (which do
+    // not carry a resource policy provider) would always deny
+    // cross-account calls.
+    if resource_policy.is_none() {
         return identity_gated;
     }
     let resource = match resource_policy {
@@ -1873,13 +1877,16 @@ mod tests {
     }
 
     #[test]
-    fn cross_account_identity_only_is_implicit_deny() {
-        // Resource lives in B, principal in A. Identity grants, resource
-        // policy silent → cross-account semantics require both.
+    fn cross_account_identity_only_allows_when_no_resource_policy() {
+        // Resource lives in B, principal in A. Identity grants, no
+        // resource policy attached. Without a resource policy, the
+        // cross-account AND requirement doesn't apply — this lets
+        // services like STS (which have no resource-policy provider)
+        // work cross-account.
         let p = principal_in(ACCT_A, "alice");
         assert_eq!(
             eval_cross(Some(allow_get_wildcard()), None, &p, ACCT_B),
-            Decision::ImplicitDeny
+            Decision::Allow
         );
     }
 
