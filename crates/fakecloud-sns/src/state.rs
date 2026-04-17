@@ -160,3 +160,39 @@ impl fakecloud_core::multi_account::AccountState for SnsState {
         Self::new(account_id, region, endpoint)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_initializes_empty() {
+        let state = SnsState::new("123456789012", "us-east-1", "http://localhost:4566");
+        assert_eq!(state.account_id, "123456789012");
+        assert_eq!(state.region, "us-east-1");
+        assert_eq!(state.endpoint, "http://localhost:4566");
+        assert!(state.topics.is_empty());
+    }
+
+    #[test]
+    fn reset_clears_state() {
+        let mut state = SnsState::new("123456789012", "us-east-1", "http://localhost:4566");
+        state.opted_out_numbers.push("+15551234567".to_string());
+        state.reset();
+        assert!(state.opted_out_numbers.is_empty());
+    }
+
+    #[test]
+    fn seed_default_opted_out_adds_phones() {
+        let mut state = SnsState::new("123456789012", "us-east-1", "http://localhost:4566");
+        state.seed_default_opted_out();
+        assert!(!state.opted_out_numbers.is_empty());
+    }
+
+    #[test]
+    fn account_state_trait() {
+        use fakecloud_core::multi_account::AccountState;
+        let state = SnsState::new_for_account("x", "us-east-1", "http://x");
+        assert_eq!(state.account_id, "x");
+    }
+}
