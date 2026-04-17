@@ -242,4 +242,54 @@ mod tests {
             "true"
         );
     }
+
+    #[test]
+    fn test_resolve_origin_wildcard_short_circuits() {
+        let req = create_test_request(Method::OPTIONS, false);
+        let origins = vec!["*".to_string(), "https://b.com".to_string()];
+        assert_eq!(resolve_origin(&origins, &req), "*");
+    }
+
+    #[test]
+    fn test_resolve_origin_matching_request_origin_reflected() {
+        let mut req = create_test_request(Method::OPTIONS, false);
+        req.headers
+            .insert("origin", "https://a.com".parse().unwrap());
+        let origins = vec!["https://a.com".to_string(), "https://b.com".to_string()];
+        assert_eq!(resolve_origin(&origins, &req), "https://a.com");
+    }
+
+    #[test]
+    fn test_resolve_origin_no_match_returns_first() {
+        let req = create_test_request(Method::OPTIONS, false);
+        let origins = vec!["https://a.com".to_string()];
+        assert_eq!(resolve_origin(&origins, &req), "https://a.com");
+    }
+
+    #[test]
+    fn test_resolve_origin_empty_origins_returns_star() {
+        let req = create_test_request(Method::OPTIONS, false);
+        let origins: Vec<String> = vec![];
+        assert_eq!(resolve_origin(&origins, &req), "*");
+    }
+
+    #[test]
+    fn add_cors_headers_wildcard_origin() {
+        let cors_config = CorsConfiguration {
+            allow_credentials: None,
+            allow_headers: None,
+            allow_methods: None,
+            allow_origins: Some(vec!["*".to_string()]),
+            expose_headers: None,
+            max_age: None,
+        };
+        let response = AwsResponse {
+            status: StatusCode::OK,
+            content_type: "application/json".to_string(),
+            headers: HeaderMap::new(),
+            body: Bytes::from(b"x".to_vec()).into(),
+        };
+        let out = add_cors_headers(response, &cors_config);
+        assert_eq!(out.headers.get("access-control-allow-origin").unwrap(), "*");
+    }
 }
