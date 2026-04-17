@@ -3086,4 +3086,77 @@ mod tests {
         );
         assert!(svc.update_stream_mode(&req).is_err());
     }
+
+    #[test]
+    fn list_streams_with_limit() {
+        let (svc, _) = make_service();
+        for i in 0..5 {
+            create_stream_action(&svc, &format!("s{i}"), 1);
+        }
+        let req = request("ListStreams", json!({"Limit": 2}));
+        let resp = svc.list_streams(&req).unwrap();
+        let body = json_response(resp);
+        assert_eq!(body["StreamNames"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn list_streams_with_exclusive_start_stream_name() {
+        let (svc, _) = make_service();
+        for i in 0..3 {
+            create_stream_action(&svc, &format!("s{i}"), 1);
+        }
+        let req = request("ListStreams", json!({"ExclusiveStartStreamName": "s0"}));
+        let resp = svc.list_streams(&req).unwrap();
+        let body = json_response(resp);
+        let names: Vec<String> = body["StreamNames"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        assert!(!names.contains(&"s0".to_string()));
+    }
+
+    #[test]
+    fn put_records_missing_records_errors() {
+        let (svc, _) = make_service();
+        create_stream_action(&svc, "prs", 1);
+        let req = request("PutRecords", json!({"StreamName": "prs"}));
+        assert!(svc.put_records(&req).is_err());
+    }
+
+    #[test]
+    fn put_record_missing_data_errors() {
+        let (svc, _) = make_service();
+        create_stream_action(&svc, "pmd", 1);
+        let req = request(
+            "PutRecord",
+            json!({"StreamName": "pmd", "PartitionKey": "k"}),
+        );
+        assert!(svc.put_record(&req).is_err());
+    }
+
+    #[test]
+    fn decrease_retention_unknown_stream_errors() {
+        let (svc, _) = make_service();
+        let req = request(
+            "DecreaseStreamRetentionPeriod",
+            json!({"StreamName": "ghost", "RetentionPeriodHours": 24}),
+        );
+        assert!(svc.decrease_stream_retention_period(&req).is_err());
+    }
+
+    #[test]
+    fn stop_stream_encryption_unknown_stream_errors() {
+        let (svc, _) = make_service();
+        let req = request(
+            "StopStreamEncryption",
+            json!({
+                "StreamName": "ghost",
+                "EncryptionType": "KMS",
+                "KeyId": "alias/aws/kinesis"
+            }),
+        );
+        assert!(svc.stop_stream_encryption(&req).is_err());
+    }
 }
