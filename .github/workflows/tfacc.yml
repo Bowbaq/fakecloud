@@ -41,17 +41,17 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     outputs:
-      services: ${{ steps.m.outputs.services }}
+      shards: ${{ steps.m.outputs.shards }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
-      - name: Emit service matrix
-        run: cargo run -q -p fakecloud-tfacc --bin tfacc_services > services.json
+      - name: Emit shard matrix
+        run: cargo run -q -p fakecloud-tfacc --bin tfacc_shards > shards.json
 
       - id: m
-        run: echo "services=$(cat services.json)" >> "$GITHUB_OUTPUT"
+        run: echo "shards=$(cat shards.json)" >> "$GITHUB_OUTPUT"
 
       # Build fakecloud once here so every matrix job can download the
       # binary as an artifact instead of rebuilding from scratch.
@@ -67,14 +67,14 @@ jobs:
           retention-days: 1
 
   tfacc:
-    name: tfacc ${{ matrix.service }}
+    name: tfacc ${{ matrix.name }}
     needs: [changes, tfacc-matrix]
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        service: ${{ fromJson(needs.tfacc-matrix.outputs.services) }}
+        include: ${{ fromJson(needs.tfacc-matrix.outputs.shards) }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
@@ -110,14 +110,14 @@ jobs:
       - name: Mark fakecloud binary executable
         run: chmod +x target/debug/fakecloud
 
-      - name: Run ${{ matrix.service }} acceptance tests
-        run: cargo test -p fakecloud-tfacc --test acc ${{ matrix.service }}_acceptance -- --nocapture
+      - name: Run ${{ matrix.name }} acceptance tests
+        run: cargo test -p fakecloud-tfacc --test acc ${{ matrix.test_fn }} -- --nocapture
 
       - name: Upload failing go test output
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: tfacc-${{ matrix.service }}-failure-log
+          name: tfacc-${{ matrix.name }}-failure-log
           path: target/tfacc/logs/${{ matrix.service }}-failure.log
           if-no-files-found: ignore
           retention-days: 7
