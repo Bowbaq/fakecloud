@@ -46,6 +46,7 @@ use fakecloud_lambda::service::LambdaService;
 use fakecloud_logs::service::LogsService;
 use fakecloud_rds::service::RdsService;
 use fakecloud_s3::service::S3Service;
+use fakecloud_scheduler::service::SchedulerService;
 use fakecloud_secretsmanager::service::SecretsManagerService;
 use fakecloud_ses::service::SesV2Service;
 use fakecloud_sns::service::SnsService;
@@ -224,6 +225,14 @@ async fn main() {
             &endpoint_url,
         ),
     ));
+
+    let scheduler_state: fakecloud_scheduler::state::SharedSchedulerState = Arc::new(
+        parking_lot::RwLock::new(fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        )),
+    );
 
     let rds_runtime = fakecloud_rds::runtime::RdsRuntime::new().map(Arc::new);
     if let Some(ref rt) = rds_runtime {
@@ -412,6 +421,7 @@ async fn main() {
         rds: rds_state.clone(),
         elasticache: elasticache_state.clone(),
         stepfunctions: stepfunctions_state.clone(),
+        scheduler: scheduler_state.clone(),
         apigatewayv2: apigatewayv2_state.clone(),
         bedrock: bedrock_state.clone(),
         container_runtime: container_runtime.clone(),
@@ -1751,6 +1761,9 @@ async fn main() {
         bedrock_service = bedrock_service.with_snapshot_store(store);
     }
     registry.register(Arc::new(bedrock_service));
+
+    let scheduler_service = SchedulerService::new(scheduler_state.clone());
+    registry.register(Arc::new(scheduler_service));
 
     // Spawn background tasks
     let lifecycle_processor = fakecloud_s3::lifecycle::LifecycleProcessor::new(s3_state.clone());

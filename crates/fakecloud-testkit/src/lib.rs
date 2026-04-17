@@ -545,6 +545,10 @@ impl TestServer {
         aws_sdk_bedrockruntime::Client::new(&self.aws_config().await)
     }
 
+    pub async fn scheduler_client(&self) -> aws_sdk_scheduler::Client {
+        aws_sdk_scheduler::Client::new(&self.aws_config().await)
+    }
+
     /// S3 always uses path-style addressing against fakecloud so bucket
     /// names don't have to be DNS-legal subdomains of `localhost`.
     pub async fn s3_client(&self) -> aws_sdk_s3::Client {
