@@ -50,15 +50,8 @@ jobs:
       - name: Build E2E partition tool
         run: cargo build -q -p fakecloud-e2e --bin e2e_nextest_partitions
 
-      - name: Prune Docker state before tests
-        run: docker system prune -af --volumes || true
-
       - name: Verify E2E partition coverage
         run: ./target/debug/e2e_nextest_partitions check
-
-      - name: Prune Docker state after tests
-        if: always()
-        run: docker system prune -af --volumes || true
 
   e2e:
     name: E2E ${{ matrix.name }}
