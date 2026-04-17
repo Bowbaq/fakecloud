@@ -459,6 +459,13 @@ impl SchedulerService {
         resource_arn: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
         let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
+        let tags_array = body
+            .get("Tags")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| validation("Tags is required"))?;
+        if tags_array.is_empty() {
+            return Err(validation("Tags must contain at least one entry"));
+        }
         let mut accounts = self.state.write();
         let state = accounts.get_or_create(&req.account_id);
         let group_name = group_name_from_tag_arn(resource_arn)?;
@@ -484,6 +491,9 @@ impl SchedulerService {
         // `TagKeys`. raw_query preserves repeated keys; we parse it
         // manually since HashMap<String, String> deduplicates.
         let keys: Vec<String> = parse_multi_query(&req.raw_query, "TagKeys");
+        if keys.is_empty() {
+            return Err(validation("TagKeys is required"));
+        }
 
         let mut accounts = self.state.write();
         let state = accounts.get_or_create(&req.account_id);
@@ -863,29 +873,25 @@ fn parse_multi_query(raw_query: &str, key: &str) -> Vec<String> {
         .collect()
 }
 
-/// Extract the schedule-group name from a scheduler ARN. Only
-/// schedule-group ARNs are tag-addressable in fakecloud today;
-/// schedule-level tagging isn't modeled yet because the SDK surfaces
-/// schedule tags only via the group.
+/// Extract the schedule-group name from a scheduler ARN. AWS
+/// EventBridge Scheduler only permits tagging on schedule-group
+/// resources; schedule ARNs are rejected with a ValidationException to
+/// match the real service.
 fn group_name_from_tag_arn(arn: &str) -> Result<String, AwsServiceError> {
-    // arn:aws:scheduler:<region>:<account>:schedule-group/<name>
-    // or:  arn:aws:scheduler:<region>:<account>:schedule/<group>/<name>
     let parts: Vec<&str> = arn.split(':').collect();
     if parts.len() < 6 || parts[0] != "arn" || parts[2] != "scheduler" {
         return Err(validation(format!("Invalid scheduler ARN: {arn}")));
     }
     let resource = parts[5];
     if let Some(name) = resource.strip_prefix("schedule-group/") {
-        Ok(name.to_string())
-    } else if let Some(rest) = resource.strip_prefix("schedule/") {
-        // Resolve the schedule's group name.
-        let group = rest.split('/').next().unwrap_or("");
-        if group.is_empty() {
-            return Err(validation(format!("Invalid schedule ARN: {arn}")));
+        if name.is_empty() {
+            return Err(validation(format!("Invalid schedule-group ARN: {arn}")));
         }
-        Ok(group.to_string())
+        Ok(name.to_string())
     } else {
-        Err(validation(format!("Unsupported resource type: {arn}")))
+        Err(validation(format!(
+            "Tagging is only supported on schedule-group resources: {arn}"
+        )))
     }
 }
 
@@ -1230,6 +1236,69 @@ mod tests {
         let body = create_body("bad");
         let err = svc
             .handle(make_request(Method::POST, "/schedules/has%20space", &body))
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(err.code(), "ValidationException");
+    }
+
+    #[tokio::test]
+    async fn tag_resource_requires_tags_field() {
+        let svc = SchedulerService::new(make_state());
+        svc.handle(make_request(Method::POST, "/schedule-groups/tr-req", "{}"))
+            .await
+            .unwrap();
+        let arn = "arn:aws:scheduler:us-east-1:111122223333:schedule-group/tr-req";
+        let encoded =
+            percent_encoding::utf8_percent_encode(arn, percent_encoding::NON_ALPHANUMERIC)
+                .to_string();
+        let err = svc
+            .handle(make_request(
+                Method::POST,
+                &format!("/tags/{encoded}"),
+                "{}",
+            ))
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(err.code(), "ValidationException");
+    }
+
+    #[tokio::test]
+    async fn untag_resource_requires_tag_keys() {
+        let svc = SchedulerService::new(make_state());
+        svc.handle(make_request(Method::POST, "/schedule-groups/ut-req", "{}"))
+            .await
+            .unwrap();
+        let arn = "arn:aws:scheduler:us-east-1:111122223333:schedule-group/ut-req";
+        let encoded =
+            percent_encoding::utf8_percent_encode(arn, percent_encoding::NON_ALPHANUMERIC)
+                .to_string();
+        let err = svc
+            .handle(make_request(
+                Method::DELETE,
+                &format!("/tags/{encoded}"),
+                "",
+            ))
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(err.code(), "ValidationException");
+    }
+
+    #[tokio::test]
+    async fn tag_resource_rejects_schedule_arn() {
+        let svc = SchedulerService::new(make_state());
+        let arn = "arn:aws:scheduler:us-east-1:111122223333:schedule/default/foo";
+        let encoded =
+            percent_encoding::utf8_percent_encode(arn, percent_encoding::NON_ALPHANUMERIC)
+                .to_string();
+        let err = svc
+            .handle(make_request(
+                Method::POST,
+                &format!("/tags/{encoded}"),
+                r#"{"Tags":[{"Key":"env","Value":"prod"}]}"#,
+            ))
             .await
             .err()
             .unwrap();

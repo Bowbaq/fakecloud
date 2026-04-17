@@ -114,7 +114,7 @@ impl ResetState {
                 self.stepfunctions.write().reset();
             }
             "scheduler" => {
-                self.scheduler.write().default_mut().reset();
+                self.scheduler.write().reset();
             }
             "apigateway" | "apigatewayv2" => {
                 self.apigatewayv2.write().apis.clear();
@@ -179,7 +179,7 @@ impl ResetState {
             tokio::spawn(async move { rt.stop_all().await });
         }
         self.stepfunctions.write().reset();
-        self.scheduler.write().default_mut().reset();
+        self.scheduler.write().reset();
         self.apigatewayv2.write().apis.clear();
         self.bedrock.write().reset();
         tracing::info!("state reset via reset API");
