@@ -658,10 +658,14 @@ impl AwsService for SchedulerService {
             .map(|p| p.account_id.as_str())
             .unwrap_or(request.account_id.as_str());
         let resource = match (action, &args) {
-            ("CreateSchedule", PathArgs::Name(n))
-            | ("GetSchedule", PathArgs::Name(n))
-            | ("UpdateSchedule", PathArgs::Name(n))
-            | ("DeleteSchedule", PathArgs::Name(n)) => {
+            ("CreateSchedule", PathArgs::Name(n)) | ("UpdateSchedule", PathArgs::Name(n)) => {
+                // Create/Update pass GroupName in the request body.
+                let group = Self::body_field(&request.body, "GroupName")
+                    .unwrap_or_else(|| DEFAULT_GROUP.to_string());
+                schedule_arn(region, account, &group, n)
+            }
+            ("GetSchedule", PathArgs::Name(n)) | ("DeleteSchedule", PathArgs::Name(n)) => {
+                // Get/Delete pass GroupName as a query string parameter.
                 let group = schedule_group_from_request(request);
                 schedule_arn(region, account, &group, n)
             }
@@ -1491,6 +1495,161 @@ mod tests {
             .err()
             .unwrap();
         assert_eq!(err.code(), "ValidationException");
+    }
+
+    #[tokio::test]
+    async fn iam_action_for_maps_create_schedule_to_schedule_arn() {
+        let svc = SchedulerService::new(make_state());
+        let body = json!({
+            "GroupName": "prod",
+            "ScheduleExpression": "rate(1 minute)",
+            "FlexibleTimeWindow": { "Mode": "OFF" },
+            "Target": {
+                "Arn": "arn:aws:sqs:us-east-1:111122223333:q",
+                "RoleArn": "arn:aws:iam::111122223333:role/s"
+            }
+        })
+        .to_string();
+        let req = make_request(Method::POST, "/schedules/s1", &body);
+        let action = svc.iam_action_for(&req).unwrap();
+        assert_eq!(action.service, "scheduler");
+        assert_eq!(action.action, "CreateSchedule");
+        assert_eq!(
+            action.resource,
+            "arn:aws:scheduler:us-east-1:111122223333:schedule/prod/s1"
+        );
+    }
+
+    #[tokio::test]
+    async fn iam_action_for_get_schedule_uses_group_name_query_param() {
+        let svc = SchedulerService::new(make_state());
+        let req = make_request(Method::GET, "/schedules/s1?groupName=mygrp", "");
+        let action = svc.iam_action_for(&req).unwrap();
+        assert_eq!(action.action, "GetSchedule");
+        assert!(action.resource.contains("schedule/mygrp/s1"));
+    }
+
+    #[tokio::test]
+    async fn iam_action_for_schedule_group_ops() {
+        let svc = SchedulerService::new(make_state());
+        let action = svc
+            .iam_action_for(&make_request(Method::POST, "/schedule-groups/g1", "{}"))
+            .unwrap();
+        assert_eq!(action.action, "CreateScheduleGroup");
+        assert_eq!(
+            action.resource,
+            "arn:aws:scheduler:us-east-1:111122223333:schedule-group/g1"
+        );
+    }
+
+    #[tokio::test]
+    async fn iam_action_for_list_ops_return_wildcard() {
+        let svc = SchedulerService::new(make_state());
+        assert_eq!(
+            svc.iam_action_for(&make_request(Method::GET, "/schedules", ""))
+                .unwrap()
+                .resource,
+            "*"
+        );
+        assert_eq!(
+            svc.iam_action_for(&make_request(Method::GET, "/schedule-groups", ""))
+                .unwrap()
+                .resource,
+            "*"
+        );
+    }
+
+    #[tokio::test]
+    async fn iam_condition_keys_for_emits_schedule_group() {
+        let svc = SchedulerService::new(make_state());
+        let body = json!({
+            "GroupName": "prod",
+            "ScheduleExpression": "rate(1 minute)",
+            "FlexibleTimeWindow": { "Mode": "OFF" },
+            "Target": {
+                "Arn": "arn:aws:sqs:us-east-1:1:q",
+                "RoleArn": "arn:aws:iam::1:role/s"
+            }
+        })
+        .to_string();
+        let req = make_request(Method::POST, "/schedules/s", &body);
+        let action = svc.iam_action_for(&req).unwrap();
+        let keys = svc.iam_condition_keys_for(&req, &action);
+        assert_eq!(
+            keys.get("scheduler:schedulegroup"),
+            Some(&vec!["prod".to_string()])
+        );
+    }
+
+    #[tokio::test]
+    async fn iam_condition_keys_for_get_uses_query_group() {
+        let svc = SchedulerService::new(make_state());
+        let req = make_request(Method::GET, "/schedules/s?groupName=alt", "");
+        let action = svc.iam_action_for(&req).unwrap();
+        let keys = svc.iam_condition_keys_for(&req, &action);
+        assert_eq!(
+            keys.get("scheduler:schedulegroup"),
+            Some(&vec!["alt".to_string()])
+        );
+    }
+
+    #[tokio::test]
+    async fn iam_condition_keys_for_list_is_empty() {
+        let svc = SchedulerService::new(make_state());
+        let req = make_request(Method::GET, "/schedules", "");
+        let action = svc.iam_action_for(&req).unwrap();
+        assert!(svc.iam_condition_keys_for(&req, &action).is_empty());
+    }
+
+    #[tokio::test]
+    async fn resource_tags_for_returns_group_tags() {
+        let svc = SchedulerService::new(make_state());
+        svc.handle(make_request(
+            Method::POST,
+            "/schedule-groups/tagged",
+            r#"{"Tags":[{"Key":"env","Value":"prod"}]}"#,
+        ))
+        .await
+        .unwrap();
+        let tags = svc
+            .resource_tags_for("arn:aws:scheduler:us-east-1:111122223333:schedule-group/tagged")
+            .unwrap();
+        assert_eq!(tags.get("env"), Some(&"prod".to_string()));
+    }
+
+    #[tokio::test]
+    async fn resource_tags_for_unknown_group_returns_none() {
+        let svc = SchedulerService::new(make_state());
+        let tags = svc
+            .resource_tags_for("arn:aws:scheduler:us-east-1:111122223333:schedule-group/missing");
+        // Group missing -> None; distinguishable from "group exists, no tags" (Some(empty))
+        assert!(tags.is_none());
+    }
+
+    #[tokio::test]
+    async fn request_tags_from_extracts_create_group_tags() {
+        let svc = SchedulerService::new(make_state());
+        let req = make_request(
+            Method::POST,
+            "/schedule-groups/g",
+            r#"{"Tags":[{"Key":"a","Value":"1"},{"Key":"b","Value":"2"}]}"#,
+        );
+        let tags = svc.request_tags_from(&req, "CreateScheduleGroup").unwrap();
+        assert_eq!(tags.get("a"), Some(&"1".to_string()));
+        assert_eq!(tags.get("b"), Some(&"2".to_string()));
+    }
+
+    #[tokio::test]
+    async fn request_tags_from_returns_none_for_non_tag_actions() {
+        let svc = SchedulerService::new(make_state());
+        let req = make_request(Method::GET, "/schedules", "");
+        assert!(svc.request_tags_from(&req, "ListSchedules").is_none());
+    }
+
+    #[tokio::test]
+    async fn iam_enforceable_is_true() {
+        let svc = SchedulerService::new(make_state());
+        assert!(svc.iam_enforceable());
     }
 
     #[tokio::test]
