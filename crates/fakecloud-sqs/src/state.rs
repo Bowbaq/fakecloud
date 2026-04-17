@@ -112,3 +112,37 @@ impl fakecloud_core::multi_account::AccountState for SqsState {
         Self::new(account_id, region, endpoint)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_has_empty_collections() {
+        let state = SqsState::new("123456789012", "us-east-1", "http://localhost:4566");
+        assert_eq!(state.account_id, "123456789012");
+        assert_eq!(state.region, "us-east-1");
+        assert_eq!(state.endpoint, "http://localhost:4566");
+        assert!(state.queues.is_empty());
+        assert!(state.name_to_url.is_empty());
+    }
+
+    #[test]
+    fn reset_clears_collections() {
+        let mut state = SqsState::new("123456789012", "us-east-1", "http://localhost:4566");
+        state
+            .name_to_url
+            .insert("q1".to_string(), "url".to_string());
+        assert!(!state.name_to_url.is_empty());
+        state.reset();
+        assert!(state.name_to_url.is_empty());
+    }
+
+    #[test]
+    fn account_state_trait_impl() {
+        use fakecloud_core::multi_account::AccountState;
+        let state = SqsState::new_for_account("111122223333", "eu-west-1", "http://x");
+        assert_eq!(state.account_id, "111122223333");
+        assert_eq!(state.region, "eu-west-1");
+    }
+}
