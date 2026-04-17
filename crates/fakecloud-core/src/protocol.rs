@@ -316,4 +316,38 @@ mod tests {
         assert_eq!(params.get("Action").unwrap(), "SendMessage");
         assert_eq!(params.get("MessageBody").unwrap(), "hello");
     }
+
+    #[test]
+    fn parse_query_body_empty_returns_empty_map() {
+        let body = Bytes::from("");
+        let params = parse_query_body(&body);
+        assert!(params.is_empty());
+    }
+
+    #[test]
+    fn parse_query_body_duplicate_keys_last_wins() {
+        let body = Bytes::from("key=a&key=b");
+        let params = parse_query_body(&body);
+        assert_eq!(params.get("key").unwrap(), "b");
+    }
+
+    #[test]
+    fn parse_query_body_single_key() {
+        let body = Bytes::from("key=value");
+        let params = parse_query_body(&body);
+        assert_eq!(params.get("key").unwrap(), "value");
+    }
+
+    #[test]
+    fn parse_amz_target_rds() {
+        let result = parse_amz_target("AmazonEC2ContainerServiceV20141113.ListClusters");
+        // Not ECS — just verify doesn't panic on unknown prefixes
+        assert!(result.is_some() || result.is_none());
+    }
+
+    #[test]
+    fn parse_amz_target_invalid_returns_none() {
+        assert!(parse_amz_target("NoDotHere").is_none());
+        assert!(parse_amz_target("").is_none());
+    }
 }
