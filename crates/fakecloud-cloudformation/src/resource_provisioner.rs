@@ -1325,4 +1325,128 @@ mod tests {
         let sr = prov.create_resource(&res).unwrap();
         assert!(!sr.physical_id.is_empty());
     }
+
+    // ── additional resource types ──
+
+    #[test]
+    fn unsupported_resource_type_errors() {
+        let prov = make_provisioner();
+        let res = make_resource("AWS::FooBar::Thing", "X", serde_json::json!({}));
+        assert!(prov.create_resource(&res).is_err());
+    }
+
+    #[test]
+    fn sqs_queue_with_redrive_policy() {
+        let prov = make_provisioner();
+        // Create DLQ first
+        let dlq = make_resource(
+            "AWS::SQS::Queue",
+            "DLQ",
+            serde_json::json!({"QueueName": "dlq1"}),
+        );
+        let dlq_resource = prov.create_resource(&dlq).unwrap();
+        let _ = dlq_resource.physical_id;
+
+        // Create source queue with redrive policy
+        let src = make_resource(
+            "AWS::SQS::Queue",
+            "Src",
+            serde_json::json!({
+                "QueueName": "src1",
+                "RedrivePolicy": {
+                    "deadLetterTargetArn": "arn:aws:sqs:us-east-1:123456789012:dlq1",
+                    "maxReceiveCount": 3
+                }
+            }),
+        );
+        let sr = prov.create_resource(&src).unwrap();
+        assert!(!sr.physical_id.is_empty());
+    }
+
+    #[test]
+    fn sns_topic_with_display_name() {
+        let prov = make_provisioner();
+        let res = make_resource(
+            "AWS::SNS::Topic",
+            "WithName",
+            serde_json::json!({"TopicName": "named-topic", "DisplayName": "Named"}),
+        );
+        let sr = prov.create_resource(&res).unwrap();
+        assert!(sr.physical_id.contains("named-topic"));
+    }
+
+    #[test]
+    fn ssm_parameter_with_explicit_name() {
+        let prov = make_provisioner();
+        let res = make_resource(
+            "AWS::SSM::Parameter",
+            "Param",
+            serde_json::json!({"Name": "/my/param", "Value": "v", "Type": "String"}),
+        );
+        let sr = prov.create_resource(&res).unwrap();
+        assert!(sr.physical_id.contains("/my/param"));
+    }
+
+    #[test]
+    fn ssm_parameter_missing_name_errors() {
+        let prov = make_provisioner();
+        let res = make_resource(
+            "AWS::SSM::Parameter",
+            "AutoP",
+            serde_json::json!({"Value": "v", "Type": "String"}),
+        );
+        assert!(prov.create_resource(&res).is_err());
+    }
+
+    #[test]
+    fn iam_managed_policy_auto_name() {
+        let prov = make_provisioner();
+        let res = make_resource(
+            "AWS::IAM::Policy",
+            "AutoPol",
+            serde_json::json!({
+                "PolicyName": "inline-pol",
+                "PolicyDocument": {"Version": "2012-10-17", "Statement": []},
+                "Users": []
+            }),
+        );
+        let sr = prov.create_resource(&res).unwrap();
+        assert!(!sr.physical_id.is_empty());
+    }
+
+    #[test]
+    fn delete_resource_works_for_queue() {
+        let prov = make_provisioner();
+        let res = make_resource(
+            "AWS::SQS::Queue",
+            "ToDel",
+            serde_json::json!({"QueueName": "todel"}),
+        );
+        let sr = prov.create_resource(&res).unwrap();
+        assert!(prov.delete_resource(&sr).is_ok());
+    }
+
+    #[test]
+    fn delete_resource_works_for_topic() {
+        let prov = make_provisioner();
+        let res = make_resource(
+            "AWS::SNS::Topic",
+            "DelT",
+            serde_json::json!({"TopicName": "delt"}),
+        );
+        let sr = prov.create_resource(&res).unwrap();
+        assert!(prov.delete_resource(&sr).is_ok());
+    }
+
+    #[test]
+    fn sqs_queue_with_fifo_suffix() {
+        let prov = make_provisioner();
+        let res = make_resource(
+            "AWS::SQS::Queue",
+            "Fifo",
+            serde_json::json!({"QueueName": "fq.fifo", "FifoQueue": true}),
+        );
+        let sr = prov.create_resource(&res).unwrap();
+        assert!(sr.physical_id.ends_with(".fifo"));
+    }
 }
