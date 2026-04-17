@@ -59,6 +59,16 @@ impl ApiGatewayV2State {
             request_history: Vec::new(),
         }
     }
+
+    pub fn reset(&mut self) {
+        self.apis.clear();
+        self.routes.clear();
+        self.integrations.clear();
+        self.stages.clear();
+        self.deployments.clear();
+        self.authorizers.clear();
+        self.request_history.clear();
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

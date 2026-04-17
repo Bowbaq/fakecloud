@@ -17,25 +17,26 @@ struct BucketSnapshot {
 
 /// Run one tick of the S3 lifecycle processor and return statistics.
 pub fn tick_lifecycle(state: &SharedS3State) -> LifecycleTickResult {
-    // Snapshot object counts and storage classes before processing
+    // Snapshot object counts and storage classes before processing (all accounts)
     let (buckets_with_lifecycle, before_snapshot) = {
         let __mas = state.read();
-        let s = __mas.default_ref();
         let mut count = 0u64;
         let mut snapshot: Vec<BucketSnapshot> = Vec::new();
-        for bucket in s.buckets.values() {
-            let classes: Vec<(String, String)> = bucket
-                .objects
-                .iter()
-                .map(|(k, o)| (k.clone(), o.storage_class.clone()))
-                .collect();
-            snapshot.push(BucketSnapshot {
-                name: bucket.name.clone(),
-                object_count: bucket.objects.len(),
-                storage_classes: classes,
-            });
-            if bucket.lifecycle_config.is_some() {
-                count += 1;
+        for (_, s) in __mas.iter() {
+            for bucket in s.buckets.values() {
+                let classes: Vec<(String, String)> = bucket
+                    .objects
+                    .iter()
+                    .map(|(k, o)| (k.clone(), o.storage_class.clone()))
+                    .collect();
+                snapshot.push(BucketSnapshot {
+                    name: bucket.name.clone(),
+                    object_count: bucket.objects.len(),
+                    storage_classes: classes,
+                });
+                if bucket.lifecycle_config.is_some() {
+                    count += 1;
+                }
             }
         }
         (count, snapshot)
@@ -50,9 +51,10 @@ pub fn tick_lifecycle(state: &SharedS3State) -> LifecycleTickResult {
     let mut transitioned_objects = 0u64;
 
     let __mas = state.read();
-    let s = __mas.default_ref();
     for snap in &before_snapshot {
-        let bucket = match s.buckets.get(&snap.name) {
+        // Find the bucket across all accounts
+        let bucket = __mas.iter().find_map(|(_, s)| s.buckets.get(&snap.name));
+        let bucket = match bucket {
             Some(b) => b,
             None => continue,
         };
