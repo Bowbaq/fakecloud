@@ -4035,4 +4035,168 @@ mod tests {
         );
         assert!(svc.delete_user_policy(&req).is_err());
     }
+
+    #[test]
+    fn put_group_policy_unknown_group_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "PutGroupPolicy",
+            vec![
+                ("GroupName", "ghost"),
+                ("PolicyName", "p"),
+                ("PolicyDocument", "{}"),
+            ],
+        );
+        assert!(svc.put_group_policy(&req).is_err());
+    }
+
+    #[test]
+    fn get_group_policy_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "GetGroupPolicy",
+            vec![("GroupName", "ghost"), ("PolicyName", "p")],
+        );
+        assert!(svc.get_group_policy(&req).is_err());
+    }
+
+    #[test]
+    fn delete_group_policy_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "DeleteGroupPolicy",
+            vec![("GroupName", "ghost"), ("PolicyName", "p")],
+        );
+        assert!(svc.delete_group_policy(&req).is_err());
+    }
+
+    #[test]
+    fn list_group_policies_unknown_errors() {
+        let svc = make_service();
+        let req = make_request("ListGroupPolicies", vec![("GroupName", "ghost")]);
+        assert!(svc.list_group_policies(&req).is_err());
+    }
+
+    #[test]
+    fn attach_group_policy_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "AttachGroupPolicy",
+            vec![
+                ("GroupName", "ghost"),
+                ("PolicyArn", "arn:aws:iam::aws:policy/ReadOnlyAccess"),
+            ],
+        );
+        assert!(svc.attach_group_policy(&req).is_err());
+    }
+
+    #[test]
+    fn detach_group_policy_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "DetachGroupPolicy",
+            vec![
+                ("GroupName", "ghost"),
+                ("PolicyArn", "arn:aws:iam::aws:policy/ReadOnlyAccess"),
+            ],
+        );
+        assert!(svc.detach_group_policy(&req).is_err());
+    }
+
+    #[test]
+    fn list_attached_group_policies_unknown_errors() {
+        let svc = make_service();
+        let req = make_request("ListAttachedGroupPolicies", vec![("GroupName", "ghost")]);
+        assert!(svc.list_attached_group_policies(&req).is_err());
+    }
+
+    #[test]
+    fn list_groups_for_user_unknown_errors() {
+        let svc = make_service();
+        let req = make_request("ListGroupsForUser", vec![("UserName", "ghost")]);
+        assert!(svc.list_groups_for_user(&req).is_err());
+    }
+
+    #[test]
+    fn get_account_summary_returns_ok() {
+        let svc = make_service();
+        let req = make_request("GetAccountSummary", vec![]);
+        let resp = svc.get_account_summary(&req).unwrap();
+        assert_eq!(resp.status, http::StatusCode::OK);
+    }
+
+    #[test]
+    fn list_policies_empty_ok() {
+        let svc = make_service();
+        let req = make_request("ListPolicies", vec![]);
+        let resp = svc.list_policies(&req).unwrap();
+        assert_eq!(resp.status, http::StatusCode::OK);
+    }
+
+    #[test]
+    fn list_users_empty_ok() {
+        let svc = make_service();
+        let req = make_request("ListUsers", vec![]);
+        let resp = svc.list_users(&req).unwrap();
+        assert_eq!(resp.status, http::StatusCode::OK);
+    }
+
+    #[test]
+    fn list_roles_empty_ok() {
+        let svc = make_service();
+        let req = make_request("ListRoles", vec![]);
+        let resp = svc.list_roles(&req).unwrap();
+        assert_eq!(resp.status, http::StatusCode::OK);
+    }
+
+    #[test]
+    fn list_groups_empty_ok() {
+        let svc = make_service();
+        let req = make_request("ListGroups", vec![]);
+        let resp = svc.list_groups(&req).unwrap();
+        assert_eq!(resp.status, http::StatusCode::OK);
+    }
+
+    #[test]
+    fn list_attached_role_policies_unknown_errors() {
+        let svc = make_service();
+        let req = make_request("ListAttachedRolePolicies", vec![("RoleName", "ghost")]);
+        assert!(svc.list_attached_role_policies(&req).is_err());
+    }
+
+    #[test]
+    fn attach_role_policy_unknown_role_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "AttachRolePolicy",
+            vec![
+                ("RoleName", "ghost"),
+                ("PolicyArn", "arn:aws:iam::aws:policy/ReadOnlyAccess"),
+            ],
+        );
+        assert!(svc.attach_role_policy(&req).is_err());
+    }
+
+    #[test]
+    fn detach_role_policy_unknown_role_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "DetachRolePolicy",
+            vec![
+                ("RoleName", "ghost"),
+                ("PolicyArn", "arn:aws:iam::aws:policy/ReadOnlyAccess"),
+            ],
+        );
+        assert!(svc.detach_role_policy(&req).is_err());
+    }
+
+    #[test]
+    fn update_role_description_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "UpdateRole",
+            vec![("RoleName", "ghost"), ("Description", "new")],
+        );
+        assert!(svc.update_role(&req).is_err());
+    }
 }
