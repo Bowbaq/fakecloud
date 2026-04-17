@@ -299,4 +299,77 @@ mod tests {
         assert_eq!(result.status, StatusCode::OK);
         assert_eq!(result.body.expect_bytes(), b"binary data".as_slice());
     }
+
+    #[test]
+    fn test_parse_lambda_response_no_body_defaults_empty() {
+        let response = json!({"statusCode": 204});
+        let result = parse_lambda_response(response).unwrap();
+        assert_eq!(result.status, StatusCode::NO_CONTENT);
+        assert!(result.body.expect_bytes().is_empty());
+    }
+
+    #[test]
+    fn test_parse_lambda_response_invalid_status_errors() {
+        let response = json!({"statusCode": 9999, "body": ""});
+        assert!(parse_lambda_response(response).is_err());
+    }
+
+    #[test]
+    fn test_parse_lambda_response_invalid_base64_errors() {
+        let response = json!({
+            "statusCode": 200,
+            "body": "not-base64!!!",
+            "isBase64Encoded": true
+        });
+        assert!(parse_lambda_response(response).is_err());
+    }
+
+    #[test]
+    fn test_construct_event_with_binary_body() {
+        let mut headers = HeaderMap::new();
+        headers.insert("content-type", "application/octet-stream".parse().unwrap());
+        let req = AwsRequest {
+            service: "apigateway".to_string(),
+            action: "Execute".to_string(),
+            method: Method::POST,
+            raw_path: "/prod/img".to_string(),
+            raw_query: String::new(),
+            path_segments: vec!["prod".to_string(), "img".to_string()],
+            query_params: HashMap::new(),
+            headers,
+            body: Bytes::from(vec![0xFF, 0xFE, 0xFD]),
+            account_id: "123456789012".to_string(),
+            region: "us-east-1".to_string(),
+            request_id: "request-id".to_string(),
+            is_query_protocol: false,
+            access_key_id: None,
+            principal: None,
+        };
+        let event = construct_event(&req, "POST /img", "prod", HashMap::new());
+        assert_eq!(event["isBase64Encoded"], true);
+    }
+
+    #[test]
+    fn test_construct_event_empty_body() {
+        let req = AwsRequest {
+            service: "apigateway".to_string(),
+            action: "Execute".to_string(),
+            method: Method::GET,
+            raw_path: "/prod/noop".to_string(),
+            raw_query: String::new(),
+            path_segments: vec!["prod".to_string(), "noop".to_string()],
+            query_params: HashMap::new(),
+            headers: HeaderMap::new(),
+            body: Bytes::new(),
+            account_id: "123456789012".to_string(),
+            region: "us-east-1".to_string(),
+            request_id: "request-id".to_string(),
+            is_query_protocol: false,
+            access_key_id: None,
+            principal: None,
+        };
+        let event = construct_event(&req, "GET /noop", "prod", HashMap::new());
+        assert_eq!(event["isBase64Encoded"], false);
+        assert!(event["body"].is_null());
+    }
 }
