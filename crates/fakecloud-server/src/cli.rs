@@ -175,4 +175,80 @@ mod tests {
     fn iam_flag_rejects_garbage() {
         assert!(Cli::try_parse_from(["fakecloud", "--iam", "allow"]).is_err());
     }
+
+    #[test]
+    fn endpoint_url_rewrites_wildcard_v4() {
+        let cli = Cli::try_parse_from(["fakecloud", "--addr", "0.0.0.0:4566"]).unwrap();
+        assert_eq!(cli.endpoint_url(), "http://localhost:4566");
+    }
+
+    #[test]
+    fn endpoint_url_rewrites_wildcard_v6() {
+        let cli = Cli::try_parse_from(["fakecloud", "--addr", "[::]:4566"]).unwrap();
+        assert_eq!(cli.endpoint_url(), "http://localhost:4566");
+    }
+
+    #[test]
+    fn endpoint_url_preserves_explicit_host() {
+        let cli = Cli::try_parse_from(["fakecloud", "--addr", "127.0.0.1:9999"]).unwrap();
+        assert_eq!(cli.endpoint_url(), "http://127.0.0.1:9999");
+    }
+
+    #[test]
+    fn iam_mode_arg_conversion_covers_all_variants() {
+        assert_eq!(IamMode::from(IamModeArg::Off), IamMode::Off);
+        assert_eq!(IamMode::from(IamModeArg::Soft), IamMode::Soft);
+        assert_eq!(IamMode::from(IamModeArg::Strict), IamMode::Strict);
+    }
+
+    #[test]
+    fn storage_mode_arg_conversion_covers_all_variants() {
+        assert!(matches!(
+            StorageMode::from(StorageModeArg::Memory),
+            StorageMode::Memory
+        ));
+        assert!(matches!(
+            StorageMode::from(StorageModeArg::Persistent),
+            StorageMode::Persistent
+        ));
+    }
+
+    #[test]
+    fn persistence_config_memory_ok_without_data_path() {
+        let cli = Cli::try_parse_from(["fakecloud"]).unwrap();
+        let cfg = cli.persistence_config().unwrap();
+        assert!(matches!(cfg.mode, StorageMode::Memory));
+    }
+
+    #[test]
+    fn persistence_config_persistent_requires_data_path() {
+        let cli = Cli::try_parse_from(["fakecloud", "--storage-mode", "persistent"]).unwrap();
+        assert!(cli.persistence_config().is_err());
+    }
+
+    #[test]
+    fn persistence_config_persistent_with_data_path() {
+        let cli = Cli::try_parse_from([
+            "fakecloud",
+            "--storage-mode",
+            "persistent",
+            "--data-path",
+            "/tmp/fc-test",
+        ])
+        .unwrap();
+        let cfg = cli.persistence_config().unwrap();
+        assert!(matches!(cfg.mode, StorageMode::Persistent));
+        assert_eq!(
+            cfg.data_path.as_deref(),
+            Some(std::path::Path::new("/tmp/fc-test"))
+        );
+    }
+
+    #[test]
+    fn s3_cache_size_default_and_override() {
+        let cli = Cli::try_parse_from(["fakecloud"]).unwrap();
+        assert_eq!(cli.s3_cache_size, DEFAULT_S3_CACHE_BYTES);
+        let cli = Cli::try_parse_from(["fakecloud", "--s3-cache-size", "1024"]).unwrap();
+        assert_eq!(cli.s3_cache_size, 1024);
+    }
 }
