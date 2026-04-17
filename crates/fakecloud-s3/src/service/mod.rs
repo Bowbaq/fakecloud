@@ -5492,4 +5492,86 @@ mod tests {
         let result = svc.get_object_attributes("123456789012", &req, "gak", "ghost");
         assert!(result.is_err());
     }
+
+    // ── ACL ──
+
+    #[test]
+    fn get_object_acl_bucket_not_found() {
+        let svc = make_service();
+        let req = make_request(Method::GET, "/ghost/k", &[("acl", "")], b"");
+        assert!(svc
+            .get_object_acl("123456789012", &req, "ghost", "k")
+            .is_err());
+    }
+
+    #[test]
+    fn put_object_acl_bucket_not_found() {
+        let svc = make_service();
+        let mut req = make_request(Method::PUT, "/ghost/k", &[("acl", "")], b"");
+        req.headers.insert("x-amz-acl", "private".parse().unwrap());
+        assert!(svc
+            .put_object_acl("123456789012", &req, "ghost", "k")
+            .is_err());
+    }
+
+    #[test]
+    fn get_object_acl_returns_acl_xml() {
+        let svc = make_service();
+        seed_bucket(&svc, "acl");
+        let req = make_request(Method::PUT, "/acl/k", &[], b"x");
+        svc.put_object("123456789012", &req, "acl", "k").unwrap();
+        let req = make_request(Method::GET, "/acl/k", &[("acl", "")], b"");
+        let resp = svc
+            .get_object_acl("123456789012", &req, "acl", "k")
+            .unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("AccessControlPolicy"));
+    }
+
+    // ── object lock ──
+
+    #[test]
+    fn put_object_retention_bucket_not_found() {
+        let svc = make_service();
+        let xml = b"<Retention><Mode>GOVERNANCE</Mode><RetainUntilDate>2030-01-01T00:00:00Z</RetainUntilDate></Retention>";
+        let req = make_request(Method::PUT, "/ghost/k", &[("retention", "")], xml);
+        assert!(svc
+            .put_object_retention("123456789012", &req, "ghost", "k")
+            .is_err());
+    }
+
+    #[test]
+    fn get_object_legal_hold_bucket_not_found() {
+        let svc = make_service();
+        let req = make_request(Method::GET, "/ghost/k", &[("legal-hold", "")], b"");
+        assert!(svc
+            .get_object_legal_hold("123456789012", &req, "ghost", "k")
+            .is_err());
+    }
+
+    #[test]
+    fn get_object_retention_bucket_not_found() {
+        let svc = make_service();
+        let req = make_request(Method::GET, "/ghost/k", &[("retention", "")], b"");
+        assert!(svc
+            .get_object_retention("123456789012", &req, "ghost", "k")
+            .is_err());
+    }
+
+    // ── Multipart variations ──
+
+    #[test]
+    fn list_multipart_uploads_nonexistent_bucket() {
+        let svc = make_service();
+        assert!(svc.list_multipart_uploads("123456789012", "ghost").is_err());
+    }
+
+    #[test]
+    fn list_multipart_uploads_empty() {
+        let svc = make_service();
+        seed_bucket(&svc, "empmp");
+        let resp = svc.list_multipart_uploads("123456789012", "empmp").unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("<ListMultipartUploadsResult"));
+    }
 }
