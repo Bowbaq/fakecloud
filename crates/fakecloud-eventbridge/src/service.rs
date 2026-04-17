@@ -6909,4 +6909,118 @@ mod tests {
         // Unknown ids are silently ok in many implementations; at least we hit the code path
         assert!(body.is_object());
     }
+
+    #[test]
+    fn describe_event_source_unknown_errors() {
+        let svc = make_service();
+        let req = make_request("DescribeEventSource", json!({"Name": "ghost"}));
+        assert!(svc.describe_event_source(&req).is_err());
+    }
+
+    #[test]
+    fn describe_partner_event_source_unknown_errors() {
+        let svc = make_service();
+        let req = make_request("DescribePartnerEventSource", json!({"Name": "ghost"}));
+        assert!(svc.describe_partner_event_source(&req).is_err());
+    }
+
+    #[test]
+    fn list_partner_event_sources_empty_ok() {
+        let svc = make_service();
+        let req = make_request(
+            "ListPartnerEventSources",
+            json!({"NamePrefix": "aws.partner"}),
+        );
+        let resp = svc.list_partner_event_sources(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(body["PartnerEventSources"].is_array());
+    }
+
+    #[test]
+    fn list_event_sources_empty_ok() {
+        let svc = make_service();
+        let req = make_request("ListEventSources", json!({}));
+        let resp = svc.list_event_sources(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(body["EventSources"].is_array());
+    }
+
+    #[test]
+    fn update_connection_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "UpdateConnection",
+            json!({"Name": "ghost", "AuthorizationType": "API_KEY"}),
+        );
+        assert!(svc.update_connection(&req).is_err());
+    }
+
+    #[test]
+    fn describe_api_destination_unknown_errors() {
+        let svc = make_service();
+        let req = make_request("DescribeApiDestination", json!({"Name": "ghost"}));
+        assert!(svc.describe_api_destination(&req).is_err());
+    }
+
+    #[test]
+    fn update_api_destination_unknown_errors() {
+        let svc = make_service();
+        let req = make_request("UpdateApiDestination", json!({"Name": "ghost"}));
+        assert!(svc.update_api_destination(&req).is_err());
+    }
+
+    #[test]
+    fn update_archive_unknown_errors() {
+        let svc = make_service();
+        let req = make_request("UpdateArchive", json!({"ArchiveName": "ghost"}));
+        assert!(svc.update_archive(&req).is_err());
+    }
+
+    #[test]
+    fn describe_archive_unknown_errors_b() {
+        let svc = make_service();
+        let req = make_request("DescribeArchive", json!({"ArchiveName": "ghost"}));
+        assert!(svc.describe_archive(&req).is_err());
+    }
+
+    #[test]
+    fn list_archives_empty_ok() {
+        let svc = make_service();
+        let req = make_request("ListArchives", json!({}));
+        let resp = svc.list_archives(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(body["Archives"].is_array());
+    }
+
+    #[test]
+    fn list_replays_empty_ok() {
+        let svc = make_service();
+        let req = make_request("ListReplays", json!({}));
+        let resp = svc.list_replays(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(body["Replays"].is_array());
+    }
+
+    #[test]
+    fn describe_endpoint_unknown_errors() {
+        let svc = make_service();
+        let req = make_request("DescribeEndpoint", json!({"Name": "ghost"}));
+        assert!(svc.describe_endpoint(&req).is_err());
+    }
+
+    #[test]
+    fn delete_endpoint_unknown_errors() {
+        let svc = make_service();
+        let req = make_request("DeleteEndpoint", json!({"Name": "ghost"}));
+        assert!(svc.delete_endpoint(&req).is_err());
+    }
+
+    #[test]
+    fn list_endpoints_empty_ok() {
+        let svc = make_service();
+        let req = make_request("ListEndpoints", json!({}));
+        let resp = svc.list_endpoints(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(body["Endpoints"].is_array());
+    }
 }
