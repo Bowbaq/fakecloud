@@ -53,3 +53,46 @@ pub async fn save_iam_snapshot(
         Err(err) => tracing::error!(%err, "iam snapshot task panicked"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::IamState;
+    use fakecloud_core::multi_account::MultiAccountState;
+    use fakecloud_persistence::DiskSnapshotStore;
+    use parking_lot::RwLock;
+
+    fn shared_state() -> SharedIamState {
+        let multi: MultiAccountState<IamState> =
+            MultiAccountState::new("123456789012", "us-east-1", "http://localhost:4566");
+        std::sync::Arc::new(RwLock::new(multi))
+    }
+
+    #[test]
+    fn new_snapshot_lock_returns_arc_mutex() {
+        let lock: IamSnapshotLock = new_snapshot_lock();
+        let _c = lock.clone();
+    }
+
+    #[tokio::test]
+    async fn save_snapshot_none_store_is_noop() {
+        let state = shared_state();
+        let lock = new_snapshot_lock();
+        save_iam_snapshot(&state, None, &lock).await;
+    }
+
+    #[tokio::test]
+    async fn save_snapshot_writes_bytes_to_disk_store() {
+        let state = shared_state();
+        let lock = new_snapshot_lock();
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("iam.json");
+        let store: std::sync::Arc<dyn SnapshotStore> =
+            std::sync::Arc::new(DiskSnapshotStore::new(path.clone()));
+        save_iam_snapshot(&state, Some(store), &lock).await;
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(!bytes.is_empty());
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["schema_version"], IAM_SNAPSHOT_SCHEMA_VERSION);
+    }
+}
