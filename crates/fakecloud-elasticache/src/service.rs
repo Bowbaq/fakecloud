@@ -6339,4 +6339,98 @@ mod tests {
         let req = request("CreateGlobalReplicationGroup", &[]);
         assert!(svc.create_global_replication_group(&req).is_err());
     }
+
+    #[test]
+    fn describe_replication_groups_empty_ok() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+        let req = request("DescribeReplicationGroups", &[]);
+        let resp = svc.describe_replication_groups(&req).unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("DescribeReplicationGroupsResult"));
+    }
+
+    #[test]
+    fn describe_cache_parameter_groups_has_defaults() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+        let req = request("DescribeCacheParameterGroups", &[]);
+        let resp = svc.describe_cache_parameter_groups(&req).unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("CacheParameterGroup"));
+    }
+
+    #[test]
+    fn describe_cache_subnet_groups_has_defaults() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+        let req = request("DescribeCacheSubnetGroups", &[]);
+        let resp = svc.describe_cache_subnet_groups(&req).unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("DescribeCacheSubnetGroupsResult"));
+    }
+
+    #[test]
+    fn describe_user_groups_empty_ok() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+        let req = request("DescribeUserGroups", &[]);
+        let resp = svc.describe_user_groups(&req).unwrap();
+        let body = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body.contains("DescribeUserGroupsResult"));
+    }
+
+    #[tokio::test]
+    async fn create_cache_cluster_unsupported_engine_errors() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+        let req = request(
+            "CreateCacheCluster",
+            &[
+                ("CacheClusterId", "c1"),
+                ("CacheNodeType", "cache.t3.micro"),
+                ("Engine", "unknown-engine"),
+                ("NumCacheNodes", "1"),
+            ],
+        );
+        assert!(svc.create_cache_cluster(&req).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn delete_cache_cluster_unknown_errors() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+        let req = request("DeleteCacheCluster", &[("CacheClusterId", "ghost")]);
+        assert!(svc.delete_cache_cluster(&req).await.is_err());
+    }
+
+    #[test]
+    fn delete_user_unknown_errors() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+        let req = request("DeleteUser", &[("UserId", "ghost")]);
+        assert!(svc.delete_user(&req).is_err());
+    }
+
+    #[test]
+    fn list_tags_unknown_arn_errors() {
+        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let svc = ElastiCacheService::new(shared);
+        let req = request(
+            "ListTagsForResource",
+            &[(
+                "ResourceName",
+                "arn:aws:elasticache:us-east-1:123:cluster/ghost",
+            )],
+        );
+        assert!(svc.list_tags_for_resource(&req).is_err());
+    }
 }
