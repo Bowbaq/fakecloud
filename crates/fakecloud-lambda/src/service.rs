@@ -1632,4 +1632,48 @@ mod tests {
         let req = make_request(Method::POST, "/unknown/route", "{}");
         assert!(svc.handle(req).await.is_err());
     }
+
+    #[tokio::test]
+    async fn publish_version_unknown_function_errors() {
+        let svc = LambdaService::new(make_state());
+        assert!(svc.publish_version("ghost").is_err());
+    }
+
+    #[tokio::test]
+    async fn get_function_unknown_errors() {
+        let svc = LambdaService::new(make_state());
+        assert!(svc.get_function("ghost").is_err());
+    }
+
+    #[tokio::test]
+    async fn delete_function_unknown_errors() {
+        let svc = LambdaService::new(make_state());
+        assert!(svc.delete_function("ghost").is_err());
+    }
+
+    #[tokio::test]
+    async fn get_event_source_mapping_unknown_errors() {
+        let svc = LambdaService::new(make_state());
+        assert!(svc.get_event_source_mapping("ghost").is_err());
+    }
+
+    #[tokio::test]
+    async fn delete_event_source_mapping_unknown_errors() {
+        let svc = LambdaService::new(make_state());
+        assert!(svc.delete_event_source_mapping("ghost").is_err());
+    }
+
+    #[tokio::test]
+    async fn list_functions_empty_ok() {
+        let svc = LambdaService::new(make_state());
+        let resp = svc.list_functions().unwrap();
+        assert_eq!(resp.status, http::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn list_event_source_mappings_empty_ok() {
+        let svc = LambdaService::new(make_state());
+        let resp = svc.list_event_source_mappings().unwrap();
+        assert_eq!(resp.status, http::StatusCode::OK);
+    }
 }
