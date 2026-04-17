@@ -6610,4 +6610,76 @@ mod tests {
         let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Count"], 2);
     }
+
+    #[test]
+    fn batch_get_item_unknown_table_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "BatchGetItem",
+            json!({
+                "RequestItems": {
+                    "ghost": {"Keys": [{"k": {"S": "1"}}]}
+                }
+            }),
+        );
+        assert!(svc.batch_get_item(&req).is_err());
+    }
+
+    #[test]
+    fn batch_write_item_unknown_table_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "BatchWriteItem",
+            json!({
+                "RequestItems": {
+                    "ghost": [{"PutRequest": {"Item": {"k": {"S": "1"}}}}]
+                }
+            }),
+        );
+        assert!(svc.batch_write_item(&req).is_err());
+    }
+
+    #[test]
+    fn transact_write_items_unknown_table_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "TransactWriteItems",
+            json!({
+                "TransactItems": [{
+                    "Put": {"TableName": "ghost", "Item": {"k": {"S": "1"}}}
+                }]
+            }),
+        );
+        assert!(svc.transact_write_items(&req).is_err());
+    }
+
+    #[test]
+    fn transact_get_items_unknown_table_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "TransactGetItems",
+            json!({
+                "TransactItems": [{
+                    "Get": {"TableName": "ghost", "Key": {"k": {"S": "1"}}}
+                }]
+            }),
+        );
+        assert!(svc.transact_get_items(&req).is_err());
+    }
+
+    #[test]
+    fn describe_global_table_not_found_b() {
+        let svc = make_service();
+        let req = make_request("DescribeGlobalTable", json!({"GlobalTableName": "ghost"}));
+        assert!(svc.describe_global_table(&req).is_err());
+    }
+
+    #[test]
+    fn list_global_tables_empty_ok() {
+        let svc = make_service();
+        let req = make_request("ListGlobalTables", json!({}));
+        let resp = svc.list_global_tables(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(body["GlobalTables"].is_array());
+    }
 }
