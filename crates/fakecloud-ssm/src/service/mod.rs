@@ -3984,4 +3984,121 @@ mod tests {
         let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Parameters"].as_array().unwrap().len(), 1);
     }
+
+    // ---- Instances / Activations ----
+
+    #[test]
+    fn create_activation_requires_iam_role() {
+        let svc = make_service();
+        let req = make_request("CreateActivation", json!({}));
+        assert!(svc.create_activation(&req).is_err());
+    }
+
+    #[test]
+    fn create_activation_stores_record() {
+        let svc = make_service();
+        let req = make_request(
+            "CreateActivation",
+            json!({"IamRole": "SSMRole", "Description": "d", "RegistrationLimit": 5}),
+        );
+        let resp = svc.create_activation(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(body["ActivationId"].is_string());
+        assert!(body["ActivationCode"].is_string());
+        assert_eq!(svc.state.read().default_ref().activations.len(), 1);
+    }
+
+    #[test]
+    fn delete_activation_missing_id_errors() {
+        let svc = make_service();
+        let req = make_request("DeleteActivation", json!({}));
+        assert!(svc.delete_activation(&req).is_err());
+    }
+
+    #[test]
+    fn delete_activation_unknown_errors() {
+        let svc = make_service();
+        let req = make_request("DeleteActivation", json!({"ActivationId": "missing"}));
+        assert!(svc.delete_activation(&req).is_err());
+    }
+
+    #[test]
+    fn delete_activation_removes_existing() {
+        let svc = make_service();
+        let create = make_request("CreateActivation", json!({"IamRole": "r"}));
+        let resp = svc.create_activation(&create).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        let id = body["ActivationId"].as_str().unwrap().to_string();
+        svc.delete_activation(&make_request(
+            "DeleteActivation",
+            json!({"ActivationId": id}),
+        ))
+        .unwrap();
+        assert!(svc.state.read().default_ref().activations.is_empty());
+    }
+
+    #[test]
+    fn describe_activations_returns_all() {
+        let svc = make_service();
+        for i in 0..3 {
+            svc.create_activation(&make_request(
+                "CreateActivation",
+                json!({"IamRole": format!("r{i}")}),
+            ))
+            .unwrap();
+        }
+        let resp = svc
+            .describe_activations(&make_request("DescribeActivations", json!({})))
+            .unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["ActivationList"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn deregister_managed_instance_missing_id_errors() {
+        let svc = make_service();
+        let req = make_request("DeregisterManagedInstance", json!({}));
+        assert!(svc.deregister_managed_instance(&req).is_err());
+    }
+
+    #[test]
+    fn describe_instance_information_returns_list() {
+        let svc = make_service();
+        let req = make_request("DescribeInstanceInformation", json!({}));
+        let resp = svc.describe_instance_information(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(body["InstanceInformationList"].is_array());
+    }
+
+    #[test]
+    fn describe_instance_properties_returns_list() {
+        let svc = make_service();
+        let req = make_request("DescribeInstanceProperties", json!({}));
+        let resp = svc.describe_instance_properties(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(body["InstanceProperties"].is_array());
+    }
+
+    #[test]
+    fn update_managed_instance_role_missing_id_errors() {
+        let svc = make_service();
+        let req = make_request("UpdateManagedInstanceRole", json!({"IamRole": "r"}));
+        assert!(svc.update_managed_instance_role(&req).is_err());
+    }
+
+    #[test]
+    fn list_nodes_returns_empty_list() {
+        let svc = make_service();
+        let req = make_request("ListNodes", json!({}));
+        let resp = svc.list_nodes(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(body["Nodes"].is_array());
+    }
+
+    #[test]
+    fn list_nodes_summary_missing_aggregators_errors() {
+        let svc = make_service();
+        let req = make_request("ListNodesSummary", json!({}));
+        assert!(svc.list_nodes_summary(&req).is_err());
+    }
 }
