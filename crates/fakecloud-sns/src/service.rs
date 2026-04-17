@@ -6432,4 +6432,100 @@ mod tests {
         let req = sns_request("GetTopicAttributes", vec![]);
         assert!(svc.get_topic_attributes(&req).is_err());
     }
+
+    #[test]
+    fn publish_message_with_subject() {
+        let (svc, _) = make_sns();
+        svc.create_topic(&sns_request("CreateTopic", vec![("Name", "subj")]))
+            .unwrap();
+        let req = sns_request(
+            "Publish",
+            vec![
+                ("TopicArn", "arn:aws:sns:us-east-1:123456789012:subj"),
+                ("Message", "hello"),
+                ("Subject", "Greeting"),
+            ],
+        );
+        svc.publish(&req).unwrap();
+    }
+
+    #[test]
+    fn confirm_subscription_missing_token_errors() {
+        let (svc, _) = make_sns();
+        let req = sns_request(
+            "ConfirmSubscription",
+            vec![("TopicArn", "arn:aws:sns:us-east-1:123456789012:t")],
+        );
+        assert!(svc.confirm_subscription(&req).is_err());
+    }
+
+    #[test]
+    fn confirm_subscription_missing_topic_errors() {
+        let (svc, _) = make_sns();
+        let req = sns_request("ConfirmSubscription", vec![("Token", "tok")]);
+        assert!(svc.confirm_subscription(&req).is_err());
+    }
+
+    #[test]
+    fn list_subscriptions_by_topic_missing_arn_errors() {
+        let (svc, _) = make_sns();
+        let req = sns_request("ListSubscriptionsByTopic", vec![]);
+        assert!(svc.list_subscriptions_by_topic(&req).is_err());
+    }
+
+    #[test]
+    fn create_platform_application_missing_name_errors() {
+        let (svc, _) = make_sns();
+        let req = sns_request(
+            "CreatePlatformApplication",
+            vec![
+                ("Platform", "GCM"),
+                ("Attributes.entry.1.key", "PlatformCredential"),
+                ("Attributes.entry.1.value", "creds"),
+            ],
+        );
+        assert!(svc.create_platform_application(&req).is_err());
+    }
+
+    #[test]
+    fn create_platform_application_missing_platform_errors() {
+        let (svc, _) = make_sns();
+        let req = sns_request("CreatePlatformApplication", vec![("Name", "a")]);
+        assert!(svc.create_platform_application(&req).is_err());
+    }
+
+    #[test]
+    fn delete_endpoint_missing_arn_errors() {
+        let (svc, _) = make_sns();
+        let req = sns_request("DeleteEndpoint", vec![]);
+        assert!(svc.delete_endpoint(&req).is_err());
+    }
+
+    #[test]
+    fn get_endpoint_attributes_missing_arn_errors() {
+        let (svc, _) = make_sns();
+        let req = sns_request("GetEndpointAttributes", vec![]);
+        assert!(svc.get_endpoint_attributes(&req).is_err());
+    }
+
+    #[test]
+    fn list_endpoints_by_app_missing_arn_errors() {
+        let (svc, _) = make_sns();
+        let req = sns_request("ListEndpointsByPlatformApplication", vec![]);
+        assert!(svc.list_endpoints_by_platform_application(&req).is_err());
+    }
+
+    #[test]
+    fn check_phone_opted_out_missing_number_errors() {
+        let (svc, _) = make_sns();
+        let req = sns_request("CheckIfPhoneNumberIsOptedOut", vec![]);
+        assert!(svc.check_if_phone_number_is_opted_out(&req).is_err());
+    }
+
+    #[test]
+    fn opt_in_phone_missing_number_errors() {
+        let (svc, _) = make_sns();
+        let req = sns_request("OptInPhoneNumber", vec![]);
+        assert!(svc.opt_in_phone_number(&req).is_err());
+    }
 }
