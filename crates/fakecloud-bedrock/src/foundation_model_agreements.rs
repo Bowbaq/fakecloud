@@ -125,3 +125,128 @@ pub fn put_use_case_for_model_access(
 
     Ok(AwsResponse::json(StatusCode::OK, "{}".to_string()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::BedrockState;
+    use bytes::Bytes;
+    use http::{HeaderMap, Method};
+    use parking_lot::RwLock;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    fn shared() -> SharedBedrockState {
+        Arc::new(RwLock::new(BedrockState::new("123456789012", "us-east-1")))
+    }
+
+    fn req() -> AwsRequest {
+        AwsRequest {
+            service: "bedrock".to_string(),
+            action: "Create".to_string(),
+            method: Method::POST,
+            raw_path: "/".to_string(),
+            raw_query: String::new(),
+            path_segments: vec![],
+            query_params: HashMap::new(),
+            headers: HeaderMap::new(),
+            body: Bytes::new(),
+            account_id: "123456789012".to_string(),
+            region: "us-east-1".to_string(),
+            request_id: "req".to_string(),
+            is_query_protocol: false,
+            access_key_id: None,
+            principal: None,
+        }
+    }
+
+    #[test]
+    fn create_agreement_missing_model_id_errors() {
+        let s = shared();
+        let err = create_foundation_model_agreement(&s, &req(), &json!({}))
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn create_agreement_persists_entry() {
+        let s = shared();
+        create_foundation_model_agreement(&s, &req(), &json!({"modelId": "anthropic.claude"}))
+            .unwrap();
+        assert_eq!(s.read().foundation_model_agreements.len(), 1);
+    }
+
+    #[test]
+    fn delete_agreement_missing_model_id_errors() {
+        let s = shared();
+        let err = delete_foundation_model_agreement(&s, &json!({}))
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn delete_agreement_unknown_returns_not_found() {
+        let s = shared();
+        let err = delete_foundation_model_agreement(&s, &json!({"modelId": "m"}))
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn delete_agreement_removes_entry() {
+        let s = shared();
+        create_foundation_model_agreement(&s, &req(), &json!({"modelId": "m"})).unwrap();
+        delete_foundation_model_agreement(&s, &json!({"modelId": "m"})).unwrap();
+        assert!(s.read().foundation_model_agreements.is_empty());
+    }
+
+    #[test]
+    fn list_offers_returns_empty_list() {
+        let s = shared();
+        let resp = list_foundation_model_agreement_offers(&s, "m").unwrap();
+        let v: Value =
+            serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
+        assert_eq!(v["modelId"], "m");
+        assert_eq!(v["offers"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn availability_reflects_agreement_state() {
+        let s = shared();
+        let resp = get_foundation_model_availability(&s, "m").unwrap();
+        let v: Value =
+            serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
+        assert_eq!(v["agreementAvailability"]["status"], "NOT_AVAILABLE");
+
+        create_foundation_model_agreement(&s, &req(), &json!({"modelId": "m"})).unwrap();
+        let resp = get_foundation_model_availability(&s, "m").unwrap();
+        let v: Value =
+            serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
+        assert_eq!(v["agreementAvailability"]["status"], "AVAILABLE");
+    }
+
+    #[test]
+    fn use_case_roundtrip() {
+        let s = shared();
+        let resp = get_use_case_for_model_access(&s).unwrap();
+        let v: Value =
+            serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
+        assert!(v["useCase"].is_null());
+
+        put_use_case_for_model_access(&s, &json!({"useCase": {"purpose": "research"}})).unwrap();
+        let resp = get_use_case_for_model_access(&s).unwrap();
+        let v: Value =
+            serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
+        assert_eq!(v["useCase"]["purpose"], "research");
+    }
+
+    #[test]
+    fn put_use_case_missing_field_errors() {
+        let s = shared();
+        let err = put_use_case_for_model_access(&s, &json!({})).err().unwrap();
+        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+    }
+}
