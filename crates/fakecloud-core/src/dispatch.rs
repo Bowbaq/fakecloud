@@ -827,6 +827,183 @@ mod tests {
     }
 
     #[test]
+    fn extract_region_from_user_agent_finds_region_segment() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            "user-agent",
+            "aws-sdk-rust/1.0 os/linux region/eu-central-1"
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(
+            extract_region_from_user_agent(&headers),
+            Some("eu-central-1".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_region_from_user_agent_none_without_header() {
+        let headers = http::HeaderMap::new();
+        assert_eq!(extract_region_from_user_agent(&headers), None);
+    }
+
+    #[test]
+    fn extract_region_from_user_agent_ignores_empty_region() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert("user-agent", "aws-sdk-java region/".parse().unwrap());
+        assert_eq!(extract_region_from_user_agent(&headers), None);
+    }
+
+    #[test]
+    fn extract_region_from_user_agent_none_when_no_region_marker() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert("user-agent", "curl/7.79.1".parse().unwrap());
+        assert_eq!(extract_region_from_user_agent(&headers), None);
+    }
+
+    #[test]
+    fn aws_username_none_for_root() {
+        let p = Principal {
+            arn: "arn:aws:iam::123456789012:root".into(),
+            user_id: "123456789012".into(),
+            account_id: "123456789012".into(),
+            principal_type: PrincipalType::Root,
+            source_identity: None,
+            tags: None,
+        };
+        assert_eq!(aws_username_from_principal(&p), None);
+    }
+
+    #[test]
+    fn aws_username_bare_no_path() {
+        let p = Principal {
+            arn: "arn:aws:iam::123456789012:user/bob".into(),
+            user_id: "AIDABOB".into(),
+            account_id: "123456789012".into(),
+            principal_type: PrincipalType::User,
+            source_identity: None,
+            tags: None,
+        };
+        assert_eq!(aws_username_from_principal(&p), Some("bob".into()));
+    }
+
+    #[test]
+    fn principal_type_label_covers_federated_and_unknown() {
+        assert_eq!(
+            principal_type_label(PrincipalType::FederatedUser),
+            "FederatedUser"
+        );
+        assert_eq!(principal_type_label(PrincipalType::Unknown), "Unknown");
+    }
+
+    #[test]
+    fn build_condition_context_marks_secure_when_flag_set() {
+        let p = Principal {
+            arn: "arn:aws:iam::123456789012:user/alice".into(),
+            user_id: "AIDAALICE".into(),
+            account_id: "123456789012".into(),
+            principal_type: PrincipalType::User,
+            source_identity: None,
+            tags: None,
+        };
+        let ctx = build_condition_context(&p, None, "us-west-2", true);
+        assert_eq!(ctx.aws_secure_transport, Some(true));
+        assert!(ctx.aws_source_ip.is_none());
+        assert_eq!(ctx.aws_requested_region.as_deref(), Some("us-west-2"));
+    }
+
+    #[test]
+    fn is_secure_transport_case_insensitive() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-forwarded-proto", "HTTPS".parse().unwrap());
+        assert!(is_secure_transport(&headers));
+    }
+
+    #[test]
+    fn is_secure_transport_non_ascii_bytes_false() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            "x-forwarded-proto",
+            http::HeaderValue::from_bytes(&[0xFF, 0xFE]).unwrap(),
+        );
+        assert!(!is_secure_transport(&headers));
+    }
+
+    #[test]
+    fn protocol_ext_error_status_is_bad_request() {
+        assert_eq!(AwsProtocol::Query.error_status(), StatusCode::BAD_REQUEST);
+        assert_eq!(AwsProtocol::Json.error_status(), StatusCode::BAD_REQUEST);
+        assert_eq!(AwsProtocol::Rest.error_status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            AwsProtocol::RestJson.error_status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[test]
+    fn build_error_response_json_has_json_content_type() {
+        let resp = build_error_response(
+            StatusCode::BAD_REQUEST,
+            "TestCode",
+            "test msg",
+            "req-1",
+            AwsProtocol::Json,
+        );
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(ct.contains("json"));
+        let rid = resp
+            .headers()
+            .get("x-amzn-requestid")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(rid, "req-1");
+    }
+
+    #[test]
+    fn build_error_response_rest_returns_xml_content_type() {
+        let resp = build_error_response(
+            StatusCode::NOT_FOUND,
+            "NoSuchBucket",
+            "bucket missing",
+            "req-2",
+            AwsProtocol::Rest,
+        );
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(ct.contains("xml"));
+    }
+
+    #[test]
+    fn build_error_response_query_returns_xml() {
+        let resp = build_error_response(
+            StatusCode::BAD_REQUEST,
+            "InvalidParameter",
+            "bad param",
+            "req-3",
+            AwsProtocol::Query,
+        );
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(ct.contains("xml"));
+    }
+
+    #[test]
     fn dispatch_config_carries_opt_in_flags() {
         let cfg = DispatchConfig {
             region: "eu-west-1".to_string(),
