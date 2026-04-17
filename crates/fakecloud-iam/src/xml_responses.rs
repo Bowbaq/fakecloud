@@ -868,3 +868,28 @@ fn generate_alphanum_id(len: usize) -> String {
         .take(len)
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn url_encode_policy_escapes_special_chars() {
+        let encoded = url_encode_policy("a b");
+        assert!(encoded.contains("%20") || encoded.contains("+"));
+    }
+
+    #[test]
+    fn generate_alphanum_id_length() {
+        let id = generate_alphanum_id(20);
+        assert_eq!(id.len(), 20);
+        assert!(id.chars().all(|c| c.is_alphanumeric()));
+    }
+
+    #[test]
+    fn generate_alphanum_id_uniqueness() {
+        let a = generate_alphanum_id(16);
+        let b = generate_alphanum_id(16);
+        assert_ne!(a, b);
+    }
+}
