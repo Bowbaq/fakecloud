@@ -26,3 +26,40 @@ pub fn xml_escape(s: &str) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wrap_xml_prepends_declaration() {
+        let out = wrap_xml("<foo/>");
+        assert!(out.starts_with("<?xml"));
+        assert!(out.contains("<foo/>"));
+    }
+
+    #[test]
+    fn xml_escape_standard_entities() {
+        assert_eq!(
+            xml_escape("a&b<c>d\"e'f"),
+            "a&amp;b&lt;c&gt;d&quot;e&apos;f"
+        );
+    }
+
+    #[test]
+    fn xml_escape_preserves_whitespace() {
+        assert_eq!(xml_escape("a\tb\nc\rd"), "a\tb\nc\rd");
+    }
+
+    #[test]
+    fn xml_escape_control_chars() {
+        let input = "a\x01b";
+        let out = xml_escape(input);
+        assert_eq!(out, "a&#x1;b");
+    }
+
+    #[test]
+    fn xml_escape_plain_chars() {
+        assert_eq!(xml_escape("hello"), "hello");
+    }
+}
