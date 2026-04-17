@@ -582,3 +582,32 @@ pub fn default_schema_attributes() -> Vec<SchemaAttribute> {
 
     attrs
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_initializes_empty() {
+        let state = CognitoState::new("123456789012", "us-east-1");
+        assert_eq!(state.account_id, "123456789012");
+        assert_eq!(state.region, "us-east-1");
+        assert!(state.user_pools.is_empty());
+        assert!(state.users.is_empty());
+    }
+
+    #[test]
+    fn reset_clears_state() {
+        let mut state = CognitoState::new("123456789012", "us-east-1");
+        state.tags.insert("arn".to_string(), HashMap::new());
+        state.reset();
+        assert!(state.tags.is_empty());
+    }
+
+    #[test]
+    fn default_schema_attributes_returns_standard() {
+        let attrs = default_schema_attributes();
+        assert!(attrs.iter().any(|a| a.name == "sub"));
+        assert!(attrs.iter().any(|a| a.name == "email"));
+    }
+}
