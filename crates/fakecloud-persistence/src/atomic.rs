@@ -120,4 +120,40 @@ mod tests {
         assert!(!tmp_sibling.exists(), "stray tmp: {:?}", tmp_sibling);
         let _ = err;
     }
+
+    #[test]
+    fn write_atomic_bytes_round_trip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("out.bin");
+        write_atomic_bytes(&path, b"hello world").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"hello world");
+    }
+
+    #[test]
+    fn write_atomic_bytes_overwrites() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("out.bin");
+        write_atomic_bytes(&path, b"v1").unwrap();
+        write_atomic_bytes(&path, b"v2").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"v2");
+    }
+
+    #[test]
+    fn write_atomic_toml_round_trip() {
+        #[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug)]
+        struct Config {
+            name: String,
+            count: i64,
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("cfg.toml");
+        let cfg = Config {
+            name: "test".to_string(),
+            count: 42,
+        };
+        write_atomic_toml(&path, &cfg).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("name"));
+        assert!(content.contains("test"));
+    }
 }
