@@ -521,3 +521,330 @@ fn test_case_to_json(tc: &AutomatedReasoningTestCase) -> Value {
         "updatedAt": tc.updated_at.to_rfc3339(),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::BedrockState;
+    use bytes::Bytes;
+    use http::{HeaderMap, Method};
+    use parking_lot::RwLock;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    fn shared() -> SharedBedrockState {
+        Arc::new(RwLock::new(BedrockState::new("123456789012", "us-east-1")))
+    }
+
+    fn req() -> AwsRequest {
+        AwsRequest {
+            service: "bedrock".to_string(),
+            action: "a".to_string(),
+            method: Method::POST,
+            raw_path: "/".to_string(),
+            raw_query: String::new(),
+            path_segments: vec![],
+            query_params: HashMap::new(),
+            headers: HeaderMap::new(),
+            body: Bytes::new(),
+            account_id: "123456789012".to_string(),
+            region: "us-east-1".to_string(),
+            request_id: "req".to_string(),
+            is_query_protocol: false,
+            access_key_id: None,
+            principal: None,
+        }
+    }
+
+    fn create_policy(state: &SharedBedrockState, name: &str) -> String {
+        let resp = create_automated_reasoning_policy(
+            state,
+            &req(),
+            &json!({"policyName": name, "policyDocument": {"doc": 1}}),
+        )
+        .unwrap();
+        let v: Value =
+            serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
+        v["policyArn"].as_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn create_policy_missing_name_errors() {
+        let s = shared();
+        let err = create_automated_reasoning_policy(&s, &req(), &json!({}))
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn create_policy_persists() {
+        let s = shared();
+        create_policy(&s, "pol-1");
+        assert_eq!(s.read().automated_reasoning_policies.len(), 1);
+    }
+
+    #[test]
+    fn get_policy_by_name_and_id_and_arn() {
+        let s = shared();
+        let arn = create_policy(&s, "pol-lookup");
+        let id = arn.rsplit('/').next().unwrap().to_string();
+        assert!(get_automated_reasoning_policy(&s, &arn).is_ok());
+        assert!(get_automated_reasoning_policy(&s, &id).is_ok());
+        assert!(get_automated_reasoning_policy(&s, "pol-lookup").is_ok());
+    }
+
+    #[test]
+    fn get_policy_unknown_not_found() {
+        let s = shared();
+        let err = get_automated_reasoning_policy(&s, "missing").err().unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn list_policies_paginates() {
+        let s = shared();
+        for i in 0..3 {
+            create_policy(&s, &format!("pol-{i}"));
+        }
+        let mut r = req();
+        r.query_params
+            .insert("maxResults".to_string(), "2".to_string());
+        let resp = list_automated_reasoning_policies(&s, &r).unwrap();
+        let v: Value =
+            serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
+        assert_eq!(v["policySummaries"].as_array().unwrap().len(), 2);
+        assert!(v["nextToken"].is_string());
+    }
+
+    #[test]
+    fn update_policy_changes_fields() {
+        let s = shared();
+        let arn = create_policy(&s, "upd");
+        update_automated_reasoning_policy(
+            &s,
+            &arn,
+            &json!({"policyName": "new-name", "description": "desc"}),
+        )
+        .unwrap();
+        let p = &s.read().automated_reasoning_policies[&arn];
+        assert_eq!(p.policy_name, "new-name");
+        assert_eq!(p.description.as_deref(), Some("desc"));
+    }
+
+    #[test]
+    fn update_policy_unknown_not_found() {
+        let s = shared();
+        let err = update_automated_reasoning_policy(&s, "miss", &json!({}))
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn delete_policy_removes_test_cases() {
+        let s = shared();
+        let arn = create_policy(&s, "del");
+        create_automated_reasoning_policy_test_case(&s, &arn, &json!({"testCaseName": "tc"}))
+            .unwrap();
+        delete_automated_reasoning_policy(&s, &arn).unwrap();
+        assert!(s.read().automated_reasoning_policies.is_empty());
+        assert!(s.read().automated_reasoning_test_cases.is_empty());
+    }
+
+    #[test]
+    fn delete_policy_unknown_not_found() {
+        let s = shared();
+        let err = delete_automated_reasoning_policy(&s, "miss").err().unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn create_version_bumps_and_appends() {
+        let s = shared();
+        let arn = create_policy(&s, "ver");
+        create_automated_reasoning_policy_version(&s, &arn, &json!({})).unwrap();
+        let p = &s.read().automated_reasoning_policies[&arn];
+        assert_eq!(p.version, "2");
+        assert_eq!(p.versions, vec!["1".to_string(), "2".to_string()]);
+    }
+
+    #[test]
+    fn create_version_unknown_not_found() {
+        let s = shared();
+        let err = create_automated_reasoning_policy_version(&s, "miss", &json!({}))
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn export_version_matches_stored_doc() {
+        let s = shared();
+        let arn = create_policy(&s, "exp");
+        let resp = export_automated_reasoning_policy_version(&s, &arn, &req()).unwrap();
+        let v: Value =
+            serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
+        assert_eq!(v["policyArn"], arn);
+        assert_eq!(v["policyDocument"]["doc"], 1);
+    }
+
+    #[test]
+    fn export_version_unknown_version_not_found() {
+        let s = shared();
+        let arn = create_policy(&s, "exp2");
+        let mut r = req();
+        r.query_params
+            .insert("policyVersion".to_string(), "99".to_string());
+        let err = export_automated_reasoning_policy_version(&s, &arn, &r)
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn test_case_crud_roundtrip() {
+        let s = shared();
+        let arn = create_policy(&s, "tc-host");
+        let resp = create_automated_reasoning_policy_test_case(
+            &s,
+            &arn,
+            &json!({"testCaseName": "tc1", "input": {"q": 1}, "expectedOutput": {"r": 2}}),
+        )
+        .unwrap();
+        let v: Value =
+            serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
+        let id = v["testCaseId"].as_str().unwrap().to_string();
+
+        let resp = get_automated_reasoning_policy_test_case(&s, &arn, &id).unwrap();
+        let v: Value =
+            serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
+        assert_eq!(v["testCaseName"], "tc1");
+
+        update_automated_reasoning_policy_test_case(
+            &s,
+            &arn,
+            &id,
+            &json!({"testCaseName": "tc1-new", "description": "d"}),
+        )
+        .unwrap();
+        let updated_name = s.read().automated_reasoning_test_cases[&(arn.clone(), id.clone())]
+            .test_case_name
+            .clone();
+        assert_eq!(updated_name, "tc1-new");
+
+        delete_automated_reasoning_policy_test_case(&s, &arn, &id).unwrap();
+        assert!(s.read().automated_reasoning_test_cases.is_empty());
+    }
+
+    #[test]
+    fn create_test_case_missing_name_errors() {
+        let s = shared();
+        let arn = create_policy(&s, "p");
+        let err = create_automated_reasoning_policy_test_case(&s, &arn, &json!({}))
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn create_test_case_unknown_policy_not_found() {
+        let s = shared();
+        let err = create_automated_reasoning_policy_test_case(
+            &s,
+            "missing-policy",
+            &json!({"testCaseName": "tc"}),
+        )
+        .err()
+        .unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn get_test_case_unknown_policy_not_found() {
+        let s = shared();
+        let err = get_automated_reasoning_policy_test_case(&s, "miss", "id")
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn get_test_case_unknown_id_not_found() {
+        let s = shared();
+        let arn = create_policy(&s, "p");
+        let err = get_automated_reasoning_policy_test_case(&s, &arn, "missing")
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn list_test_cases_paginates() {
+        let s = shared();
+        let arn = create_policy(&s, "pol");
+        for i in 0..3 {
+            create_automated_reasoning_policy_test_case(
+                &s,
+                &arn,
+                &json!({"testCaseName": format!("tc-{i}")}),
+            )
+            .unwrap();
+        }
+        let mut r = req();
+        r.query_params
+            .insert("maxResults".to_string(), "2".to_string());
+        let resp = list_automated_reasoning_policy_test_cases(&s, &arn, &r).unwrap();
+        let v: Value =
+            serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
+        assert_eq!(v["testCaseSummaries"].as_array().unwrap().len(), 2);
+        assert!(v["nextToken"].is_string());
+    }
+
+    #[test]
+    fn list_test_cases_unknown_policy_not_found() {
+        let s = shared();
+        let err = list_automated_reasoning_policy_test_cases(&s, "miss", &req())
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn update_test_case_unknown_policy_not_found() {
+        let s = shared();
+        let err = update_automated_reasoning_policy_test_case(&s, "miss", "id", &json!({}))
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn update_test_case_unknown_id_not_found() {
+        let s = shared();
+        let arn = create_policy(&s, "p2");
+        let err = update_automated_reasoning_policy_test_case(&s, &arn, "missing", &json!({}))
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn delete_test_case_unknown_policy_not_found() {
+        let s = shared();
+        let err = delete_automated_reasoning_policy_test_case(&s, "miss", "id")
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn delete_test_case_unknown_id_not_found() {
+        let s = shared();
+        let arn = create_policy(&s, "p3");
+        let err = delete_automated_reasoning_policy_test_case(&s, &arn, "missing")
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+}
