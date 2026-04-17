@@ -350,4 +350,191 @@ mod tests {
         assert!(parse_amz_target("NoDotHere").is_none());
         assert!(parse_amz_target("").is_none());
     }
+
+    #[test]
+    fn parse_amz_target_various_prefixes() {
+        assert_eq!(
+            parse_amz_target("AmazonSQS.SendMessage").unwrap().service,
+            "sqs"
+        );
+        assert_eq!(
+            parse_amz_target("AmazonSNS.Publish").unwrap().service,
+            "sns"
+        );
+        assert_eq!(
+            parse_amz_target("DynamoDB_20120810.GetItem")
+                .unwrap()
+                .service,
+            "dynamodb"
+        );
+        assert_eq!(
+            parse_amz_target("Logs_20140328.PutLogEvents")
+                .unwrap()
+                .service,
+            "logs"
+        );
+        assert_eq!(
+            parse_amz_target("secretsmanager.GetSecretValue")
+                .unwrap()
+                .service,
+            "secretsmanager"
+        );
+        assert_eq!(
+            parse_amz_target("TrentService.Encrypt").unwrap().service,
+            "kms"
+        );
+        assert_eq!(
+            parse_amz_target("AWSCognitoIdentityProviderService.InitiateAuth")
+                .unwrap()
+                .service,
+            "cognito-idp"
+        );
+        assert_eq!(
+            parse_amz_target("AWSStepFunctions.StartExecution")
+                .unwrap()
+                .service,
+            "states"
+        );
+        assert!(parse_amz_target("UnknownServicePrefix.Action").is_none());
+    }
+
+    #[test]
+    fn infer_service_from_action_maps_sts() {
+        assert_eq!(
+            infer_service_from_action("AssumeRole").as_deref(),
+            Some("sts")
+        );
+        assert_eq!(
+            infer_service_from_action("GetCallerIdentity").as_deref(),
+            Some("sts")
+        );
+    }
+
+    #[test]
+    fn infer_service_from_action_maps_iam() {
+        assert_eq!(
+            infer_service_from_action("CreateUser").as_deref(),
+            Some("iam")
+        );
+        assert_eq!(
+            infer_service_from_action("ListRoles").as_deref(),
+            Some("iam")
+        );
+    }
+
+    #[test]
+    fn infer_service_from_action_maps_ses() {
+        assert_eq!(
+            infer_service_from_action("SendEmail").as_deref(),
+            Some("ses")
+        );
+        assert_eq!(
+            infer_service_from_action("ListIdentities").as_deref(),
+            Some("ses")
+        );
+    }
+
+    #[test]
+    fn infer_service_from_action_unknown_returns_none() {
+        assert!(infer_service_from_action("NotARealAction").is_none());
+    }
+
+    #[test]
+    fn rest_protocol_for_returns_none_for_non_rest_service() {
+        assert!(rest_protocol_for("sqs").is_none());
+    }
+
+    #[test]
+    fn url_decode_handles_percent_and_plus() {
+        assert_eq!(url_decode("hello+world"), "hello world");
+        assert_eq!(url_decode("hello%20world"), "hello world");
+        assert_eq!(url_decode("100%25"), "100%");
+    }
+
+    #[test]
+    fn url_decode_ignores_malformed_percent() {
+        assert_eq!(url_decode("%ZZ"), "");
+    }
+
+    #[test]
+    fn from_hex_valid_digits() {
+        assert_eq!(from_hex(b'0'), Some(0));
+        assert_eq!(from_hex(b'9'), Some(9));
+        assert_eq!(from_hex(b'a'), Some(10));
+        assert_eq!(from_hex(b'F'), Some(15));
+    }
+
+    #[test]
+    fn from_hex_invalid_returns_none() {
+        assert!(from_hex(b'g').is_none());
+        assert!(from_hex(b' ').is_none());
+    }
+
+    #[test]
+    fn detect_service_via_amz_target() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-amz-target", "AmazonSSM.GetParameter".parse().unwrap());
+        let query = HashMap::new();
+        let body = Bytes::new();
+        let detected = detect_service(&headers, &query, &body).unwrap();
+        assert_eq!(detected.service, "ssm");
+        assert_eq!(detected.action, "GetParameter");
+    }
+
+    #[test]
+    fn detect_service_via_query_action_with_inferred_service() {
+        let headers = HeaderMap::new();
+        let mut query = HashMap::new();
+        query.insert("Action".to_string(), "AssumeRole".to_string());
+        let body = Bytes::new();
+        let detected = detect_service(&headers, &query, &body).unwrap();
+        assert_eq!(detected.service, "sts");
+        assert_eq!(detected.action, "AssumeRole");
+        assert_eq!(detected.protocol, AwsProtocol::Query);
+    }
+
+    #[test]
+    fn detect_service_via_form_body() {
+        let headers = HeaderMap::new();
+        let query = HashMap::new();
+        let body = Bytes::from("Action=SendEmail&Source=x%40y.com");
+        let detected = detect_service(&headers, &query, &body).unwrap();
+        assert_eq!(detected.service, "ses");
+        assert_eq!(detected.action, "SendEmail");
+    }
+
+    #[test]
+    fn detect_service_via_sigv2_presigned() {
+        let headers = HeaderMap::new();
+        let mut query = HashMap::new();
+        query.insert("AWSAccessKeyId".to_string(), "AKID".to_string());
+        query.insert("Signature".to_string(), "sig".to_string());
+        query.insert("Expires".to_string(), "1234567890".to_string());
+        let body = Bytes::new();
+        let detected = detect_service(&headers, &query, &body).unwrap();
+        assert_eq!(detected.service, "s3");
+        assert_eq!(detected.protocol, AwsProtocol::Rest);
+    }
+
+    #[test]
+    fn detect_service_via_sigv4_presigned_credential() {
+        let headers = HeaderMap::new();
+        let mut query = HashMap::new();
+        query.insert(
+            "X-Amz-Credential".to_string(),
+            "AKID/20240101/us-east-1/s3/aws4_request".to_string(),
+        );
+        let body = Bytes::new();
+        let detected = detect_service(&headers, &query, &body).unwrap();
+        assert_eq!(detected.service, "s3");
+        assert_eq!(detected.protocol, AwsProtocol::Rest);
+    }
+
+    #[test]
+    fn detect_service_unknown_returns_none() {
+        let headers = HeaderMap::new();
+        let query = HashMap::new();
+        let body = Bytes::new();
+        assert!(detect_service(&headers, &query, &body).is_none());
+    }
 }

@@ -386,4 +386,334 @@ mod tests {
         assert!(parse_schedule("rate(abc minutes)").is_none());
         assert!(parse_schedule("cron(1 2 3)").is_none());
     }
+
+    #[test]
+    fn parse_rate_zero_is_valid() {
+        let s = parse_schedule("rate(0 seconds)");
+        assert!(matches!(s, Some(Schedule::Rate(d)) if d == Duration::ZERO));
+    }
+
+    #[test]
+    fn parse_rate_unknown_unit_rejected() {
+        assert!(parse_schedule("rate(1 fortnight)").is_none());
+    }
+
+    #[test]
+    fn parse_cron_question_mark_is_any() {
+        let s = parse_schedule("cron(? ? ? ? ? ?)");
+        assert!(matches!(s, Some(Schedule::Cron(_))));
+    }
+
+    #[test]
+    fn parse_cron_non_numeric_field_is_any() {
+        let s = parse_schedule("cron(xyz 12 * * ? *)");
+        match s {
+            Some(Schedule::Cron(c)) => assert!(matches!(c.minute, CronField::Any)),
+            _ => panic!("expected cron"),
+        }
+    }
+
+    #[test]
+    fn cron_wildcard_always_matches() {
+        let cron = CronExpr {
+            minute: CronField::Any,
+            hour: CronField::Any,
+            day_of_month: CronField::Any,
+            month: CronField::Any,
+            day_of_week: CronField::Any,
+        };
+        assert!(cron_matches_now(&cron));
+    }
+
+    #[test]
+    fn cron_impossible_minute_never_matches() {
+        let cron = CronExpr {
+            minute: CronField::Value(99),
+            hour: CronField::Any,
+            day_of_month: CronField::Any,
+            month: CronField::Any,
+            day_of_week: CronField::Any,
+        };
+        assert!(!cron_matches_now(&cron));
+    }
+
+    mod tick_tests {
+        use super::*;
+        use crate::state::{
+            EventBridgeState, EventRule, EventTarget as EbTarget, RuleKey, SharedEventBridgeState,
+        };
+        use fakecloud_core::delivery::{
+            EventBridgeDelivery, KinesisDelivery, SnsDelivery, SqsDelivery, StepFunctionsDelivery,
+        };
+        use parking_lot::RwLock;
+        use std::sync::Mutex;
+
+        #[derive(Default)]
+        struct Recorder {
+            sqs: Mutex<Vec<(String, String)>>,
+            sns: Mutex<Vec<(String, String)>>,
+            stepfunctions: Mutex<Vec<(String, String)>>,
+        }
+
+        impl SqsDelivery for Recorder {
+            fn deliver_to_queue(&self, arn: &str, body: &str, _attrs: &HashMap<String, String>) {
+                self.sqs
+                    .lock()
+                    .unwrap()
+                    .push((arn.to_string(), body.to_string()));
+            }
+
+            fn deliver_to_queue_with_attrs(
+                &self,
+                arn: &str,
+                body: &str,
+                _attrs: &HashMap<String, fakecloud_core::delivery::SqsMessageAttribute>,
+                _group: Option<&str>,
+                _dedup: Option<&str>,
+            ) {
+                self.sqs
+                    .lock()
+                    .unwrap()
+                    .push((arn.to_string(), body.to_string()));
+            }
+        }
+
+        impl SnsDelivery for Recorder {
+            fn publish_to_topic(&self, arn: &str, msg: &str, _subject: Option<&str>) {
+                self.sns
+                    .lock()
+                    .unwrap()
+                    .push((arn.to_string(), msg.to_string()));
+            }
+        }
+
+        impl StepFunctionsDelivery for Recorder {
+            fn start_execution(&self, arn: &str, input: &str) {
+                self.stepfunctions
+                    .lock()
+                    .unwrap()
+                    .push((arn.to_string(), input.to_string()));
+            }
+        }
+
+        impl EventBridgeDelivery for Recorder {
+            fn put_event(&self, _source: &str, _detail_type: &str, _detail: &str, _bus: &str) {}
+        }
+
+        impl KinesisDelivery for Recorder {
+            fn put_record(&self, _stream_arn: &str, _data: &str, _partition_key: &str) {}
+        }
+
+        fn make_state() -> (SharedEventBridgeState, EventBridgeState) {
+            let state = EventBridgeState::new("123456789012", "us-east-1");
+            let shared = Arc::new(RwLock::new(state.clone()));
+            (shared, state)
+        }
+
+        fn make_rule(name: &str, schedule: &str, target_arn: &str) -> EventRule {
+            EventRule {
+                name: name.to_string(),
+                arn: format!("arn:aws:events:us-east-1:123456789012:rule/{name}"),
+                event_bus_name: "default".to_string(),
+                event_pattern: None,
+                schedule_expression: Some(schedule.to_string()),
+                state: "ENABLED".to_string(),
+                description: None,
+                role_arn: None,
+                managed_by: None,
+                created_by: None,
+                targets: vec![EbTarget {
+                    id: "t1".to_string(),
+                    arn: target_arn.to_string(),
+                    input: None,
+                    input_path: None,
+                    input_transformer: None,
+                    sqs_parameters: None,
+                }],
+                tags: HashMap::new(),
+                last_fired: None,
+            }
+        }
+
+        fn build_scheduler(state: SharedEventBridgeState, recorder: Arc<Recorder>) -> Scheduler {
+            let bus = Arc::new(
+                DeliveryBus::new()
+                    .with_sqs(recorder.clone())
+                    .with_sns(recorder.clone())
+                    .with_stepfunctions(recorder.clone()),
+            );
+            Scheduler::new(state, bus)
+        }
+
+        #[test]
+        fn tick_disabled_rule_is_skipped() {
+            let (shared, _) = make_state();
+            {
+                let mut s = shared.write();
+                let mut rule = make_rule("r", "rate(1 second)", "arn:aws:sqs:us-east-1:123:q");
+                rule.state = "DISABLED".to_string();
+                s.rules
+                    .insert(("default".to_string(), "r".to_string()), rule);
+            }
+            let recorder = Arc::new(Recorder::default());
+            let scheduler = build_scheduler(shared.clone(), recorder.clone());
+            let mut last = HashMap::<RuleKey, (u32, u32)>::new();
+            scheduler.tick(&mut last);
+            assert!(recorder.sqs.lock().unwrap().is_empty());
+        }
+
+        #[test]
+        fn tick_rule_without_targets_is_skipped() {
+            let (shared, _) = make_state();
+            {
+                let mut s = shared.write();
+                let mut rule = make_rule("r", "rate(1 second)", "arn:aws:sqs:us-east-1:123:q");
+                rule.targets.clear();
+                s.rules
+                    .insert(("default".to_string(), "r".to_string()), rule);
+            }
+            let recorder = Arc::new(Recorder::default());
+            let scheduler = build_scheduler(shared.clone(), recorder.clone());
+            let mut last = HashMap::<RuleKey, (u32, u32)>::new();
+            scheduler.tick(&mut last);
+            assert!(recorder.sqs.lock().unwrap().is_empty());
+        }
+
+        #[test]
+        fn tick_invalid_schedule_is_skipped() {
+            let (shared, _) = make_state();
+            {
+                let mut s = shared.write();
+                let rule = make_rule("r", "bogus", "arn:aws:sqs:us-east-1:123:q");
+                s.rules
+                    .insert(("default".to_string(), "r".to_string()), rule);
+            }
+            let recorder = Arc::new(Recorder::default());
+            let scheduler = build_scheduler(shared.clone(), recorder.clone());
+            let mut last = HashMap::<RuleKey, (u32, u32)>::new();
+            scheduler.tick(&mut last);
+            assert!(recorder.sqs.lock().unwrap().is_empty());
+        }
+
+        #[test]
+        fn tick_fires_rate_rule_to_sqs_target() {
+            let (shared, _) = make_state();
+            let q_arn = "arn:aws:sqs:us-east-1:123456789012:q1".to_string();
+            {
+                let mut s = shared.write();
+                let rule = make_rule("r", "rate(1 second)", &q_arn);
+                s.rules
+                    .insert(("default".to_string(), "r".to_string()), rule);
+            }
+            let recorder = Arc::new(Recorder::default());
+            let scheduler = build_scheduler(shared.clone(), recorder.clone());
+            let mut last = HashMap::<RuleKey, (u32, u32)>::new();
+            scheduler.tick(&mut last);
+            let calls = recorder.sqs.lock().unwrap();
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0].0, q_arn);
+            let payload: serde_json::Value = serde_json::from_str(&calls[0].1).unwrap();
+            assert_eq!(payload["detail-type"], "Scheduled Event");
+            assert_eq!(payload["source"], "aws.events");
+        }
+
+        #[test]
+        fn tick_fires_to_sns_target() {
+            let (shared, _) = make_state();
+            let topic_arn = "arn:aws:sns:us-east-1:123456789012:t1".to_string();
+            {
+                let mut s = shared.write();
+                let rule = make_rule("r", "rate(1 second)", &topic_arn);
+                s.rules
+                    .insert(("default".to_string(), "r".to_string()), rule);
+            }
+            let recorder = Arc::new(Recorder::default());
+            let scheduler = build_scheduler(shared.clone(), recorder.clone());
+            let mut last = HashMap::<RuleKey, (u32, u32)>::new();
+            scheduler.tick(&mut last);
+            let calls = recorder.sns.lock().unwrap();
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0].0, topic_arn);
+        }
+
+        #[test]
+        fn tick_fires_to_stepfunctions_target() {
+            let (shared, _) = make_state();
+            let sm_arn = "arn:aws:states:us-east-1:123456789012:stateMachine:m1".to_string();
+            {
+                let mut s = shared.write();
+                let rule = make_rule("r", "rate(1 second)", &sm_arn);
+                s.rules
+                    .insert(("default".to_string(), "r".to_string()), rule);
+            }
+            let recorder = Arc::new(Recorder::default());
+            let scheduler = build_scheduler(shared.clone(), recorder.clone());
+            let mut last = HashMap::<RuleKey, (u32, u32)>::new();
+            scheduler.tick(&mut last);
+            let calls = recorder.stepfunctions.lock().unwrap();
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0].0, sm_arn);
+            let guard = shared.read();
+            assert_eq!(guard.step_function_executions.len(), 1);
+        }
+
+        #[test]
+        fn tick_lambda_target_records_invocation() {
+            let (shared, _) = make_state();
+            let fn_arn = "arn:aws:lambda:us-east-1:123456789012:function:F".to_string();
+            {
+                let mut s = shared.write();
+                let rule = make_rule("r", "rate(1 second)", &fn_arn);
+                s.rules
+                    .insert(("default".to_string(), "r".to_string()), rule);
+            }
+            let recorder = Arc::new(Recorder::default());
+            let scheduler = build_scheduler(shared.clone(), recorder.clone());
+            let mut last = HashMap::<RuleKey, (u32, u32)>::new();
+            scheduler.tick(&mut last);
+            let guard = shared.read();
+            assert_eq!(guard.lambda_invocations.len(), 1);
+            assert_eq!(guard.lambda_invocations[0].function_arn, fn_arn);
+        }
+
+        #[test]
+        fn tick_logs_target_records_delivery() {
+            let (shared, _) = make_state();
+            let lg_arn = "arn:aws:logs:us-east-1:123456789012:log-group:lg".to_string();
+            {
+                let mut s = shared.write();
+                let rule = make_rule("r", "rate(1 second)", &lg_arn);
+                s.rules
+                    .insert(("default".to_string(), "r".to_string()), rule);
+            }
+            let recorder = Arc::new(Recorder::default());
+            let scheduler = build_scheduler(shared.clone(), recorder.clone());
+            let mut last = HashMap::<RuleKey, (u32, u32)>::new();
+            scheduler.tick(&mut last);
+            let guard = shared.read();
+            assert_eq!(guard.log_deliveries.len(), 1);
+            assert_eq!(guard.log_deliveries[0].log_group_arn, lg_arn);
+        }
+
+        #[test]
+        fn tick_updates_last_fired() {
+            let (shared, _) = make_state();
+            {
+                let mut s = shared.write();
+                let rule = make_rule("r", "rate(1 second)", "arn:aws:sqs:us-east-1:123:q");
+                s.rules
+                    .insert(("default".to_string(), "r".to_string()), rule);
+            }
+            let recorder = Arc::new(Recorder::default());
+            let scheduler = build_scheduler(shared.clone(), recorder.clone());
+            let mut last = HashMap::<RuleKey, (u32, u32)>::new();
+            scheduler.tick(&mut last);
+            let guard = shared.read();
+            let rule = guard
+                .rules
+                .get(&("default".to_string(), "r".to_string()))
+                .unwrap();
+            assert!(rule.last_fired.is_some());
+        }
+    }
 }
