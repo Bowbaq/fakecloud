@@ -1047,4 +1047,169 @@ mod tests {
         let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["transformedLogs"].as_array().unwrap().len(), 2);
     }
+
+    // ---- Resource policy ----
+
+    #[test]
+    fn resource_policy_lifecycle() {
+        let svc = make_service();
+        let req = make_request(
+            "PutResourcePolicy",
+            json!({
+                "policyName": "p1",
+                "policyDocument": "{}",
+            }),
+        );
+        svc.put_resource_policy(&req).unwrap();
+
+        let req = make_request("DescribeResourcePolicies", json!({}));
+        let resp = svc.describe_resource_policies(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["resourcePolicies"].as_array().unwrap().len(), 1);
+
+        let req = make_request("DeleteResourcePolicy", json!({"policyName": "p1"}));
+        svc.delete_resource_policy(&req).unwrap();
+    }
+
+    #[test]
+    fn put_resource_policy_missing_name_errors() {
+        let svc = make_service();
+        let req = make_request("PutResourcePolicy", json!({"policyDocument": "{}"}));
+        assert!(svc.put_resource_policy(&req).is_err());
+    }
+
+    #[test]
+    fn put_resource_policy_missing_document_errors() {
+        let svc = make_service();
+        let req = make_request("PutResourcePolicy", json!({"policyName": "p"}));
+        assert!(svc.put_resource_policy(&req).is_err());
+    }
+
+    #[test]
+    fn delete_resource_policy_missing_name_errors() {
+        let svc = make_service();
+        let req = make_request("DeleteResourcePolicy", json!({}));
+        assert!(svc.delete_resource_policy(&req).is_err());
+    }
+
+    // ---- Account policy validation paths ----
+
+    #[test]
+    fn put_account_policy_missing_name_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "PutAccountPolicy",
+            json!({"policyType": "DATA_PROTECTION_POLICY", "policyDocument": "{}"}),
+        );
+        assert!(svc.put_account_policy(&req).is_err());
+    }
+
+    #[test]
+    fn put_account_policy_missing_type_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "PutAccountPolicy",
+            json!({"policyName": "p", "policyDocument": "{}"}),
+        );
+        assert!(svc.put_account_policy(&req).is_err());
+    }
+
+    #[test]
+    fn describe_account_policies_missing_type_errors() {
+        let svc = make_service();
+        let req = make_request("DescribeAccountPolicies", json!({}));
+        assert!(svc.describe_account_policies(&req).is_err());
+    }
+
+    #[test]
+    fn delete_account_policy_missing_fields_errors() {
+        let svc = make_service();
+        let req = make_request("DeleteAccountPolicy", json!({"policyName": "p"}));
+        assert!(svc.delete_account_policy(&req).is_err());
+    }
+
+    // ---- Data protection policy error paths ----
+
+    #[test]
+    fn put_data_protection_missing_identifier_errors() {
+        let svc = make_service();
+        let req = make_request("PutDataProtectionPolicy", json!({"policyDocument": "{}"}));
+        assert!(svc.put_data_protection_policy(&req).is_err());
+    }
+
+    #[test]
+    fn put_data_protection_unknown_group_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "PutDataProtectionPolicy",
+            json!({"logGroupIdentifier": "missing", "policyDocument": "{}"}),
+        );
+        assert!(svc.put_data_protection_policy(&req).is_err());
+    }
+
+    #[test]
+    fn get_data_protection_missing_identifier_errors() {
+        let svc = make_service();
+        let req = make_request("GetDataProtectionPolicy", json!({}));
+        assert!(svc.get_data_protection_policy(&req).is_err());
+    }
+
+    #[test]
+    fn delete_data_protection_missing_identifier_errors() {
+        let svc = make_service();
+        let req = make_request("DeleteDataProtectionPolicy", json!({}));
+        assert!(svc.delete_data_protection_policy(&req).is_err());
+    }
+
+    // ---- Index policy error paths ----
+
+    #[test]
+    fn put_index_policy_missing_identifier_errors() {
+        let svc = make_service();
+        let req = make_request("PutIndexPolicy", json!({"policyDocument": "{}"}));
+        assert!(svc.put_index_policy(&req).is_err());
+    }
+
+    #[test]
+    fn delete_index_policy_missing_identifier_errors() {
+        let svc = make_service();
+        let req = make_request("DeleteIndexPolicy", json!({}));
+        assert!(svc.delete_index_policy(&req).is_err());
+    }
+
+    // ---- Transformer error paths ----
+
+    #[test]
+    fn put_transformer_missing_identifier_errors() {
+        let svc = make_service();
+        let req = make_request("PutTransformer", json!({"transformerConfig": []}));
+        assert!(svc.put_transformer(&req).is_err());
+    }
+
+    #[test]
+    fn get_transformer_missing_identifier_errors() {
+        let svc = make_service();
+        let req = make_request("GetTransformer", json!({}));
+        assert!(svc.get_transformer(&req).is_err());
+    }
+
+    #[test]
+    fn delete_transformer_missing_identifier_errors() {
+        let svc = make_service();
+        let req = make_request("DeleteTransformer", json!({}));
+        assert!(svc.delete_transformer(&req).is_err());
+    }
+
+    #[test]
+    fn describe_field_indexes_basic() {
+        let svc = make_service();
+        create_group(&svc, "g");
+        let req = make_request(
+            "DescribeFieldIndexes",
+            json!({"logGroupIdentifiers": ["g"]}),
+        );
+        let resp = svc.describe_field_indexes(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(body["fieldIndexes"].is_array());
+    }
 }
