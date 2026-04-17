@@ -473,8 +473,12 @@ async fn wait_for_port(child: &mut Child, port: u16) -> bool {
         .build()
         .expect("build reqwest client");
 
-    // 30s total budget at 20ms cadence.
-    for _ in 0..1500 {
+    // Use a wall-clock deadline rather than a fixed iteration count:
+    // each health-check request has its own 500ms timeout, so a naive
+    // loop of N iterations × (500ms + 20ms) would delay failure well
+    // past the intended budget when the server never binds.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while std::time::Instant::now() < deadline {
         if child.try_wait().ok().flatten().is_some() {
             return false;
         }
