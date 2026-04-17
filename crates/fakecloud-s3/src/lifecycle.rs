@@ -435,4 +435,64 @@ mod tests {
         assert_eq!(rules[1].prefix.as_deref(), Some("b/"));
         assert_eq!(rules[1].expiration_days, Some(20));
     }
+
+    #[test]
+    fn parse_empty_lifecycle_xml_returns_empty() {
+        let xml = "<LifecycleConfiguration></LifecycleConfiguration>";
+        let rules = parse_lifecycle_rules(xml);
+        assert!(rules.is_some());
+        assert!(rules.unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_rule_with_noncurrent_version_expiration() {
+        let xml = r#"<LifecycleConfiguration>
+            <Rule>
+                <ID>nc-rule</ID>
+                <Status>Enabled</Status>
+                <Prefix>x/</Prefix>
+                <NoncurrentVersionExpiration><NoncurrentDays>30</NoncurrentDays></NoncurrentVersionExpiration>
+            </Rule>
+        </LifecycleConfiguration>"#;
+        let rules = parse_lifecycle_rules(xml).unwrap();
+        assert_eq!(rules.len(), 1);
+    }
+
+    #[test]
+    fn parse_rule_with_abort_incomplete_multipart() {
+        let xml = r#"<LifecycleConfiguration>
+            <Rule>
+                <ID>mp-rule</ID>
+                <Status>Enabled</Status>
+                <Prefix></Prefix>
+                <AbortIncompleteMultipartUpload><DaysAfterInitiation>7</DaysAfterInitiation></AbortIncompleteMultipartUpload>
+            </Rule>
+        </LifecycleConfiguration>"#;
+        let rules = parse_lifecycle_rules(xml).unwrap();
+        assert_eq!(rules.len(), 1);
+    }
+
+    #[test]
+    fn parse_date_valid() {
+        let d = parse_date("2025-01-15T00:00:00Z");
+        assert!(d.is_some());
+    }
+
+    #[test]
+    fn parse_date_invalid_returns_none() {
+        assert!(parse_date("bogus").is_none());
+    }
+
+    #[test]
+    fn extract_block_finds_tag() {
+        let body = "<a><b>content</b></a>";
+        let block = extract_block(body, "b");
+        assert_eq!(block, Some("content"));
+    }
+
+    #[test]
+    fn extract_block_missing_tag_returns_none() {
+        let body = "<a></a>";
+        assert!(extract_block(body, "missing").is_none());
+    }
 }
