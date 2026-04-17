@@ -639,3 +639,309 @@ fn word_boundary_match(text: &str, word: &str) -> bool {
     }
     false
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::BedrockState;
+    use parking_lot::RwLock;
+    use std::sync::Arc;
+
+    fn empty_guardrail(id: &str) -> Guardrail {
+        Guardrail {
+            guardrail_id: id.to_string(),
+            guardrail_arn: format!("arn:aws:bedrock:us-east-1:123:guardrail/{id}"),
+            name: id.to_string(),
+            description: String::new(),
+            status: "READY".to_string(),
+            version: "DRAFT".to_string(),
+            next_version_number: 1,
+            blocked_input_messaging: "blocked input".to_string(),
+            blocked_outputs_messaging: "blocked output".to_string(),
+            content_policy: None,
+            word_policy: None,
+            sensitive_information_policy: None,
+            topic_policy: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    fn shared_state() -> SharedBedrockState {
+        Arc::new(RwLock::new(BedrockState::new("123456789012", "us-east-1")))
+    }
+
+    #[test]
+    fn word_boundary_matches_whole_word_only() {
+        assert!(word_boundary_match("the damn cat", "damn"));
+        assert!(word_boundary_match("damn!", "damn"));
+        assert!(!word_boundary_match("damnation is long", "damn"));
+        assert!(!word_boundary_match("subdamned", "damn"));
+    }
+
+    #[test]
+    fn evaluate_content_custom_word_match() {
+        let mut g = empty_guardrail("g1");
+        g.word_policy = Some(json!({
+            "wordsConfig": [{"text": "secret"}]
+        }));
+        let a = evaluate_content(&g, "this contains SECRET stuff");
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0]["wordPolicy"]["customWords"][0]["match"], "secret");
+    }
+
+    #[test]
+    fn evaluate_content_profanity_managed_list() {
+        let mut g = empty_guardrail("g1");
+        g.word_policy = Some(json!({
+            "managedWordListsConfig": [{"type": "PROFANITY"}]
+        }));
+        let a = evaluate_content(&g, "oh damn, that hurt");
+        assert!(!a.is_empty());
+        assert_eq!(
+            a[0]["wordPolicy"]["managedWordLists"][0]["type"],
+            "PROFANITY"
+        );
+    }
+
+    #[test]
+    fn evaluate_content_topic_match() {
+        let mut g = empty_guardrail("g1");
+        g.topic_policy = Some(json!({
+            "topicsConfig": [{
+                "name": "Politics",
+                "examples": ["election results"],
+            }]
+        }));
+        let a = evaluate_content(&g, "The election results were surprising");
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0]["topicPolicy"]["topics"][0]["name"], "Politics");
+    }
+
+    #[test]
+    fn evaluate_content_pii_email_detected() {
+        let mut g = empty_guardrail("g1");
+        g.sensitive_information_policy = Some(json!({
+            "piiEntitiesConfig": [{"type": "EMAIL", "action": "BLOCK"}]
+        }));
+        let a = evaluate_content(&g, "contact me at user@example.com please");
+        assert_eq!(a.len(), 1);
+        assert_eq!(
+            a[0]["sensitiveInformationPolicy"]["piiEntities"][0]["match"],
+            "user@example.com"
+        );
+    }
+
+    #[test]
+    fn evaluate_content_pii_phone_detected() {
+        let mut g = empty_guardrail("g1");
+        g.sensitive_information_policy = Some(json!({
+            "piiEntitiesConfig": [{"type": "PHONE", "action": "BLOCK"}]
+        }));
+        let a = evaluate_content(&g, "call 555-123-4567 now");
+        assert_eq!(a.len(), 1);
+    }
+
+    #[test]
+    fn evaluate_content_pii_unknown_type_ignored() {
+        let mut g = empty_guardrail("g1");
+        g.sensitive_information_policy = Some(json!({
+            "piiEntitiesConfig": [{"type": "BOGUS", "action": "BLOCK"}]
+        }));
+        let a = evaluate_content(&g, "test user@example.com");
+        assert!(a.is_empty());
+    }
+
+    #[test]
+    fn evaluate_content_regex_matches() {
+        let mut g = empty_guardrail("g1");
+        g.sensitive_information_policy = Some(json!({
+            "regexesConfig": [{
+                "name": "code",
+                "pattern": r"CODE-\d+",
+                "action": "ANONYMIZE"
+            }]
+        }));
+        let a = evaluate_content(&g, "ref CODE-12345 here");
+        assert_eq!(a.len(), 1);
+        assert_eq!(
+            a[0]["sensitiveInformationPolicy"]["regexes"][0]["match"],
+            "CODE-12345"
+        );
+    }
+
+    #[test]
+    fn evaluate_content_regex_invalid_pattern_skipped() {
+        let mut g = empty_guardrail("g1");
+        g.sensitive_information_policy = Some(json!({
+            "regexesConfig": [{
+                "name": "bad",
+                "pattern": "(unclosed",
+                "action": "BLOCK"
+            }]
+        }));
+        let a = evaluate_content(&g, "text");
+        assert!(a.is_empty());
+    }
+
+    #[test]
+    fn evaluate_content_empty_returns_no_assessments() {
+        let g = empty_guardrail("g1");
+        let a = evaluate_content(&g, "any text");
+        assert!(a.is_empty());
+    }
+
+    fn make_req() -> AwsRequest {
+        use bytes::Bytes;
+        use http::Method;
+        use std::collections::HashMap;
+        AwsRequest {
+            service: "bedrock".to_string(),
+            action: "CreateGuardrail".to_string(),
+            method: Method::POST,
+            raw_path: "/guardrails".to_string(),
+            raw_query: String::new(),
+            path_segments: vec!["guardrails".to_string()],
+            query_params: HashMap::new(),
+            headers: http::HeaderMap::new(),
+            body: Bytes::new(),
+            account_id: "123456789012".to_string(),
+            region: "us-east-1".to_string(),
+            request_id: "req-id".to_string(),
+            is_query_protocol: false,
+            access_key_id: None,
+            principal: None,
+        }
+    }
+
+    #[test]
+    fn create_guardrail_requires_name() {
+        let state = shared_state();
+        let req = make_req();
+        let body = json!({});
+        let err = create_guardrail(&state, &req, &body).err().unwrap();
+        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn create_guardrail_roundtrip() {
+        let state = shared_state();
+        let req = make_req();
+        let body = json!({
+            "name": "my-guard",
+            "blockedInputMessaging": "NOPE-IN",
+            "blockedOutputsMessaging": "NOPE-OUT",
+            "description": "some guard",
+            "wordPolicyConfig": {"wordsConfig": []},
+        });
+        let resp = create_guardrail(&state, &req, &body).unwrap();
+        assert_eq!(resp.status, StatusCode::CREATED);
+        let s = state.read();
+        assert_eq!(s.guardrails.len(), 1);
+        let g = s.guardrails.values().next().unwrap();
+        assert_eq!(g.name, "my-guard");
+        assert_eq!(g.blocked_input_messaging, "NOPE-IN");
+    }
+
+    #[test]
+    fn get_guardrail_not_found() {
+        let state = shared_state();
+        let req = make_req();
+        let err = get_guardrail(&state, &req, "missing").err().unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn delete_guardrail_removes_entry() {
+        let state = shared_state();
+        let gid = "gid-1";
+        state
+            .write()
+            .guardrails
+            .insert(gid.to_string(), empty_guardrail(gid));
+        delete_guardrail(&state, gid).unwrap();
+        assert!(state.read().guardrails.is_empty());
+    }
+
+    #[test]
+    fn delete_guardrail_not_found() {
+        let state = shared_state();
+        let err = delete_guardrail(&state, "missing").err().unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn list_guardrails_returns_all() {
+        let state = shared_state();
+        state
+            .write()
+            .guardrails
+            .insert("a".to_string(), empty_guardrail("a"));
+        state
+            .write()
+            .guardrails
+            .insert("b".to_string(), empty_guardrail("b"));
+        let req = make_req();
+        let resp = list_guardrails(&state, &req).unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+    }
+
+    #[test]
+    fn apply_guardrail_noop_with_no_policies() {
+        let state = shared_state();
+        state
+            .write()
+            .guardrails
+            .insert("g".to_string(), empty_guardrail("g"));
+        let body = br#"{"content":[{"text":{"text":"hello"}}],"source":"INPUT"}"#;
+        let resp = apply_guardrail(&state, "g", "DRAFT", body).unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+    }
+
+    #[test]
+    fn apply_guardrail_intervenes_on_blocked_word() {
+        let state = shared_state();
+        let mut g = empty_guardrail("g");
+        g.word_policy = Some(json!({"wordsConfig": [{"text": "forbidden"}]}));
+        state.write().guardrails.insert("g".to_string(), g);
+        let body = br#"{"content":[{"text":{"text":"this is forbidden"}}],"source":"INPUT"}"#;
+        let resp = apply_guardrail(&state, "g", "DRAFT", body).unwrap();
+        let body_str = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body_str.contains("GUARDRAIL_INTERVENED"));
+        assert!(body_str.contains("blocked input"));
+    }
+
+    #[test]
+    fn apply_guardrail_output_source_uses_output_message() {
+        let state = shared_state();
+        let mut g = empty_guardrail("g");
+        g.word_policy = Some(json!({"wordsConfig": [{"text": "x"}]}));
+        state.write().guardrails.insert("g".to_string(), g);
+        let body = br#"{"content":[{"text":{"text":"contains x value"}}],"source":"OUTPUT"}"#;
+        let resp = apply_guardrail(&state, "g", "DRAFT", body).unwrap();
+        let body_str = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        assert!(body_str.contains("blocked output"));
+    }
+
+    #[test]
+    fn apply_guardrail_missing_returns_not_found() {
+        let state = shared_state();
+        let body = br#"{"content":[],"source":"INPUT"}"#;
+        let err = apply_guardrail(&state, "missing", "DRAFT", body)
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn apply_guardrail_missing_version_returns_not_found() {
+        let state = shared_state();
+        state
+            .write()
+            .guardrails
+            .insert("g".to_string(), empty_guardrail("g"));
+        let body = br#"{"content":[],"source":"INPUT"}"#;
+        let err = apply_guardrail(&state, "g", "99", body).err().unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+}
