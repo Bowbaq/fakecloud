@@ -123,7 +123,7 @@ pub fn pid_alive(_pid: u32) -> bool {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use super::pid_alive;
+    use super::{cli_works, detect_cli, pid_alive, reap_stale_containers};
 
     #[test]
     fn self_is_alive() {
@@ -139,5 +139,49 @@ mod tests {
     fn huge_pid_is_dead() {
         // Max u32 is far outside any reasonable PID range on any OS.
         assert!(!pid_alive(u32::MAX - 1));
+    }
+
+    #[test]
+    fn cli_works_false_for_unknown_binary() {
+        assert!(!cli_works("definitely-not-a-real-cli-name-xyz123"));
+    }
+
+    #[test]
+    fn detect_cli_respects_env_var_pointing_to_missing_bin() {
+        let _g = EnvGuard::set("FAKECLOUD_CONTAINER_CLI", "nonexistent-cli-binary-abc-123");
+        // Env says use this specific CLI; it doesn't exist so returns None
+        // regardless of docker/podman availability on the host.
+        assert!(detect_cli().is_none());
+    }
+
+    #[test]
+    fn reap_runs_without_panicking() {
+        // Point env at a nonexistent CLI so the reap body never executes any
+        // real docker command. Ensures the startup hook is safe on boxes
+        // without any container CLI.
+        let _g = EnvGuard::set("FAKECLOUD_CONTAINER_CLI", "nonexistent-cli-binary-abc-123");
+        reap_stale_containers();
+    }
+
+    struct EnvGuard {
+        key: &'static str,
+        prev: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let prev = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.prev {
+                Some(v) => std::env::set_var(self.key, v),
+                None => std::env::remove_var(self.key),
+            }
+        }
     }
 }
