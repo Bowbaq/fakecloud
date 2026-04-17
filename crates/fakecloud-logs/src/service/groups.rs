@@ -33,7 +33,8 @@ impl LogsService {
         validate_string_length("logGroupName", &name, 1, 512)?;
         validate_optional_string_length("kmsKeyId", body["kmsKeyId"].as_str(), 1, 256)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         if state.log_groups.contains_key(&name) {
             return Err(AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -101,7 +102,8 @@ impl LogsService {
 
         validate_string_length("logGroupName", name, 1, 512)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         // Check deletion protection
         if let Some(group) = state.log_groups.get(name) {
             if group.deletion_protection {
@@ -153,7 +155,9 @@ impl LogsService {
             &["STANDARD", "INFREQUENT_ACCESS", "DELIVERY"],
         )?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::LogsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let mut groups: Vec<&LogGroup> = state
             .log_groups
             .values()
@@ -247,7 +251,8 @@ impl LogsService {
             )
         })?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let group = state.log_groups.get_mut(name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -276,7 +281,8 @@ impl LogsService {
 
         validate_string_length("logGroupName", name, 1, 512)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let group = state.log_groups.get_mut(name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -318,7 +324,8 @@ impl LogsService {
 
         let resolved_name = resolve_log_group_name(log_group_name, resource_identifier)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let group = state
             .log_groups
             .get_mut(resolved_name.as_str())
@@ -350,7 +357,8 @@ impl LogsService {
 
         let resolved_name = resolve_log_group_name(log_group_name, resource_identifier)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let group = state
             .log_groups
             .get_mut(resolved_name.as_str())
@@ -395,7 +403,9 @@ impl LogsService {
             log_group_id.to_string()
         };
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::LogsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         if !state.log_groups.contains_key(&group_name) {
             return Err(AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -445,7 +455,8 @@ impl LogsService {
             log_group_id
         };
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let group = state.log_groups.get_mut(&group_name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -519,7 +530,9 @@ impl LogsService {
             &["STANDARD", "INFREQUENT_ACCESS", "DELIVERY"],
         )?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::LogsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let mut groups: Vec<&LogGroup> = state
             .log_groups
             .values()
@@ -626,7 +639,8 @@ mod tests {
         );
         svc.associate_kms_key(&req).unwrap();
 
-        let state = svc.state.read();
+        let _mas = svc.state.read();
+        let state = _mas.default_ref();
         assert_eq!(
             state.log_groups["grp"].kms_key_id.as_deref(),
             Some("arn:aws:kms:us-east-1:123456789012:key/abc-123")
@@ -649,7 +663,8 @@ mod tests {
         let req = make_request("DisassociateKmsKey", json!({ "resourceIdentifier": "grp" }));
         svc.disassociate_kms_key(&req).unwrap();
 
-        let state = svc.state.read();
+        let _mas = svc.state.read();
+        let state = _mas.default_ref();
         assert!(state.log_groups["grp"].kms_key_id.is_none());
     }
 }

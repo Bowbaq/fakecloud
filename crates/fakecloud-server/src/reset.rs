@@ -45,7 +45,8 @@ impl ResetState {
                 s.default_mut().seed_default_opted_out();
             }
             "events" | "eventbridge" => {
-                let mut eb = self.eb.write();
+                let mut eb_accounts = self.eb.write();
+                let eb = eb_accounts.default_mut();
                 eb.rules.clear();
                 eb.events.clear();
                 eb.archives.clear();
@@ -134,7 +135,8 @@ impl ResetState {
             sns.default_mut().seed_default_opted_out();
         }
         {
-            let mut eb = self.eb.write();
+            let mut eb_accounts = self.eb.write();
+            let eb = eb_accounts.default_mut();
             eb.rules.clear();
             eb.events.clear();
             eb.archives.clear();
@@ -148,7 +150,7 @@ impl ResetState {
         }
         self.ssm.write().reset();
         self.dynamodb.write().reset();
-        self.lambda.write().reset();
+        self.lambda.write().default_mut().reset();
         // Stop all Lambda containers on reset
         if let Some(ref rt) = self.container_runtime {
             let rt = rt.clone();
@@ -156,7 +158,7 @@ impl ResetState {
         }
         self.secretsmanager.write().reset();
         self.s3.write().reset();
-        self.logs.write().reset();
+        self.logs.write().default_mut().reset();
         self.kms.write().reset();
         self.cloudformation.write().reset();
         self.ses.write().reset();
@@ -324,7 +326,11 @@ mod tests {
                 ),
             )),
             eb: Arc::new(parking_lot::RwLock::new(
-                fakecloud_eventbridge::state::EventBridgeState::new("123456789012", "us-east-1"),
+                fakecloud_core::multi_account::MultiAccountState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "",
+                ),
             )),
             ssm: Arc::new(parking_lot::RwLock::new(
                 fakecloud_ssm::state::SsmState::new("123456789012", "us-east-1"),
@@ -337,7 +343,11 @@ mod tests {
                 ),
             )),
             lambda: Arc::new(parking_lot::RwLock::new(
-                fakecloud_lambda::state::LambdaState::new("123456789012", "us-east-1"),
+                fakecloud_core::multi_account::MultiAccountState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "",
+                ),
             )),
             secretsmanager: Arc::new(parking_lot::RwLock::new(
                 fakecloud_core::multi_account::MultiAccountState::new(
@@ -354,7 +364,11 @@ mod tests {
                 ),
             )),
             logs: Arc::new(parking_lot::RwLock::new(
-                fakecloud_logs::state::LogsState::new("123456789012", "us-east-1"),
+                fakecloud_core::multi_account::MultiAccountState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "",
+                ),
             )),
             kms: Arc::new(parking_lot::RwLock::new(
                 fakecloud_core::multi_account::MultiAccountState::new(

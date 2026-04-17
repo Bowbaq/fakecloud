@@ -47,23 +47,24 @@ pub fn fire_rule(
     let container_runtime = ctx.container_runtime;
 
     let (targets, account_id, region) = {
-        let state = state.read();
+        let eb_accounts = state.read();
+        let eb_state = eb_accounts.default_ref();
 
         // Verify bus exists
-        if !state.buses.contains_key(bus_name) {
+        if !eb_state.buses.contains_key(bus_name) {
             return Err(format!("Event bus '{bus_name}' not found"));
         }
 
         let key = (bus_name.to_string(), rule_name.to_string());
-        let rule = match state.rules.get(&key) {
+        let rule = match eb_state.rules.get(&key) {
             Some(r) => r,
             None => return Err(format!("Rule '{rule_name}' not found on bus '{bus_name}'")),
         };
 
         (
             rule.targets.clone(),
-            state.account_id.clone(),
-            state.region.clone(),
+            eb_state.account_id.clone(),
+            eb_state.region.clone(),
         )
     };
 
@@ -90,7 +91,8 @@ pub fn fire_rule(
 
     // Record the event in state
     {
-        let mut s = state.write();
+        let mut s_accounts = state.write();
+        let s = s_accounts.default_mut();
         s.events.push(crate::state::PutEvent {
             event_id: event_id.clone(),
             source: "aws.events".to_string(),
@@ -138,15 +140,16 @@ pub fn fire_rule(
                 arn: arn.clone(),
             });
         } else if arn.contains(":lambda:") {
-            let mut s = state.write();
+            let mut s_accounts = state.write();
+            let s = s_accounts.default_mut();
             s.lambda_invocations.push(crate::state::LambdaInvocation {
                 function_arn: arn.clone(),
                 payload: body_str.clone(),
                 timestamp: now,
             });
-            drop(s);
+            drop(s_accounts);
             if let Some(ref ls) = lambda_state {
-                ls.write().invocations.push(LambdaInvocation {
+                ls.write().default_mut().invocations.push(LambdaInvocation {
                     function_arn: arn.clone(),
                     payload: body_str.clone(),
                     timestamp: now,
@@ -159,13 +162,14 @@ pub fn fire_rule(
                 arn: arn.clone(),
             });
         } else if arn.contains(":logs:") {
-            let mut s = state.write();
+            let mut s_accounts = state.write();
+            let s = s_accounts.default_mut();
             s.log_deliveries.push(crate::state::LogDelivery {
                 log_group_arn: arn.clone(),
                 payload: body_str.clone(),
                 timestamp: now,
             });
-            drop(s);
+            drop(s_accounts);
             if let Some(ref log_state) = logs_state {
                 crate::service::deliver_to_logs(log_state, arn, &body_str, now);
             }
@@ -216,14 +220,13 @@ fn resolve_target_body(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{EventBridgeState, EventRule};
+    use crate::state::EventRule;
     use parking_lot::RwLock;
 
     fn make_state() -> SharedEventBridgeState {
-        Arc::new(RwLock::new(EventBridgeState::new(
-            "123456789012",
-            "us-east-1",
-        )))
+        Arc::new(RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ))
     }
 
     fn add_rule(
@@ -233,7 +236,8 @@ mod tests {
         enabled: bool,
         targets: Vec<EventTarget>,
     ) {
-        let mut s = state.write();
+        let mut s_accounts = state.write();
+        let s = s_accounts.default_mut();
         let key = (bus.to_string(), name.to_string());
         s.rules.insert(
             key,
@@ -292,7 +296,8 @@ mod tests {
         );
 
         // Verify event was recorded
-        let s = state.read();
+        let s_accounts = state.read();
+        let s = s_accounts.default_ref();
         assert!(s.events.iter().any(|e| e.source == "aws.events"));
     }
 

@@ -115,7 +115,8 @@ impl LogsService {
         let _guard = self.snapshot_lock.lock().await;
         let snapshot = LogsSnapshot {
             schema_version: LOGS_SNAPSHOT_SCHEMA_VERSION,
-            state: self.state.read().clone(),
+            accounts: Some(self.state.read().clone()),
+            state: None,
         };
         let join = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
             let bytes = serde_json::to_vec(&snapshot)
@@ -693,7 +694,6 @@ fn resolve_json_path_simple<'a>(
 #[cfg(test)]
 pub(crate) mod test_helpers {
     use super::*;
-    use crate::state::LogsState;
     use bytes::Bytes;
     use fakecloud_core::delivery::DeliveryBus;
     use http::{HeaderMap, Method};
@@ -701,10 +701,9 @@ pub(crate) mod test_helpers {
     use std::sync::Arc;
 
     pub fn make_service() -> LogsService {
-        let state = Arc::new(parking_lot::RwLock::new(LogsState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let delivery_bus = Arc::new(DeliveryBus::new());
         LogsService::new(state, delivery_bus)
     }

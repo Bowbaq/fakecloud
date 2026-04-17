@@ -868,7 +868,11 @@ mod tests {
                 ),
             )),
             eventbridge: Arc::new(RwLock::new(
-                fakecloud_eventbridge::state::EventBridgeState::new("123456789012", "us-east-1"),
+                fakecloud_core::multi_account::MultiAccountState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "",
+                ),
             )),
             dynamodb: Arc::new(RwLock::new(
                 fakecloud_core::multi_account::MultiAccountState::new(
@@ -877,10 +881,13 @@ mod tests {
                     "",
                 ),
             )),
-            logs: Arc::new(RwLock::new(fakecloud_logs::state::LogsState::new(
-                "123456789012",
-                "us-east-1",
-            ))),
+            logs: Arc::new(RwLock::new(
+                fakecloud_core::multi_account::MultiAccountState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "",
+                ),
+            )),
             delivery: Arc::new(DeliveryBus::new()),
         };
         CloudFormationService::new(cf_state, deps)

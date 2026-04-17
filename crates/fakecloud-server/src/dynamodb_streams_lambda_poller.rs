@@ -50,7 +50,8 @@ impl DynamoDbStreamsLambdaPoller {
     async fn poll(&self) {
         // Collect enabled mappings that point to DynamoDB streams
         let mappings: Vec<(String, String, String, i64)> = {
-            let lambda = self.lambda_state.read();
+            let lambda_accounts = self.lambda_state.read();
+            let lambda = lambda_accounts.default_ref();
             lambda
                 .event_source_mappings
                 .values()
@@ -185,7 +186,8 @@ impl DynamoDbStreamsLambdaPoller {
                 }
             } else {
                 // No delivery mechanism, just record
-                let mut lambda = self.lambda_state.write();
+                let mut lambda_accounts = self.lambda_state.write();
+                let lambda = lambda_accounts.default_mut();
                 lambda.invocations.push(LambdaInvocation {
                     function_arn: function_arn.clone(),
                     payload: payload.clone(),

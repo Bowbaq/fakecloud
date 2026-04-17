@@ -489,7 +489,8 @@ impl ResourceProvisioner {
             .and_then(|v| v.as_str())
             .unwrap_or("default");
 
-        let mut state = self.eventbridge_state.write();
+        let mut eb_accounts = self.eventbridge_state.write();
+        let state = eb_accounts.get_or_create(&self.account_id);
 
         // Validate that the event bus exists
         if !state.buses.contains_key(event_bus_name) {
@@ -550,7 +551,8 @@ impl ResourceProvisioner {
     }
 
     fn delete_eventbridge_rule(&self, physical_id: &str) -> Result<(), String> {
-        let mut state = self.eventbridge_state.write();
+        let mut eb_accounts = self.eventbridge_state.write();
+        let state = eb_accounts.default_mut();
         // physical_id is the ARN; find the rule key
         let key = state
             .rules
@@ -761,7 +763,8 @@ impl ResourceProvisioner {
             .and_then(|v| v.as_i64())
             .map(|v| v as i32);
 
-        let mut state = self.logs_state.write();
+        let mut logs_accounts = self.logs_state.write();
+        let state = logs_accounts.get_or_create(&self.account_id);
         let arn = format!(
             "arn:aws:logs:{}:{}:log-group:{}:*",
             state.region, state.account_id, log_group_name
@@ -791,7 +794,8 @@ impl ResourceProvisioner {
     }
 
     fn delete_log_group(&self, physical_id: &str) -> Result<(), String> {
-        let mut state = self.logs_state.write();
+        let mut logs_accounts = self.logs_state.write();
+        let state = logs_accounts.default_mut();
         // physical_id is the ARN; find the log group name
         let name = state
             .log_groups
@@ -944,16 +948,15 @@ mod tests {
                 "us-east-1", "",
             ))),
             eventbridge_state: Arc::new(RwLock::new(
-                fakecloud_eventbridge::state::EventBridgeState::new("123456789012", "us-east-1"),
+                fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
             )),
             dynamodb_state: Arc::new(RwLock::new(fakecloud_core::multi_account::MultiAccountState::new(
                 "123456789012",
                 "us-east-1", "",
             ))),
-            logs_state: Arc::new(RwLock::new(fakecloud_logs::state::LogsState::new(
-                "123456789012",
-                "us-east-1",
-            ))),
+            logs_state: Arc::new(RwLock::new(
+                fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+            )),
             delivery: Arc::new(DeliveryBus::new()),
             account_id: "123456789012".to_string(),
             region: "us-east-1".to_string(),
@@ -1042,7 +1045,8 @@ mod tests {
         let prov = make_provisioner();
         // Create a custom bus first
         {
-            let mut state = prov.eventbridge_state.write();
+            let mut eb_accounts = prov.eventbridge_state.write();
+            let state = eb_accounts.default_mut();
             state.buses.insert(
                 "custom-bus".to_string(),
                 fakecloud_eventbridge::state::EventBus {

@@ -3,7 +3,13 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 
-pub type SharedLogsState = Arc<RwLock<LogsState>>;
+pub type SharedLogsState = Arc<RwLock<fakecloud_core::multi_account::MultiAccountState<LogsState>>>;
+
+impl fakecloud_core::multi_account::AccountState for LogsState {
+    fn new_for_account(account_id: &str, region: &str, _endpoint: &str) -> Self {
+        Self::new(account_id, region)
+    }
+}
 
 /// JSON object keys must be strings, so serialize
 /// `HashMap<(String,String), AccountPolicy>` as a list of
@@ -361,10 +367,13 @@ pub struct ScheduledQuery {
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct LogsSnapshot {
     pub schema_version: u32,
-    pub state: LogsState,
+    #[serde(default)]
+    pub accounts: Option<fakecloud_core::multi_account::MultiAccountState<LogsState>>,
+    #[serde(default)]
+    pub state: Option<LogsState>,
 }
 
-pub const LOGS_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+pub const LOGS_SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 
 #[cfg(test)]
 mod tests {
