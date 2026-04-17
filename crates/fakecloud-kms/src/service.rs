@@ -5561,4 +5561,146 @@ mod tests {
         let req = make_request("ImportKeyMaterial", json!({}));
         assert!(svc.import_key_material(&req).is_err());
     }
+
+    #[test]
+    fn describe_key_returns_metadata() {
+        let svc = make_service();
+        let key_id = create_key(&svc);
+        let req = make_request("DescribeKey", json!({"KeyId": key_id}));
+        let resp = svc.describe_key(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(body["KeyMetadata"].is_object());
+    }
+
+    #[test]
+    fn enable_key_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "EnableKey",
+            json!({"KeyId": "00000000-0000-0000-0000-000000000000"}),
+        );
+        assert!(svc.enable_key(&req).is_err());
+    }
+
+    #[test]
+    fn disable_key_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "DisableKey",
+            json!({"KeyId": "00000000-0000-0000-0000-000000000000"}),
+        );
+        assert!(svc.disable_key(&req).is_err());
+    }
+
+    #[test]
+    fn enable_disable_key_rotation_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "EnableKeyRotation",
+            json!({"KeyId": "00000000-0000-0000-0000-000000000000"}),
+        );
+        assert!(svc.enable_key_rotation(&req).is_err());
+
+        let req = make_request(
+            "DisableKeyRotation",
+            json!({"KeyId": "00000000-0000-0000-0000-000000000000"}),
+        );
+        assert!(svc.disable_key_rotation(&req).is_err());
+    }
+
+    #[test]
+    fn get_key_rotation_status_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "GetKeyRotationStatus",
+            json!({"KeyId": "00000000-0000-0000-0000-000000000000"}),
+        );
+        assert!(svc.get_key_rotation_status(&req).is_err());
+    }
+
+    #[test]
+    fn update_key_description_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "UpdateKeyDescription",
+            json!({
+                "KeyId": "00000000-0000-0000-0000-000000000000",
+                "Description": "new"
+            }),
+        );
+        assert!(svc.update_key_description(&req).is_err());
+    }
+
+    #[test]
+    fn list_resource_tags_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "ListResourceTags",
+            json!({"KeyId": "00000000-0000-0000-0000-000000000000"}),
+        );
+        assert!(svc.list_resource_tags(&req).is_err());
+    }
+
+    #[test]
+    fn list_aliases_empty_returns_ok() {
+        let svc = make_service();
+        let req = make_request("ListAliases", json!({}));
+        let resp = svc.list_aliases(&req).unwrap();
+        assert_eq!(resp.status, http::StatusCode::OK);
+    }
+
+    #[test]
+    fn create_alias_missing_name_errors() {
+        let svc = make_service();
+        let req = make_request("CreateAlias", json!({"TargetKeyId": "k"}));
+        assert!(svc.create_alias(&req).is_err());
+    }
+
+    #[test]
+    fn delete_alias_not_found() {
+        let svc = make_service();
+        let req = make_request("DeleteAlias", json!({"AliasName": "alias/ghost"}));
+        assert!(svc.delete_alias(&req).is_err());
+    }
+
+    #[test]
+    fn create_grant_unknown_key_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "CreateGrant",
+            json!({
+                "KeyId": "00000000-0000-0000-0000-000000000000",
+                "GranteePrincipal": "arn:aws:iam::123:role/r",
+                "Operations": ["Encrypt"]
+            }),
+        );
+        assert!(svc.create_grant(&req).is_err());
+    }
+
+    #[test]
+    fn revoke_grant_unknown_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "RevokeGrant",
+            json!({
+                "KeyId": "00000000-0000-0000-0000-000000000000",
+                "GrantId": "ghost"
+            }),
+        );
+        assert!(svc.revoke_grant(&req).is_err());
+    }
+
+    #[test]
+    fn tag_resource_on_known_key_succeeds() {
+        let svc = make_service();
+        let key_id = create_key(&svc);
+        let req = make_request(
+            "TagResource",
+            json!({
+                "KeyId": key_id,
+                "Tags": [{"TagKey": "env", "TagValue": "prod"}]
+            }),
+        );
+        svc.tag_resource(&req).unwrap();
+    }
 }
