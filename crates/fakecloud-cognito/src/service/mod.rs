@@ -6211,4 +6211,85 @@ mod tests {
         let req = make_req("UpdateUserPoolClient", &body.to_string());
         assert!(svc.update_user_pool_client(&req).is_err());
     }
+
+    #[test]
+    fn admin_get_device_not_found() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Username": "ghost",
+            "DeviceKey": "dk-ghost"
+        });
+        let req = make_req("AdminGetDevice", &body.to_string());
+        assert!(svc.admin_get_device(&req).is_err());
+    }
+
+    #[test]
+    fn admin_list_devices_unknown_user_errors() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id, "Username": "ghost"});
+        let req = make_req("AdminListDevices", &body.to_string());
+        assert!(svc.admin_list_devices(&req).is_err());
+    }
+
+    #[test]
+    fn admin_forget_device_unknown_user_errors() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Username": "ghost",
+            "DeviceKey": "dk"
+        });
+        let req = make_req("AdminForgetDevice", &body.to_string());
+        assert!(svc.admin_forget_device(&req).is_err());
+    }
+
+    #[test]
+    fn revoke_token_invalid_errors() {
+        let (svc, _) = make_svc();
+        let body = json!({"ClientId": "c", "Token": "bogus"});
+        let req = make_req("RevokeToken", &body.to_string());
+        assert!(svc.revoke_token(&req).is_err());
+    }
+
+    #[test]
+    fn describe_user_import_job_not_found() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id, "JobId": "ghost"});
+        let req = make_req("DescribeUserImportJob", &body.to_string());
+        assert!(svc.describe_user_import_job(&req).is_err());
+    }
+
+    #[test]
+    fn start_user_import_job_not_found() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id, "JobId": "ghost"});
+        let req = make_req("StartUserImportJob", &body.to_string());
+        assert!(svc.start_user_import_job(&req).is_err());
+    }
+
+    #[test]
+    fn stop_user_import_job_not_found() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id, "JobId": "ghost"});
+        let req = make_req("StopUserImportJob", &body.to_string());
+        assert!(svc.stop_user_import_job(&req).is_err());
+    }
+
+    #[test]
+    fn get_csv_header_basic() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id});
+        let req = make_req("GetCSVHeader", &body.to_string());
+        let resp = svc.get_csv_header(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(body["CSVHeader"].is_array());
+    }
 }
