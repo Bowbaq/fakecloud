@@ -3994,4 +3994,43 @@ mod tests {
         );
         assert!(svc.create_db_instance(&req).await.is_err());
     }
+
+    #[test]
+    fn modify_db_instance_missing_id_errors() {
+        let svc = make_service();
+        let req = request("ModifyDBInstance", &[]);
+        assert!(svc.modify_db_instance(&req).is_err());
+    }
+
+    #[test]
+    fn modify_db_parameter_group_unknown_pg_errors() {
+        let svc = make_service();
+        let req = request(
+            "ModifyDBParameterGroup",
+            &[
+                ("DBParameterGroupName", "ghost"),
+                ("Parameters.member.1.ParameterName", "p"),
+                ("Parameters.member.1.ParameterValue", "v"),
+                ("Parameters.member.1.ApplyMethod", "immediate"),
+            ],
+        );
+        assert!(svc.modify_db_parameter_group(&req).is_err());
+    }
+
+    #[test]
+    fn describe_db_parameter_groups_unknown_errors() {
+        let svc = make_service();
+        let req = request(
+            "DescribeDBParameterGroups",
+            &[("DBParameterGroupName", "ghost")],
+        );
+        assert!(svc.describe_db_parameter_groups(&req).is_err());
+    }
+
+    #[test]
+    fn describe_db_subnet_groups_unknown_errors() {
+        let svc = make_service();
+        let req = request("DescribeDBSubnetGroups", &[("DBSubnetGroupName", "ghost")]);
+        assert!(svc.describe_db_subnet_groups(&req).is_err());
+    }
 }
