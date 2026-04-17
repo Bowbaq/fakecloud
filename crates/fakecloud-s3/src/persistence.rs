@@ -349,4 +349,105 @@ permission = "READ"
         assert_eq!(b.acl_grants[0].grantee_id.as_deref(), Some("grantee-a"));
         assert_eq!(b.acl_grants[0].permission, "READ");
     }
+
+    #[test]
+    fn acl_grant_snapshot_roundtrip() {
+        let grant = AclGrant {
+            grantee_type: "CanonicalUser".to_string(),
+            grantee_id: Some("g1".to_string()),
+            grantee_display_name: Some("Alice".to_string()),
+            grantee_uri: None,
+            permission: "READ".to_string(),
+        };
+        let snap: AclGrantSnapshot = (&grant).into();
+        let round = acl_grant_from_snapshot(&snap);
+        assert_eq!(round.grantee_type, "CanonicalUser");
+        assert_eq!(round.grantee_id.as_deref(), Some("g1"));
+        assert_eq!(round.grantee_display_name.as_deref(), Some("Alice"));
+        assert_eq!(round.permission, "READ");
+    }
+
+    #[test]
+    fn bucket_meta_snapshot_copies_fields() {
+        let b = S3Bucket::new("my-bucket", "eu-west-1", "owner");
+        let meta = bucket_meta_snapshot(&b);
+        assert_eq!(meta.name, "my-bucket");
+        assert_eq!(meta.region, "eu-west-1");
+        assert_eq!(meta.acl_owner_id, "owner");
+        assert!(!meta.eventbridge_enabled);
+    }
+
+    #[test]
+    fn object_meta_snapshot_preserves_object_fields() {
+        let obj = S3Object {
+            key: "k".to_string(),
+            content_type: "text/plain".to_string(),
+            etag: "etag".to_string(),
+            size: 42,
+            storage_class: "STANDARD".to_string(),
+            version_id: Some("v1".to_string()),
+            is_delete_marker: false,
+            ..Default::default()
+        };
+        let meta = object_meta_snapshot(&obj);
+        assert_eq!(meta.key, "k");
+        assert_eq!(meta.content_type, "text/plain");
+        assert_eq!(meta.size, 42);
+        assert_eq!(meta.version_id.as_deref(), Some("v1"));
+    }
+
+    #[test]
+    fn mpu_init_snapshot_captures_metadata() {
+        use std::collections::BTreeMap;
+        let mpu = MultipartUpload {
+            upload_id: "up-1".to_string(),
+            key: "k".to_string(),
+            initiated: chrono::Utc::now(),
+            parts: BTreeMap::new(),
+            metadata: HashMap::new(),
+            content_type: "application/octet-stream".to_string(),
+            storage_class: "STANDARD".to_string(),
+            sse_algorithm: None,
+            sse_kms_key_id: None,
+            tagging: None,
+            acl_grants: Vec::new(),
+            checksum_algorithm: None,
+        };
+        let snap = mpu_init_snapshot(&mpu);
+        assert_eq!(snap.upload_id, "up-1");
+        assert_eq!(snap.content_type, "application/octet-stream");
+    }
+
+    #[test]
+    fn upload_part_meta_snapshot_copies_identifiers() {
+        let part = UploadPart {
+            part_number: 3,
+            body: crate::state::memory_body(bytes::Bytes::from_static(b"abc")),
+            etag: "peeetag".to_string(),
+            size: 3,
+            last_modified: chrono::Utc::now(),
+        };
+        let snap = upload_part_meta_snapshot(&part);
+        assert_eq!(snap.part_number, 3);
+        assert_eq!(snap.etag, "peeetag");
+        assert_eq!(snap.size, 3);
+    }
+
+    #[test]
+    fn hydrate_s3_state_populates_buckets() {
+        let mut snapshot = S3StateSnapshot::default();
+        snapshot.buckets.insert(
+            "b".to_string(),
+            BucketSnapshot {
+                meta: BucketMeta {
+                    name: "b".into(),
+                    acl_owner_id: "owner".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let state = hydrate_s3_state(snapshot, "123", "us-east-1").unwrap();
+        assert!(state.buckets.contains_key("b"));
+    }
 }
