@@ -9,7 +9,7 @@ use fakecloud_core::pagination::paginate;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 use fakecloud_core::validation::*;
 
-use crate::state::{SsmParameter, SsmParameterVersion};
+use crate::state::{SsmParameter, SsmParameterVersion, SsmState};
 
 use super::{missing, SsmService, PARAMETER_VERSION_LIMIT};
 
@@ -277,7 +277,8 @@ impl SsmService {
     pub(super) fn put_parameter(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let input = PutParameterInput::from_body(&req.json_body())?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         if let Some(existing) = lookup_param_mut(&mut state.parameters, &input.name) {
             return apply_overwrite(existing, input);
         }
@@ -299,6 +300,7 @@ impl SsmService {
         raw_name: &str,
         secret_name: &str,
         region: &str,
+        account_id: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
         let sm_state = self.secretsmanager_state.as_ref().ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -359,11 +361,7 @@ impl SsmService {
 
         let value = version.secret_string.as_deref().unwrap_or("").to_string();
 
-        let ssm_state = self.state.read();
-        let arn = format!(
-            "arn:aws:ssm:{region}:{}:parameter{}",
-            ssm_state.account_id, raw_name
-        );
+        let arn = format!("arn:aws:ssm:{region}:{}:parameter{}", account_id, raw_name);
 
         Ok(AwsResponse::ok_json(json!({
             "Parameter": {
@@ -395,14 +393,21 @@ impl SsmService {
 
         // Resolve Secrets Manager references via cross-service lookup
         if let Some(secret_name) = raw_name.strip_prefix("/aws/reference/secretsmanager/") {
-            return self.resolve_secretsmanager_param(raw_name, secret_name, &req.region);
+            return self.resolve_secretsmanager_param(
+                raw_name,
+                secret_name,
+                &req.region,
+                &req.account_id,
+            );
         }
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         // Handle ARN-style names directly (they contain many colons)
         if raw_name.starts_with("arn:aws:ssm:") {
-            let param = resolve_param_by_name_or_arn(&state, raw_name)?;
+            let param = resolve_param_by_name_or_arn(state, raw_name)?;
             return Ok(AwsResponse::ok_json(json!({
                 "Parameter": param_to_json(param, true, with_decryption, &req.region),
             })));
@@ -416,7 +421,7 @@ impl SsmService {
         }
 
         // Try looking up by name or by ARN - use raw_name in error for full context
-        let param = resolve_param_by_name_or_arn(&state, base_name)
+        let param = resolve_param_by_name_or_arn(state, base_name)
             .map_err(|_| param_not_found(raw_name))?;
 
         match selector {
@@ -496,7 +501,9 @@ impl SsmService {
             ));
         }
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let mut parameters = Vec::new();
         let mut invalid = Vec::new();
         let mut seen_names = std::collections::HashSet::new();
@@ -629,7 +636,9 @@ impl SsmService {
             validate_parameter_filters_by_path(f)?;
         }
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let all_params: Vec<&SsmParameter> = state
             .parameters
             .values()
@@ -659,7 +668,8 @@ impl SsmService {
         let body = req.json_body();
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         if remove_param(&mut state.parameters, name).is_none() {
             return Err(param_not_found(name));
         }
@@ -674,7 +684,8 @@ impl SsmService {
         let body = req.json_body();
         let names = body["Names"].as_array().ok_or_else(|| missing("Names"))?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let mut deleted = Vec::new();
         let mut invalid = Vec::new();
 
@@ -718,7 +729,9 @@ impl SsmService {
             validate_parameter_filters(filters)?;
         }
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         // Check if any filter explicitly targets /aws/ prefix paths
         let targets_aws_prefix = param_filters.as_ref().is_some_and(|filters| {
@@ -797,7 +810,9 @@ impl SsmService {
         }
         let max_results = max_results.unwrap_or(50) as usize;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let param = state
             .parameters
             .get(name)
@@ -868,7 +883,8 @@ impl SsmService {
 
         validate_label_lengths(&label_strings)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let param =
             lookup_param_mut(&mut state.parameters, name).ok_or_else(|| param_not_found(name))?;
 
@@ -953,7 +969,8 @@ impl SsmService {
             .as_i64()
             .ok_or_else(|| missing("ParameterVersion"))?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let param =
             lookup_param_mut(&mut state.parameters, name).ok_or_else(|| param_not_found(name))?;
 

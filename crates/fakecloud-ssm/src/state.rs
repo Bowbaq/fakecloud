@@ -735,17 +735,26 @@ pub struct ResourceDataSync {
     pub sync_last_modified_time: DateTime<Utc>,
 }
 
-pub type SharedSsmState = Arc<RwLock<SsmState>>;
+pub type SharedSsmState = Arc<RwLock<fakecloud_core::multi_account::MultiAccountState<SsmState>>>;
+
+impl fakecloud_core::multi_account::AccountState for SsmState {
+    fn new_for_account(account_id: &str, region: &str, _endpoint: &str) -> Self {
+        Self::new(account_id, region)
+    }
+}
 
 /// On-disk snapshot envelope for SSM state. Versioned so format
 /// changes fail loudly on upgrade.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SsmSnapshot {
     pub schema_version: u32,
-    pub state: SsmState,
+    #[serde(default)]
+    pub accounts: Option<fakecloud_core::multi_account::MultiAccountState<SsmState>>,
+    #[serde(default)]
+    pub state: Option<SsmState>,
 }
 
-pub const SSM_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+pub const SSM_SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 
 #[cfg(test)]
 mod tests {

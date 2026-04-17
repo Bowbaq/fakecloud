@@ -6,7 +6,7 @@ use fakecloud_core::pagination::paginate;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 use fakecloud_core::validation::*;
 
-use crate::state::ComplianceItem;
+use crate::state::{ComplianceItem, SsmState};
 
 use super::{missing, SsmService};
 
@@ -48,7 +48,8 @@ impl SsmService {
             .ok_or_else(|| missing("ExecutionSummary"))?;
         let items = body["Items"].as_array().ok_or_else(|| missing("Items"))?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Remove existing compliance items for this resource/type
         state
@@ -105,7 +106,9 @@ impl SsmService {
             .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
             .unwrap_or_default();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let all_items: Vec<Value> = state
             .compliance_items
             .iter()
@@ -155,7 +158,9 @@ impl SsmService {
     ) -> Result<AwsResponse, AwsServiceError> {
         let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         // Group by compliance_type
         let mut type_counts: HashMap<String, (i64, i64)> = HashMap::new(); // (compliant, non_compliant)
@@ -198,7 +203,9 @@ impl SsmService {
     ) -> Result<AwsResponse, AwsServiceError> {
         let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         // Group by resource_id
         let mut resource_status: HashMap<String, (String, String, i64, i64)> = HashMap::new();

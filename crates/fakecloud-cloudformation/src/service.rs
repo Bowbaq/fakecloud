@@ -19,7 +19,7 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use crate::resource_provisioner::ResourceProvisioner;
 use crate::state::{
-    CloudFormationSnapshot, SharedCloudFormationState, Stack, StackResource,
+    CloudFormationSnapshot, CloudFormationState, SharedCloudFormationState, Stack, StackResource,
     CLOUDFORMATION_SNAPSHOT_SCHEMA_VERSION,
 };
 use crate::template;
@@ -147,7 +147,8 @@ impl CloudFormationService {
         let _guard = self.snapshot_lock.lock().await;
         let snapshot = CloudFormationSnapshot {
             schema_version: CLOUDFORMATION_SNAPSHOT_SCHEMA_VERSION,
-            state: self.state.read().clone(),
+            state: None,
+            accounts: Some(self.state.read().clone()),
         };
         let join = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
             let bytes = serde_json::to_vec(&snapshot)
@@ -162,8 +163,7 @@ impl CloudFormationService {
         }
     }
 
-    fn provisioner(&self, stack_id: &str) -> ResourceProvisioner {
-        let cf_state = self.state.read();
+    fn provisioner(&self, stack_id: &str, account_id: &str, region: &str) -> ResourceProvisioner {
         ResourceProvisioner {
             sqs_state: self.deps.sqs.clone(),
             sns_state: self.deps.sns.clone(),
@@ -174,8 +174,8 @@ impl CloudFormationService {
             dynamodb_state: self.deps.dynamodb.clone(),
             logs_state: self.deps.logs.clone(),
             delivery: self.deps.delivery.clone(),
-            account_id: cf_state.account_id.clone(),
-            region: cf_state.region.clone(),
+            account_id: account_id.to_string(),
+            region: region.to_string(),
             stack_id: stack_id.to_string(),
         }
     }
@@ -286,7 +286,9 @@ impl CloudFormationService {
 
         // Check if stack already exists and is not deleted
         {
-            let state = self.state.read();
+            let accounts = self.state.read();
+            let empty = CloudFormationState::new(&req.account_id, &req.region);
+            let state = accounts.get(&req.account_id).unwrap_or(&empty);
             if let Some(existing) = state.stacks.get(stack_name.as_str()) {
                 if existing.status != "DELETE_COMPLETE" {
                     return Err(AwsServiceError::aws_error(
@@ -307,18 +309,15 @@ impl CloudFormationService {
             AwsServiceError::aws_error(StatusCode::BAD_REQUEST, "ValidationError", e)
         })?;
 
-        let stack_id = {
-            let state = self.state.read();
-            format!(
-                "arn:aws:cloudformation:{}:{}:stack/{}/{}",
-                state.region,
-                state.account_id,
-                stack_name,
-                uuid::Uuid::new_v4()
-            )
-        };
+        let stack_id = format!(
+            "arn:aws:cloudformation:{}:{}:stack/{}/{}",
+            req.region,
+            req.account_id,
+            stack_name,
+            uuid::Uuid::new_v4()
+        );
 
-        let provisioner = self.provisioner(&stack_id);
+        let provisioner = self.provisioner(&stack_id, &req.account_id, &req.region);
         let resources =
             provision_stack_resources(&provisioner, &parsed.resources, template_body, &parameters)?;
 
@@ -337,7 +336,8 @@ impl CloudFormationService {
         };
 
         {
-            let mut state = self.state.write();
+            let mut accounts = self.state.write();
+            let state = accounts.get_or_create(&req.account_id);
             state.stacks.insert(stack_name.clone(), stack);
         }
 
@@ -364,7 +364,8 @@ impl CloudFormationService {
             )
         })?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Find stack by name or stack ID
         let stack = state.stacks.values_mut().find(|s| {
@@ -379,8 +380,8 @@ impl CloudFormationService {
 
             // Build the provisioner while we still have the stack_id
             // Drop the write lock temporarily so the provisioner can read state
-            drop(state);
-            let provisioner = self.provisioner(&stack_id);
+            drop(accounts);
+            let provisioner = self.provisioner(&stack_id, &req.account_id, &req.region);
 
             // Delete resources in reverse order
             for resource in resources.iter().rev() {
@@ -388,12 +389,13 @@ impl CloudFormationService {
             }
 
             // Re-acquire the write lock to update stack status
-            let mut state = self.state.write();
+            let mut accounts = self.state.write();
+            let state = accounts.get_or_create(&req.account_id);
             if let Some(stack) = state.stacks.values_mut().find(|s| s.stack_id == stack_id) {
                 stack.status = "DELETE_COMPLETE".to_string();
                 stack.resources.clear();
             }
-            drop(state);
+            drop(accounts);
 
             Self::send_stack_notification(
                 &self.deps.delivery,
@@ -413,7 +415,9 @@ impl CloudFormationService {
     fn describe_stacks(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let stack_name = Self::get_param(req, "StackName");
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = CloudFormationState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let stacks: Vec<Stack> = if let Some(ref name) = stack_name {
             state
                 .stacks
@@ -449,7 +453,9 @@ impl CloudFormationService {
     }
 
     fn list_stacks(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = CloudFormationState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let stacks: Vec<Stack> = state.stacks.values().cloned().collect();
 
         Ok(AwsResponse::xml(
@@ -467,7 +473,9 @@ impl CloudFormationService {
             )
         })?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = CloudFormationState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let stack = state
             .stacks
             .values()
@@ -497,7 +505,9 @@ impl CloudFormationService {
             )
         })?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = CloudFormationState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let stack = state
             .stacks
             .values()
@@ -531,7 +541,9 @@ impl CloudFormationService {
 
         // Get stack_id before write lock for the provisioner
         let found_stack_id = {
-            let state = self.state.read();
+            let accounts = self.state.read();
+            let empty = CloudFormationState::new(&req.account_id, &req.region);
+            let state = accounts.get(&req.account_id).unwrap_or(&empty);
             state
                 .stacks
                 .values()
@@ -543,9 +555,10 @@ impl CloudFormationService {
                 .unwrap_or_default()
         };
 
-        let provisioner = self.provisioner(&found_stack_id);
+        let provisioner = self.provisioner(&found_stack_id, &req.account_id, &req.region);
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let stack = state
             .stacks
             .values_mut()
@@ -589,7 +602,7 @@ impl CloudFormationService {
         let stack_name_for_notif = stack.name.clone();
 
         if let Err(error_msg) = update_result {
-            drop(state);
+            drop(accounts);
             Self::send_stack_notification(
                 &self.deps.delivery,
                 &notification_arns,
@@ -604,7 +617,7 @@ impl CloudFormationService {
             ));
         }
 
-        drop(state);
+        drop(accounts);
         Self::send_stack_notification(
             &self.deps.delivery,
             &notification_arns,
@@ -628,7 +641,9 @@ impl CloudFormationService {
             )
         })?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = CloudFormationState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let stack = state
             .stacks
             .values()
@@ -824,16 +839,18 @@ fn apply_resource_updates(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::CloudFormationState;
     use http::HeaderMap;
     use parking_lot::RwLock;
     use std::sync::Arc;
 
     fn make_service() -> CloudFormationService {
-        let cf_state = Arc::new(RwLock::new(CloudFormationState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let cf_state = Arc::new(RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4566",
+            ),
+        ));
         let deps = CloudFormationDeps {
             sqs: Arc::new(RwLock::new(
                 fakecloud_core::multi_account::MultiAccountState::new(
@@ -849,10 +866,13 @@ mod tests {
                     "http://localhost:4566",
                 ),
             )),
-            ssm: Arc::new(RwLock::new(fakecloud_ssm::state::SsmState::new(
-                "123456789012",
-                "us-east-1",
-            ))),
+            ssm: Arc::new(RwLock::new(
+                fakecloud_core::multi_account::MultiAccountState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "http://localhost:4566",
+                ),
+            )),
             iam: Arc::new(RwLock::new(
                 fakecloud_core::multi_account::MultiAccountState::new(
                     "123456789012",
@@ -942,7 +962,8 @@ mod tests {
         assert!(result.is_err());
 
         // Stack status should be UPDATE_FAILED
-        let state = svc.state.read();
+        let accounts = svc.state.read();
+        let state = accounts.get("123456789012").unwrap();
         let stack = state.stacks.get("test-stack").unwrap();
         assert_eq!(stack.status, "UPDATE_FAILED");
     }
@@ -977,7 +998,8 @@ mod tests {
         assert!(result.is_ok(), "CreateStack failed: {:?}", result.err());
 
         // Verify both resources were created
-        let state = svc.state.read();
+        let accounts = svc.state.read();
+        let state = accounts.get("123456789012").unwrap();
         let stack = state.stacks.get("ref-stack").unwrap();
         assert_eq!(stack.resources.len(), 2);
         assert_eq!(stack.status, "CREATE_COMPLETE");

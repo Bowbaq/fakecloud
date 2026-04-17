@@ -9,7 +9,7 @@ use fakecloud_core::pagination::paginate;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 use fakecloud_core::validation::*;
 
-use crate::state::{OpsItemRelatedItem, OpsMetadataEntry, SsmOpsItem};
+use crate::state::{OpsItemRelatedItem, OpsMetadataEntry, SsmOpsItem, SsmState};
 
 use super::{missing, SsmService};
 
@@ -62,7 +62,8 @@ impl SsmService {
             .unwrap_or_default();
 
         let now = Utc::now();
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         state.ops_item_counter += 1;
         let ops_item_id = format!("oi-{:012x}", state.ops_item_counter);
 
@@ -101,7 +102,9 @@ impl SsmService {
             .as_str()
             .ok_or_else(|| missing("OpsItemId"))?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let item = state.ops_items.get(ops_item_id).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -121,7 +124,8 @@ impl SsmService {
             .as_str()
             .ok_or_else(|| missing("OpsItemId"))?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let account_id = state.account_id.clone();
         let item = state.ops_items.get_mut(ops_item_id).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -173,7 +177,8 @@ impl SsmService {
             .as_str()
             .ok_or_else(|| missing("OpsItemId"))?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         state.ops_items.remove(ops_item_id);
         Ok(AwsResponse::ok_json(json!({})))
     }
@@ -186,7 +191,9 @@ impl SsmService {
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
         let max_results = body["MaxResults"].as_i64().unwrap_or(50) as usize;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let all: Vec<Value> = state
             .ops_items
             .values()
@@ -254,7 +261,8 @@ impl SsmService {
             .to_string();
 
         let now = Utc::now();
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Verify ops item exists
         if !state.ops_items.contains_key(&ops_item_id) {
@@ -298,7 +306,8 @@ impl SsmService {
             .as_str()
             .ok_or_else(|| missing("AssociationId"))?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let before = state.ops_item_related_items.len();
         state
             .ops_item_related_items
@@ -320,7 +329,9 @@ impl SsmService {
     ) -> Result<AwsResponse, AwsServiceError> {
         let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let ops_item_id = body["OpsItemId"].as_str();
 
         let items: Vec<Value> = state
@@ -351,7 +362,9 @@ impl SsmService {
     ) -> Result<AwsResponse, AwsServiceError> {
         let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         // Filter by OpsItemId if provided in Filters
         let filter_id = body["Filters"].as_array().and_then(|filters| {
@@ -404,7 +417,8 @@ impl SsmService {
             .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
             .unwrap_or_default();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let arn = format!(
             "arn:aws:ssm:{}:{}:opsmetadata/{}",
             state.region, state.account_id, resource_id
@@ -438,7 +452,9 @@ impl SsmService {
             .as_str()
             .ok_or_else(|| missing("OpsMetadataArn"))?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let entry = state.ops_metadata.get(arn).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -462,7 +478,8 @@ impl SsmService {
             .as_str()
             .ok_or_else(|| missing("OpsMetadataArn"))?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let entry = state.ops_metadata.get_mut(arn).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -496,7 +513,8 @@ impl SsmService {
             .as_str()
             .ok_or_else(|| missing("OpsMetadataArn"))?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         if state.ops_metadata.remove(arn).is_none() {
             return Err(AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -514,7 +532,9 @@ impl SsmService {
     ) -> Result<AwsResponse, AwsServiceError> {
         let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let items: Vec<Value> = state
             .ops_metadata
             .values()

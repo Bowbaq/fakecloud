@@ -8,7 +8,7 @@ use fakecloud_core::pagination::paginate;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 use fakecloud_core::validation::*;
 
-use crate::state::SsmCommand;
+use crate::state::{SsmCommand, SsmState};
 
 use super::{missing, SsmService};
 
@@ -150,7 +150,8 @@ impl SsmService {
             document_hash_type: input.document_hash_type.clone(),
         };
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         state.commands.push(cmd);
 
         let expires = now + chrono::Duration::seconds(input.timeout.unwrap_or(3600));
@@ -195,7 +196,9 @@ impl SsmService {
         let command_id = body["CommandId"].as_str();
         let instance_id = body["InstanceId"].as_str();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let all_commands: Vec<Value> = state
             .commands
             .iter()
@@ -271,7 +274,9 @@ impl SsmService {
         let plugin_name = body["PluginName"].as_str();
         validate_optional_string_length("PluginName", plugin_name, 4, 500)?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let cmd = state
             .commands
             .iter()
@@ -329,7 +334,9 @@ impl SsmService {
         let max_results = body["MaxResults"].as_i64().unwrap_or(50) as usize;
         let command_id = body["CommandId"].as_str();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let all_invocations: Vec<Value> = state
             .commands
             .iter()
@@ -372,7 +379,8 @@ impl SsmService {
             .ok_or_else(|| missing("CommandId"))?;
         validate_string_length("CommandId", command_id, 36, 36)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         if let Some(cmd) = state
             .commands
             .iter_mut()
