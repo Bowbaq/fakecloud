@@ -60,3 +60,39 @@ pub struct CloudFormationSnapshot {
     pub schema_version: u32,
     pub state: CloudFormationState,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_initializes_empty() {
+        let state = CloudFormationState::new("123456789012", "us-east-1");
+        assert_eq!(state.account_id, "123456789012");
+        assert_eq!(state.region, "us-east-1");
+        assert!(state.stacks.is_empty());
+    }
+
+    #[test]
+    fn reset_clears_stacks() {
+        let mut state = CloudFormationState::new("123456789012", "us-east-1");
+        state.stacks.insert(
+            "s1".to_string(),
+            Stack {
+                name: "s1".to_string(),
+                stack_id: "id".to_string(),
+                template: "{}".to_string(),
+                status: "CREATE_COMPLETE".to_string(),
+                resources: vec![],
+                parameters: HashMap::new(),
+                tags: HashMap::new(),
+                created_at: Utc::now(),
+                updated_at: None,
+                description: None,
+                notification_arns: vec![],
+            },
+        );
+        state.reset();
+        assert!(state.stacks.is_empty());
+    }
+}
