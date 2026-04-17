@@ -7,7 +7,7 @@ use fakecloud_core::pagination::paginate;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 use fakecloud_core::validation::*;
 
-use crate::state::{PatchBaseline, PatchGroup};
+use crate::state::{PatchBaseline, PatchGroup, SsmState};
 
 use super::{missing, SsmService};
 
@@ -18,7 +18,8 @@ impl SsmService {
     ) -> Result<AwsResponse, AwsServiceError> {
         let input = CreatePatchBaselineInput::from_body(&req.json_body())?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Idempotency: if a baseline with the same ClientToken already exists, return it
         if let Some(ref token) = input.client_token {
@@ -70,7 +71,8 @@ impl SsmService {
             .ok_or_else(|| missing("BaselineId"))?;
         validate_string_length("BaselineId", baseline_id, 20, 128)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         state.patch_baselines.remove(baseline_id);
         // Also remove any patch group associations
         state
@@ -89,7 +91,9 @@ impl SsmService {
         let max_results = body["MaxResults"].as_i64().unwrap_or(50) as usize;
         let filters = body["Filters"].as_array();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let all_baselines: Vec<Value> = state
             .patch_baselines
             .values()
@@ -155,7 +159,9 @@ impl SsmService {
             .ok_or_else(|| missing("BaselineId"))?;
         validate_string_length("BaselineId", baseline_id, 20, 128)?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let pb = state.patch_baselines.get(baseline_id).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -211,7 +217,8 @@ impl SsmService {
             .to_string();
         validate_string_length("PatchGroup", &patch_group, 1, 256)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Check baseline exists (AWS returns "Maintenance window" in this error, not "Patch baseline")
         if !state.patch_baselines.contains_key(&baseline_id) {
@@ -267,7 +274,8 @@ impl SsmService {
             .ok_or_else(|| missing("PatchGroup"))?;
         validate_string_length("PatchGroup", patch_group, 1, 256)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Check if the association exists
         let exists = state
@@ -328,7 +336,9 @@ impl SsmService {
         )?;
         let operating_system = body["OperatingSystem"].as_str().unwrap_or("WINDOWS");
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         // Find a patch group association matching both patch group and OS
         let found = state.patch_groups.iter().find(|pg| {
@@ -367,7 +377,9 @@ impl SsmService {
         let max_results = body["MaxResults"].as_i64().unwrap_or(50) as usize;
         let filters = body["Filters"].as_array();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let all_mappings: Vec<Value> = state
             .patch_groups
             .iter()
@@ -436,7 +448,8 @@ impl SsmService {
             .as_str()
             .ok_or_else(|| missing("BaselineId"))?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let pb = state.patch_baselines.get_mut(baseline_id).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -682,7 +695,9 @@ impl SsmService {
         )?;
         let operating_system = body["OperatingSystem"].as_str().unwrap_or("WINDOWS");
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         // Check if a custom default has been registered
         if let Some(ref baseline_id) = state.default_patch_baseline_id {
@@ -711,7 +726,8 @@ impl SsmService {
             .ok_or_else(|| missing("BaselineId"))?
             .to_string();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Verify baseline exists (custom or default)
         if !state.patch_baselines.contains_key(&baseline_id)

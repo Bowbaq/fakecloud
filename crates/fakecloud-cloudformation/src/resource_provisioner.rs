@@ -268,11 +268,12 @@ impl ResourceProvisioner {
             .and_then(|v| v.as_str())
             .unwrap_or("String");
 
-        let mut state = self.ssm_state.write();
+        let mut accounts = self.ssm_state.write();
+        let state = accounts.get_or_create(&self.account_id);
         let arn = format!(
             "arn:aws:ssm:{}:{}:parameter{}",
-            state.region,
-            state.account_id,
+            self.region,
+            self.account_id,
             if name.starts_with('/') {
                 name.to_string()
             } else {
@@ -306,7 +307,8 @@ impl ResourceProvisioner {
     }
 
     fn delete_ssm_parameter(&self, physical_id: &str) -> Result<(), String> {
-        let mut state = self.ssm_state.write();
+        let mut accounts = self.ssm_state.write();
+        let state = accounts.get_or_create(&self.account_id);
         state.parameters.remove(physical_id);
         Ok(())
     }
@@ -936,10 +938,13 @@ mod tests {
                     "http://localhost:4566",
                 ),
             )),
-            ssm_state: Arc::new(RwLock::new(fakecloud_ssm::state::SsmState::new(
-                "123456789012",
-                "us-east-1",
-            ))),
+            ssm_state: Arc::new(RwLock::new(
+                fakecloud_core::multi_account::MultiAccountState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "http://localhost:4566",
+                ),
+            )),
             iam_state: Arc::new(RwLock::new(
                 fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", "http://localhost:4566"),
             )),

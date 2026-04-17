@@ -15,3 +15,7 @@ tokio = { workspace = true }
 [[bin]]
 name = "tfacc_services"
 path = "src/bin/tfacc_services.rs"
+
+[[bin]]
+name = "tfacc_shards"
+path = "src/bin/tfacc_shards.rs"

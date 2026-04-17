@@ -6,7 +6,7 @@ use fakecloud_aws::arn::Arn;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 use fakecloud_core::validation::*;
 
-use crate::state::SsmSession;
+use crate::state::{SsmSession, SsmState};
 
 use super::{missing, SsmService};
 
@@ -22,7 +22,8 @@ impl SsmService {
         let reason = body["Reason"].as_str().map(|s| s.to_string());
 
         let now = Utc::now();
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         state.session_counter += 1;
         let session_id = format!("session-{:012x}", state.session_counter);
         let account_id = state.account_id.clone();
@@ -51,7 +52,9 @@ impl SsmService {
             .as_str()
             .ok_or_else(|| missing("SessionId"))?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let session = state.sessions.get(session_id).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -77,7 +80,8 @@ impl SsmService {
             .as_str()
             .ok_or_else(|| missing("SessionId"))?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         if let Some(session) = state.sessions.get_mut(session_id) {
             session.status = "Terminated".to_string();
             session.end_date = Some(Utc::now());
@@ -96,7 +100,9 @@ impl SsmService {
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 200)?;
         let state_filter = body["State"].as_str().ok_or_else(|| missing("State"))?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let sessions: Vec<Value> = state
             .sessions
             .values()
@@ -137,7 +143,8 @@ impl SsmService {
             .as_array()
             .ok_or_else(|| missing("Targets"))?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         state.session_counter += 1;
         let access_request_id = format!("ar-{:012x}", state.session_counter);
 

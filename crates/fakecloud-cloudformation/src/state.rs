@@ -51,14 +51,24 @@ impl CloudFormationState {
     }
 }
 
-pub type SharedCloudFormationState = Arc<RwLock<CloudFormationState>>;
+pub type SharedCloudFormationState =
+    Arc<RwLock<fakecloud_core::multi_account::MultiAccountState<CloudFormationState>>>;
 
-pub const CLOUDFORMATION_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+impl fakecloud_core::multi_account::AccountState for CloudFormationState {
+    fn new_for_account(account_id: &str, region: &str, _endpoint: &str) -> Self {
+        Self::new(account_id, region)
+    }
+}
+
+pub const CLOUDFORMATION_SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CloudFormationSnapshot {
     pub schema_version: u32,
-    pub state: CloudFormationState,
+    #[serde(default)]
+    pub accounts: Option<fakecloud_core::multi_account::MultiAccountState<CloudFormationState>>,
+    #[serde(default)]
+    pub state: Option<CloudFormationState>,
 }
 
 #[cfg(test)]

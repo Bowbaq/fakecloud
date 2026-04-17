@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 use fakecloud_core::validation::*;
 
-use crate::state::{InventoryDeletion, InventoryEntry, InventoryItem};
+use crate::state::{InventoryDeletion, InventoryEntry, InventoryItem, SsmState};
 
 use super::{missing, SsmService};
 
@@ -66,7 +66,8 @@ impl SsmService {
             });
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let entry = state
             .inventory_entries
             .entry(instance_id.clone())
@@ -96,7 +97,9 @@ impl SsmService {
     pub(super) fn get_inventory(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let entities: Vec<Value> = state
             .inventory_entries
             .values()
@@ -194,7 +197,9 @@ impl SsmService {
             .as_str()
             .ok_or_else(|| missing("TypeName"))?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let entries: Vec<&HashMap<String, String>> = state
             .inventory_entries
             .get(instance_id)
@@ -246,7 +251,8 @@ impl SsmService {
             .ok_or_else(|| missing("TypeName"))?
             .to_string();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Remove matching inventory items
         for entry in state.inventory_entries.values_mut() {
@@ -288,7 +294,9 @@ impl SsmService {
     ) -> Result<AwsResponse, AwsServiceError> {
         let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let deletions: Vec<Value> = state
             .inventory_deletions
             .iter()

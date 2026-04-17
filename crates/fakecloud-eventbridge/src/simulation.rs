@@ -350,4 +350,172 @@ mod tests {
         let targets = result.unwrap();
         assert_eq!(targets.len(), 1);
     }
+
+    #[test]
+    fn fire_rule_unknown_bus_errors() {
+        let state = make_state();
+        let delivery = Arc::new(DeliveryBus::new());
+        let ctx = FireRuleContext {
+            state: &state,
+            delivery: &delivery,
+            lambda_state: &None,
+            logs_state: &None,
+            container_runtime: &None,
+        };
+        let err = fire_rule(&ctx, "missing-bus", "rule").unwrap_err();
+        assert!(err.contains("missing-bus"));
+    }
+
+    #[test]
+    fn fire_rule_no_targets_returns_empty() {
+        let state = make_state();
+        let delivery = Arc::new(DeliveryBus::new());
+        add_rule(&state, "default", "no-targets", true, Vec::new());
+        let ctx = FireRuleContext {
+            state: &state,
+            delivery: &delivery,
+            lambda_state: &None,
+            logs_state: &None,
+            container_runtime: &None,
+        };
+        let targets = fire_rule(&ctx, "default", "no-targets").unwrap();
+        assert!(targets.is_empty());
+    }
+
+    #[test]
+    fn fire_rule_with_sns_and_lambda_and_logs_targets() {
+        let state = make_state();
+        let delivery = Arc::new(DeliveryBus::new());
+        add_rule(
+            &state,
+            "default",
+            "multi",
+            true,
+            vec![
+                EventTarget {
+                    id: "t-sns".to_string(),
+                    arn: "arn:aws:sns:us-east-1:123456789012:topic".to_string(),
+                    input: None,
+                    input_path: None,
+                    input_transformer: None,
+                    sqs_parameters: None,
+                },
+                EventTarget {
+                    id: "t-lambda".to_string(),
+                    arn: "arn:aws:lambda:us-east-1:123456789012:function:F".to_string(),
+                    input: None,
+                    input_path: None,
+                    input_transformer: None,
+                    sqs_parameters: None,
+                },
+                EventTarget {
+                    id: "t-logs".to_string(),
+                    arn: "arn:aws:logs:us-east-1:123456789012:log-group:lg".to_string(),
+                    input: None,
+                    input_path: None,
+                    input_transformer: None,
+                    sqs_parameters: None,
+                },
+            ],
+        );
+        let ctx = FireRuleContext {
+            state: &state,
+            delivery: &delivery,
+            lambda_state: &None,
+            logs_state: &None,
+            container_runtime: &None,
+        };
+        let fired = fire_rule(&ctx, "default", "multi").unwrap();
+        let types: Vec<&str> = fired.iter().map(|t| t.target_type.as_str()).collect();
+        assert!(types.contains(&"sns"));
+        assert!(types.contains(&"lambda"));
+        assert!(types.contains(&"logs"));
+    }
+
+    #[test]
+    fn fire_rule_with_sqs_fifo_message_group() {
+        let state = make_state();
+        let delivery = Arc::new(DeliveryBus::new());
+        add_rule(
+            &state,
+            "default",
+            "fifo",
+            true,
+            vec![EventTarget {
+                id: "t1".to_string(),
+                arn: "arn:aws:sqs:us-east-1:123456789012:queue.fifo".to_string(),
+                input: None,
+                input_path: None,
+                input_transformer: None,
+                sqs_parameters: Some(json!({"MessageGroupId": "g1"})),
+            }],
+        );
+        let ctx = FireRuleContext {
+            state: &state,
+            delivery: &delivery,
+            lambda_state: &None,
+            logs_state: &None,
+            container_runtime: &None,
+        };
+        let fired = fire_rule(&ctx, "default", "fifo").unwrap();
+        assert_eq!(fired.len(), 1);
+        assert_eq!(fired[0].target_type, "sqs");
+    }
+
+    #[test]
+    fn resolve_target_body_uses_literal_input() {
+        let target = EventTarget {
+            id: "t".to_string(),
+            arn: "arn:aws:sqs:us-east-1:123:q".to_string(),
+            input: Some("{\"literal\":true}".to_string()),
+            input_path: None,
+            input_transformer: None,
+            sqs_parameters: None,
+        };
+        let body = resolve_target_body(&target, &json!({"ignored": 1}), "ignored");
+        assert_eq!(body, "{\"literal\":true}");
+    }
+
+    #[test]
+    fn resolve_target_body_uses_input_path_for_top_level() {
+        let target = EventTarget {
+            id: "t".to_string(),
+            arn: "arn:aws:sqs:us-east-1:123:q".to_string(),
+            input: None,
+            input_path: Some("$.detail".to_string()),
+            input_transformer: None,
+            sqs_parameters: None,
+        };
+        let event = json!({"detail": {"k": 1}, "other": 2});
+        let body = resolve_target_body(&target, &event, "fallback");
+        assert!(body.contains("\"k\""));
+    }
+
+    #[test]
+    fn resolve_target_body_falls_back_for_nested_input_path() {
+        let target = EventTarget {
+            id: "t".to_string(),
+            arn: "arn:aws:sqs:us-east-1:123:q".to_string(),
+            input: None,
+            input_path: Some("$.detail.nested".to_string()),
+            input_transformer: None,
+            sqs_parameters: None,
+        };
+        let body = resolve_target_body(&target, &json!({}), "full-event");
+        assert_eq!(body, "full-event");
+    }
+
+    #[test]
+    fn resolve_target_body_no_transform_returns_full_event() {
+        let target = EventTarget {
+            id: "t".to_string(),
+            arn: "arn:aws:sqs:us-east-1:123:q".to_string(),
+            input: None,
+            input_path: None,
+            input_transformer: None,
+            sqs_parameters: None,
+        };
+        let body = resolve_target_body(&target, &json!({}), "full-event");
+        assert_eq!(body, "full-event");
+    }
 }

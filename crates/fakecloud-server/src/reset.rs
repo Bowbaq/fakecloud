@@ -23,6 +23,7 @@ pub(crate) struct ResetState {
     pub rds: fakecloud_rds::state::SharedRdsState,
     pub elasticache: fakecloud_elasticache::state::SharedElastiCacheState,
     pub stepfunctions: fakecloud_stepfunctions::state::SharedStepFunctionsState,
+    pub scheduler: fakecloud_scheduler::state::SharedSchedulerState,
     pub apigatewayv2: fakecloud_apigatewayv2::state::SharedApiGatewayV2State,
     pub bedrock: fakecloud_bedrock::state::SharedBedrockState,
     pub container_runtime: Option<Arc<fakecloud_lambda::runtime::ContainerRuntime>>,
@@ -112,6 +113,9 @@ impl ResetState {
             "states" | "stepfunctions" => {
                 self.stepfunctions.write().reset();
             }
+            "scheduler" => {
+                self.scheduler.write().reset();
+            }
             "apigateway" | "apigatewayv2" => {
                 self.apigatewayv2.write().apis.clear();
             }
@@ -175,6 +179,7 @@ impl ResetState {
             tokio::spawn(async move { rt.stop_all().await });
         }
         self.stepfunctions.write().reset();
+        self.scheduler.write().reset();
         self.apigatewayv2.write().apis.clear();
         self.bedrock.write().reset();
         tracing::info!("state reset via reset API");
@@ -333,7 +338,11 @@ mod tests {
                 ),
             )),
             ssm: Arc::new(parking_lot::RwLock::new(
-                fakecloud_ssm::state::SsmState::new("123456789012", "us-east-1"),
+                fakecloud_core::multi_account::MultiAccountState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "http://localhost:4566",
+                ),
             )),
             dynamodb: Arc::new(parking_lot::RwLock::new(
                 fakecloud_core::multi_account::MultiAccountState::new(
@@ -378,9 +387,10 @@ mod tests {
                 ),
             )),
             cloudformation: Arc::new(parking_lot::RwLock::new(
-                fakecloud_cloudformation::state::CloudFormationState::new(
+                fakecloud_core::multi_account::MultiAccountState::new(
                     "123456789012",
                     "us-east-1",
+                    "http://localhost:4566",
                 ),
             )),
             ses: Arc::new(parking_lot::RwLock::new(
@@ -412,6 +422,13 @@ mod tests {
                 fakecloud_stepfunctions::state::StepFunctionsState::new(
                     "123456789012",
                     "us-east-1",
+                ),
+            )),
+            scheduler: Arc::new(parking_lot::RwLock::new(
+                fakecloud_core::multi_account::MultiAccountState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "",
                 ),
             )),
             apigatewayv2: Arc::new(parking_lot::RwLock::new(

@@ -5,7 +5,7 @@ use fakecloud_aws::arn::Arn;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 use fakecloud_core::validation::*;
 
-use crate::state::SsmServiceSetting;
+use crate::state::{SsmServiceSetting, SsmState};
 
 use super::{missing, SsmService};
 
@@ -47,7 +47,9 @@ impl SsmService {
             .as_str()
             .ok_or_else(|| missing("SettingId"))?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         if let Some(setting) = state.service_settings.get(setting_id) {
             Ok(AwsResponse::ok_json(json!({
                 "ServiceSetting": {
@@ -84,7 +86,8 @@ impl SsmService {
             .as_str()
             .ok_or_else(|| missing("SettingId"))?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         state.service_settings.remove(setting_id);
 
         let default_value = get_default_service_setting(setting_id);
@@ -116,7 +119,8 @@ impl SsmService {
             .ok_or_else(|| missing("SettingValue"))?
             .to_string();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let now = Utc::now();
         let account_id = state.account_id.clone();
         state.service_settings.insert(

@@ -1,0 +1,389 @@
+//! End-to-end tests for EventBridge Scheduler (`scheduler.amazonaws.com`).
+
+mod helpers;
+
+use std::time::Duration;
+
+use aws_sdk_scheduler::types::{
+    ActionAfterCompletion, DeadLetterConfig, FlexibleTimeWindow, FlexibleTimeWindowMode,
+    ScheduleState, Target,
+};
+use aws_sdk_sqs::types::QueueAttributeName;
+use fakecloud_testkit::TestServer;
+
+async fn wait_for_message(
+    sqs: &aws_sdk_sqs::Client,
+    queue_url: &str,
+    timeout: Duration,
+) -> Option<aws_sdk_sqs::types::Message> {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        let resp = sqs
+            .receive_message()
+            .queue_url(queue_url)
+            .wait_time_seconds(1)
+            .max_number_of_messages(1)
+            .message_attribute_names("All")
+            .send()
+            .await
+            .unwrap();
+        if let Some(msgs) = resp.messages {
+            if let Some(m) = msgs.into_iter().next() {
+                return Some(m);
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    None
+}
+
+async fn queue_url(sqs: &aws_sdk_sqs::Client, name: &str) -> String {
+    sqs.create_queue()
+        .queue_name(name)
+        .send()
+        .await
+        .unwrap()
+        .queue_url
+        .unwrap()
+}
+
+async fn queue_arn(sqs: &aws_sdk_sqs::Client, url: &str) -> String {
+    sqs.get_queue_attributes()
+        .queue_url(url)
+        .attribute_names(QueueAttributeName::QueueArn)
+        .send()
+        .await
+        .unwrap()
+        .attributes
+        .unwrap()
+        .get(&QueueAttributeName::QueueArn)
+        .unwrap()
+        .clone()
+}
+
+fn sqs_target() -> Target {
+    Target::builder()
+        .arn("arn:aws:sqs:us-east-1:000000000000:scheduler-dest")
+        .role_arn("arn:aws:iam::000000000000:role/scheduler")
+        .input("{\"hello\":\"world\"}")
+        .build()
+        .unwrap()
+}
+
+fn off_window() -> FlexibleTimeWindow {
+    FlexibleTimeWindow::builder()
+        .mode(FlexibleTimeWindowMode::Off)
+        .build()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn scheduler_create_get_delete_schedule() {
+    let server = TestServer::start().await;
+    let client = server.scheduler_client().await;
+
+    let created = client
+        .create_schedule()
+        .name("crud-s1")
+        .schedule_expression("rate(5 minutes)")
+        .flexible_time_window(off_window())
+        .target(sqs_target())
+        .send()
+        .await
+        .expect("create_schedule");
+    assert!(created.schedule_arn().contains("schedule/default/crud-s1"));
+
+    let got = client
+        .get_schedule()
+        .name("crud-s1")
+        .send()
+        .await
+        .expect("get_schedule");
+    assert_eq!(got.name().unwrap(), "crud-s1");
+    assert_eq!(got.group_name().unwrap(), "default");
+    assert_eq!(got.schedule_expression().unwrap(), "rate(5 minutes)");
+    assert_eq!(got.state().unwrap(), &ScheduleState::Enabled);
+    let target = got.target().unwrap();
+    assert_eq!(target.input().unwrap(), "{\"hello\":\"world\"}");
+
+    client
+        .delete_schedule()
+        .name("crud-s1")
+        .send()
+        .await
+        .expect("delete_schedule");
+
+    let err = client
+        .get_schedule()
+        .name("crud-s1")
+        .send()
+        .await
+        .expect_err("schedule should be gone");
+    assert!(format!("{err:?}").contains("ResourceNotFound"));
+}
+
+#[tokio::test]
+async fn scheduler_update_is_idempotent_upsert() {
+    let server = TestServer::start().await;
+    let client = server.scheduler_client().await;
+
+    client
+        .create_schedule()
+        .name("up-s1")
+        .schedule_expression("rate(1 minute)")
+        .flexible_time_window(off_window())
+        .target(sqs_target())
+        .send()
+        .await
+        .unwrap();
+
+    let new_target = Target::builder()
+        .arn("arn:aws:sqs:us-east-1:000000000000:updated-dest")
+        .role_arn("arn:aws:iam::000000000000:role/scheduler")
+        .input("{\"v\":2}")
+        .build()
+        .unwrap();
+
+    client
+        .update_schedule()
+        .name("up-s1")
+        .schedule_expression("rate(10 minutes)")
+        .flexible_time_window(off_window())
+        .target(new_target)
+        .state(ScheduleState::Disabled)
+        .send()
+        .await
+        .expect("update_schedule");
+
+    let got = client.get_schedule().name("up-s1").send().await.unwrap();
+    assert_eq!(got.schedule_expression().unwrap(), "rate(10 minutes)");
+    assert_eq!(got.state().unwrap(), &ScheduleState::Disabled);
+    assert_eq!(got.target().unwrap().input().unwrap(), "{\"v\":2}");
+}
+
+#[tokio::test]
+async fn scheduler_at_one_shot_action_after_completion_persists() {
+    // Round-trip the one-shot configuration; firing semantics land in Batch 2.
+    let server = TestServer::start().await;
+    let client = server.scheduler_client().await;
+
+    client
+        .create_schedule()
+        .name("once")
+        .schedule_expression("at(2099-01-01T12:00:00)")
+        .flexible_time_window(off_window())
+        .target(sqs_target())
+        .action_after_completion(ActionAfterCompletion::Delete)
+        .send()
+        .await
+        .expect("create at-schedule");
+
+    let got = client.get_schedule().name("once").send().await.unwrap();
+    assert_eq!(
+        got.action_after_completion().unwrap(),
+        &ActionAfterCompletion::Delete
+    );
+    assert_eq!(
+        got.schedule_expression().unwrap(),
+        "at(2099-01-01T12:00:00)"
+    );
+}
+
+#[tokio::test]
+async fn scheduler_list_schedules_filters() {
+    let server = TestServer::start().await;
+    let client = server.scheduler_client().await;
+
+    client
+        .create_schedule_group()
+        .name("groupX")
+        .send()
+        .await
+        .unwrap();
+
+    for (name, group) in [
+        ("alpha-1", "default"),
+        ("alpha-2", "groupX"),
+        ("beta-1", "groupX"),
+    ] {
+        client
+            .create_schedule()
+            .name(name)
+            .group_name(group)
+            .schedule_expression("rate(1 hour)")
+            .flexible_time_window(off_window())
+            .target(sqs_target())
+            .send()
+            .await
+            .unwrap();
+    }
+
+    let resp = client
+        .list_schedules()
+        .group_name("groupX")
+        .name_prefix("alpha")
+        .send()
+        .await
+        .unwrap();
+    let names: Vec<&str> = resp.schedules().iter().map(|s| s.name().unwrap()).collect();
+    assert_eq!(names, ["alpha-2"]);
+}
+
+#[tokio::test]
+async fn scheduler_group_lifecycle() {
+    let server = TestServer::start().await;
+    let client = server.scheduler_client().await;
+
+    let created = client
+        .create_schedule_group()
+        .name("life-grp")
+        .send()
+        .await
+        .unwrap();
+    assert!(created
+        .schedule_group_arn()
+        .contains("schedule-group/life-grp"));
+
+    let got = client
+        .get_schedule_group()
+        .name("life-grp")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(got.name().unwrap(), "life-grp");
+
+    client
+        .delete_schedule_group()
+        .name("life-grp")
+        .send()
+        .await
+        .unwrap();
+
+    let err = client
+        .get_schedule_group()
+        .name("life-grp")
+        .send()
+        .await
+        .expect_err("group should be gone");
+    assert!(format!("{err:?}").contains("ResourceNotFound"));
+}
+
+// ---------------------------------------------------------------------------
+// Firing semantics (Batch 2)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn scheduler_rate_expression_delivers_input_to_sqs() {
+    let server = TestServer::start().await;
+    let sched = server.scheduler_client().await;
+    let sqs = server.sqs_client().await;
+
+    let q_url = queue_url(&sqs, "fire-dest").await;
+    let q_arn = queue_arn(&sqs, &q_url).await;
+
+    let target = Target::builder()
+        .arn(q_arn.clone())
+        .role_arn("arn:aws:iam::000000000000:role/scheduler")
+        .input("{\"msg\":\"hello\"}")
+        .build()
+        .unwrap();
+
+    sched
+        .create_schedule()
+        .name("fire-rate")
+        .schedule_expression("rate(1 minute)")
+        .flexible_time_window(off_window())
+        .target(target)
+        .send()
+        .await
+        .expect("create_schedule");
+
+    let msg = wait_for_message(&sqs, &q_url, Duration::from_secs(10))
+        .await
+        .expect("scheduler should deliver within 10s");
+    assert_eq!(msg.body.unwrap(), "{\"msg\":\"hello\"}");
+}
+
+#[tokio::test]
+async fn scheduler_at_one_shot_delete_removes_schedule_after_fire() {
+    let server = TestServer::start().await;
+    let sched = server.scheduler_client().await;
+    let sqs = server.sqs_client().await;
+
+    let q_url = queue_url(&sqs, "once-dest").await;
+    let q_arn = queue_arn(&sqs, &q_url).await;
+
+    let target = Target::builder()
+        .arn(q_arn)
+        .role_arn("arn:aws:iam::000000000000:role/scheduler")
+        .input("{\"one\":\"shot\"}")
+        .build()
+        .unwrap();
+
+    // Past-dated so it fires on the next tick.
+    sched
+        .create_schedule()
+        .name("once-delete")
+        .schedule_expression("at(2020-01-01T00:00:00)")
+        .flexible_time_window(off_window())
+        .target(target)
+        .action_after_completion(ActionAfterCompletion::Delete)
+        .send()
+        .await
+        .unwrap();
+
+    let msg = wait_for_message(&sqs, &q_url, Duration::from_secs(10))
+        .await
+        .expect("one-shot should fire within 10s");
+    assert_eq!(msg.body.unwrap(), "{\"one\":\"shot\"}");
+
+    // Give the ticker a beat to apply the DELETE post-fire action.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let err = sched
+        .get_schedule()
+        .name("once-delete")
+        .send()
+        .await
+        .expect_err("schedule should be deleted after firing");
+    assert!(format!("{err:?}").contains("ResourceNotFound"));
+}
+
+#[tokio::test]
+async fn scheduler_dlq_routing_on_missing_target_queue() {
+    let server = TestServer::start().await;
+    let sched = server.scheduler_client().await;
+    let sqs = server.sqs_client().await;
+
+    // Create ONLY the DLQ — the target queue ARN is bogus on purpose.
+    let dlq_url = queue_url(&sqs, "dlq-dest").await;
+    let dlq_arn = queue_arn(&sqs, &dlq_url).await;
+
+    let target = Target::builder()
+        .arn("arn:aws:sqs:us-east-1:000000000000:no-such-queue")
+        .role_arn("arn:aws:iam::000000000000:role/scheduler")
+        .input("{\"original\":true}")
+        .dead_letter_config(DeadLetterConfig::builder().arn(dlq_arn.clone()).build())
+        .build()
+        .unwrap();
+
+    sched
+        .create_schedule()
+        .name("dlq-test")
+        .schedule_expression("rate(1 minute)")
+        .flexible_time_window(off_window())
+        .target(target)
+        .send()
+        .await
+        .unwrap();
+
+    let msg = wait_for_message(&sqs, &dlq_url, Duration::from_secs(10))
+        .await
+        .expect("DLQ should receive failed delivery");
+    assert_eq!(msg.body.unwrap(), "{\"original\":true}");
+    let attrs = msg
+        .message_attributes
+        .expect("DLQ message should have attrs");
+    assert!(attrs.contains_key("X-Amz-Scheduler-Attempt"));
+    assert!(attrs.contains_key("X-Amz-Scheduler-Schedule-Arn"));
+    assert!(attrs.contains_key("X-Amz-Scheduler-Error-Code"));
+}

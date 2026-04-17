@@ -46,6 +46,7 @@ use fakecloud_lambda::service::LambdaService;
 use fakecloud_logs::service::LogsService;
 use fakecloud_rds::service::RdsService;
 use fakecloud_s3::service::S3Service;
+use fakecloud_scheduler::service::SchedulerService;
 use fakecloud_secretsmanager::service::SecretsManagerService;
 use fakecloud_ses::service::SesV2Service;
 use fakecloud_sns::service::SnsService;
@@ -126,7 +127,11 @@ async fn main() {
         ),
     ));
     let ssm_state = Arc::new(parking_lot::RwLock::new(
-        fakecloud_ssm::state::SsmState::new(&cli.account_id, &cli.region),
+        fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        ),
     ));
     let dynamodb_state = Arc::new(parking_lot::RwLock::new(
         fakecloud_core::multi_account::MultiAccountState::new(
@@ -187,7 +192,11 @@ async fn main() {
         ),
     ));
     let cloudformation_state = Arc::new(parking_lot::RwLock::new(
-        fakecloud_cloudformation::state::CloudFormationState::new(&cli.account_id, &cli.region),
+        fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        ),
     ));
     let ses_state = Arc::new(parking_lot::RwLock::new(
         fakecloud_core::multi_account::MultiAccountState::new(
@@ -232,6 +241,14 @@ async fn main() {
             &endpoint_url,
         ),
     ));
+
+    let scheduler_state: fakecloud_scheduler::state::SharedSchedulerState = Arc::new(
+        parking_lot::RwLock::new(fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        )),
+    );
 
     let rds_runtime = fakecloud_rds::runtime::RdsRuntime::new().map(Arc::new);
     if let Some(ref rt) = rds_runtime {
@@ -330,6 +347,9 @@ async fn main() {
     // Step 3: S3 delivery (S3 notifications can push to SQS, SNS, Lambda, and EventBridge)
     let sns_delivery_for_ses = sns_delivery.clone();
     let sns_delivery_for_cf = sns_delivery.clone();
+    let sns_delivery_for_scheduler = sns_delivery.clone();
+    let sns_delivery_for_scheduler_eb = sns_delivery.clone();
+    let sns_delivery_for_scheduler_sfn_eb = sns_delivery.clone();
     let eb_delivery_for_s3 = Arc::new(
         fakecloud_eventbridge::delivery::EventBridgeDeliveryImpl::new(
             eb_state.clone(),
@@ -420,6 +440,7 @@ async fn main() {
         rds: rds_state.clone(),
         elasticache: elasticache_state.clone(),
         stepfunctions: stepfunctions_state.clone(),
+        scheduler: scheduler_state.clone(),
         apigatewayv2: apigatewayv2_state.clone(),
         bedrock: bedrock_state.clone(),
         container_runtime: container_runtime.clone(),
@@ -455,7 +476,7 @@ async fn main() {
                     {
                         Ok(snapshot) => {
                             if snapshot.schema_version
-                                != fakecloud_cloudformation::state::CLOUDFORMATION_SNAPSHOT_SCHEMA_VERSION
+                                > fakecloud_cloudformation::state::CLOUDFORMATION_SNAPSHOT_SCHEMA_VERSION
                             {
                                 fatal_exit(format_args!(
                                     "cloudformation persistence schema mismatch: on-disk={}, expected={}",
@@ -463,12 +484,23 @@ async fn main() {
                                     fakecloud_cloudformation::state::CLOUDFORMATION_SNAPSHOT_SCHEMA_VERSION,
                                 ));
                             }
-                            let stack_count = snapshot.state.stacks.len();
-                            *cloudformation_state.write() = snapshot.state;
-                            tracing::info!(
-                                stacks = stack_count,
-                                "loaded cloudformation persistence snapshot",
-                            );
+                            if let Some(accounts) = snapshot.accounts {
+                                let account_count = accounts.account_count();
+                                *cloudformation_state.write() = accounts;
+                                tracing::info!(
+                                    accounts = account_count,
+                                    "loaded cloudformation persistence snapshot (multi-account)"
+                                );
+                            } else if let Some(single_state) = snapshot.state {
+                                let stack_count = single_state.stacks.len();
+                                let account_id = single_state.account_id.clone();
+                                let mut mas = cloudformation_state.write();
+                                *mas.get_or_create(&account_id) = single_state;
+                                tracing::info!(
+                                    stacks = stack_count,
+                                    "loaded cloudformation persistence snapshot (migrated from v1)"
+                                );
+                            }
                         }
                         Err(err) => fatal_exit(format_args!(
                             "failed to parse cloudformation persistence snapshot: {err}"
@@ -700,6 +732,7 @@ async fn main() {
     // Spawn the EventBridge scheduler as a background task
     let eb_state_for_ses = eb_state.clone();
     let eb_state_for_sfn = eb_state.clone();
+    let eb_state_for_scheduler = eb_state.clone();
     let mut scheduler = fakecloud_eventbridge::scheduler::Scheduler::new(eb_state, delivery_for_eb)
         .with_lambda(lambda_state.clone())
         .with_logs(logs_state.clone());
@@ -798,7 +831,7 @@ async fn main() {
                     match serde_json::from_slice::<fakecloud_ssm::state::SsmSnapshot>(&bytes) {
                         Ok(snapshot) => {
                             if snapshot.schema_version
-                                != fakecloud_ssm::state::SSM_SNAPSHOT_SCHEMA_VERSION
+                                > fakecloud_ssm::state::SSM_SNAPSHOT_SCHEMA_VERSION
                             {
                                 fatal_exit(format_args!(
                                     "ssm persistence schema mismatch: on-disk={}, expected={}",
@@ -806,12 +839,23 @@ async fn main() {
                                     fakecloud_ssm::state::SSM_SNAPSHOT_SCHEMA_VERSION,
                                 ));
                             }
-                            let param_count = snapshot.state.parameters.len();
-                            *ssm_state.write() = snapshot.state;
-                            tracing::info!(
-                                parameters = param_count,
-                                "loaded ssm persistence snapshot",
-                            );
+                            if let Some(accounts) = snapshot.accounts {
+                                let account_count = accounts.account_count();
+                                *ssm_state.write() = accounts;
+                                tracing::info!(
+                                    accounts = account_count,
+                                    "loaded ssm persistence snapshot (multi-account)"
+                                );
+                            } else if let Some(single_state) = snapshot.state {
+                                let param_count = single_state.parameters.len();
+                                let account_id = single_state.account_id.clone();
+                                let mut mas = ssm_state.write();
+                                *mas.get_or_create(&account_id) = single_state;
+                                tracing::info!(
+                                    parameters = param_count,
+                                    "loaded ssm persistence snapshot (migrated from v1)"
+                                );
+                            }
                         }
                         Err(err) => fatal_exit(format_args!(
                             "failed to parse ssm persistence snapshot: {err}"
@@ -1776,6 +1820,80 @@ async fn main() {
         bedrock_service = bedrock_service.with_snapshot_store(store);
     }
     registry.register(Arc::new(bedrock_service));
+
+    let scheduler_service = SchedulerService::new(scheduler_state.clone());
+    registry.register(Arc::new(scheduler_service));
+
+    // Spawn the Scheduler firing loop as a background task. Mirrors
+    // EventBridge's delivery bus so every target type Scheduler
+    // routes (`:sqs:`, `:sns:`, `:lambda:`, `:states:`, `:events:`)
+    // resolves to a live sender.
+    let sfn_delivery_for_scheduler: Arc<dyn fakecloud_core::delivery::StepFunctionsDelivery> = {
+        let mut sns_fanout_for_sfn = DeliveryBus::new().with_sqs(sqs_delivery.clone());
+        if let Some(ref ld) = lambda_delivery {
+            sns_fanout_for_sfn = sns_fanout_for_sfn.with_lambda(ld.clone());
+        }
+        let sns_for_sfn = Arc::new(fakecloud_sns::delivery::SnsDeliveryImpl::new(
+            sns_state.clone(),
+            Arc::new(sns_fanout_for_sfn),
+        ));
+        // Inner bus for EB rule delivery: matches other call-sites'
+        // surface (SQS + SNS + Lambda) so Scheduler-triggered SFN
+        // executions that hit EB rules fanning to SNS don't get
+        // silently dropped.
+        let mut inner_eb_bus = DeliveryBus::new()
+            .with_sqs(sqs_delivery.clone())
+            .with_sns(sns_delivery_for_scheduler_sfn_eb);
+        if let Some(ref ld) = lambda_delivery {
+            inner_eb_bus = inner_eb_bus.with_lambda(ld.clone());
+        }
+        let eb_for_sfn = Arc::new(
+            fakecloud_eventbridge::delivery::EventBridgeDeliveryImpl::new(
+                eb_state_for_scheduler.clone(),
+                Arc::new(inner_eb_bus),
+            ),
+        );
+        let mut sfn_interpreter_bus = DeliveryBus::new()
+            .with_sqs(sqs_delivery.clone())
+            .with_sns(sns_for_sfn)
+            .with_eventbridge(eb_for_sfn);
+        if let Some(ref ld) = lambda_delivery {
+            sfn_interpreter_bus = sfn_interpreter_bus.with_lambda(ld.clone());
+        }
+        Arc::new(stepfunctions_delivery::StepFunctionsDeliveryImpl::new(
+            stepfunctions_state.clone(),
+            Some(Arc::new(sfn_interpreter_bus)),
+            Some(dynamodb_state.clone()),
+        ))
+    };
+    let eb_delivery_for_scheduler = {
+        let mut inner = DeliveryBus::new()
+            .with_sqs(sqs_delivery.clone())
+            .with_sns(sns_delivery_for_scheduler_eb);
+        if let Some(ref ld) = lambda_delivery {
+            inner = inner.with_lambda(ld.clone());
+        }
+        Arc::new(
+            fakecloud_eventbridge::delivery::EventBridgeDeliveryImpl::new(
+                eb_state_for_scheduler,
+                Arc::new(inner),
+            ),
+        )
+    };
+    let delivery_for_scheduler = {
+        let mut bus = DeliveryBus::new()
+            .with_sqs(sqs_delivery.clone())
+            .with_sns(sns_delivery_for_scheduler)
+            .with_eventbridge(eb_delivery_for_scheduler)
+            .with_stepfunctions(sfn_delivery_for_scheduler);
+        if let Some(ref ld) = lambda_delivery {
+            bus = bus.with_lambda(ld.clone());
+        }
+        Arc::new(bus)
+    };
+    let scheduler_ticker =
+        fakecloud_scheduler::ticker::Ticker::new(scheduler_state.clone(), delivery_for_scheduler);
+    tokio::spawn(scheduler_ticker.run());
 
     // Spawn background tasks
     let lifecycle_processor = fakecloud_s3::lifecycle::LifecycleProcessor::new(s3_state.clone());
