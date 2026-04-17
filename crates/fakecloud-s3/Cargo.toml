@@ -29,3 +29,6 @@ sha1 = { workspace = true }
 sha2 = { workspace = true }
 crc32fast = { workspace = true }
 toml = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

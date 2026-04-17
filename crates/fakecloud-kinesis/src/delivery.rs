@@ -73,3 +73,132 @@ impl KinesisDelivery for KinesisDeliveryImpl {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::{KinesisShard, KinesisState, KinesisStream, SharedKinesisState};
+    use parking_lot::RwLock;
+    use std::collections::HashMap;
+
+    fn make_stream(name: &str, shard_count: usize) -> KinesisStream {
+        let shards = (0..shard_count)
+            .map(|i| KinesisShard {
+                shard_id: format!("shardId-{i:012}"),
+                starting_hash_key: "0".to_string(),
+                ending_hash_key: "340282366920938463463374607431768211455".to_string(),
+                parent_shard_id: None,
+                adjacent_parent_shard_id: None,
+                is_open: true,
+                next_sequence_number: 0,
+                records: Vec::new(),
+            })
+            .collect();
+        KinesisStream {
+            stream_name: name.to_string(),
+            stream_arn: format!("arn:aws:kinesis:us-east-1:123456789012:stream/{name}"),
+            stream_status: "ACTIVE".to_string(),
+            stream_creation_timestamp: Utc::now(),
+            retention_period_hours: 24,
+            stream_mode: "PROVISIONED".to_string(),
+            encryption_type: "NONE".to_string(),
+            key_id: None,
+            shard_count: shard_count as i32,
+            open_shard_count: shard_count as i32,
+            tags: HashMap::new(),
+            shards,
+            next_shard_index: shard_count as i32,
+            enhanced_metrics: Vec::new(),
+            warm_throughput_mibps: None,
+            max_record_size_kib: None,
+        }
+    }
+
+    fn make_state(stream: KinesisStream) -> SharedKinesisState {
+        let mut s = KinesisState::new("123456789012", "us-east-1");
+        s.streams.insert(stream.stream_name.clone(), stream);
+        Arc::new(RwLock::new(s))
+    }
+
+    #[test]
+    fn put_record_delivers_to_shard() {
+        let stream = make_stream("my-stream", 1);
+        let state = make_state(stream);
+        let delivery = KinesisDeliveryImpl::new(state.clone());
+        let encoded = base64::engine::general_purpose::STANDARD.encode(b"hello");
+        delivery.put_record(
+            "arn:aws:kinesis:us-east-1:123456789012:stream/my-stream",
+            &encoded,
+            "pk-1",
+        );
+        let guard = state.read();
+        let stream = guard.streams.get("my-stream").unwrap();
+        assert_eq!(stream.shards[0].records.len(), 1);
+        let rec = &stream.shards[0].records[0];
+        assert_eq!(rec.data, b"hello");
+        assert_eq!(rec.partition_key, "pk-1");
+    }
+
+    #[test]
+    fn put_record_stores_raw_bytes_when_not_base64() {
+        let stream = make_stream("s", 1);
+        let state = make_state(stream);
+        let delivery = KinesisDeliveryImpl::new(state.clone());
+        delivery.put_record(
+            "arn:aws:kinesis:us-east-1:123456789012:stream/s",
+            "not-base64!",
+            "p",
+        );
+        let guard = state.read();
+        let rec = &guard.streams.get("s").unwrap().shards[0].records[0];
+        assert_eq!(rec.data, b"not-base64!");
+    }
+
+    #[test]
+    fn put_record_distributes_across_shards_by_partition_key() {
+        let stream = make_stream("s", 4);
+        let state = make_state(stream);
+        let delivery = KinesisDeliveryImpl::new(state.clone());
+        delivery.put_record(
+            "arn:aws:kinesis:us-east-1:123456789012:stream/s",
+            &base64::engine::general_purpose::STANDARD.encode(b"a"),
+            "A",
+        );
+        delivery.put_record(
+            "arn:aws:kinesis:us-east-1:123456789012:stream/s",
+            &base64::engine::general_purpose::STANDARD.encode(b"b"),
+            "B",
+        );
+        let guard = state.read();
+        let stream = guard.streams.get("s").unwrap();
+        let total: usize = stream.shards.iter().map(|s| s.records.len()).sum();
+        assert_eq!(total, 2);
+    }
+
+    #[test]
+    fn put_record_unknown_stream_is_noop() {
+        let stream = make_stream("s", 1);
+        let state = make_state(stream);
+        let delivery = KinesisDeliveryImpl::new(state.clone());
+        delivery.put_record(
+            "arn:aws:kinesis:us-east-1:123456789012:stream/other",
+            "AAA=",
+            "p",
+        );
+        let guard = state.read();
+        assert!(guard.streams.get("s").unwrap().shards[0].records.is_empty());
+    }
+
+    #[test]
+    fn put_record_handles_plain_stream_name_arg() {
+        let stream = make_stream("plain", 1);
+        let state = make_state(stream);
+        let delivery = KinesisDeliveryImpl::new(state.clone());
+        delivery.put_record("plain", "AAA=", "p");
+        let guard = state.read();
+        assert_eq!(
+            guard.streams.get("plain").unwrap().shards[0].records.len(),
+            1
+        );
+    }
+}

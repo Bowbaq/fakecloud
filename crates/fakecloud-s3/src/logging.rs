@@ -231,4 +231,52 @@ mod tests {
         assert!(entry.contains("req-abc"));
         assert!(entry.contains("\"GET /my-bucket/my-key.txt HTTP/1.1\""));
     }
+
+    #[test]
+    fn parse_logging_config_missing_target_bucket_returns_none() {
+        let xml = r#"<BucketLoggingStatus>
+            <LoggingEnabled><TargetPrefix>logs/</TargetPrefix></LoggingEnabled>
+        </BucketLoggingStatus>"#;
+        assert!(parse_logging_config(xml).is_none());
+    }
+
+    #[test]
+    fn parse_logging_config_empty_prefix_defaults_to_empty_string() {
+        let xml = r#"<BucketLoggingStatus>
+            <LoggingEnabled><TargetBucket>log</TargetBucket></LoggingEnabled>
+        </BucketLoggingStatus>"#;
+        let cfg = parse_logging_config(xml).unwrap();
+        assert_eq!(cfg.target_bucket, "log");
+        assert_eq!(cfg.target_prefix, "");
+    }
+
+    #[test]
+    fn format_log_entry_replaces_missing_key_with_dash() {
+        let request = AccessLogRequest {
+            operation: "GET.BUCKET",
+            key: None,
+            status: 200,
+            request_id: "req-x",
+            method: "GET",
+            path: "/my-bucket",
+        };
+        let entry = format_access_log_entry("owner", "my-bucket", &request);
+        assert!(entry.contains("REST.GET.BUCKET - "));
+    }
+
+    #[test]
+    fn operation_name_maps_all_common_methods() {
+        use http::Method;
+        assert_eq!(operation_name(&Method::GET, None), "GET.BUCKET");
+        assert_eq!(operation_name(&Method::GET, Some("k")), "GET.OBJECT");
+        assert_eq!(operation_name(&Method::PUT, None), "PUT.BUCKET");
+        assert_eq!(operation_name(&Method::PUT, Some("k")), "PUT.OBJECT");
+        assert_eq!(operation_name(&Method::DELETE, None), "DELETE.BUCKET");
+        assert_eq!(operation_name(&Method::DELETE, Some("k")), "DELETE.OBJECT");
+        assert_eq!(operation_name(&Method::HEAD, None), "HEAD.BUCKET");
+        assert_eq!(operation_name(&Method::HEAD, Some("k")), "HEAD.OBJECT");
+        assert_eq!(operation_name(&Method::POST, None), "POST");
+        assert_eq!(operation_name(&Method::POST, Some("k")), "POST");
+        assert_eq!(operation_name(&Method::OPTIONS, None), "UNKNOWN");
+    }
 }
