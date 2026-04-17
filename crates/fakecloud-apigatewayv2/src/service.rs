@@ -2836,4 +2836,193 @@ mod tests {
         );
         assert!(svc.handle(req).await.is_err());
     }
+
+    #[tokio::test]
+    async fn deployment_crud_lifecycle() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+        let api_id = create_api(&svc);
+
+        let body = serde_json::json!({});
+        let req = make_request(
+            Method::POST,
+            &format!("/v2/apis/{api_id}/deployments"),
+            &body.to_string(),
+        );
+        let resp = svc.handle(req).await.unwrap();
+        let deployment_id = body_json(&resp)["deploymentId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let req = make_request(
+            Method::GET,
+            &format!("/v2/apis/{api_id}/deployments/{deployment_id}"),
+            "",
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(
+            body_json(&resp)["deploymentId"].as_str().unwrap(),
+            deployment_id
+        );
+
+        let req = make_request(Method::GET, &format!("/v2/apis/{api_id}/deployments"), "");
+        let resp = svc.handle(req).await.unwrap();
+        let body = body_json(&resp);
+        assert!(body["items"].is_array());
+    }
+
+    #[tokio::test]
+    async fn get_nonexistent_deployment_errors() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+        let api_id = create_api(&svc);
+        let req = make_request(
+            Method::GET,
+            &format!("/v2/apis/{api_id}/deployments/ghost"),
+            "",
+        );
+        assert!(svc.handle(req).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn delete_api_removes_it() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+        let api_id = create_api(&svc);
+
+        let req = make_request(Method::DELETE, &format!("/v2/apis/{api_id}"), "");
+        svc.handle(req).await.unwrap();
+
+        let req = make_request(Method::GET, &format!("/v2/apis/{api_id}"), "");
+        assert!(svc.handle(req).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn delete_authorizer_not_found() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+        let api_id = create_api(&svc);
+        let req = make_request(
+            Method::DELETE,
+            &format!("/v2/apis/{api_id}/authorizers/ghost"),
+            "",
+        );
+        assert!(svc.handle(req).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn list_authorizers_empty() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+        let api_id = create_api(&svc);
+        let req = make_request(Method::GET, &format!("/v2/apis/{api_id}/authorizers"), "");
+        let resp = svc.handle(req).await.unwrap();
+        let body = body_json(&resp);
+        assert!(body["items"].is_array());
+    }
+
+    #[tokio::test]
+    async fn list_stages_empty() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+        let api_id = create_api(&svc);
+        let req = make_request(Method::GET, &format!("/v2/apis/{api_id}/stages"), "");
+        let resp = svc.handle(req).await.unwrap();
+        let body = body_json(&resp);
+        assert!(body["items"].is_array());
+    }
+
+    #[tokio::test]
+    async fn get_apis_lists_created() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+        create_api(&svc);
+        create_api(&svc);
+        let req = make_request(Method::GET, "/v2/apis", "");
+        let resp = svc.handle(req).await.unwrap();
+        let body = body_json(&resp);
+        assert_eq!(body["items"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn delete_stage_removes() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+        let api_id = create_api(&svc);
+        let body = serde_json::json!({"stageName": "todel"});
+        let req = make_request(
+            Method::POST,
+            &format!("/v2/apis/{api_id}/stages"),
+            &body.to_string(),
+        );
+        svc.handle(req).await.unwrap();
+
+        let req = make_request(
+            Method::DELETE,
+            &format!("/v2/apis/{api_id}/stages/todel"),
+            "",
+        );
+        svc.handle(req).await.unwrap();
+
+        let req = make_request(Method::GET, &format!("/v2/apis/{api_id}/stages/todel"), "");
+        assert!(svc.handle(req).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn get_integrations_empty() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+        let api_id = create_api(&svc);
+        let req = make_request(Method::GET, &format!("/v2/apis/{api_id}/integrations"), "");
+        let resp = svc.handle(req).await.unwrap();
+        let body = body_json(&resp);
+        assert!(body["items"].is_array());
+    }
+
+    #[tokio::test]
+    async fn get_routes_empty() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+        let api_id = create_api(&svc);
+        let req = make_request(Method::GET, &format!("/v2/apis/{api_id}/routes"), "");
+        let resp = svc.handle(req).await.unwrap();
+        let body = body_json(&resp);
+        assert!(body["items"].is_array());
+    }
+
+    #[tokio::test]
+    async fn get_authorizer_not_found() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+        let api_id = create_api(&svc);
+        let req = make_request(
+            Method::GET,
+            &format!("/v2/apis/{api_id}/authorizers/ghost"),
+            "",
+        );
+        assert!(svc.handle(req).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn get_integration_not_found() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+        let api_id = create_api(&svc);
+        let req = make_request(
+            Method::GET,
+            &format!("/v2/apis/{api_id}/integrations/ghost"),
+            "",
+        );
+        assert!(svc.handle(req).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn get_route_not_found() {
+        let state = make_state();
+        let svc = ApiGatewayV2Service::new(state);
+        let api_id = create_api(&svc);
+        let req = make_request(Method::GET, &format!("/v2/apis/{api_id}/routes/ghost"), "");
+        assert!(svc.handle(req).await.is_err());
+    }
 }
