@@ -473,17 +473,18 @@ mod tests {
     }
 
     fn shared_state() -> SharedSesState {
-        use crate::state::SesState;
-        Arc::new(parking_lot::RwLock::new(SesState::new(
+        use fakecloud_core::multi_account::MultiAccountState;
+        Arc::new(parking_lot::RwLock::new(MultiAccountState::new(
             "123456789012",
             "us-east-1",
+            "http://localhost:4566",
         )))
     }
 
     #[test]
     fn check_suppression_list_finds_suppressed() {
         let state = shared_state();
-        state.write().suppressed_destinations.insert(
+        state.write().default_mut().suppressed_destinations.insert(
             "blocked@example.com".to_string(),
             SuppressedDestination {
                 email_address: "blocked@example.com".to_string(),
@@ -536,7 +537,7 @@ mod tests {
     #[test]
     fn resolve_config_set_uses_identity_default_when_no_explicit() {
         let state = shared_state();
-        state.write().identities.insert(
+        state.write().default_mut().identities.insert(
             "sender@example.com".to_string(),
             make_identity("sender@example.com", Some("identity-cs")),
         );
@@ -547,7 +548,7 @@ mod tests {
     #[test]
     fn resolve_config_set_falls_back_to_domain_identity() {
         let state = shared_state();
-        state.write().identities.insert(
+        state.write().default_mut().identities.insert(
             "example.com".to_string(),
             make_identity("example.com", Some("domain-cs")),
         );
@@ -564,7 +565,7 @@ mod tests {
     #[test]
     fn get_matching_destinations_filters_by_enabled_and_event_type() {
         let state = shared_state();
-        state.write().event_destinations.insert(
+        state.write().default_mut().event_destinations.insert(
             "cs".to_string(),
             vec![
                 EventDestination {
