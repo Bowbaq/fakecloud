@@ -487,3 +487,17 @@ pub struct AutomatedReasoningTestCase {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_initializes_state() {
+        let state = BedrockState::new("123456789012", "us-east-1");
+        assert_eq!(state.account_id, "123456789012");
+        assert_eq!(state.region, "us-east-1");
+        assert!(state.guardrails.is_empty());
+        assert!(state.custom_models.is_empty());
+    }
+}
