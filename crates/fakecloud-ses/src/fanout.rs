@@ -447,4 +447,24 @@ mod tests {
         assert_eq!(event["eventType"], "Complaint");
         assert_eq!(event["complaint"]["complaintFeedbackType"], "abuse");
     }
+
+    #[test]
+    fn classify_multiple_recipients_no_simulator() {
+        let recipients = vec![
+            "a@example.com".to_string(),
+            "b@example.com".to_string(),
+            "c@example.com".to_string(),
+        ];
+        let (events, suppress) = classify_recipients(&recipients);
+        assert!(events.contains(&SesEventType::Send));
+        assert!(events.contains(&SesEventType::Delivery));
+        assert!(!suppress);
+    }
+
+    #[test]
+    fn classify_empty_recipients() {
+        let (events, suppress) = classify_recipients(&[]);
+        assert!(!events.is_empty());
+        assert!(!suppress);
+    }
 }
