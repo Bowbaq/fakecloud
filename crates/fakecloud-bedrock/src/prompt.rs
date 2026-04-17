@@ -100,12 +100,40 @@ pub fn resolve_override(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::BedrockState;
     use parking_lot::RwLock;
     use std::sync::Arc;
 
     fn shared() -> SharedBedrockState {
-        Arc::new(RwLock::new(BedrockState::new("123456789012", "us-east-1")))
+        Arc::new(RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4566",
+            ),
+        ))
+    }
+
+    fn req() -> AwsRequest {
+        use bytes::Bytes;
+        use http::{HeaderMap, Method};
+        use std::collections::HashMap;
+        AwsRequest {
+            service: "bedrock".to_string(),
+            action: "a".to_string(),
+            method: Method::POST,
+            raw_path: "/".to_string(),
+            raw_query: String::new(),
+            path_segments: vec![],
+            query_params: HashMap::new(),
+            headers: HeaderMap::new(),
+            body: Bytes::new(),
+            account_id: "123456789012".to_string(),
+            region: "us-east-1".to_string(),
+            request_id: "req".to_string(),
+            is_query_protocol: false,
+            access_key_id: None,
+            principal: None,
+        }
     }
 
     #[test]
@@ -198,7 +226,7 @@ mod tests {
     #[test]
     fn resolve_override_uses_response_rule_first() {
         let state = shared();
-        state.write().response_rules.insert(
+        state.write().default_mut().response_rules.insert(
             "m".to_string(),
             vec![ResponseRule {
                 prompt_contains: Some("hello".to_string()),
@@ -207,11 +235,12 @@ mod tests {
         );
         state
             .write()
+            .default_mut()
             .custom_responses
             .insert("m".to_string(), "legacy-loses".to_string());
         let body = br#"{"prompt":"hello world"}"#;
         assert_eq!(
-            resolve_override(&state, "m", body).as_deref(),
+            resolve_override(&state, &req(), "m", body).as_deref(),
             Some("rule-wins")
         );
     }
@@ -219,7 +248,7 @@ mod tests {
     #[test]
     fn resolve_override_falls_back_to_custom_response() {
         let state = shared();
-        state.write().response_rules.insert(
+        state.write().default_mut().response_rules.insert(
             "m".to_string(),
             vec![ResponseRule {
                 prompt_contains: Some("notfound".to_string()),
@@ -228,11 +257,12 @@ mod tests {
         );
         state
             .write()
+            .default_mut()
             .custom_responses
             .insert("m".to_string(), "fallback".to_string());
         let body = br#"{"prompt":"hi"}"#;
         assert_eq!(
-            resolve_override(&state, "m", body).as_deref(),
+            resolve_override(&state, &req(), "m", body).as_deref(),
             Some("fallback")
         );
     }
@@ -240,6 +270,6 @@ mod tests {
     #[test]
     fn resolve_override_none_when_nothing_configured() {
         let state = shared();
-        assert!(resolve_override(&state, "m", b"{}").is_none());
+        assert!(resolve_override(&state, &req(), "m", b"{}").is_none());
     }
 }
