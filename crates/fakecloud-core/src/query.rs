@@ -56,3 +56,81 @@ pub fn required_query_param(req: &AwsRequest, name: &str) -> Result<String, AwsS
         )
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::Bytes;
+    use http::HeaderMap;
+    use std::collections::HashMap;
+
+    fn make_req(params: &[(&str, &str)]) -> AwsRequest {
+        let mut query_params = HashMap::new();
+        for (k, v) in params {
+            query_params.insert((*k).to_string(), (*v).to_string());
+        }
+        AwsRequest {
+            service: "x".to_string(),
+            action: "A".to_string(),
+            region: "us-east-1".to_string(),
+            account_id: "123".to_string(),
+            request_id: "r".to_string(),
+            headers: HeaderMap::new(),
+            query_params,
+            body: Bytes::new(),
+            path_segments: vec![],
+            raw_path: "/".to_string(),
+            raw_query: String::new(),
+            method: http::Method::POST,
+            is_query_protocol: true,
+            access_key_id: None,
+            principal: None,
+        }
+    }
+
+    #[test]
+    fn query_response_xml_format() {
+        let xml = query_response_xml("Foo", "http://example.com/", "<Bar/>", "req-1");
+        assert!(xml.contains("<FooResponse"));
+        assert!(xml.contains("<FooResult><Bar/></FooResult>"));
+        assert!(xml.contains("<RequestId>req-1</RequestId>"));
+    }
+
+    #[test]
+    fn query_metadata_only_xml_omits_result() {
+        let xml = query_metadata_only_xml("Foo", "http://example.com/", "req-1");
+        assert!(xml.contains("<FooResponse"));
+        assert!(!xml.contains("<FooResult"));
+        assert!(xml.contains("<RequestId>req-1</RequestId>"));
+    }
+
+    #[test]
+    fn optional_query_param_returns_value() {
+        let req = make_req(&[("key", "value")]);
+        assert_eq!(optional_query_param(&req, "key").as_deref(), Some("value"));
+    }
+
+    #[test]
+    fn optional_query_param_missing_returns_none() {
+        let req = make_req(&[]);
+        assert!(optional_query_param(&req, "key").is_none());
+    }
+
+    #[test]
+    fn optional_query_param_empty_returns_none() {
+        let req = make_req(&[("key", "")]);
+        assert!(optional_query_param(&req, "key").is_none());
+    }
+
+    #[test]
+    fn required_query_param_returns_value() {
+        let req = make_req(&[("k", "v")]);
+        assert_eq!(required_query_param(&req, "k").unwrap(), "v");
+    }
+
+    #[test]
+    fn required_query_param_missing_errors() {
+        let req = make_req(&[]);
+        assert!(required_query_param(&req, "k").is_err());
+    }
+}
