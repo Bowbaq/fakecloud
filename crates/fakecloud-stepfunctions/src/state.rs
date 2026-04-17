@@ -160,3 +160,87 @@ impl StepFunctionsState {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn state_machine_type_as_str() {
+        assert_eq!(StateMachineType::Standard.as_str(), "STANDARD");
+        assert_eq!(StateMachineType::Express.as_str(), "EXPRESS");
+    }
+
+    #[test]
+    fn state_machine_type_parse() {
+        assert_eq!(
+            StateMachineType::parse("STANDARD"),
+            Some(StateMachineType::Standard)
+        );
+        assert_eq!(
+            StateMachineType::parse("EXPRESS"),
+            Some(StateMachineType::Express)
+        );
+        assert_eq!(StateMachineType::parse("bogus"), None);
+    }
+
+    #[test]
+    fn state_machine_status_as_str() {
+        assert_eq!(StateMachineStatus::Active.as_str(), "ACTIVE");
+        assert_eq!(StateMachineStatus::Deleting.as_str(), "DELETING");
+    }
+
+    #[test]
+    fn execution_status_as_str() {
+        assert_eq!(ExecutionStatus::Running.as_str(), "RUNNING");
+        assert_eq!(ExecutionStatus::Succeeded.as_str(), "SUCCEEDED");
+        assert_eq!(ExecutionStatus::Failed.as_str(), "FAILED");
+        assert_eq!(ExecutionStatus::TimedOut.as_str(), "TIMED_OUT");
+        assert_eq!(ExecutionStatus::Aborted.as_str(), "ABORTED");
+        assert_eq!(ExecutionStatus::PendingRedrive.as_str(), "PENDING_REDRIVE");
+    }
+
+    #[test]
+    fn state_machine_arn_format() {
+        let state = StepFunctionsState::new("123456789012", "us-east-1");
+        assert_eq!(
+            state.state_machine_arn("my-sm"),
+            "arn:aws:states:us-east-1:123456789012:stateMachine:my-sm"
+        );
+    }
+
+    #[test]
+    fn execution_arn_format() {
+        let state = StepFunctionsState::new("123456789012", "us-east-1");
+        assert_eq!(
+            state.execution_arn("sm", "exec-1"),
+            "arn:aws:states:us-east-1:123456789012:execution:sm:exec-1"
+        );
+    }
+
+    #[test]
+    fn state_reset_clears_all() {
+        let mut state = StepFunctionsState::new("123456789012", "us-east-1");
+        state.state_machines.insert(
+            "x".to_string(),
+            StateMachine {
+                name: "sm".to_string(),
+                arn: "arn:aws:states:us-east-1:123:stateMachine:sm".to_string(),
+                definition: "{}".to_string(),
+                role_arn: "r".to_string(),
+                machine_type: StateMachineType::Standard,
+                status: StateMachineStatus::Active,
+                creation_date: Utc::now(),
+                update_date: Utc::now(),
+                tags: HashMap::new(),
+                revision_id: "v1".to_string(),
+                logging_configuration: None,
+                tracing_configuration: None,
+                description: String::new(),
+            },
+        );
+        state.reset();
+        assert!(state.state_machines.is_empty());
+        assert!(state.executions.is_empty());
+    }
+}
