@@ -10,13 +10,14 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  e2e-matrix:
+  e2e-build:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Build E2E partition tool
         run: cargo build -q -p fakecloud-e2e --bin e2e_nextest_partitions
@@ -24,6 +25,19 @@ jobs:
       - id: matrix
         name: Generate E2E matrix
         run: echo "matrix=$(./target/debug/e2e_nextest_partitions matrix)" >> "$GITHUB_OUTPUT"
+
+      # Build fakecloud once here so every partition job can download the
+      # binary as an artifact instead of rebuilding from scratch.
+      - name: Build fakecloud
+        run: cargo build --bin fakecloud
+
+      - name: Upload fakecloud binary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fakecloud-binary-e2e
+          path: target/debug/fakecloud
+          if-no-files-found: error
+          retention-days: 1
 
   e2e-partition-check:
     runs-on: ubuntu-latest
@@ -48,11 +62,11 @@ jobs:
 
   e2e:
     name: E2E ${{ matrix.name }}
-    needs: [e2e-matrix, e2e-partition-check]
+    needs: [e2e-build, e2e-partition-check]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix: ${{ fromJson(needs.e2e-matrix.outputs.matrix) }}
+      matrix: ${{ fromJson(needs.e2e-build.outputs.matrix) }}
     env:
       NEXTEST_FILTER: ${{ matrix.filter }}
       NEXTEST_PARTITION: ${{ matrix.partition }}
@@ -86,8 +100,14 @@ jobs:
             podman system prune -af || true
           fi
 
-      - name: Build server
-        run: cargo build --bin fakecloud
+      - name: Download fakecloud binary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: fakecloud-binary-e2e
+          path: target/debug
+
+      - name: Mark fakecloud binary executable
+        run: chmod +x target/debug/fakecloud
 
       - name: Run nextest partition
         run: |
