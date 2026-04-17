@@ -136,4 +136,37 @@ mod tests {
         assert_eq!(v["__type"], "ValidationException");
         assert_eq!(v["message"], "bad input");
     }
+
+    #[test]
+    fn s3_xml_error_basic() {
+        let (status, content_type, body) =
+            s3_xml_error_response(StatusCode::NOT_FOUND, "NoSuchKey", "not found", "req-x");
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(content_type, "application/xml");
+        let body_str = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body_str.contains("<Code>NoSuchKey</Code>"));
+        assert!(body_str.contains("<Message>not found</Message>"));
+        assert!(body_str.contains("<RequestId>req-x</RequestId>"));
+    }
+
+    #[test]
+    fn s3_xml_error_with_fields_includes_extra() {
+        let extras = vec![("BucketName".to_string(), "my-bucket".to_string())];
+        let (_, _, body) = s3_xml_error_response_with_fields(
+            StatusCode::CONFLICT,
+            "BucketAlreadyOwnedByYou",
+            "already owns",
+            "req-1",
+            &extras,
+        );
+        let body_str = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body_str.contains("<BucketName>my-bucket</BucketName>"));
+    }
+
+    #[test]
+    fn xml_error_escapes_special_chars() {
+        let (_, _, body) = xml_error_response(StatusCode::BAD_REQUEST, "E", "a<b>c", "req-1");
+        let body_str = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body_str.contains("a&lt;b&gt;c"));
+    }
 }
