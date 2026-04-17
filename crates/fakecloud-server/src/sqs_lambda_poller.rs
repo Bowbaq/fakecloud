@@ -47,7 +47,8 @@ impl SqsLambdaPoller {
     async fn poll(&self) {
         // Collect enabled mappings that point to SQS sources
         let mappings: Vec<(String, String, i64)> = {
-            let lambda = self.lambda_state.read();
+            let lambda_accounts = self.lambda_state.read();
+            let lambda = lambda_accounts.default_ref();
             lambda
                 .event_source_mappings
                 .values()
@@ -159,7 +160,8 @@ impl SqsLambdaPoller {
             }
 
             // Record the invocation in Lambda state (for observability / testing)
-            let mut lambda = self.lambda_state.write();
+            let mut lambda_accounts = self.lambda_state.write();
+            let lambda = lambda_accounts.default_mut();
             lambda.invocations.push(LambdaInvocation {
                 function_arn,
                 payload,

@@ -29,7 +29,8 @@ impl LogsService {
         validate_string_length("logGroupName", log_group_name, 1, 512)?;
         validate_optional_string_length("queryString", Some(&query_string), 0, 10000)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Verify log group exists
         if !state.log_groups.contains_key(log_group_name) {
@@ -77,7 +78,9 @@ impl LogsService {
 
         validate_string_length("queryId", query_id, 1, 256)?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::LogsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let query_info = state.queries.get(query_id).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -152,7 +155,9 @@ impl LogsService {
             &["CWLI", "SQL", "PPL"],
         )?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::LogsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let queries: Vec<Value> = state
             .queries
             .values()
@@ -244,7 +249,8 @@ impl LogsService {
 
         let now = Utc::now().timestamp_millis();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         state.query_definitions.insert(
             query_definition_id.clone(),
             QueryDefinition {
@@ -285,7 +291,9 @@ impl LogsService {
             &["CWLI", "SQL", "PPL"],
         )?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::LogsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let defs: Vec<Value> = state
             .query_definitions
             .values()
@@ -322,7 +330,8 @@ impl LogsService {
 
         validate_string_length("queryDefinitionId", qd_id, 1, 256)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let success = state.query_definitions.remove(qd_id).is_some();
 
         Ok(AwsResponse::json(
@@ -341,7 +350,8 @@ impl LogsService {
             )
         })?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let query = state.queries.get_mut(query_id).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,

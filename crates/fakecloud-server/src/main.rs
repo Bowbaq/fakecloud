@@ -119,7 +119,11 @@ async fn main() {
         mas
     }));
     let eb_state = Arc::new(parking_lot::RwLock::new(
-        fakecloud_eventbridge::state::EventBridgeState::new(&cli.account_id, &cli.region),
+        fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        ),
     ));
     let ssm_state = Arc::new(parking_lot::RwLock::new(
         fakecloud_ssm::state::SsmState::new(&cli.account_id, &cli.region),
@@ -132,7 +136,11 @@ async fn main() {
         ),
     ));
     let lambda_state = Arc::new(parking_lot::RwLock::new(
-        fakecloud_lambda::state::LambdaState::new(&cli.account_id, &cli.region),
+        fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        ),
     ));
 
     // Reap any backing containers left behind by a previous fakecloud process
@@ -165,7 +173,11 @@ async fn main() {
         ),
     ));
     let logs_state = Arc::new(parking_lot::RwLock::new(
-        fakecloud_logs::state::LogsState::new(&cli.account_id, &cli.region),
+        fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        ),
     ));
     let kms_state = Arc::new(parking_lot::RwLock::new(
         fakecloud_core::multi_account::MultiAccountState::new(
@@ -624,22 +636,31 @@ async fn main() {
                     ) {
                         Ok(snapshot) => {
                             if snapshot.schema_version
-                                != fakecloud_eventbridge::state::EVENTBRIDGE_SNAPSHOT_SCHEMA_VERSION
+                                > fakecloud_eventbridge::state::EVENTBRIDGE_SNAPSHOT_SCHEMA_VERSION
                             {
                                 fatal_exit(format_args!(
-                                    "eventbridge persistence schema mismatch: on-disk={}, expected={}",
+                                    "eventbridge persistence schema too new: on-disk={}, max supported={}",
                                     snapshot.schema_version,
                                     fakecloud_eventbridge::state::EVENTBRIDGE_SNAPSHOT_SCHEMA_VERSION,
                                 ));
                             }
-                            let bus_count = snapshot.state.buses.len();
-                            let rule_count = snapshot.state.rules.len();
-                            *eb_state.write() = snapshot.state;
-                            tracing::info!(
-                                buses = bus_count,
-                                rules = rule_count,
-                                "loaded eventbridge persistence snapshot",
-                            );
+                            if let Some(accounts) = snapshot.accounts {
+                                let account_count = accounts.account_count();
+                                *eb_state.write() = accounts;
+                                tracing::info!(
+                                    accounts = account_count,
+                                    "loaded eventbridge persistence snapshot (multi-account)"
+                                );
+                            } else if let Some(single_state) = snapshot.state {
+                                let bus_count = single_state.buses.len();
+                                let account_id = single_state.account_id.clone();
+                                let mut mas = eb_state.write();
+                                *mas.get_or_create(&account_id) = single_state;
+                                tracing::info!(
+                                    buses = bus_count,
+                                    "loaded eventbridge persistence snapshot (migrated from v1)"
+                                );
+                            }
                         }
                         Err(err) => fatal_exit(format_args!(
                             "failed to parse eventbridge persistence snapshot: {err}"
@@ -829,20 +850,31 @@ async fn main() {
                     {
                         Ok(snapshot) => {
                             if snapshot.schema_version
-                                != fakecloud_lambda::state::LAMBDA_SNAPSHOT_SCHEMA_VERSION
+                                > fakecloud_lambda::state::LAMBDA_SNAPSHOT_SCHEMA_VERSION
                             {
                                 fatal_exit(format_args!(
-                                    "lambda persistence schema mismatch: on-disk={}, expected={}",
+                                    "lambda persistence schema too new: on-disk={}, max supported={}",
                                     snapshot.schema_version,
                                     fakecloud_lambda::state::LAMBDA_SNAPSHOT_SCHEMA_VERSION,
                                 ));
                             }
-                            let fn_count = snapshot.state.functions.len();
-                            *lambda_state.write() = snapshot.state;
-                            tracing::info!(
-                                functions = fn_count,
-                                "loaded lambda persistence snapshot",
-                            );
+                            if let Some(accounts) = snapshot.accounts {
+                                let account_count = accounts.account_count();
+                                *lambda_state.write() = accounts;
+                                tracing::info!(
+                                    accounts = account_count,
+                                    "loaded lambda persistence snapshot (multi-account)"
+                                );
+                            } else if let Some(single_state) = snapshot.state {
+                                let fn_count = single_state.functions.len();
+                                let account_id = single_state.account_id.clone();
+                                let mut mas = lambda_state.write();
+                                *mas.get_or_create(&account_id) = single_state;
+                                tracing::info!(
+                                    functions = fn_count,
+                                    "loaded lambda persistence snapshot (migrated from v1)"
+                                );
+                            }
                         }
                         Err(err) => fatal_exit(format_args!(
                             "failed to parse lambda persistence snapshot: {err}"
@@ -952,20 +984,31 @@ async fn main() {
                     match serde_json::from_slice::<fakecloud_logs::state::LogsSnapshot>(&bytes) {
                         Ok(snapshot) => {
                             if snapshot.schema_version
-                                != fakecloud_logs::state::LOGS_SNAPSHOT_SCHEMA_VERSION
+                                > fakecloud_logs::state::LOGS_SNAPSHOT_SCHEMA_VERSION
                             {
                                 fatal_exit(format_args!(
-                                    "logs persistence schema mismatch: on-disk={}, expected={}",
+                                    "logs persistence schema too new: on-disk={}, max supported={}",
                                     snapshot.schema_version,
                                     fakecloud_logs::state::LOGS_SNAPSHOT_SCHEMA_VERSION,
                                 ));
                             }
-                            let group_count = snapshot.state.log_groups.len();
-                            *logs_state.write() = snapshot.state;
-                            tracing::info!(
-                                log_groups = group_count,
-                                "loaded logs persistence snapshot",
-                            );
+                            if let Some(accounts) = snapshot.accounts {
+                                let account_count = accounts.account_count();
+                                *logs_state.write() = accounts;
+                                tracing::info!(
+                                    accounts = account_count,
+                                    "loaded logs persistence snapshot (multi-account)"
+                                );
+                            } else if let Some(single_state) = snapshot.state {
+                                let group_count = single_state.log_groups.len();
+                                let account_id = single_state.account_id.clone();
+                                let mut mas = logs_state.write();
+                                *mas.get_or_create(&account_id) = single_state;
+                                tracing::info!(
+                                    log_groups = group_count,
+                                    "loaded logs persistence snapshot (migrated from v1)"
+                                );
+                            }
                         }
                         Err(err) => fatal_exit(format_args!(
                             "failed to parse logs persistence snapshot: {err}"
@@ -1820,7 +1863,8 @@ async fn main() {
             axum::routing::get({
                 let ls = lambda_invocations_state.clone();
                 move || async move {
-                    let state = ls.read();
+                    let accounts = ls.read();
+                    let state = accounts.default_ref();
                     let invocations = state
                         .invocations
                         .iter()
@@ -2146,7 +2190,8 @@ async fn main() {
             axum::routing::get({
                 let es = eb_introspection_state;
                 move || async move {
-                    let state = es.read();
+                    let accounts = es.read();
+                    let state = accounts.default_ref();
                     let events = state
                         .events
                         .iter()

@@ -39,7 +39,8 @@ impl KinesisLambdaPoller {
 
     async fn poll(&self) {
         let mappings: Vec<(String, String, String, i64)> = {
-            let lambda = self.lambda_state.read();
+            let lambda_accounts = self.lambda_state.read();
+            let lambda = lambda_accounts.default_ref();
             lambda
                 .event_source_mappings
                 .values()
@@ -150,7 +151,8 @@ impl KinesisLambdaPoller {
                 }
 
                 if !used_real_delivery {
-                    let mut lambda = self.lambda_state.write();
+                    let mut lambda_accounts = self.lambda_state.write();
+                    let lambda = lambda_accounts.default_mut();
                     lambda.invocations.push(LambdaInvocation {
                         function_arn: function_arn.clone(),
                         payload,

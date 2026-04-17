@@ -58,7 +58,8 @@ impl LogsService {
             })
             .unwrap_or_default();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let arn = format!(
             "arn:aws:logs:{}:{}:destination:{}",
             state.region, state.account_id, destination_name
@@ -113,7 +114,9 @@ impl LogsService {
         validate_optional_range_i64("limit", body["limit"].as_i64(), 1, 50)?;
         validate_optional_string_length("nextToken", body["nextToken"].as_str(), 1, 2048)?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::LogsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let destinations: Vec<Value> = state
             .destinations
             .values()
@@ -154,7 +157,8 @@ impl LogsService {
 
         validate_string_length("destinationName", name, 1, 512)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         if state.destinations.remove(name).is_none() {
             return Err(AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -191,7 +195,8 @@ impl LogsService {
 
         validate_string_length("accessPolicy", policy, 1, 5120)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let dest = state.destinations.get_mut(name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,

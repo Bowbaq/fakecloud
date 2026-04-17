@@ -36,7 +36,8 @@ impl EventBridgeDelivery for EventBridgeDeliveryImpl {
             resources: Vec::new(),
         };
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.default_mut();
         state.events.push(event);
 
         // Find matching rules and their targets
@@ -62,7 +63,7 @@ impl EventBridgeDelivery for EventBridgeDeliveryImpl {
             .collect();
 
         // Drop the lock before delivering
-        drop(state);
+        drop(accounts);
 
         if matching_targets.is_empty() {
             return;
@@ -100,9 +101,7 @@ impl EventBridgeDelivery for EventBridgeDeliveryImpl {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{
-        EventBridgeState, EventRule, EventTarget as EbTarget, SharedEventBridgeState,
-    };
+    use crate::state::{EventRule, EventTarget as EbTarget, SharedEventBridgeState};
     use fakecloud_core::delivery::{SnsDelivery, SqsDelivery};
     use parking_lot::RwLock;
     use std::sync::Mutex;
@@ -146,10 +145,9 @@ mod tests {
     }
 
     fn make_shared() -> SharedEventBridgeState {
-        Arc::new(RwLock::new(EventBridgeState::new(
-            "123456789012",
-            "us-east-1",
-        )))
+        Arc::new(RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ))
     }
 
     fn make_rule(name: &str, pattern: Option<&str>, target_arn: &str) -> EventRule {
@@ -184,9 +182,10 @@ mod tests {
         let delivery = EventBridgeDeliveryImpl::new(state.clone(), bus);
         delivery.put_event("my.source", "MyType", r#"{"k":"v"}"#, "default");
         let guard = state.read();
-        assert_eq!(guard.events.len(), 1);
-        assert_eq!(guard.events[0].source, "my.source");
-        assert_eq!(guard.events[0].detail_type, "MyType");
+        let default = guard.default_ref();
+        assert_eq!(default.events.len(), 1);
+        assert_eq!(default.events[0].source, "my.source");
+        assert_eq!(default.events[0].detail_type, "MyType");
     }
 
     #[test]
@@ -194,7 +193,8 @@ mod tests {
         let state = make_shared();
         let q_arn = "arn:aws:sqs:us-east-1:123456789012:q".to_string();
         {
-            let mut s = state.write();
+            let mut s_accounts = state.write();
+            let s = s_accounts.default_mut();
             let rule = make_rule("r", None, &q_arn);
             s.rules
                 .insert(("default".to_string(), "r".to_string()), rule);
@@ -216,7 +216,8 @@ mod tests {
         let state = make_shared();
         let topic_arn = "arn:aws:sns:us-east-1:123456789012:t".to_string();
         {
-            let mut s = state.write();
+            let mut s_accounts = state.write();
+            let s = s_accounts.default_mut();
             let rule = make_rule("r", None, &topic_arn);
             s.rules
                 .insert(("default".to_string(), "r".to_string()), rule);
@@ -236,7 +237,8 @@ mod tests {
         let state = make_shared();
         let q_arn = "arn:aws:sqs:us-east-1:123456789012:q".to_string();
         {
-            let mut s = state.write();
+            let mut s_accounts = state.write();
+            let s = s_accounts.default_mut();
             let mut rule = make_rule("r", None, &q_arn);
             rule.state = "DISABLED".to_string();
             s.rules
@@ -254,7 +256,8 @@ mod tests {
         let state = make_shared();
         let q_arn = "arn:aws:sqs:us-east-1:123456789012:q".to_string();
         {
-            let mut s = state.write();
+            let mut s_accounts = state.write();
+            let s = s_accounts.default_mut();
             let mut rule = make_rule("r", None, &q_arn);
             rule.event_bus_name = "custom-bus".to_string();
             s.rules
@@ -272,7 +275,8 @@ mod tests {
         let state = make_shared();
         let q_arn = "arn:aws:sqs:us-east-1:123456789012:q".to_string();
         {
-            let mut s = state.write();
+            let mut s_accounts = state.write();
+            let s = s_accounts.default_mut();
             let rule = make_rule("r", None, &q_arn);
             s.rules
                 .insert(("default".to_string(), "r".to_string()), rule);

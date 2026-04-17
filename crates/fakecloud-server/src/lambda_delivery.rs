@@ -38,9 +38,21 @@ impl LambdaDelivery for LambdaDeliveryImpl {
             }
         };
 
+        // Extract account ID from ARN
+        let account_id = {
+            let parts: Vec<&str> = function_arn.split(':').collect();
+            if parts.len() >= 5 {
+                parts[4].to_string()
+            } else {
+                String::new()
+            }
+        };
+
         let func = {
-            let state = self.lambda_state.read();
-            state.functions.get(&function_name).cloned()
+            let accounts = self.lambda_state.read();
+            accounts
+                .get(&account_id)
+                .and_then(|state| state.functions.get(&function_name).cloned())
         };
 
         let runtime = self.runtime.clone();
@@ -53,7 +65,8 @@ impl LambdaDelivery for LambdaDeliveryImpl {
 
             // Record invocation regardless of whether code exists
             {
-                let mut state = lambda_state.write();
+                let mut accounts = lambda_state.write();
+                let state = accounts.get_or_create(&account_id);
                 state
                     .invocations
                     .push(fakecloud_lambda::state::LambdaInvocation {

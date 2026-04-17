@@ -85,14 +85,24 @@ impl LambdaState {
     }
 }
 
-pub type SharedLambdaState = Arc<RwLock<LambdaState>>;
+pub type SharedLambdaState =
+    Arc<RwLock<fakecloud_core::multi_account::MultiAccountState<LambdaState>>>;
 
-pub const LAMBDA_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+impl fakecloud_core::multi_account::AccountState for LambdaState {
+    fn new_for_account(account_id: &str, region: &str, _endpoint: &str) -> Self {
+        Self::new(account_id, region)
+    }
+}
+
+pub const LAMBDA_SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LambdaSnapshot {
     pub schema_version: u32,
-    pub state: LambdaState,
+    #[serde(default)]
+    pub accounts: Option<fakecloud_core::multi_account::MultiAccountState<LambdaState>>,
+    #[serde(default)]
+    pub state: Option<LambdaState>,
 }
 
 #[cfg(test)]

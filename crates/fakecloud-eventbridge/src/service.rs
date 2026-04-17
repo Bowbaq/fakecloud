@@ -20,8 +20,8 @@ use fakecloud_lambda::state::{LambdaInvocation, SharedLambdaState};
 use fakecloud_logs::state::SharedLogsState;
 
 use crate::state::{
-    ApiDestination, Archive, Connection, Endpoint, EventBridgeSnapshot, EventBus, EventRule,
-    EventTarget, PartnerEventSource, PutEvent, Replay, SharedEventBridgeState,
+    ApiDestination, Archive, Connection, Endpoint, EventBridgeSnapshot, EventBridgeState, EventBus,
+    EventRule, EventTarget, PartnerEventSource, PutEvent, Replay, SharedEventBridgeState,
     EVENTBRIDGE_SNAPSHOT_SCHEMA_VERSION,
 };
 
@@ -171,7 +171,8 @@ impl EventBridgeService {
         let _guard = self.snapshot_lock.lock().await;
         let snapshot = EventBridgeSnapshot {
             schema_version: EVENTBRIDGE_SNAPSHOT_SCHEMA_VERSION,
-            state: self.state.read().clone(),
+            accounts: Some(self.state.read().clone()),
+            state: None,
         };
         let join = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
             let bytes = serde_json::to_vec(&snapshot)
@@ -403,9 +404,11 @@ impl EventBridgeService {
         // Partner event bus validation
         if name.starts_with("aws.partner/") {
             let event_source = body["EventSourceName"].as_str().unwrap_or("");
-            let state_r = self.state.read();
+            let accounts_r = self.state.read();
+            let empty_r = EventBridgeState::new(&req.account_id, &req.region);
+            let state_r = accounts_r.get(&req.account_id).unwrap_or(&empty_r);
             let has_source = state_r.partner_event_sources.contains_key(event_source);
-            drop(state_r);
+            drop(accounts_r);
             if !has_source {
                 return Err(AwsServiceError::aws_error(
                     StatusCode::BAD_REQUEST,
@@ -415,7 +418,8 @@ impl EventBridgeService {
             }
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if state.buses.contains_key(&name) {
             return Err(AwsServiceError::aws_error(
@@ -466,7 +470,8 @@ impl EventBridgeService {
             ));
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         state.buses.remove(name);
         state.rules.retain(|k, _| k.0 != name);
 
@@ -490,7 +495,9 @@ impl EventBridgeService {
             })?;
         }
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = EventBridgeState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let filtered: Vec<&_> = state
             .buses
             .values()
@@ -518,7 +525,9 @@ impl EventBridgeService {
         validate_optional_string_length("name", body["Name"].as_str(), 1, 1600)?;
         let name = body["Name"].as_str().unwrap_or("default");
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = EventBridgeState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let bus = state.buses.get(name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -560,7 +569,8 @@ impl EventBridgeService {
         validate_optional_string_length("statementId", body["StatementId"].as_str(), 1, 64)?;
         let event_bus_name = body["EventBusName"].as_str().unwrap_or("default");
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let bus = state.buses.get_mut(event_bus_name).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -622,7 +632,8 @@ impl EventBridgeService {
         let statement_id = body["StatementId"].as_str().unwrap_or("");
         let remove_all = body["RemoveAllPermissions"].as_bool().unwrap_or(false);
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let bus = state.buses.get_mut(event_bus_name).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -698,7 +709,8 @@ impl EventBridgeService {
             .unwrap_or("default")
             .to_string();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let event_bus_name = state.resolve_bus_name(&raw_bus);
 
         let event_pattern = body["EventPattern"].as_str().and_then(|s| {
@@ -785,7 +797,8 @@ impl EventBridgeService {
         validate_optional_string_length("eventBusName", body["EventBusName"].as_str(), 1, 1600)?;
         let event_bus_name = body["EventBusName"].as_str().unwrap_or("default");
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let bus_name = state.resolve_bus_name(event_bus_name);
         let key = (bus_name, name.to_string());
 
@@ -815,7 +828,9 @@ impl EventBridgeService {
         let limit = body["Limit"].as_u64().map(|n| n as usize);
         let next_token = body["NextToken"].as_str();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = EventBridgeState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let bus_name = state.resolve_bus_name(event_bus_name);
 
         let mut rules: Vec<&EventRule> = state
@@ -887,7 +902,9 @@ impl EventBridgeService {
         validate_optional_string_length("eventBusName", body["EventBusName"].as_str(), 1, 1600)?;
         let event_bus_name = body["EventBusName"].as_str().unwrap_or("default");
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = EventBridgeState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let bus_name = state.resolve_bus_name(event_bus_name);
         let key = (bus_name.clone(), name.to_string());
 
@@ -940,7 +957,8 @@ impl EventBridgeService {
         validate_optional_string_length("eventBusName", body["EventBusName"].as_str(), 1, 1600)?;
         let event_bus_name = body["EventBusName"].as_str().unwrap_or("default");
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let bus_name = state.resolve_bus_name(event_bus_name);
         let key = (bus_name, name.to_string());
 
@@ -964,7 +982,8 @@ impl EventBridgeService {
         validate_optional_string_length("eventBusName", body["EventBusName"].as_str(), 1, 1600)?;
         let event_bus_name = body["EventBusName"].as_str().unwrap_or("default");
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let bus_name = state.resolve_bus_name(event_bus_name);
         let key = (bus_name, name.to_string());
 
@@ -1021,7 +1040,8 @@ impl EventBridgeService {
             }
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let bus_name = state.resolve_bus_name(event_bus_name);
         let key = (bus_name.clone(), rule_name.to_string());
 
@@ -1061,7 +1081,8 @@ impl EventBridgeService {
             .filter_map(|v| v.as_str().map(|s| s.to_string()))
             .collect();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let bus_name = state.resolve_bus_name(event_bus_name);
         let key = (bus_name.clone(), rule_name.to_string());
 
@@ -1093,7 +1114,9 @@ impl EventBridgeService {
         let limit = body["Limit"].as_u64().map(|n| n as usize);
         let next_token = body["NextToken"].as_str();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = EventBridgeState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let bus_name = state.resolve_bus_name(event_bus_name);
         let key = (bus_name, rule_name.to_string());
 
@@ -1146,7 +1169,9 @@ impl EventBridgeService {
         let limit = body["Limit"].as_u64().map(|n| n as usize);
         let next_token = body["NextToken"].as_str();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = EventBridgeState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let bus_name = state.resolve_bus_name(event_bus_name);
 
         // Deduplicate rule names
@@ -1205,7 +1230,8 @@ impl EventBridgeService {
             .to_string();
         validate_string_length("account", &account, 12, 12)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         if state.partner_event_sources.contains_key(&name) {
             return Err(AwsServiceError::aws_error(
                 StatusCode::CONFLICT,
@@ -1247,7 +1273,8 @@ impl EventBridgeService {
             .ok_or_else(|| missing("Account"))?
             .to_string();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         match state.partner_event_sources.get(&name) {
             Some(ps) if ps.account == account => {
                 state.partner_event_sources.remove(&name);
@@ -1283,7 +1310,9 @@ impl EventBridgeService {
             .to_string();
         validate_string_length("name", &name, 1, 256)?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = EventBridgeState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let ps = state.partner_event_sources.get(&name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
@@ -1309,7 +1338,9 @@ impl EventBridgeService {
         validate_optional_string_length("nextToken", body["NextToken"].as_str(), 1, 2048)?;
         let limit = body["Limit"].as_i64().unwrap_or(100) as usize;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = EventBridgeState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let all: Vec<Value> = state
             .partner_event_sources
             .values()
@@ -1344,7 +1375,9 @@ impl EventBridgeService {
         validate_optional_range_i64("limit", body["Limit"].as_i64(), 1, 100)?;
         validate_optional_string_length("nextToken", body["NextToken"].as_str(), 1, 2048)?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = EventBridgeState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let accounts: Vec<Value> = state
             .partner_event_sources
             .values()
@@ -1365,7 +1398,8 @@ impl EventBridgeService {
             .ok_or_else(|| missing("Name"))?
             .to_string();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let ps = state.partner_event_sources.get_mut(&name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
@@ -1386,7 +1420,8 @@ impl EventBridgeService {
             .ok_or_else(|| missing("Name"))?
             .to_string();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let ps = state.partner_event_sources.get_mut(&name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
@@ -1407,7 +1442,9 @@ impl EventBridgeService {
             .ok_or_else(|| missing("Name"))?
             .to_string();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = EventBridgeState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let ps = state.partner_event_sources.get(&name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
@@ -1433,7 +1470,9 @@ impl EventBridgeService {
         let name_prefix = body["NamePrefix"].as_str();
         let limit = body["Limit"].as_i64().unwrap_or(100) as usize;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = EventBridgeState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let all: Vec<Value> = state
             .partner_event_sources
             .values()
@@ -1552,7 +1591,8 @@ impl EventBridgeService {
         )?;
         let name = body["Name"].as_str().unwrap_or("default");
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let bus = state.buses.get_mut(name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -1600,7 +1640,8 @@ impl EventBridgeService {
         let event_buses = body["EventBuses"].as_array().cloned().unwrap_or_default();
         let role_arn = body["RoleArn"].as_str().map(|s| s.to_string());
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         if state.endpoints.contains_key(&name) {
             return Err(AwsServiceError::aws_error(
                 StatusCode::CONFLICT,
@@ -1658,7 +1699,8 @@ impl EventBridgeService {
         validate_required("Name", &body["Name"])?;
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         state.endpoints.remove(name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -1675,7 +1717,9 @@ impl EventBridgeService {
         validate_required("Name", &body["Name"])?;
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = EventBridgeState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let ep = state.endpoints.get(name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -1719,7 +1763,9 @@ impl EventBridgeService {
         let name_prefix = body["NamePrefix"].as_str();
         let limit = body["MaxResults"].as_i64().unwrap_or(100) as usize;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = EventBridgeState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let all: Vec<Value> = state
             .endpoints
             .values()
@@ -1759,7 +1805,8 @@ impl EventBridgeService {
         validate_required("Name", &body["Name"])?;
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let ep = state.endpoints.get_mut(name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -1805,7 +1852,8 @@ impl EventBridgeService {
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
         validate_string_length("name", name, 1, 64)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let conn = state.connections.get_mut(name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -1854,7 +1902,8 @@ impl EventBridgeService {
             ));
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let mut result_entries = Vec::new();
         let mut events_to_deliver = Vec::new();
         let mut failed_count = 0;
@@ -1897,7 +1946,7 @@ impl EventBridgeService {
             };
 
             archive_matching_event(
-                &mut state,
+                state,
                 &event,
                 &event_bus_name,
                 &source,
@@ -1946,7 +1995,7 @@ impl EventBridgeService {
         }
 
         // Drop the lock before delivering
-        drop(state);
+        drop(accounts);
 
         // Deliver to targets
         for (event_id, source, detail_type, detail, time, resources, targets) in events_to_deliver {
@@ -2010,7 +2059,8 @@ impl EventBridgeService {
                         "EventBridge delivering to Lambda function"
                     );
                     let now = Utc::now();
-                    let mut state = self.state.write();
+                    let mut accounts = self.state.write();
+                    let state = accounts.get_or_create(&req.account_id);
                     state
                         .lambda_invocations
                         .push(crate::state::LambdaInvocation {
@@ -2018,10 +2068,10 @@ impl EventBridgeService {
                             payload: body_str.clone(),
                             timestamp: now,
                         });
-                    drop(state);
+                    drop(accounts);
                     // Record in Lambda state for cross-service visibility
                     if let Some(ref ls) = self.lambda_state {
-                        ls.write().invocations.push(LambdaInvocation {
+                        ls.write().default_mut().invocations.push(LambdaInvocation {
                             function_arn: arn.clone(),
                             payload: body_str.clone(),
                             timestamp: now,
@@ -2042,13 +2092,14 @@ impl EventBridgeService {
                         "EventBridge delivering to CloudWatch Logs"
                     );
                     let now = Utc::now();
-                    let mut state = self.state.write();
+                    let mut accounts = self.state.write();
+                    let state = accounts.get_or_create(&req.account_id);
                     state.log_deliveries.push(crate::state::LogDelivery {
                         log_group_arn: arn.clone(),
                         payload: body_str.clone(),
                         timestamp: now,
                     });
-                    drop(state);
+                    drop(accounts);
                     // Write event to CloudWatch Logs state
                     if let Some(ref log_state) = self.logs_state {
                         deliver_to_logs(log_state, arn, &body_str, now);
@@ -2066,7 +2117,8 @@ impl EventBridgeService {
                         "EventBridge delivering to Step Functions"
                     );
                     self.delivery.start_stepfunctions_execution(arn, &body_str);
-                    let mut state = self.state.write();
+                    let mut accounts = self.state.write();
+                    let state = accounts.get_or_create(&req.account_id);
                     state
                         .step_function_executions
                         .push(crate::state::StepFunctionExecution {
@@ -2076,7 +2128,9 @@ impl EventBridgeService {
                         });
                 } else if arn.contains(":api-destination/") {
                     // ApiDestination target: look up destination + connection, then POST
-                    let state = self.state.read();
+                    let accounts = self.state.read();
+                    let empty = EventBridgeState::new(&req.account_id, &req.region);
+                    let state = accounts.get(&req.account_id).unwrap_or(&empty);
                     let dest = state.api_destinations.values().find(|d| d.arn == *arn);
                     if let Some(dest) = dest {
                         let url = dest.invocation_endpoint.clone();
@@ -2086,7 +2140,7 @@ impl EventBridgeService {
                             .values()
                             .find(|c| c.arn == dest.connection_arn)
                             .cloned();
-                        drop(state);
+                        drop(accounts);
 
                         let payload = body_str.clone();
                         tokio::spawn(async move {
@@ -2159,8 +2213,9 @@ impl EventBridgeService {
         validate_string_length("resourceARN", arn, 1, 1600)?;
         validate_required("Tags", &body["Tags"])?;
 
-        let mut state = self.state.write();
-        let tag_map = find_tags_mut(&mut state, arn)?;
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
+        let tag_map = find_tags_mut(state, arn)?;
 
         fakecloud_core::tags::apply_tags(tag_map, &body, "Tags", "Key", "Value").map_err(|f| {
             AwsServiceError::aws_error(
@@ -2182,8 +2237,9 @@ impl EventBridgeService {
         validate_string_length("resourceARN", arn, 1, 1600)?;
         validate_required("TagKeys", &body["TagKeys"])?;
 
-        let mut state = self.state.write();
-        let tag_map = find_tags_mut(&mut state, arn)?;
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
+        let tag_map = find_tags_mut(state, arn)?;
 
         fakecloud_core::tags::remove_tags(tag_map, &body, "TagKeys").map_err(|f| {
             AwsServiceError::aws_error(
@@ -2204,8 +2260,10 @@ impl EventBridgeService {
             .ok_or_else(|| missing("ResourceARN"))?;
         validate_string_length("resourceARN", arn, 1, 1600)?;
 
-        let state = self.state.read();
-        let tag_map = find_tags(&state, arn)?;
+        let accounts = self.state.read();
+        let empty = EventBridgeState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
+        let tag_map = find_tags(state, arn)?;
 
         let tags = fakecloud_core::tags::tags_to_json(tag_map, "Key", "Value");
 
@@ -2242,7 +2300,8 @@ impl EventBridgeService {
             validate_event_pattern(pattern)?;
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Validate event bus exists
         let bus_name = state.resolve_bus_name(&event_source_arn);
@@ -2352,7 +2411,9 @@ impl EventBridgeService {
             .ok_or_else(|| missing("ArchiveName"))?;
         validate_string_length("archiveName", name, 1, 48)?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = EventBridgeState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let archive = state.archives.get(name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -2437,7 +2498,9 @@ impl EventBridgeService {
 
         let limit = body["Limit"].as_i64().unwrap_or(100) as usize;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = EventBridgeState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let all: Vec<Value> = state
             .archives
             .values()
@@ -2492,7 +2555,8 @@ impl EventBridgeService {
             validate_event_pattern(pattern)?;
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let archive = state.archives.get_mut(name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -2526,7 +2590,8 @@ impl EventBridgeService {
             .ok_or_else(|| missing("ArchiveName"))?;
         validate_string_length("archiveName", name, 1, 48)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         if !state.archives.contains_key(name) {
             return Err(AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -2575,7 +2640,8 @@ impl EventBridgeService {
         validate_required("AuthParameters", &body["AuthParameters"])?;
         let auth_params = body["AuthParameters"].clone();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let now = Utc::now();
         let conn_uuid = uuid::Uuid::new_v4();
         let arn = format!(
@@ -2615,7 +2681,9 @@ impl EventBridgeService {
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
         validate_string_length("name", name, 1, 64)?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = EventBridgeState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let conn = state.connections.get(name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -2671,7 +2739,9 @@ impl EventBridgeService {
         let connection_state = body["ConnectionState"].as_str();
         let limit = body["Limit"].as_i64().unwrap_or(100) as usize;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = EventBridgeState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let all: Vec<Value> = state
             .connections
             .values()
@@ -2722,7 +2792,8 @@ impl EventBridgeService {
             &["BASIC", "OAUTH_CLIENT_CREDENTIALS", "API_KEY"],
         )?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let conn = state.connections.get_mut(name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -2757,7 +2828,8 @@ impl EventBridgeService {
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
         validate_string_length("name", name, 1, 64)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let conn = state.connections.remove(name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -2814,7 +2886,8 @@ impl EventBridgeService {
             validate_range_i64("invocationRateLimitPerSecond", r, 1, i64::MAX)?;
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let now = Utc::now();
         let dest_uuid = uuid::Uuid::new_v4();
         let arn = format!(
@@ -2850,7 +2923,9 @@ impl EventBridgeService {
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
         validate_string_length("name", name, 1, 64)?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = EventBridgeState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let dest = state.api_destinations.get(name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -2890,7 +2965,9 @@ impl EventBridgeService {
         let connection_arn = body["ConnectionArn"].as_str();
         let limit = body["Limit"].as_i64().unwrap_or(100) as usize;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = EventBridgeState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let all: Vec<Value> = state
             .api_destinations
             .values()
@@ -2956,7 +3033,8 @@ impl EventBridgeService {
             validate_range_i64("invocationRateLimitPerSecond", r, 1, i64::MAX)?;
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let dest = state.api_destinations.get_mut(name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -2996,7 +3074,8 @@ impl EventBridgeService {
         let name = body["Name"].as_str().ok_or_else(|| missing("Name"))?;
         validate_string_length("name", name, 1, 64)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         if !state.api_destinations.contains_key(name) {
             return Err(AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -3014,7 +3093,8 @@ impl EventBridgeService {
     fn start_replay(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let input = StartReplayInput::from_body(&req.json_body())?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Validate event bus + archive, in the order the real service validates them.
         let bus_name = state.resolve_bus_name(&input.destination_arn);
@@ -3072,7 +3152,7 @@ impl EventBridgeService {
         );
 
         let events_to_deliver = collect_replay_events_with_targets(
-            &state,
+            state,
             &archive_name,
             &bus_name,
             input.event_start_time,
@@ -3095,7 +3175,7 @@ impl EventBridgeService {
         };
         state.replays.insert(input.name, replay);
 
-        drop(state);
+        drop(accounts);
 
         for (event, targets) in events_to_deliver {
             let detail_value: Value = serde_json::from_str(&event.detail).unwrap_or(json!({}));
@@ -3167,7 +3247,8 @@ impl EventBridgeService {
             self.delivery
                 .publish_to_sns(target_arn, &body_str, Some(&event.detail_type));
         } else if target_arn.contains(":lambda:") {
-            let mut state = self.state.write();
+            let mut accounts = self.state.write();
+            let state = accounts.default_mut();
             state
                 .lambda_invocations
                 .push(crate::state::LambdaInvocation {
@@ -3175,9 +3256,9 @@ impl EventBridgeService {
                     payload: body_str.clone(),
                     timestamp: Utc::now(),
                 });
-            drop(state);
+            drop(accounts);
             if let Some(ref ls) = self.lambda_state {
-                ls.write().invocations.push(LambdaInvocation {
+                ls.write().default_mut().invocations.push(LambdaInvocation {
                     function_arn: target_arn.clone(),
                     payload: body_str.clone(),
                     timestamp: Utc::now(),
@@ -3191,20 +3272,22 @@ impl EventBridgeService {
                 &body_str,
             );
         } else if target_arn.contains(":logs:") {
-            let mut state = self.state.write();
+            let mut accounts = self.state.write();
+            let state = accounts.default_mut();
             state.log_deliveries.push(crate::state::LogDelivery {
                 log_group_arn: target_arn.clone(),
                 payload: body_str.clone(),
                 timestamp: Utc::now(),
             });
-            drop(state);
+            drop(accounts);
             if let Some(ref log_state) = self.logs_state {
                 deliver_to_logs(log_state, target_arn, &body_str, Utc::now());
             }
         } else if target_arn.contains(":states:") {
             self.delivery
                 .start_stepfunctions_execution(target_arn, &body_str);
-            let mut state = self.state.write();
+            let mut accounts = self.state.write();
+            let state = accounts.default_mut();
             state
                 .step_function_executions
                 .push(crate::state::StepFunctionExecution {
@@ -3235,7 +3318,9 @@ impl EventBridgeService {
             .ok_or_else(|| missing("ReplayName"))?;
         validate_string_length("replayName", name, 1, 64)?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = EventBridgeState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let replay = state.replays.get(name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -3320,7 +3405,9 @@ impl EventBridgeService {
 
         let limit = body["Limit"].as_i64().unwrap_or(100) as usize;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = EventBridgeState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let all: Vec<Value> = state
             .replays
             .values()
@@ -3368,7 +3455,8 @@ impl EventBridgeService {
             .ok_or_else(|| missing("ReplayName"))?;
         validate_string_length("replayName", name, 1, 64)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let replay = state.replays.get_mut(name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -3948,7 +4036,8 @@ pub fn invoke_lambda_async(
 
     tokio::spawn(async move {
         let func = {
-            let state = lambda_state.read();
+            let accounts = lambda_state.read();
+            let state = accounts.default_ref();
             state.functions.get(&func_name).cloned()
         };
         let func = match func {
@@ -3999,7 +4088,8 @@ pub fn deliver_to_logs(
     let stream_name = "events".to_string();
     let ts_millis = timestamp.timestamp_millis();
 
-    let mut state = logs_state.write();
+    let mut accounts = logs_state.write();
+    let state = accounts.default_mut();
     let region = state.region.clone();
     let account_id = state.account_id.clone();
 
@@ -4411,15 +4501,13 @@ mod tests {
 
     // ---- list_connections / list_api_destinations filtering & pagination ----
 
-    use crate::state::EventBridgeState;
     use fakecloud_core::delivery::DeliveryBus;
     use parking_lot::RwLock;
 
     fn make_service() -> EventBridgeService {
-        let state = Arc::new(RwLock::new(EventBridgeState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = Arc::new(RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let delivery = Arc::new(DeliveryBus::new());
         EventBridgeService::new(state, delivery)
     }
@@ -4463,7 +4551,8 @@ mod tests {
 
     fn create_api_destination(svc: &EventBridgeService, name: &str, conn_name: &str) {
         let conn_arn_field = {
-            let state = svc.state.read();
+            let _mas = svc.state.read();
+            let state = _mas.default_ref();
             state.connections.get(conn_name).unwrap().arn.clone()
         };
         let req = make_request(
@@ -4522,7 +4611,8 @@ mod tests {
 
         // All connections start as AUTHORIZED; change one
         {
-            let mut state = svc.state.write();
+            let mut _mas = svc.state.write();
+            let state = _mas.default_mut();
             state
                 .connections
                 .get_mut("conn-b")
@@ -4637,7 +4727,8 @@ mod tests {
         create_api_destination(&svc, "dest-3", "conn-a");
 
         let conn_a_arn = {
-            let state = svc.state.read();
+            let _mas = svc.state.read();
+            let state = _mas.default_ref();
             state.connections.get("conn-a").unwrap().arn.clone()
         };
 
@@ -4825,13 +4916,16 @@ mod tests {
     fn create_replay(svc: &EventBridgeService, name: &str) {
         // Need an archive first for the replay's event source
         let archive_arn = {
-            let state = svc.state.read();
-            if state.archives.contains_key("replay-archive") {
-                state.archives["replay-archive"].arn.clone()
+            let guard = svc.state.read();
+            let st = guard.default_ref();
+            if st.archives.contains_key("replay-archive") {
+                st.archives["replay-archive"].arn.clone()
             } else {
-                drop(state);
+                drop(guard);
                 create_archive(svc, "replay-archive");
-                svc.state.read().archives["replay-archive"].arn.clone()
+                svc.state.read().default_ref().archives["replay-archive"]
+                    .arn
+                    .clone()
             }
         };
         let req = make_request(
@@ -5173,7 +5267,8 @@ mod tests {
         );
         svc.deactivate_event_source(&req).unwrap();
         {
-            let state = svc.state.read();
+            let _mas = svc.state.read();
+            let state = _mas.default_ref();
             assert_eq!(
                 state.partner_event_sources["aws.partner/test"].state,
                 "INACTIVE"
@@ -5184,7 +5279,8 @@ mod tests {
         let req = make_request("ActivateEventSource", json!({ "Name": "aws.partner/test" }));
         svc.activate_event_source(&req).unwrap();
         {
-            let state = svc.state.read();
+            let _mas = svc.state.read();
+            let state = _mas.default_ref();
             assert_eq!(
                 state.partner_event_sources["aws.partner/test"].state,
                 "ACTIVE"
@@ -5220,6 +5316,7 @@ mod tests {
         assert!(svc
             .state
             .read()
+            .default_ref()
             .partner_event_sources
             .contains_key("aws.partner/test"));
 
@@ -5232,6 +5329,7 @@ mod tests {
         assert!(!svc
             .state
             .read()
+            .default_ref()
             .partner_event_sources
             .contains_key("aws.partner/test"));
 
@@ -5290,10 +5388,9 @@ mod tests {
 
         let messages: Arc<parking_lot::Mutex<Vec<(String, String)>>> =
             Arc::new(parking_lot::Mutex::new(Vec::new()));
-        let state = Arc::new(RwLock::new(EventBridgeState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = Arc::new(RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let delivery = Arc::new(DeliveryBus::new().with_sqs(Arc::new(RecordingSqsDelivery {
             messages: messages.clone(),
         })));
@@ -5365,7 +5462,8 @@ mod tests {
 
         // Verify archive has 2 events
         {
-            let state = svc.state.read();
+            let _mas = svc.state.read();
+            let state = _mas.default_ref();
             let archive = state.archives.get("test-archive").unwrap();
             assert_eq!(archive.events.len(), 2);
             assert_eq!(archive.event_count, 2);
@@ -5376,7 +5474,8 @@ mod tests {
 
         // StartReplay: should re-deliver the archived events
         let archive_arn = {
-            let state = svc.state.read();
+            let _mas = svc.state.read();
+            let state = _mas.default_ref();
             state.archives.get("test-archive").unwrap().arn.clone()
         };
 
@@ -5416,7 +5515,8 @@ mod tests {
         }
 
         // Verify replay is marked as COMPLETED
-        let state = svc.state.read();
+        let _mas = svc.state.read();
+        let state = _mas.default_ref();
         let replay = state.replays.get("my-replay").unwrap();
         assert_eq!(replay.state, "COMPLETED");
     }
@@ -5502,17 +5602,17 @@ mod tests {
         // This test verifies that the PutEvents code path correctly identifies
         // api-destination ARN targets and resolves the destination metadata.
         // The actual HTTP call goes to a non-existent host (fire-and-forget).
-        let state = Arc::new(RwLock::new(EventBridgeState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = Arc::new(RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let delivery = Arc::new(DeliveryBus::new());
         let svc = EventBridgeService::new(state, delivery);
 
         // Create connection and api destination
         create_connection(&svc, "my-conn");
         let conn_arn = {
-            let state = svc.state.read();
+            let _mas = svc.state.read();
+            let state = _mas.default_ref();
             state.connections.get("my-conn").unwrap().arn.clone()
         };
         let req = make_request(
@@ -5527,7 +5627,8 @@ mod tests {
         svc.create_api_destination(&req).unwrap();
 
         let dest_arn = {
-            let state = svc.state.read();
+            let _mas = svc.state.read();
+            let state = _mas.default_ref();
             state.api_destinations.get("my-dest").unwrap().arn.clone()
         };
 
@@ -5608,7 +5709,8 @@ mod tests {
     fn put_rule_persists_event_pattern_and_state() {
         let svc = make_service();
         put_rule_simple(&svc, "r1");
-        let state = svc.state.read();
+        let _mas = svc.state.read();
+        let state = _mas.default_ref();
         let rule = state
             .rules
             .get(&("default".to_string(), "r1".to_string()))
@@ -5654,7 +5756,8 @@ mod tests {
         put_rule_simple(&svc, "r1");
         // Inject a target directly.
         {
-            let mut state = svc.state.write();
+            let mut _mas = svc.state.write();
+            let state = _mas.default_mut();
             let rule = state
                 .rules
                 .get_mut(&("default".to_string(), "r1".to_string()))
@@ -5675,7 +5778,8 @@ mod tests {
             json!({ "Name": "r1", "Description": "updated", "EventPattern": r#"{"source":["a"]}"# }),
         );
         svc.put_rule(&req).unwrap();
-        let state = svc.state.read();
+        let _mas = svc.state.read();
+        let state = _mas.default_ref();
         let rule = state
             .rules
             .get(&("default".to_string(), "r1".to_string()))
@@ -5721,6 +5825,7 @@ mod tests {
         assert!(!svc
             .state
             .read()
+            .default_ref()
             .rules
             .contains_key(&("default".to_string(), "r1".to_string())));
     }
@@ -5734,6 +5839,7 @@ mod tests {
         assert_eq!(
             svc.state
                 .read()
+                .default_ref()
                 .rules
                 .get(&("default".to_string(), "r1".to_string()))
                 .unwrap()
@@ -5745,6 +5851,7 @@ mod tests {
         assert_eq!(
             svc.state
                 .read()
+                .default_ref()
                 .rules
                 .get(&("default".to_string(), "r1".to_string()))
                 .unwrap()
@@ -5888,7 +5995,8 @@ mod tests {
         );
         svc.put_targets(&second).unwrap();
 
-        let state = svc.state.read();
+        let _mas = svc.state.read();
+        let state = _mas.default_ref();
         let rule = state
             .rules
             .get(&("default".to_string(), "r1".to_string()))
@@ -5963,6 +6071,7 @@ mod tests {
         let arn = svc
             .state
             .read()
+            .default_ref()
             .rules
             .get(&("default".to_string(), "r1".to_string()))
             .unwrap()
@@ -5994,6 +6103,7 @@ mod tests {
         let arn = svc
             .state
             .read()
+            .default_ref()
             .rules
             .get(&("default".to_string(), "r1".to_string()))
             .unwrap()
@@ -6014,7 +6124,8 @@ mod tests {
         );
         svc.untag_resource(&untag).unwrap();
 
-        let state = svc.state.read();
+        let _mas = svc.state.read();
+        let state = _mas.default_ref();
         let rule = state
             .rules
             .get(&("default".to_string(), "r1".to_string()))
@@ -6654,13 +6765,14 @@ mod tests {
     fn create_api_destination_invalid_method_errors() {
         let svc = make_service();
         create_connection(&svc, "conn-m");
-        let state = svc.state.read();
-        let conn_arn = state
+        let guard = svc.state.read();
+        let st = guard.default_ref();
+        let conn_arn = st
             .connections
             .get("conn-m")
             .map(|c| c.arn.clone())
             .unwrap_or_default();
-        drop(state);
+        drop(guard);
 
         let req = make_request(
             "CreateApiDestination",
