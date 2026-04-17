@@ -94,3 +94,31 @@ pub struct LambdaSnapshot {
     pub schema_version: u32,
     pub state: LambdaState,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_has_empty_collections() {
+        let state = LambdaState::new("123456789012", "us-east-1");
+        assert_eq!(state.account_id, "123456789012");
+        assert_eq!(state.region, "us-east-1");
+        assert!(state.functions.is_empty());
+        assert!(state.event_source_mappings.is_empty());
+        assert!(state.invocations.is_empty());
+    }
+
+    #[test]
+    fn reset_clears_collections() {
+        let mut state = LambdaState::new("123456789012", "us-east-1");
+        state.invocations.push(LambdaInvocation {
+            function_arn: "arn".to_string(),
+            payload: "p".to_string(),
+            timestamp: Utc::now(),
+            source: "s".to_string(),
+        });
+        state.reset();
+        assert!(state.invocations.is_empty());
+    }
+}

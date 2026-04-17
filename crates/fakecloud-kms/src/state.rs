@@ -117,3 +117,36 @@ pub struct KmsSnapshot {
 }
 
 pub const KMS_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_has_empty_collections() {
+        let state = KmsState::new("123456789012", "us-east-1");
+        assert_eq!(state.account_id, "123456789012");
+        assert_eq!(state.region, "us-east-1");
+        assert!(state.keys.is_empty());
+        assert!(state.aliases.is_empty());
+        assert!(state.grants.is_empty());
+        assert!(state.custom_key_stores.is_empty());
+    }
+
+    #[test]
+    fn reset_clears_collections() {
+        let mut state = KmsState::new("123456789012", "us-east-1");
+        state.aliases.insert(
+            "alias/test".to_string(),
+            KmsAlias {
+                alias_name: "alias/test".to_string(),
+                alias_arn: "arn".to_string(),
+                target_key_id: "k".to_string(),
+                creation_date: 0.0,
+            },
+        );
+        assert!(!state.aliases.is_empty());
+        state.reset();
+        assert!(state.aliases.is_empty());
+    }
+}
