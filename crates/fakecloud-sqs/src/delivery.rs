@@ -132,10 +132,7 @@ mod tests {
     fn make_queue(name: &str, is_fifo: bool, content_based_dedup: bool) -> SqsQueue {
         let mut attributes = HashMap::new();
         if content_based_dedup {
-            attributes.insert(
-                "ContentBasedDeduplication".to_string(),
-                "true".to_string(),
-            );
+            attributes.insert("ContentBasedDeduplication".to_string(), "true".to_string());
         }
         SqsQueue {
             queue_name: name.to_string(),
@@ -279,7 +276,10 @@ mod tests {
         let q = guard.default_ref().queues.get(&url).unwrap();
         let msg = q.messages.front().unwrap();
         let blob = msg.message_attributes.get("Blob").unwrap();
-        assert_eq!(blob.binary_value.as_deref(), Some(&[0x01u8, 0x02, 0x03][..]));
+        assert_eq!(
+            blob.binary_value.as_deref(),
+            Some(&[0x01u8, 0x02, 0x03][..])
+        );
     }
 
     #[test]
