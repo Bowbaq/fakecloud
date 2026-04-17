@@ -5113,4 +5113,77 @@ mod tests {
         let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["queueUrls"].as_array().unwrap().is_empty());
     }
+
+    #[test]
+    fn purge_queue_unknown_queue_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "PurgeQueue",
+            json!({"QueueUrl": "http://localhost:4566/123456789012/ghost"}),
+        );
+        assert!(svc.purge_queue(&req).is_err());
+    }
+
+    #[test]
+    fn get_queue_url_missing_name_errors() {
+        let svc = make_service();
+        let req = make_request("GetQueueUrl", json!({}));
+        assert!(svc.get_queue_url(&req).is_err());
+    }
+
+    #[test]
+    fn get_queue_attributes_missing_url_errors() {
+        let svc = make_service();
+        let req = make_request("GetQueueAttributes", json!({}));
+        assert!(svc.get_queue_attributes(&req).is_err());
+    }
+
+    #[test]
+    fn set_queue_attributes_missing_url_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "SetQueueAttributes",
+            json!({"Attributes": {"VisibilityTimeout": "60"}}),
+        );
+        assert!(svc.set_queue_attributes(&req).is_err());
+    }
+
+    #[test]
+    fn remove_permission_unknown_queue_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "RemovePermission",
+            json!({
+                "QueueUrl": "http://localhost:4566/123456789012/ghost",
+                "Label": "l"
+            }),
+        );
+        assert!(svc.remove_permission(&req).is_err());
+    }
+
+    #[test]
+    fn untag_queue_missing_url_errors() {
+        let svc = make_service();
+        let req = make_request("UntagQueue", json!({"TagKeys": ["k"]}));
+        assert!(svc.untag_queue(&req).is_err());
+    }
+
+    #[test]
+    fn send_message_batch_over_max_entries_errors() {
+        let svc = make_service();
+        svc.create_queue(&make_request("CreateQueue", json!({"QueueName": "smbo"})))
+            .unwrap();
+        let mut entries = Vec::new();
+        for i in 0..15 {
+            entries.push(json!({"Id": format!("e{i}"), "MessageBody": "x"}));
+        }
+        let req = make_request(
+            "SendMessageBatch",
+            json!({
+                "QueueUrl": "http://localhost:4566/123456789012/smbo",
+                "Entries": entries
+            }),
+        );
+        assert!(svc.send_message_batch(&req).is_err());
+    }
 }
