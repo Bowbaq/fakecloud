@@ -244,7 +244,13 @@ pub fn delete_imported_model(
     model_identifier: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
     let mut accts = state.write();
-    let s = accts.get_or_create(&req.account_id);
+    let Some(s) = accts.get_mut(&req.account_id) else {
+        return Err(AwsServiceError::aws_error(
+            StatusCode::NOT_FOUND,
+            "ResourceNotFoundException",
+            format!("Imported model {model_identifier} not found"),
+        ));
+    };
     let key = s
         .imported_models
         .iter()

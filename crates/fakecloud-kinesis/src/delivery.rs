@@ -28,7 +28,11 @@ impl KinesisDelivery for KinesisDeliveryImpl {
         };
 
         let default_id = self.state.read().default_account_id().to_string();
-        let target_account = stream_arn.split(':').nth(4).unwrap_or(&default_id);
+        let target_account = stream_arn
+            .split(':')
+            .nth(4)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&default_id);
         let mut accounts = self.state.write();
         let state = accounts.get_or_create(target_account);
         if let Some(stream) = state.streams.get_mut(stream_name) {
