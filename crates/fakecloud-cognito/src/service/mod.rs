@@ -6292,4 +6292,108 @@ mod tests {
         let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["CSVHeader"].is_array());
     }
+
+    #[test]
+    fn admin_disable_user_not_found() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id, "Username": "ghost"});
+        let req = make_req("AdminDisableUser", &body.to_string());
+        assert!(svc.admin_disable_user(&req).is_err());
+    }
+
+    #[test]
+    fn admin_enable_user_not_found() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id, "Username": "ghost"});
+        let req = make_req("AdminEnableUser", &body.to_string());
+        assert!(svc.admin_enable_user(&req).is_err());
+    }
+
+    #[test]
+    fn admin_update_user_attributes_not_found() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Username": "ghost",
+            "UserAttributes": [{"Name": "email", "Value": "x@y.com"}]
+        });
+        let req = make_req("AdminUpdateUserAttributes", &body.to_string());
+        assert!(svc.admin_update_user_attributes(&req).is_err());
+    }
+
+    #[test]
+    fn admin_delete_user_attributes_not_found() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Username": "ghost",
+            "UserAttributeNames": ["email"]
+        });
+        let req = make_req("AdminDeleteUserAttributes", &body.to_string());
+        assert!(svc.admin_delete_user_attributes(&req).is_err());
+    }
+
+    #[test]
+    fn admin_set_user_password_not_found() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Username": "ghost",
+            "Password": "Pass1!",
+            "Permanent": true
+        });
+        let req = make_req("AdminSetUserPassword", &body.to_string());
+        assert!(svc.admin_set_user_password(&req).is_err());
+    }
+
+    #[test]
+    fn list_users_pool_not_found() {
+        let (svc, _) = make_svc();
+        let body = json!({"UserPoolId": "us-east-1_ghost000"});
+        let req = make_req("ListUsers", &body.to_string());
+        assert!(svc.list_users(&req).is_err());
+    }
+
+    #[test]
+    fn get_user_invalid_token() {
+        let (svc, _) = make_svc();
+        let body = json!({"AccessToken": "bogus"});
+        let req = make_req("GetUser", &body.to_string());
+        assert!(svc.get_user(&req).is_err());
+    }
+
+    #[test]
+    fn delete_user_invalid_token() {
+        let (svc, _) = make_svc();
+        let body = json!({"AccessToken": "bogus"});
+        let req = make_req("DeleteUser", &body.to_string());
+        assert!(svc.delete_user(&req).is_err());
+    }
+
+    #[test]
+    fn update_user_attributes_invalid_token() {
+        let (svc, _) = make_svc();
+        let body = json!({
+            "AccessToken": "bogus",
+            "UserAttributes": [{"Name": "email", "Value": "x@y.com"}]
+        });
+        let req = make_req("UpdateUserAttributes", &body.to_string());
+        assert!(svc.update_user_attributes(&req).is_err());
+    }
+
+    #[test]
+    fn delete_user_attributes_invalid_token() {
+        let (svc, _) = make_svc();
+        let body = json!({
+            "AccessToken": "bogus",
+            "UserAttributeNames": ["email"]
+        });
+        let req = make_req("DeleteUserAttributes", &body.to_string());
+        assert!(svc.delete_user_attributes(&req).is_err());
+    }
 }
