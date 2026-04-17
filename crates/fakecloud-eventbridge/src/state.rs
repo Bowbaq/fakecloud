@@ -305,6 +305,53 @@ impl EventBridgeState {
 
 pub type SharedEventBridgeState = Arc<RwLock<EventBridgeState>>;
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_creates_default_bus() {
+        let state = EventBridgeState::new("123456789012", "us-east-1");
+        assert!(state.buses.contains_key("default"));
+        assert_eq!(state.account_id, "123456789012");
+        assert_eq!(state.region, "us-east-1");
+    }
+
+    #[test]
+    fn resolve_bus_name_from_arn() {
+        let state = EventBridgeState::new("123456789012", "us-east-1");
+        assert_eq!(
+            state.resolve_bus_name("arn:aws:events:us-east-1:123456789012:event-bus/my-bus"),
+            "my-bus"
+        );
+    }
+
+    #[test]
+    fn resolve_bus_name_plain() {
+        let state = EventBridgeState::new("123456789012", "us-east-1");
+        assert_eq!(state.resolve_bus_name("my-bus"), "my-bus");
+    }
+
+    #[test]
+    fn resolve_bus_name_invalid_arn_falls_back() {
+        let state = EventBridgeState::new("123456789012", "us-east-1");
+        // ARN-looking string without event-bus/ prefix
+        assert_eq!(
+            state.resolve_bus_name("arn:aws:events:us-east-1:123456789012:rule/r"),
+            "arn:aws:events:us-east-1:123456789012:rule/r"
+        );
+    }
+
+    #[test]
+    fn reset_recreates_default_bus() {
+        let mut state = EventBridgeState::new("123456789012", "us-east-1");
+        state.buses.clear();
+        assert!(!state.buses.contains_key("default"));
+        state.reset();
+        assert!(state.buses.contains_key("default"));
+    }
+}
+
 /// On-disk snapshot envelope for EventBridge state. Versioned so
 /// format changes fail loudly on upgrade.
 #[derive(Debug, Clone, Serialize, Deserialize)]
