@@ -331,6 +331,7 @@ async fn main() {
     // Step 3: S3 delivery (S3 notifications can push to SQS, SNS, Lambda, and EventBridge)
     let sns_delivery_for_ses = sns_delivery.clone();
     let sns_delivery_for_cf = sns_delivery.clone();
+    let sns_delivery_for_scheduler = sns_delivery.clone();
     let eb_delivery_for_s3 = Arc::new(
         fakecloud_eventbridge::delivery::EventBridgeDeliveryImpl::new(
             eb_state.clone(),
@@ -1764,6 +1765,20 @@ async fn main() {
 
     let scheduler_service = SchedulerService::new(scheduler_state.clone());
     registry.register(Arc::new(scheduler_service));
+
+    // Spawn the Scheduler firing loop as a background task. Shares the
+    // SQS delivery bus used by EventBridge Rules so the same cross-
+    // service delivery plumbing (DLQ routing included) applies.
+    let delivery_for_scheduler = {
+        let mut bus = DeliveryBus::new().with_sqs(sqs_delivery.clone());
+        if let Some(ref ld) = lambda_delivery {
+            bus = bus.with_lambda(ld.clone());
+        }
+        Arc::new(bus.with_sns(sns_delivery_for_scheduler))
+    };
+    let scheduler_ticker =
+        fakecloud_scheduler::ticker::Ticker::new(scheduler_state.clone(), delivery_for_scheduler);
+    tokio::spawn(scheduler_ticker.run());
 
     // Spawn background tasks
     let lifecycle_processor = fakecloud_s3::lifecycle::LifecycleProcessor::new(s3_state.clone());

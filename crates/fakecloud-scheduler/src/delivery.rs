@@ -1,0 +1,306 @@
+//! Target delivery + DLQ routing for fired schedules.
+//!
+//! Scheduler's firing contract: every enabled schedule whose expression
+//! matches the current tick has its `Target.Input` body delivered to
+//! `Target.Arn`. If delivery fails (target queue missing, etc.) and
+//! `Target.DeadLetterConfig.Arn` is set, we route the original input +
+//! failure metadata headers to the DLQ so tests can observe the
+//! failure. No retry policy is modeled in Batch 2 — every fire is a
+//! single attempt.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use fakecloud_core::delivery::{DeliveryBus, SqsDeliveryError, SqsMessageAttribute};
+
+use crate::state::Schedule;
+
+/// Attempt to deliver a fired schedule's target. Returns `Ok(())` when
+/// the target accepted the message (or the target type is a fire-and-
+/// forget SNS/Lambda/SFN that we don't currently validate). Returns
+/// `Err` only for SQS-shaped targets where the queue doesn't exist —
+/// that's the specific signal Scheduler's DLQ routing needs.
+pub fn deliver_target(bus: &Arc<DeliveryBus>, schedule: &Schedule) -> Result<(), SqsDeliveryError> {
+    let arn = &schedule.target.arn;
+    let body = schedule.target.input.as_deref().unwrap_or("{}");
+
+    if arn.contains(":sqs:") {
+        let attrs = HashMap::new();
+        let group_id = schedule
+            .target
+            .sqs_parameters
+            .as_ref()
+            .and_then(|s| s.message_group_id.as_deref());
+        return bus.try_send_to_sqs_with_attrs(arn, body, &attrs, group_id, None);
+    }
+
+    if arn.contains(":sns:") {
+        bus.publish_to_sns(arn, body, None);
+        return Ok(());
+    }
+
+    if arn.contains(":lambda:") {
+        // Fire-and-forget async invocation. A proper implementation
+        // would await the future, but DeliveryBus::invoke_lambda is
+        // async and we're called from the synchronous tick loop.
+        let bus = bus.clone();
+        let arn = arn.clone();
+        let body = body.to_string();
+        tokio::spawn(async move {
+            let _ = bus.invoke_lambda(&arn, &body).await;
+        });
+        return Ok(());
+    }
+
+    if arn.contains(":states:") {
+        bus.start_stepfunctions_execution(arn, body);
+        return Ok(());
+    }
+
+    if arn.contains(":events:") {
+        bus.put_event_to_eventbridge("aws.scheduler", "Scheduled Event", body, "default");
+        return Ok(());
+    }
+
+    // Unsupported target type — log and succeed so we don't push it to
+    // DLQ (DLQ is for deliverable-target failures, not unknown targets).
+    tracing::warn!(target_arn = %arn, schedule = %schedule.name, "scheduler: unsupported target type, skipping");
+    Ok(())
+}
+
+/// Route a failed delivery to the schedule's DLQ, if one is
+/// configured. Metadata headers mirror AWS's format so tests can
+/// assert on `X-Amz-Scheduler-Attempt` etc.
+pub fn route_to_dlq(
+    bus: &Arc<DeliveryBus>,
+    schedule: &Schedule,
+    error_code: &str,
+    error_message: &str,
+) {
+    let dlq_arn = match schedule
+        .target
+        .dead_letter_config
+        .as_ref()
+        .and_then(|d| d.arn.as_ref())
+    {
+        Some(arn) => arn.clone(),
+        None => return,
+    };
+
+    let mut attrs: HashMap<String, SqsMessageAttribute> = HashMap::new();
+    attrs.insert("X-Amz-Scheduler-Attempt".to_string(), string_attr("1"));
+    attrs.insert(
+        "X-Amz-Scheduler-Schedule-Arn".to_string(),
+        string_attr(&schedule.arn),
+    );
+    attrs.insert(
+        "X-Amz-Scheduler-Target-Arn".to_string(),
+        string_attr(&schedule.target.arn),
+    );
+    attrs.insert(
+        "X-Amz-Scheduler-Error-Code".to_string(),
+        string_attr(error_code),
+    );
+    attrs.insert(
+        "X-Amz-Scheduler-Error-Message".to_string(),
+        string_attr(error_message),
+    );
+    attrs.insert(
+        "X-Amz-Scheduler-Group".to_string(),
+        string_attr(&schedule.group_name),
+    );
+
+    let body = schedule.target.input.as_deref().unwrap_or("{}");
+    if let Err(err) = bus.try_send_to_sqs_with_attrs(&dlq_arn, body, &attrs, None, None) {
+        tracing::error!(
+            schedule = %schedule.name,
+            dlq = %dlq_arn,
+            %err,
+            "scheduler: DLQ delivery failed — message dropped"
+        );
+    } else {
+        tracing::info!(
+            schedule = %schedule.name,
+            dlq = %dlq_arn,
+            %error_code,
+            "scheduler: delivery failed, routed to DLQ"
+        );
+    }
+}
+
+fn string_attr(v: &str) -> SqsMessageAttribute {
+    SqsMessageAttribute {
+        data_type: "String".to_string(),
+        string_value: Some(v.to_string()),
+        binary_value: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::{DeadLetterConfig, FlexibleTimeWindow, Schedule, Target};
+    use chrono::Utc;
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
+    type RecordedCall = (String, String, HashMap<String, SqsMessageAttribute>);
+
+    struct Recorder {
+        calls: Mutex<Vec<RecordedCall>>,
+        fail_arn: Option<String>,
+    }
+
+    impl fakecloud_core::delivery::SqsDelivery for Recorder {
+        fn deliver_to_queue(&self, _arn: &str, _body: &str, _attrs: &HashMap<String, String>) {}
+
+        fn try_deliver_to_queue_with_attrs(
+            &self,
+            queue_arn: &str,
+            message_body: &str,
+            message_attributes: &HashMap<String, SqsMessageAttribute>,
+            _group: Option<&str>,
+            _dedup: Option<&str>,
+        ) -> Result<(), SqsDeliveryError> {
+            if Some(queue_arn.to_string()) == self.fail_arn {
+                return Err(SqsDeliveryError::QueueNotFound(queue_arn.to_string()));
+            }
+            self.calls.lock().unwrap().push((
+                queue_arn.to_string(),
+                message_body.to_string(),
+                message_attributes.clone(),
+            ));
+            Ok(())
+        }
+    }
+
+    fn make_schedule(target_arn: &str, dlq: Option<&str>, input: Option<&str>) -> Schedule {
+        Schedule {
+            arn: "arn:aws:scheduler:us-east-1:1:schedule/default/t".to_string(),
+            name: "t".to_string(),
+            group_name: "default".to_string(),
+            schedule_expression: "rate(1 minute)".to_string(),
+            schedule_expression_timezone: None,
+            start_date: None,
+            end_date: None,
+            description: None,
+            state: "ENABLED".to_string(),
+            kms_key_arn: None,
+            action_after_completion: "NONE".to_string(),
+            flexible_time_window: FlexibleTimeWindow::default(),
+            target: Target {
+                arn: target_arn.to_string(),
+                role_arn: "arn:aws:iam::1:role/s".to_string(),
+                input: input.map(String::from),
+                dead_letter_config: dlq.map(|arn| DeadLetterConfig {
+                    arn: Some(arn.to_string()),
+                }),
+                retry_policy: None,
+                sqs_parameters: None,
+                ecs_parameters: None,
+                eventbridge_parameters: None,
+                kinesis_parameters: None,
+                sagemaker_pipeline_parameters: None,
+            },
+            creation_date: Utc::now(),
+            last_modification_date: Utc::now(),
+            last_fired: None,
+        }
+    }
+
+    #[test]
+    fn deliver_target_sqs_success() {
+        let recorder = Arc::new(Recorder {
+            calls: Mutex::new(Vec::new()),
+            fail_arn: None,
+        });
+        let bus = Arc::new(DeliveryBus::new().with_sqs(recorder.clone()));
+        let sched = make_schedule("arn:aws:sqs:us-east-1:1:dest", None, Some(r#"{"v":1}"#));
+        let result = deliver_target(&bus, &sched);
+        assert!(result.is_ok());
+        let calls = recorder.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].1, r#"{"v":1}"#);
+    }
+
+    #[test]
+    fn deliver_target_sqs_missing_queue_returns_err() {
+        let recorder = Arc::new(Recorder {
+            calls: Mutex::new(Vec::new()),
+            fail_arn: Some("arn:aws:sqs:us-east-1:1:missing".to_string()),
+        });
+        let bus = Arc::new(DeliveryBus::new().with_sqs(recorder.clone()));
+        let sched = make_schedule("arn:aws:sqs:us-east-1:1:missing", None, None);
+        let result = deliver_target(&bus, &sched);
+        assert!(matches!(result, Err(SqsDeliveryError::QueueNotFound(_))));
+    }
+
+    #[test]
+    fn route_to_dlq_includes_metadata_headers() {
+        let recorder = Arc::new(Recorder {
+            calls: Mutex::new(Vec::new()),
+            fail_arn: None,
+        });
+        let bus = Arc::new(DeliveryBus::new().with_sqs(recorder.clone()));
+        let sched = make_schedule(
+            "arn:aws:sqs:us-east-1:1:main",
+            Some("arn:aws:sqs:us-east-1:1:dlq"),
+            Some(r#"{"original":true}"#),
+        );
+        route_to_dlq(&bus, &sched, "QueueNotFound", "queue missing");
+        let calls = recorder.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        let (arn, body, attrs) = &calls[0];
+        assert_eq!(arn, "arn:aws:sqs:us-east-1:1:dlq");
+        assert_eq!(body, r#"{"original":true}"#);
+        assert_eq!(
+            attrs
+                .get("X-Amz-Scheduler-Attempt")
+                .and_then(|a| a.string_value.as_deref()),
+            Some("1")
+        );
+        assert_eq!(
+            attrs
+                .get("X-Amz-Scheduler-Error-Code")
+                .and_then(|a| a.string_value.as_deref()),
+            Some("QueueNotFound")
+        );
+        assert_eq!(
+            attrs
+                .get("X-Amz-Scheduler-Schedule-Arn")
+                .and_then(|a| a.string_value.as_deref()),
+            Some("arn:aws:scheduler:us-east-1:1:schedule/default/t")
+        );
+    }
+
+    #[test]
+    fn route_to_dlq_without_config_is_noop() {
+        let recorder = Arc::new(Recorder {
+            calls: Mutex::new(Vec::new()),
+            fail_arn: None,
+        });
+        let bus = Arc::new(DeliveryBus::new().with_sqs(recorder.clone()));
+        let sched = make_schedule("arn:aws:sqs:us-east-1:1:main", None, None);
+        route_to_dlq(&bus, &sched, "X", "y");
+        assert!(recorder.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn deliver_target_unknown_arn_is_ok() {
+        let recorder = Arc::new(Recorder {
+            calls: Mutex::new(Vec::new()),
+            fail_arn: None,
+        });
+        let bus = Arc::new(DeliveryBus::new().with_sqs(recorder.clone()));
+        let sched = make_schedule("arn:aws:ec2:us-east-1:1:instance/foo", None, None);
+        assert!(deliver_target(&bus, &sched).is_ok());
+        assert!(recorder.calls.lock().unwrap().is_empty());
+    }
+
+    // Silence unused warning on AtomicUsize import when we expand later.
+    #[allow(dead_code)]
+    fn _placeholder(_: AtomicUsize) {
+        let _ = Ordering::SeqCst;
+    }
+}

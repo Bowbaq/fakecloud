@@ -5,5 +5,8 @@
 //! ScheduleGroup, FlexibleTimeWindow, DeadLetterConfig,
 //! ActionAfterCompletion), and REST-JSON protocol.
 
+pub mod delivery;
+pub mod expr;
 pub mod service;
 pub mod state;
+pub mod ticker;
