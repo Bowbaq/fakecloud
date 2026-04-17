@@ -224,3 +224,150 @@ fn find_job_key(
             )
         })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::BedrockState;
+    use bytes::Bytes;
+    use http::{HeaderMap, Method};
+    use parking_lot::RwLock;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    fn shared() -> SharedBedrockState {
+        Arc::new(RwLock::new(BedrockState::new("123456789012", "us-east-1")))
+    }
+
+    fn req() -> AwsRequest {
+        AwsRequest {
+            service: "bedrock".to_string(),
+            action: "Eval".to_string(),
+            method: Method::POST,
+            raw_path: "/".to_string(),
+            raw_query: String::new(),
+            path_segments: vec![],
+            query_params: HashMap::new(),
+            headers: HeaderMap::new(),
+            body: Bytes::new(),
+            account_id: "123456789012".to_string(),
+            region: "us-east-1".to_string(),
+            request_id: "req".to_string(),
+            is_query_protocol: false,
+            access_key_id: None,
+            principal: None,
+        }
+    }
+
+    #[test]
+    fn create_evaluation_job_automated_detected_from_config() {
+        let s = shared();
+        let body = json!({
+            "jobName": "auto-eval",
+            "roleArn": "arn:aws:iam::123:role/bedrock",
+            "evaluationConfig": {"automated": {"datasetMetricConfigs": []}}
+        });
+        let resp = create_evaluation_job(&s, &req(), &body).unwrap();
+        assert_eq!(resp.status, StatusCode::CREATED);
+        let state = s.read();
+        assert_eq!(state.evaluation_jobs.len(), 1);
+        let job = state.evaluation_jobs.values().next().unwrap();
+        assert_eq!(job.job_type, "Automated");
+        assert_eq!(job.job_name, "auto-eval");
+        assert_eq!(job.status, "InProgress");
+    }
+
+    #[test]
+    fn create_evaluation_job_defaults_to_human_without_automated() {
+        let s = shared();
+        let body = json!({"roleArn": "arn:aws:iam::123:role/b"});
+        create_evaluation_job(&s, &req(), &body).unwrap();
+        let state = s.read();
+        let job = state.evaluation_jobs.values().next().unwrap();
+        assert_eq!(job.job_type, "Human");
+        assert_eq!(job.job_name, "eval-job");
+    }
+
+    #[test]
+    fn get_evaluation_job_by_arn_or_id_or_name() {
+        let s = shared();
+        let body = json!({"jobName": "my-eval"});
+        create_evaluation_job(&s, &req(), &body).unwrap();
+        let arn = s.read().evaluation_jobs.keys().next().unwrap().clone();
+        let id = arn.rsplit('/').next().unwrap().to_string();
+        assert!(get_evaluation_job(&s, &arn).is_ok());
+        assert!(get_evaluation_job(&s, &id).is_ok());
+        assert!(get_evaluation_job(&s, "my-eval").is_ok());
+    }
+
+    #[test]
+    fn get_evaluation_job_unknown_returns_not_found() {
+        let s = shared();
+        let err = get_evaluation_job(&s, "missing").err().unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn list_evaluation_jobs_paginates() {
+        let s = shared();
+        for i in 0..3 {
+            create_evaluation_job(&s, &req(), &json!({"jobName": format!("j{i}")})).unwrap();
+        }
+        let mut r = req();
+        r.query_params
+            .insert("maxResults".to_string(), "2".to_string());
+        let resp = list_evaluation_jobs(&s, &r).unwrap();
+        let text = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
+        let v: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(v["jobSummaries"].as_array().unwrap().len(), 2);
+        assert!(v["nextToken"].is_string());
+    }
+
+    #[test]
+    fn stop_evaluation_job_transitions_to_stopped() {
+        let s = shared();
+        create_evaluation_job(&s, &req(), &json!({})).unwrap();
+        let arn = s.read().evaluation_jobs.keys().next().unwrap().clone();
+        stop_evaluation_job(&s, &arn).unwrap();
+        assert_eq!(s.read().evaluation_jobs[&arn].status, "Stopped");
+    }
+
+    #[test]
+    fn stop_evaluation_job_conflict_when_not_in_progress() {
+        let s = shared();
+        create_evaluation_job(&s, &req(), &json!({})).unwrap();
+        let arn = s.read().evaluation_jobs.keys().next().unwrap().clone();
+        stop_evaluation_job(&s, &arn).unwrap();
+        let err = stop_evaluation_job(&s, &arn).err().unwrap();
+        assert_eq!(err.status(), StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn stop_evaluation_job_unknown_returns_not_found() {
+        let s = shared();
+        let err = stop_evaluation_job(&s, "missing").err().unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn batch_delete_removes_matches_and_collects_errors() {
+        let s = shared();
+        create_evaluation_job(&s, &req(), &json!({"jobName": "a"})).unwrap();
+        create_evaluation_job(&s, &req(), &json!({"jobName": "b"})).unwrap();
+        let body = json!({"jobIdentifiers": ["a", "missing"]});
+        let resp = batch_delete_evaluation_job(&s, &body).unwrap();
+        let v: Value =
+            serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
+        let errors = v["errors"].as_array().unwrap();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0]["jobIdentifier"], "missing");
+        assert_eq!(s.read().evaluation_jobs.len(), 1);
+    }
+
+    #[test]
+    fn batch_delete_missing_identifiers_returns_validation_error() {
+        let s = shared();
+        let err = batch_delete_evaluation_job(&s, &json!({})).err().unwrap();
+        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+    }
+}
