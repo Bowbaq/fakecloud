@@ -1322,4 +1322,60 @@ mod tests {
         let req = sts_request("BogusAction", vec![]);
         assert!(svc.handle(req).await.is_err());
     }
+
+    #[tokio::test]
+    async fn assume_role_missing_role_arn_errors() {
+        let (svc, _) = make_sts_service();
+        let req = sts_request("AssumeRole", vec![("RoleSessionName", "sess")]);
+        assert!(svc.assume_role(&req).is_err());
+    }
+
+    #[tokio::test]
+    async fn assume_role_with_web_identity_missing_token_errors() {
+        let (svc, _) = make_sts_service();
+        let req = sts_request(
+            "AssumeRoleWithWebIdentity",
+            vec![
+                ("RoleArn", "arn:aws:iam::123:role/r"),
+                ("RoleSessionName", "s"),
+            ],
+        );
+        assert!(svc.assume_role_with_web_identity(&req).is_err());
+    }
+
+    #[tokio::test]
+    async fn assume_role_with_saml_missing_assertion_errors() {
+        let (svc, _) = make_sts_service();
+        let req = sts_request(
+            "AssumeRoleWithSAML",
+            vec![
+                ("RoleArn", "arn:aws:iam::123:role/r"),
+                ("PrincipalArn", "arn:aws:iam::123:saml-provider/p"),
+            ],
+        );
+        assert!(svc.assume_role_with_saml(&req).is_err());
+    }
+
+    #[tokio::test]
+    async fn get_session_token_returns_ok() {
+        let (svc, _) = make_sts_service();
+        let req = sts_request("GetSessionToken", vec![]);
+        let resp = svc.get_session_token(&req).unwrap();
+        assert_eq!(resp.status, http::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn get_federation_token_returns_ok() {
+        let (svc, _) = make_sts_service();
+        let req = sts_request("GetFederationToken", vec![("Name", "test-user")]);
+        let resp = svc.get_federation_token(&req).unwrap();
+        assert_eq!(resp.status, http::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn get_federation_token_missing_name_errors() {
+        let (svc, _) = make_sts_service();
+        let req = sts_request("GetFederationToken", vec![]);
+        assert!(svc.get_federation_token(&req).is_err());
+    }
 }
