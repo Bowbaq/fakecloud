@@ -220,18 +220,34 @@ async fn main() {
         ),
     ));
     let rds_state = Arc::new(parking_lot::RwLock::new(
-        fakecloud_rds::state::RdsState::new(&cli.account_id, &cli.region),
+        fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        ),
     ));
     let elasticache_state = Arc::new(parking_lot::RwLock::new(
-        fakecloud_elasticache::state::ElastiCacheState::new(&cli.account_id, &cli.region),
+        fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        ),
     ));
 
     let stepfunctions_state = Arc::new(parking_lot::RwLock::new(
-        fakecloud_stepfunctions::state::StepFunctionsState::new(&cli.account_id, &cli.region),
+        fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        ),
     ));
 
     let apigatewayv2_state = Arc::new(parking_lot::RwLock::new(
-        fakecloud_apigatewayv2::state::ApiGatewayV2State::new(&cli.account_id, &cli.region),
+        fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        ),
     ));
 
     let bedrock_state = Arc::new(parking_lot::RwLock::new(
@@ -1513,20 +1529,31 @@ async fn main() {
                     match serde_json::from_slice::<fakecloud_rds::state::RdsSnapshot>(&bytes) {
                         Ok(snapshot) => {
                             if snapshot.schema_version
-                                != fakecloud_rds::state::RDS_SNAPSHOT_SCHEMA_VERSION
+                                > fakecloud_rds::state::RDS_SNAPSHOT_SCHEMA_VERSION
                             {
                                 fatal_exit(format_args!(
-                                    "rds persistence schema mismatch: on-disk={}, expected={}",
+                                    "rds persistence schema too new: on-disk={}, max supported={}",
                                     snapshot.schema_version,
                                     fakecloud_rds::state::RDS_SNAPSHOT_SCHEMA_VERSION,
                                 ));
                             }
-                            let instance_count = snapshot.state.instances.len();
-                            *rds_state.write() = snapshot.state;
-                            tracing::info!(
-                                instances = instance_count,
-                                "loaded rds persistence snapshot",
-                            );
+                            if let Some(accounts) = snapshot.accounts {
+                                let account_count = accounts.account_count();
+                                *rds_state.write() = accounts;
+                                tracing::info!(
+                                    accounts = account_count,
+                                    "loaded rds persistence snapshot (multi-account)",
+                                );
+                            } else if let Some(single_state) = snapshot.state {
+                                let instance_count = single_state.instances.len();
+                                let account_id = single_state.account_id.clone();
+                                let mut mas = rds_state.write();
+                                *mas.get_or_create(&account_id) = single_state;
+                                tracing::info!(
+                                    instances = instance_count,
+                                    "loaded rds persistence snapshot (migrated from v1)",
+                                );
+                            }
                         }
                         Err(err) => fatal_exit(format_args!(
                             "failed to parse rds persistence snapshot: {err}"
@@ -1568,20 +1595,31 @@ async fn main() {
                     ) {
                         Ok(snapshot) => {
                             if snapshot.schema_version
-                                != fakecloud_elasticache::state::ELASTICACHE_SNAPSHOT_SCHEMA_VERSION
+                                > fakecloud_elasticache::state::ELASTICACHE_SNAPSHOT_SCHEMA_VERSION
                             {
                                 fatal_exit(format_args!(
-                                    "elasticache persistence schema mismatch: on-disk={}, expected={}",
+                                    "elasticache persistence schema too new: on-disk={}, max supported={}",
                                     snapshot.schema_version,
                                     fakecloud_elasticache::state::ELASTICACHE_SNAPSHOT_SCHEMA_VERSION,
                                 ));
                             }
-                            let cluster_count = snapshot.state.cache_clusters.len();
-                            *elasticache_state.write() = snapshot.state;
-                            tracing::info!(
-                                clusters = cluster_count,
-                                "loaded elasticache persistence snapshot",
-                            );
+                            if let Some(accounts) = snapshot.accounts {
+                                let account_count = accounts.account_count();
+                                *elasticache_state.write() = accounts;
+                                tracing::info!(
+                                    accounts = account_count,
+                                    "loaded elasticache persistence snapshot (multi-account)",
+                                );
+                            } else if let Some(single_state) = snapshot.state {
+                                let cluster_count = single_state.cache_clusters.len();
+                                let account_id = single_state.account_id.clone();
+                                let mut mas = elasticache_state.write();
+                                *mas.get_or_create(&account_id) = single_state;
+                                tracing::info!(
+                                    clusters = cluster_count,
+                                    "loaded elasticache persistence snapshot (migrated from v1)",
+                                );
+                            }
                         }
                         Err(err) => fatal_exit(format_args!(
                             "failed to parse elasticache persistence snapshot: {err}"
@@ -1662,22 +1700,31 @@ async fn main() {
                     {
                         Ok(snapshot) => {
                             if snapshot.schema_version
-                                != fakecloud_stepfunctions::state::STEPFUNCTIONS_SNAPSHOT_SCHEMA_VERSION
+                                > fakecloud_stepfunctions::state::STEPFUNCTIONS_SNAPSHOT_SCHEMA_VERSION
                             {
                                 fatal_exit(format_args!(
-                                    "stepfunctions persistence schema mismatch: on-disk={}, expected={}",
+                                    "stepfunctions persistence schema too new: on-disk={}, max supported={}",
                                     snapshot.schema_version,
                                     fakecloud_stepfunctions::state::STEPFUNCTIONS_SNAPSHOT_SCHEMA_VERSION,
                                 ));
                             }
-                            let sm_count = snapshot.state.state_machines.len();
-                            let exec_count = snapshot.state.executions.len();
-                            *stepfunctions_state.write() = snapshot.state;
-                            tracing::info!(
-                                state_machines = sm_count,
-                                executions = exec_count,
-                                "loaded stepfunctions persistence snapshot",
-                            );
+                            if let Some(accounts) = snapshot.accounts {
+                                let account_count = accounts.account_count();
+                                *stepfunctions_state.write() = accounts;
+                                tracing::info!(
+                                    accounts = account_count,
+                                    "loaded stepfunctions persistence snapshot (multi-account)",
+                                );
+                            } else if let Some(single_state) = snapshot.state {
+                                let sm_count = single_state.state_machines.len();
+                                let account_id = single_state.account_id.clone();
+                                let mut mas = stepfunctions_state.write();
+                                *mas.get_or_create(&account_id) = single_state;
+                                tracing::info!(
+                                    state_machines = sm_count,
+                                    "loaded stepfunctions persistence snapshot (migrated from v1)",
+                                );
+                            }
                         }
                         Err(err) => fatal_exit(format_args!(
                             "failed to parse stepfunctions persistence snapshot: {err}"
@@ -1717,20 +1764,31 @@ async fn main() {
                     {
                         Ok(snapshot) => {
                             if snapshot.schema_version
-                                != fakecloud_apigatewayv2::state::APIGATEWAYV2_SNAPSHOT_SCHEMA_VERSION
+                                > fakecloud_apigatewayv2::state::APIGATEWAYV2_SNAPSHOT_SCHEMA_VERSION
                             {
                                 fatal_exit(format_args!(
-                                    "apigatewayv2 persistence schema mismatch: on-disk={}, expected={}",
+                                    "apigatewayv2 persistence schema too new: on-disk={}, max supported={}",
                                     snapshot.schema_version,
                                     fakecloud_apigatewayv2::state::APIGATEWAYV2_SNAPSHOT_SCHEMA_VERSION,
                                 ));
                             }
-                            let api_count = snapshot.state.apis.len();
-                            *apigatewayv2_state.write() = snapshot.state;
-                            tracing::info!(
-                                apis = api_count,
-                                "loaded apigatewayv2 persistence snapshot",
-                            );
+                            if let Some(accounts) = snapshot.accounts {
+                                let account_count = accounts.account_count();
+                                *apigatewayv2_state.write() = accounts;
+                                tracing::info!(
+                                    accounts = account_count,
+                                    "loaded apigatewayv2 persistence snapshot (multi-account)",
+                                );
+                            } else if let Some(single_state) = snapshot.state {
+                                let api_count = single_state.apis.len();
+                                let account_id = single_state.account_id.clone();
+                                let mut mas = apigatewayv2_state.write();
+                                *mas.get_or_create(&account_id) = single_state;
+                                tracing::info!(
+                                    apis = api_count,
+                                    "loaded apigatewayv2 persistence snapshot (migrated from v1)",
+                                );
+                            }
                         }
                         Err(err) => fatal_exit(format_args!(
                             "failed to parse apigatewayv2 persistence snapshot: {err}"
@@ -2739,7 +2797,8 @@ async fn main() {
                 move || {
                     let rs = rs.clone();
                     async move {
-                        let state = rs.read();
+                        let accounts = rs.read();
+                        let state = accounts.default_ref();
                         let mut instances: Vec<types::RdsInstance> = state
                             .instances
                             .values()
@@ -2760,7 +2819,8 @@ async fn main() {
                 move || {
                     let ec = ec.clone();
                     async move {
-                        let state = ec.read();
+                        let accounts = ec.read();
+                        let state = accounts.default_ref();
                         let mut clusters: Vec<types::ElastiCacheCluster> = state
                             .cache_clusters
                             .values()
@@ -2779,7 +2839,8 @@ async fn main() {
                 move || {
                     let ec = ec.clone();
                     async move {
-                        let state = ec.read();
+                        let accounts = ec.read();
+                        let state = accounts.default_ref();
                         let mut replication_groups: Vec<
                             types::ElastiCacheReplicationGroupIntrospection,
                         > = state
@@ -2803,7 +2864,8 @@ async fn main() {
                 move || {
                     let ec = ec.clone();
                     async move {
-                        let state = ec.read();
+                        let accounts = ec.read();
+                        let state = accounts.default_ref();
                         let mut serverless_caches: Vec<
                             types::ElastiCacheServerlessCacheIntrospection,
                         > = state
@@ -2825,7 +2887,8 @@ async fn main() {
                 move || {
                     let ss = ss.clone();
                     async move {
-                        let state = ss.read();
+                        let accounts = ss.read();
+                        let state = accounts.default_ref();
                         let mut executions: Vec<types::StepFunctionsExecution> = state
                             .executions
                             .values()
@@ -2853,7 +2916,8 @@ async fn main() {
                 move || {
                     let apigw_state = apigw_state.clone();
                     async move {
-                        let state = apigw_state.read();
+                        let accounts = apigw_state.read();
+                        let state = accounts.default_ref();
                         axum::Json(serde_json::json!({
                             "requests": state.request_history
                         }))

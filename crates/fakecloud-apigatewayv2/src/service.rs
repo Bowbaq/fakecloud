@@ -10,8 +10,8 @@ use fakecloud_core::validation::*;
 use fakecloud_persistence::SnapshotStore;
 
 use crate::state::{
-    ApiGatewayV2Snapshot, ApiRequest, Authorizer, Deployment, HttpApi, Integration, Route,
-    SharedApiGatewayV2State, Stage, APIGATEWAYV2_SNAPSHOT_SCHEMA_VERSION,
+    ApiGatewayV2Snapshot, ApiGatewayV2State, ApiRequest, Authorizer, Deployment, HttpApi,
+    Integration, Route, SharedApiGatewayV2State, Stage, APIGATEWAYV2_SNAPSHOT_SCHEMA_VERSION,
 };
 use crate::{cors, http_proxy, lambda_proxy, mock, router::Router};
 
@@ -80,7 +80,8 @@ impl ApiGatewayV2Service {
         let _guard = self.snapshot_lock.lock().await;
         let snapshot = ApiGatewayV2Snapshot {
             schema_version: APIGATEWAYV2_SNAPSHOT_SCHEMA_VERSION,
-            state: self.state.read().clone(),
+            state: None,
+            accounts: Some(self.state.read().clone()),
         };
         let join = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
             let bytes = serde_json::to_vec(&snapshot)
@@ -352,7 +353,8 @@ impl ApiGatewayV2Service {
         let mut api = HttpApi::new(api_id, name, description, tags, region);
         api.cors_configuration = cors_configuration;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let api_clone = api.clone();
         state.apis.insert(api.api_id.clone(), api);
 
@@ -361,7 +363,7 @@ impl ApiGatewayV2Service {
 
     fn get_api(
         &self,
-        _req: &AwsRequest,
+        req: &AwsRequest,
         api_id: Option<&str>,
     ) -> Result<AwsResponse, AwsServiceError> {
         let api_id = api_id.ok_or_else(|| {
@@ -372,7 +374,9 @@ impl ApiGatewayV2Service {
             )
         })?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = ApiGatewayV2State::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let api = state.apis.get(api_id).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
@@ -384,8 +388,10 @@ impl ApiGatewayV2Service {
         Ok(AwsResponse::ok_json(json!(api)))
     }
 
-    fn get_apis(&self, _req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+    fn get_apis(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let accounts = self.state.read();
+        let empty = ApiGatewayV2State::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let apis: Vec<&HttpApi> = state.apis.values().collect();
 
         Ok(AwsResponse::ok_json(json!({
@@ -407,7 +413,8 @@ impl ApiGatewayV2Service {
         })?;
 
         let body = req.json_body();
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let api = state.apis.get_mut(api_id).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -440,7 +447,7 @@ impl ApiGatewayV2Service {
 
     fn delete_api(
         &self,
-        _req: &AwsRequest,
+        req: &AwsRequest,
         api_id: Option<&str>,
     ) -> Result<AwsResponse, AwsServiceError> {
         let api_id = api_id.ok_or_else(|| {
@@ -451,7 +458,8 @@ impl ApiGatewayV2Service {
             )
         })?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         state.apis.remove(api_id).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -507,7 +515,8 @@ impl ApiGatewayV2Service {
             authorizer_id,
         };
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Verify API exists
         if !state.apis.contains_key(api_id) {
@@ -529,7 +538,7 @@ impl ApiGatewayV2Service {
 
     fn get_route(
         &self,
-        _req: &AwsRequest,
+        req: &AwsRequest,
         api_id: Option<&str>,
         route_id: Option<&str>,
     ) -> Result<AwsResponse, AwsServiceError> {
@@ -549,7 +558,9 @@ impl ApiGatewayV2Service {
             )
         })?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = ApiGatewayV2State::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let routes = state.routes.get(api_id).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -572,7 +583,7 @@ impl ApiGatewayV2Service {
 
     fn get_routes(
         &self,
-        _req: &AwsRequest,
+        req: &AwsRequest,
         api_id: Option<&str>,
     ) -> Result<AwsResponse, AwsServiceError> {
         let api_id = api_id.ok_or_else(|| {
@@ -583,7 +594,9 @@ impl ApiGatewayV2Service {
             )
         })?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = ApiGatewayV2State::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         // Verify API exists
         if !state.apis.contains_key(api_id) {
@@ -628,7 +641,8 @@ impl ApiGatewayV2Service {
         })?;
 
         let body = req.json_body();
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let routes = state.routes.get_mut(api_id).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -667,7 +681,7 @@ impl ApiGatewayV2Service {
 
     fn delete_route(
         &self,
-        _req: &AwsRequest,
+        req: &AwsRequest,
         api_id: Option<&str>,
         route_id: Option<&str>,
     ) -> Result<AwsResponse, AwsServiceError> {
@@ -687,7 +701,8 @@ impl ApiGatewayV2Service {
             )
         })?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let routes = state.routes.get_mut(api_id).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -751,7 +766,8 @@ impl ApiGatewayV2Service {
             timeout_in_millis,
         };
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Verify API exists
         if !state.apis.contains_key(api_id) {
@@ -773,7 +789,7 @@ impl ApiGatewayV2Service {
 
     fn get_integration(
         &self,
-        _req: &AwsRequest,
+        req: &AwsRequest,
         api_id: Option<&str>,
         integration_id: Option<&str>,
     ) -> Result<AwsResponse, AwsServiceError> {
@@ -793,7 +809,9 @@ impl ApiGatewayV2Service {
             )
         })?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = ApiGatewayV2State::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let integrations = state.integrations.get(api_id).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -816,7 +834,7 @@ impl ApiGatewayV2Service {
 
     fn get_integrations(
         &self,
-        _req: &AwsRequest,
+        req: &AwsRequest,
         api_id: Option<&str>,
     ) -> Result<AwsResponse, AwsServiceError> {
         let api_id = api_id.ok_or_else(|| {
@@ -827,7 +845,9 @@ impl ApiGatewayV2Service {
             )
         })?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = ApiGatewayV2State::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         // Verify API exists
         if !state.apis.contains_key(api_id) {
@@ -872,7 +892,8 @@ impl ApiGatewayV2Service {
         })?;
 
         let body = req.json_body();
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let integrations = state.integrations.get_mut(api_id).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -911,7 +932,7 @@ impl ApiGatewayV2Service {
 
     fn delete_integration(
         &self,
-        _req: &AwsRequest,
+        req: &AwsRequest,
         api_id: Option<&str>,
         integration_id: Option<&str>,
     ) -> Result<AwsResponse, AwsServiceError> {
@@ -931,7 +952,8 @@ impl ApiGatewayV2Service {
             )
         })?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let integrations = state.integrations.get_mut(api_id).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -996,7 +1018,8 @@ impl ApiGatewayV2Service {
             last_updated_date: None,
         };
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Verify API exists
         if !state.apis.contains_key(api_id) {
@@ -1031,7 +1054,7 @@ impl ApiGatewayV2Service {
 
     fn get_stage(
         &self,
-        _req: &AwsRequest,
+        req: &AwsRequest,
         api_id: Option<&str>,
         stage_name: Option<&str>,
     ) -> Result<AwsResponse, AwsServiceError> {
@@ -1051,7 +1074,9 @@ impl ApiGatewayV2Service {
             )
         })?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = ApiGatewayV2State::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let stages = state.stages.get(api_id).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -1074,7 +1099,7 @@ impl ApiGatewayV2Service {
 
     fn get_stages(
         &self,
-        _req: &AwsRequest,
+        req: &AwsRequest,
         api_id: Option<&str>,
     ) -> Result<AwsResponse, AwsServiceError> {
         let api_id = api_id.ok_or_else(|| {
@@ -1085,7 +1110,9 @@ impl ApiGatewayV2Service {
             )
         })?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = ApiGatewayV2State::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         // Verify API exists
         if !state.apis.contains_key(api_id) {
@@ -1130,7 +1157,8 @@ impl ApiGatewayV2Service {
         })?;
 
         let body = req.json_body();
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let stages = state.stages.get_mut(api_id).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -1167,7 +1195,7 @@ impl ApiGatewayV2Service {
 
     fn delete_stage(
         &self,
-        _req: &AwsRequest,
+        req: &AwsRequest,
         api_id: Option<&str>,
         stage_name: Option<&str>,
     ) -> Result<AwsResponse, AwsServiceError> {
@@ -1187,7 +1215,8 @@ impl ApiGatewayV2Service {
             )
         })?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let stages = state.stages.get_mut(api_id).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -1237,7 +1266,8 @@ impl ApiGatewayV2Service {
             auto_deployed: false,
         };
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Verify API exists
         if !state.apis.contains_key(api_id) {
@@ -1269,7 +1299,7 @@ impl ApiGatewayV2Service {
 
     fn get_deployment(
         &self,
-        _req: &AwsRequest,
+        req: &AwsRequest,
         api_id: Option<&str>,
         deployment_id: Option<&str>,
     ) -> Result<AwsResponse, AwsServiceError> {
@@ -1289,7 +1319,9 @@ impl ApiGatewayV2Service {
             )
         })?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = ApiGatewayV2State::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let deployments = state.deployments.get(api_id).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -1312,7 +1344,7 @@ impl ApiGatewayV2Service {
 
     fn get_deployments(
         &self,
-        _req: &AwsRequest,
+        req: &AwsRequest,
         api_id: Option<&str>,
     ) -> Result<AwsResponse, AwsServiceError> {
         let api_id = api_id.ok_or_else(|| {
@@ -1323,7 +1355,9 @@ impl ApiGatewayV2Service {
             )
         })?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = ApiGatewayV2State::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         // Verify API exists
         if !state.apis.contains_key(api_id) {
@@ -1416,7 +1450,8 @@ impl ApiGatewayV2Service {
             jwt_configuration,
         };
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Verify API exists
         if !state.apis.contains_key(api_id) {
@@ -1438,7 +1473,7 @@ impl ApiGatewayV2Service {
 
     fn get_authorizer(
         &self,
-        _req: &AwsRequest,
+        req: &AwsRequest,
         api_id: Option<&str>,
         authorizer_id: Option<&str>,
     ) -> Result<AwsResponse, AwsServiceError> {
@@ -1458,7 +1493,9 @@ impl ApiGatewayV2Service {
             )
         })?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = ApiGatewayV2State::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         // Verify API exists
         if !state.apis.contains_key(api_id) {
@@ -1486,7 +1523,7 @@ impl ApiGatewayV2Service {
 
     fn get_authorizers(
         &self,
-        _req: &AwsRequest,
+        req: &AwsRequest,
         api_id: Option<&str>,
     ) -> Result<AwsResponse, AwsServiceError> {
         let api_id = api_id.ok_or_else(|| {
@@ -1497,7 +1534,9 @@ impl ApiGatewayV2Service {
             )
         })?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = ApiGatewayV2State::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         // Verify API exists
         if !state.apis.contains_key(api_id) {
@@ -1542,7 +1581,8 @@ impl ApiGatewayV2Service {
         })?;
 
         let body = req.json_body();
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Verify API exists
         if !state.apis.contains_key(api_id) {
@@ -1598,7 +1638,7 @@ impl ApiGatewayV2Service {
 
     fn delete_authorizer(
         &self,
-        _req: &AwsRequest,
+        req: &AwsRequest,
         api_id: Option<&str>,
         authorizer_id: Option<&str>,
     ) -> Result<AwsResponse, AwsServiceError> {
@@ -1618,7 +1658,8 @@ impl ApiGatewayV2Service {
             )
         })?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Verify API exists
         if !state.apis.contains_key(api_id) {
@@ -1661,7 +1702,9 @@ impl ApiGatewayV2Service {
 
         // Find the API for this stage and get CORS configuration
         let (api_id, routes, cors_config) = {
-            let state = self.state.read();
+            let accounts = self.state.read();
+            let empty = ApiGatewayV2State::new(&req.account_id, &req.region);
+            let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
             // Find which API has this stage (sort by API ID for deterministic resolution)
             let mut stage_entries: Vec<_> = state
@@ -1732,7 +1775,9 @@ impl ApiGatewayV2Service {
             })?;
 
         let integration = {
-            let state = self.state.read();
+            let accounts = self.state.read();
+            let empty = ApiGatewayV2State::new(&req.account_id, &req.region);
+            let state = accounts.get(&req.account_id).unwrap_or(&empty);
             state
                 .integrations
                 .get(&api_id)
@@ -1858,7 +1903,8 @@ impl ApiGatewayV2Service {
             status_code,
         };
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         state.request_history.push(request_record);
     }
 }
@@ -1871,7 +1917,6 @@ fn generate_id(prefix: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::ApiGatewayV2State;
     use bytes::Bytes;
     use http::{HeaderMap, Method};
     use parking_lot::RwLock;
@@ -1880,10 +1925,9 @@ mod tests {
     use std::sync::Arc;
 
     fn make_state() -> SharedApiGatewayV2State {
-        Arc::new(RwLock::new(ApiGatewayV2State::new(
-            "123456789012",
-            "us-east-1",
-        )))
+        Arc::new(RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ))
     }
 
     fn make_request(method: Method, path: &str, body: &str) -> AwsRequest {

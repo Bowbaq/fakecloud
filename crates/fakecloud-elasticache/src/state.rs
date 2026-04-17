@@ -4,7 +4,14 @@ use std::sync::Arc;
 use fakecloud_aws::arn::Arn;
 use parking_lot::RwLock;
 
-pub type SharedElastiCacheState = Arc<RwLock<ElastiCacheState>>;
+pub type SharedElastiCacheState =
+    Arc<RwLock<fakecloud_core::multi_account::MultiAccountState<ElastiCacheState>>>;
+
+impl fakecloud_core::multi_account::AccountState for ElastiCacheState {
+    fn new_for_account(account_id: &str, region: &str, _endpoint: &str) -> Self {
+        Self::new(account_id, region)
+    }
+}
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CacheEngineVersion {
@@ -626,12 +633,15 @@ fn default_users(account_id: &str, region: &str) -> HashMap<String, ElastiCacheU
     map
 }
 
-pub const ELASTICACHE_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+pub const ELASTICACHE_SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ElastiCacheSnapshot {
     pub schema_version: u32,
-    pub state: ElastiCacheState,
+    #[serde(default)]
+    pub accounts: Option<fakecloud_core::multi_account::MultiAccountState<ElastiCacheState>>,
+    #[serde(default)]
+    pub state: Option<ElastiCacheState>,
 }
 
 #[cfg(test)]

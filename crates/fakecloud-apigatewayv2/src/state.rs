@@ -3,7 +3,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-pub type SharedApiGatewayV2State = Arc<parking_lot::RwLock<ApiGatewayV2State>>;
+pub type SharedApiGatewayV2State =
+    Arc<parking_lot::RwLock<fakecloud_core::multi_account::MultiAccountState<ApiGatewayV2State>>>;
+
+impl fakecloud_core::multi_account::AccountState for ApiGatewayV2State {
+    fn new_for_account(account_id: &str, region: &str, _endpoint: &str) -> Self {
+        Self::new(account_id, region)
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiGatewayV2State {
@@ -27,12 +34,15 @@ pub struct ApiGatewayV2State {
     pub request_history: Vec<ApiRequest>,
 }
 
-pub const APIGATEWAYV2_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+pub const APIGATEWAYV2_SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ApiGatewayV2Snapshot {
     pub schema_version: u32,
-    pub state: ApiGatewayV2State,
+    #[serde(default)]
+    pub accounts: Option<fakecloud_core::multi_account::MultiAccountState<ApiGatewayV2State>>,
+    #[serde(default)]
+    pub state: Option<ApiGatewayV2State>,
 }
 
 impl ApiGatewayV2State {

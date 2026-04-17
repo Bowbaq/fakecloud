@@ -117,7 +117,7 @@ impl ResetState {
                 self.scheduler.write().reset();
             }
             "apigateway" | "apigatewayv2" => {
-                self.apigatewayv2.write().apis.clear();
+                self.apigatewayv2.write().reset();
             }
             "bedrock" | "bedrock-runtime" => {
                 self.bedrock.write().reset();
@@ -180,7 +180,7 @@ impl ResetState {
         }
         self.stepfunctions.write().reset();
         self.scheduler.write().reset();
-        self.apigatewayv2.write().apis.clear();
+        self.apigatewayv2.write().reset();
         self.bedrock.write().reset();
         tracing::info!("state reset via reset API");
         axum::Json(types::ResetResponse {
@@ -271,7 +271,9 @@ mod tests {
 
     #[test]
     fn reset_service_clears_rds_state() {
-        let mut rds = RdsState::new("123456789012", "us-east-1");
+        let mut rds_mas: fakecloud_core::multi_account::MultiAccountState<RdsState> =
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", "");
+        let rds = rds_mas.default_mut();
         let created_at = Utc::now();
         rds.instances.insert(
             "db-1".to_string(),
@@ -414,14 +416,19 @@ mod tests {
                     "http://localhost:4566",
                 ),
             )),
-            rds: Arc::new(parking_lot::RwLock::new(rds)),
+            rds: Arc::new(parking_lot::RwLock::new(rds_mas)),
             elasticache: Arc::new(parking_lot::RwLock::new(
-                fakecloud_elasticache::state::ElastiCacheState::new("123456789012", "us-east-1"),
-            )),
-            stepfunctions: Arc::new(parking_lot::RwLock::new(
-                fakecloud_stepfunctions::state::StepFunctionsState::new(
+                fakecloud_core::multi_account::MultiAccountState::new(
                     "123456789012",
                     "us-east-1",
+                    "",
+                ),
+            )),
+            stepfunctions: Arc::new(parking_lot::RwLock::new(
+                fakecloud_core::multi_account::MultiAccountState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "",
                 ),
             )),
             scheduler: Arc::new(parking_lot::RwLock::new(
@@ -432,7 +439,11 @@ mod tests {
                 ),
             )),
             apigatewayv2: Arc::new(parking_lot::RwLock::new(
-                fakecloud_apigatewayv2::state::ApiGatewayV2State::new("123456789012", "us-east-1"),
+                fakecloud_core::multi_account::MultiAccountState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "",
+                ),
             )),
             bedrock: Arc::new(parking_lot::RwLock::new(
                 fakecloud_core::multi_account::MultiAccountState::new(
@@ -448,7 +459,7 @@ mod tests {
 
         state.reset_service("rds").expect("reset rds");
 
-        assert!(state.rds.read().instances.is_empty());
+        assert!(state.rds.read().default_ref().instances.is_empty());
     }
 
     #[test]
