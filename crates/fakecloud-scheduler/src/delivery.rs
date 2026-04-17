@@ -31,7 +31,13 @@ pub fn deliver_target(bus: &Arc<DeliveryBus>, schedule: &Schedule) -> Result<(),
             .sqs_parameters
             .as_ref()
             .and_then(|s| s.message_group_id.as_deref());
-        return bus.try_send_to_sqs_with_attrs(arn, body, &attrs, group_id, None);
+        // FIFO queues without content-based dedup reject messages
+        // lacking a dedup ID; AWS Scheduler synthesizes one per fire
+        // so the message survives regardless of the queue's dedup
+        // policy. Use the schedule ARN + fire timestamp so the same
+        // schedule can fire repeatedly without being deduplicated.
+        let dedup_id = fifo_dedup_id(arn, &schedule.arn);
+        return bus.try_send_to_sqs_with_attrs(arn, body, &attrs, group_id, dedup_id.as_deref());
     }
 
     if arn.contains(":sns:") {
@@ -58,7 +64,8 @@ pub fn deliver_target(bus: &Arc<DeliveryBus>, schedule: &Schedule) -> Result<(),
     }
 
     if arn.contains(":events:") {
-        bus.put_event_to_eventbridge("aws.scheduler", "Scheduled Event", body, "default");
+        let bus_name = event_bus_name_from_arn(arn);
+        bus.put_event_to_eventbridge("aws.scheduler", "Scheduled Event", body, &bus_name);
         return Ok(());
     }
 
@@ -111,7 +118,17 @@ pub fn route_to_dlq(
     );
 
     let body = schedule.target.input.as_deref().unwrap_or("{}");
-    if let Err(err) = bus.try_send_to_sqs_with_attrs(&dlq_arn, body, &attrs, None, None) {
+    let dedup_id = fifo_dedup_id(&dlq_arn, &schedule.arn);
+    // FIFO DLQs need a MessageGroupId; use the schedule name so each
+    // schedule's DLQ messages fall in its own ordered stream.
+    let group_id = dedup_id.as_ref().map(|_| schedule.name.clone());
+    if let Err(err) = bus.try_send_to_sqs_with_attrs(
+        &dlq_arn,
+        body,
+        &attrs,
+        group_id.as_deref(),
+        dedup_id.as_deref(),
+    ) {
         tracing::error!(
             schedule = %schedule.name,
             dlq = %dlq_arn,
@@ -125,6 +142,41 @@ pub fn route_to_dlq(
             %error_code,
             "scheduler: delivery failed, routed to DLQ"
         );
+    }
+}
+
+/// Build a dedup ID for FIFO queues. Returns `Some(...)` only when
+/// the target queue name ends in `.fifo`; standard queues ignore
+/// dedup IDs so we skip the allocation. The ID combines the schedule
+/// ARN with a unique per-fire UUID so repeated fires of the same
+/// schedule aren't deduplicated.
+fn fifo_dedup_id(queue_arn: &str, schedule_arn: &str) -> Option<String> {
+    if !queue_arn.ends_with(".fifo") {
+        return None;
+    }
+    Some(format!("{}-{}", schedule_arn, uuid::Uuid::new_v4()))
+}
+
+/// Extract the EventBridge bus name from a `:events:` target ARN.
+/// Two shapes are accepted:
+/// - `arn:aws:events:<region>:<account>:event-bus/<name>`
+/// - `arn:aws:events:<region>:<account>:bus/<name>` (legacy / alias)
+///
+/// Returns `"default"` only when the ARN names the default bus or is
+/// malformed; never as a silent fallback for a custom bus name.
+fn event_bus_name_from_arn(arn: &str) -> String {
+    let resource = match arn.split(':').nth(5) {
+        Some(r) => r,
+        None => return "default".to_string(),
+    };
+    let name = resource
+        .strip_prefix("event-bus/")
+        .or_else(|| resource.strip_prefix("bus/"))
+        .unwrap_or("default");
+    if name.is_empty() {
+        "default".to_string()
+    } else {
+        name.to_string()
     }
 }
 
@@ -284,6 +336,37 @@ mod tests {
         let sched = make_schedule("arn:aws:sqs:us-east-1:1:main", None, None);
         route_to_dlq(&bus, &sched, "X", "y");
         assert!(recorder.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn fifo_dedup_id_generated_for_fifo_queue() {
+        let id = fifo_dedup_id("arn:aws:sqs:us-east-1:1:q.fifo", "arn:sched/a");
+        assert!(id.is_some());
+        let s = id.unwrap();
+        assert!(s.starts_with("arn:sched/a-"));
+    }
+
+    #[test]
+    fn fifo_dedup_id_skipped_for_standard_queue() {
+        let id = fifo_dedup_id("arn:aws:sqs:us-east-1:1:standard", "arn:sched/a");
+        assert!(id.is_none());
+    }
+
+    #[test]
+    fn event_bus_name_from_arn_custom() {
+        assert_eq!(
+            event_bus_name_from_arn("arn:aws:events:us-east-1:1:event-bus/my-bus"),
+            "my-bus"
+        );
+    }
+
+    #[test]
+    fn event_bus_name_from_arn_default_fallback() {
+        assert_eq!(
+            event_bus_name_from_arn("arn:aws:events:us-east-1:1:event-bus/default"),
+            "default"
+        );
+        assert_eq!(event_bus_name_from_arn("arn:malformed"), "default");
     }
 
     #[test]

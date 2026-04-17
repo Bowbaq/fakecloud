@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{DateTime, Timelike, Utc};
+use chrono::{DateTime, Datelike, Timelike, Utc};
 
 use fakecloud_core::delivery::DeliveryBus;
 
@@ -33,14 +33,14 @@ impl Ticker {
         // (hour, minute) pair of the last cron fire, keyed by schedule
         // identity — keeps cron schedules from firing multiple times
         // inside the same minute when the 1s tick runs 60+ times.
-        let mut cron_last_minute: HashMap<(String, ScheduleKey), (u32, u32)> = HashMap::new();
+        let mut cron_last_minute: HashMap<(String, ScheduleKey), CronFireStamp> = HashMap::new();
         loop {
             interval.tick().await;
             self.tick(&mut cron_last_minute);
         }
     }
 
-    fn tick(&self, cron_last_minute: &mut HashMap<(String, ScheduleKey), (u32, u32)>) {
+    fn tick(&self, cron_last_minute: &mut HashMap<(String, ScheduleKey), CronFireStamp>) {
         let now = Utc::now();
         // Phase 1: collect due schedules while holding a short write lock.
         let mut due: Vec<(String, ScheduleKey)> = Vec::new();
@@ -156,19 +156,41 @@ fn post_fire_action(expr: &Expr, schedule: &crate::state::Schedule) -> PostFire 
     }
 }
 
+/// Identity of the last minute-slot a cron schedule fired in. Keyed
+/// by full (year, ordinal, hour, minute) so subsequent days of the
+/// same (hour, minute) are treated as fresh fires.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct CronFireStamp {
+    year: i32,
+    ordinal: u32,
+    hour: u32,
+    minute: u32,
+}
+
+impl CronFireStamp {
+    fn from(now: DateTime<Utc>) -> Self {
+        Self {
+            year: now.year(),
+            ordinal: now.ordinal(),
+            hour: now.hour(),
+            minute: now.minute(),
+        }
+    }
+}
+
 fn is_due_with_dedup(
     expr: &Expr,
     last_fired: Option<DateTime<Utc>>,
     now: DateTime<Utc>,
     key: &(String, ScheduleKey),
-    cron_last_minute: &mut HashMap<(String, ScheduleKey), (u32, u32)>,
+    cron_last_minute: &mut HashMap<(String, ScheduleKey), CronFireStamp>,
 ) -> bool {
     match expr {
         Expr::Cron(c) => {
             if !expr::matches_cron(c, now) {
                 return false;
             }
-            let current = (now.hour(), now.minute());
+            let current = CronFireStamp::from(now);
             if cron_last_minute.get(key) == Some(&current) {
                 return false;
             }

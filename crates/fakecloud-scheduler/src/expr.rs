@@ -85,25 +85,25 @@ fn parse_cron(inner: &str) -> Option<Expr> {
     if parts.len() != 6 {
         return None;
     }
+    // Reject tokens we don't understand (ranges, lists, step values,
+    // month/weekday name shorthands). Falling back to wildcard would
+    // cause unsupported schedules to fire every minute instead of
+    // being silently disabled. `year` (parts[5]) is accepted but not
+    // enforced at fire time — matches existing eventbridge behavior.
     Some(Expr::Cron(CronExpr {
-        minute: parse_cron_field(parts[0]),
-        hour: parse_cron_field(parts[1]),
-        day_of_month: parse_cron_field(parts[2]),
-        month: parse_cron_field(parts[3]),
-        day_of_week: parse_cron_field(parts[4]),
-        // year (parts[5]) is parsed but not enforced — matches existing
-        // eventbridge behavior.
+        minute: parse_cron_field(parts[0])?,
+        hour: parse_cron_field(parts[1])?,
+        day_of_month: parse_cron_field(parts[2])?,
+        month: parse_cron_field(parts[3])?,
+        day_of_week: parse_cron_field(parts[4])?,
     }))
 }
 
-fn parse_cron_field(s: &str) -> CronField {
+fn parse_cron_field(s: &str) -> Option<CronField> {
     if s == "*" || s == "?" {
-        return CronField::Any;
+        return Some(CronField::Any);
     }
-    match s.parse::<u32>() {
-        Ok(v) => CronField::Value(v),
-        Err(_) => CronField::Any,
-    }
+    s.parse::<u32>().ok().map(CronField::Value)
 }
 
 /// Decide whether `expr` is due to fire, given its `last_fired` time
@@ -189,6 +189,17 @@ mod tests {
         assert!(matches!(parse("cron(* * * * ? *)"), Some(Expr::Cron(_))));
         assert!(matches!(parse("cron(0 12 * * ? *)"), Some(Expr::Cron(_))));
         assert!(parse("cron(1 2 3)").is_none());
+    }
+
+    #[test]
+    fn parse_cron_rejects_unsupported_tokens() {
+        // Non-numeric, non-wildcard tokens are now rejected instead
+        // of being silently converted to wildcards (which would make
+        // every unsupported schedule fire every minute).
+        assert!(parse("cron(*/5 * * * ? *)").is_none());
+        assert!(parse("cron(1,3,5 * * * ? *)").is_none());
+        assert!(parse("cron(1-3 * * * ? *)").is_none());
+        assert!(parse("cron(xyz 12 * * ? *)").is_none());
     }
 
     #[test]

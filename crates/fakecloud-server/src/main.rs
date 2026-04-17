@@ -703,6 +703,7 @@ async fn main() {
     // Spawn the EventBridge scheduler as a background task
     let eb_state_for_ses = eb_state.clone();
     let eb_state_for_sfn = eb_state.clone();
+    let eb_state_for_scheduler = eb_state.clone();
     let mut scheduler = fakecloud_eventbridge::scheduler::Scheduler::new(eb_state, delivery_for_eb)
         .with_lambda(lambda_state.clone())
         .with_logs(logs_state.clone());
@@ -1766,15 +1767,54 @@ async fn main() {
     let scheduler_service = SchedulerService::new(scheduler_state.clone());
     registry.register(Arc::new(scheduler_service));
 
-    // Spawn the Scheduler firing loop as a background task. Shares the
-    // SQS delivery bus used by EventBridge Rules so the same cross-
-    // service delivery plumbing (DLQ routing included) applies.
+    // Spawn the Scheduler firing loop as a background task. Mirrors
+    // EventBridge's delivery bus so every target type Scheduler
+    // routes (`:sqs:`, `:sns:`, `:lambda:`, `:states:`, `:events:`)
+    // resolves to a live sender.
+    let sfn_delivery_for_scheduler: Arc<dyn fakecloud_core::delivery::StepFunctionsDelivery> = {
+        let mut sns_fanout_for_sfn = DeliveryBus::new().with_sqs(sqs_delivery.clone());
+        if let Some(ref ld) = lambda_delivery {
+            sns_fanout_for_sfn = sns_fanout_for_sfn.with_lambda(ld.clone());
+        }
+        let sns_for_sfn = Arc::new(fakecloud_sns::delivery::SnsDeliveryImpl::new(
+            sns_state.clone(),
+            Arc::new(sns_fanout_for_sfn),
+        ));
+        let eb_for_sfn = Arc::new(
+            fakecloud_eventbridge::delivery::EventBridgeDeliveryImpl::new(
+                eb_state_for_scheduler.clone(),
+                Arc::new(DeliveryBus::new().with_sqs(sqs_delivery.clone())),
+            ),
+        );
+        let mut sfn_interpreter_bus = DeliveryBus::new()
+            .with_sqs(sqs_delivery.clone())
+            .with_sns(sns_for_sfn)
+            .with_eventbridge(eb_for_sfn);
+        if let Some(ref ld) = lambda_delivery {
+            sfn_interpreter_bus = sfn_interpreter_bus.with_lambda(ld.clone());
+        }
+        Arc::new(stepfunctions_delivery::StepFunctionsDeliveryImpl::new(
+            stepfunctions_state.clone(),
+            Some(Arc::new(sfn_interpreter_bus)),
+            Some(dynamodb_state.clone()),
+        ))
+    };
+    let eb_delivery_for_scheduler = Arc::new(
+        fakecloud_eventbridge::delivery::EventBridgeDeliveryImpl::new(
+            eb_state_for_scheduler,
+            Arc::new(DeliveryBus::new().with_sqs(sqs_delivery.clone())),
+        ),
+    );
     let delivery_for_scheduler = {
-        let mut bus = DeliveryBus::new().with_sqs(sqs_delivery.clone());
+        let mut bus = DeliveryBus::new()
+            .with_sqs(sqs_delivery.clone())
+            .with_sns(sns_delivery_for_scheduler)
+            .with_eventbridge(eb_delivery_for_scheduler)
+            .with_stepfunctions(sfn_delivery_for_scheduler);
         if let Some(ref ld) = lambda_delivery {
             bus = bus.with_lambda(ld.clone());
         }
-        Arc::new(bus.with_sns(sns_delivery_for_scheduler))
+        Arc::new(bus)
     };
     let scheduler_ticker =
         fakecloud_scheduler::ticker::Ticker::new(scheduler_state.clone(), delivery_for_scheduler);
