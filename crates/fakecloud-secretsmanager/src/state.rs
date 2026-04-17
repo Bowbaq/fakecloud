@@ -71,3 +71,46 @@ pub struct SecretsManagerSnapshot {
 }
 
 pub const SECRETSMANAGER_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_initializes_empty() {
+        let state = SecretsManagerState::new("123456789012", "us-east-1");
+        assert_eq!(state.account_id, "123456789012");
+        assert_eq!(state.region, "us-east-1");
+        assert!(state.secrets.is_empty());
+    }
+
+    #[test]
+    fn reset_clears_secrets() {
+        let mut state = SecretsManagerState::new("123456789012", "us-east-1");
+        state.secrets.insert(
+            "s1".to_string(),
+            Secret {
+                name: "s1".to_string(),
+                arn: "arn".to_string(),
+                description: None,
+                kms_key_id: None,
+                versions: HashMap::new(),
+                current_version_id: None,
+                tags: vec![],
+                tags_ever_set: false,
+                deleted: false,
+                deletion_date: None,
+                created_at: Utc::now(),
+                last_changed_at: Utc::now(),
+                last_accessed_at: None,
+                rotation_enabled: None,
+                rotation_lambda_arn: None,
+                rotation_rules: None,
+                last_rotated_at: None,
+                resource_policy: None,
+            },
+        );
+        state.reset();
+        assert!(state.secrets.is_empty());
+    }
+}
