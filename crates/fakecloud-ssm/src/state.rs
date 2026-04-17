@@ -746,3 +746,15 @@ pub struct SsmSnapshot {
 }
 
 pub const SSM_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_initializes() {
+        let state = SsmState::new("123456789012", "us-east-1");
+        assert_eq!(state.account_id, "123456789012");
+        assert_eq!(state.region, "us-east-1");
+    }
+}
