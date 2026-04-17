@@ -59,14 +59,28 @@ async fn sts_caller_identity_reflects_account() {
 async fn sts_assume_role_routes_to_target_account() {
     let server = start().await;
 
-    // Admin in account A assumes role in account B
+    // Bootstrap admins in both accounts
     let (a_akid, a_secret) = server.create_admin(ACCOUNT_A, "admin-a").await;
-    let a_cfg = config_with(&server, &a_akid, &a_secret).await;
+    let (b_akid, b_secret) = server.create_admin(ACCOUNT_B, "admin-b").await;
 
+    // Create the role in account B with a trust policy that allows anyone
+    let b_cfg = config_with(&server, &b_akid, &b_secret).await;
+    let iam_b = aws_sdk_iam::Client::new(&b_cfg);
+    iam_b
+        .create_role()
+        .role_name("cross-account-role")
+        .assume_role_policy_document(
+            r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":"*","Action":"sts:AssumeRole"}]}"#,
+        )
+        .send()
+        .await
+        .unwrap();
+
+    // Admin in account A assumes the role in account B
+    let a_cfg = config_with(&server, &a_akid, &a_secret).await;
     let sts = StsClient::new(&a_cfg);
     let role_arn = format!("arn:aws:iam::{ACCOUNT_B}:role/cross-account-role");
 
-    // AssumeRole should succeed (identity policy allows sts:AssumeRole)
     let assumed = sts
         .assume_role()
         .role_arn(&role_arn)

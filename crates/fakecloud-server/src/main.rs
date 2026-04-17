@@ -1718,6 +1718,9 @@ async fn main() {
                 fakecloud_kms::resource_policy::KmsResourcePolicyProvider::shared(
                     kms_state.clone(),
                 ),
+                fakecloud_iam::resource_policy::StsResourcePolicyProvider::shared(
+                    iam_state.clone(),
+                ),
             ],
         )),
     };
