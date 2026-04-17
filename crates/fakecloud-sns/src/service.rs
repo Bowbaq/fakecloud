@@ -6297,4 +6297,139 @@ mod tests {
         let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("Policy"));
     }
+
+    // ── PublishBatch error paths ──
+
+    #[test]
+    fn publish_batch_missing_topic_errors() {
+        let (svc, _) = make_sns();
+        let req = sns_request(
+            "PublishBatch",
+            vec![
+                ("PublishBatchRequestEntries.member.1.Id", "e1"),
+                ("PublishBatchRequestEntries.member.1.Message", "hi"),
+            ],
+        );
+        assert!(svc.publish_batch(&req).is_err());
+    }
+
+    #[test]
+    fn subscribe_missing_topic_arn_errors() {
+        let (svc, _) = make_sns();
+        let req = sns_request("Subscribe", vec![("Protocol", "sqs")]);
+        assert!(svc.subscribe(&req).is_err());
+    }
+
+    #[test]
+    fn unsubscribe_missing_arn_errors() {
+        let (svc, _) = make_sns();
+        let req = sns_request("Unsubscribe", vec![]);
+        assert!(svc.unsubscribe(&req).is_err());
+    }
+
+    #[test]
+    fn get_subscription_attributes_missing_arn_errors() {
+        let (svc, _) = make_sns();
+        let req = sns_request("GetSubscriptionAttributes", vec![]);
+        assert!(svc.get_subscription_attributes(&req).is_err());
+    }
+
+    #[test]
+    fn set_subscription_attributes_missing_arn_errors() {
+        let (svc, _) = make_sns();
+        let req = sns_request(
+            "SetSubscriptionAttributes",
+            vec![("AttributeName", "x"), ("AttributeValue", "y")],
+        );
+        assert!(svc.set_subscription_attributes(&req).is_err());
+    }
+
+    #[test]
+    fn set_topic_attributes_missing_arn_errors() {
+        let (svc, _) = make_sns();
+        let req = sns_request(
+            "SetTopicAttributes",
+            vec![("AttributeName", "DisplayName"), ("AttributeValue", "x")],
+        );
+        assert!(svc.set_topic_attributes(&req).is_err());
+    }
+
+    #[test]
+    fn list_tags_missing_resource_arn_errors() {
+        let (svc, _) = make_sns();
+        let req = sns_request("ListTagsForResource", vec![]);
+        assert!(svc.list_tags_for_resource(&req).is_err());
+    }
+
+    #[test]
+    fn tag_resource_missing_arn_errors() {
+        let (svc, _) = make_sns();
+        let req = sns_request(
+            "TagResource",
+            vec![("Tags.member.1.Key", "k"), ("Tags.member.1.Value", "v")],
+        );
+        assert!(svc.tag_resource(&req).is_err());
+    }
+
+    #[test]
+    fn untag_resource_missing_arn_errors() {
+        let (svc, _) = make_sns();
+        let req = sns_request("UntagResource", vec![("TagKeys.member.1", "k")]);
+        assert!(svc.untag_resource(&req).is_err());
+    }
+
+    #[test]
+    fn add_permission_missing_topic_arn_errors() {
+        let (svc, _) = make_sns();
+        let req = sns_request(
+            "AddPermission",
+            vec![("Label", "l"), ("AWSAccountId.member.1", "123")],
+        );
+        assert!(svc.add_permission(&req).is_err());
+    }
+
+    #[test]
+    fn remove_permission_missing_topic_errors() {
+        let (svc, _) = make_sns();
+        let req = sns_request("RemovePermission", vec![("Label", "l")]);
+        assert!(svc.remove_permission(&req).is_err());
+    }
+
+    #[test]
+    fn create_platform_endpoint_missing_app_arn_errors() {
+        let (svc, _) = make_sns();
+        let req = sns_request("CreatePlatformEndpoint", vec![("Token", "t")]);
+        assert!(svc.create_platform_endpoint(&req).is_err());
+    }
+
+    #[test]
+    fn set_platform_application_attributes_unknown_app_errors() {
+        let (svc, _) = make_sns();
+        let req = sns_request(
+            "SetPlatformApplicationAttributes",
+            vec![
+                (
+                    "PlatformApplicationArn",
+                    "arn:aws:sns:us-east-1:123456789012:app/GCM/ghost",
+                ),
+                ("Attributes.entry.1.key", "PlatformCredential"),
+                ("Attributes.entry.1.value", "x"),
+            ],
+        );
+        assert!(svc.set_platform_application_attributes(&req).is_err());
+    }
+
+    #[test]
+    fn delete_topic_missing_arn_errors() {
+        let (svc, _) = make_sns();
+        let req = sns_request("DeleteTopic", vec![]);
+        assert!(svc.delete_topic(&req).is_err());
+    }
+
+    #[test]
+    fn get_topic_attributes_missing_arn_errors() {
+        let (svc, _) = make_sns();
+        let req = sns_request("GetTopicAttributes", vec![]);
+        assert!(svc.get_topic_attributes(&req).is_err());
+    }
 }
