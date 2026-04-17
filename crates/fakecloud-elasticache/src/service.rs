@@ -119,7 +119,8 @@ impl ElastiCacheService {
         let _guard = self.snapshot_lock.lock().await;
         let snapshot = ElastiCacheSnapshot {
             schema_version: ELASTICACHE_SNAPSHOT_SCHEMA_VERSION,
-            state: self.state.read().clone(),
+            state: None,
+            accounts: Some(self.state.read().clone()),
         };
         let join = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
             let bytes = serde_json::to_vec(&snapshot)
@@ -281,7 +282,9 @@ impl ElastiCacheService {
         let max_records = optional_usize_param(request, "MaxRecords")?;
         let marker = optional_param(request, "Marker");
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = ElastiCacheState::new(&request.account_id, &request.region);
+        let state = accounts.get(&request.account_id).unwrap_or(&empty);
 
         let groups: Vec<&CacheParameterGroup> = state
             .parameter_groups
@@ -334,7 +337,9 @@ impl ElastiCacheService {
         let max_records = optional_usize_param(request, "MaxRecords")?;
         let marker = optional_param(request, "Marker");
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = ElastiCacheState::new(&request.account_id, &request.region);
+        let state = accounts.get(&request.account_id).unwrap_or(&empty);
         let mut nodes: Vec<&ReservedCacheNode> = state.reserved_cache_nodes.values().collect();
         nodes.retain(|node| {
             reserved_cache_node_id
@@ -401,7 +406,9 @@ impl ElastiCacheService {
         let max_records = optional_usize_param(request, "MaxRecords")?;
         let marker = optional_param(request, "Marker");
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = ElastiCacheState::new(&request.account_id, &request.region);
+        let state = accounts.get(&request.account_id).unwrap_or(&empty);
         let mut offerings: Vec<&ReservedCacheNodesOffering> =
             state.reserved_cache_nodes_offerings.iter().collect();
         offerings.retain(|offering| {
@@ -504,7 +511,8 @@ impl ElastiCacheService {
             ));
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&request.account_id);
 
         if state.subnet_groups.contains_key(&name) {
             return Err(AwsServiceError::aws_error(
@@ -555,7 +563,9 @@ impl ElastiCacheService {
         let max_records = optional_usize_param(request, "MaxRecords")?;
         let marker = optional_param(request, "Marker");
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = ElastiCacheState::new(&request.account_id, &request.region);
+        let state = accounts.get(&request.account_id).unwrap_or(&empty);
 
         let groups: Vec<&CacheSubnetGroup> = if let Some(ref name) = group_name {
             match state.subnet_groups.get(name) {
@@ -605,7 +615,8 @@ impl ElastiCacheService {
     ) -> Result<AwsResponse, AwsServiceError> {
         let name = required_param(request, "CacheSubnetGroupName")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&request.account_id);
 
         if name == "default" {
             return Err(AwsServiceError::aws_error(
@@ -639,7 +650,8 @@ impl ElastiCacheService {
         let description = optional_param(request, "CacheSubnetGroupDescription");
         let subnet_ids = parse_member_list(&request.query_params, "SubnetIds", "SubnetIdentifier");
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&request.account_id);
         let region = state.region.clone();
 
         let group = state.subnet_groups.get_mut(&name).ok_or_else(|| {
@@ -714,7 +726,8 @@ impl ElastiCacheService {
                 .unwrap_or(true);
 
         let (preferred_availability_zone, arn) = {
-            let mut state = self.state.write();
+            let mut accounts = self.state.write();
+            let state = accounts.get_or_create(&request.account_id);
             if !state.begin_cache_cluster_creation(&cache_cluster_id) {
                 return Err(AwsServiceError::aws_error(
                     StatusCode::BAD_REQUEST,
@@ -757,6 +770,7 @@ impl ElastiCacheService {
         let runtime = self.runtime.as_ref().ok_or_else(|| {
             self.state
                 .write()
+                .get_or_create(&request.account_id)
                 .cancel_cache_cluster_creation(&cache_cluster_id);
             AwsServiceError::aws_error(
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -771,6 +785,7 @@ impl ElastiCacheService {
             Err(e) => {
                 self.state
                     .write()
+                    .get_or_create(&request.account_id)
                     .cancel_cache_cluster_creation(&cache_cluster_id);
                 return Err(runtime_error_to_service_error(e));
             }
@@ -797,10 +812,11 @@ impl ElastiCacheService {
 
         let xml = cache_cluster_xml(&cluster, true);
         {
-            let mut state = self.state.write();
+            let mut accounts = self.state.write();
+            let state = accounts.get_or_create(&request.account_id);
             state.finish_cache_cluster_creation(cluster.clone());
             if let Some(ref group_id) = cluster.replication_group_id {
-                add_cluster_to_replication_group(&mut state, group_id, &cluster.cache_cluster_id);
+                add_cluster_to_replication_group(state, group_id, &cluster.cache_cluster_id);
             }
         }
 
@@ -825,7 +841,9 @@ impl ElastiCacheService {
         let max_records = optional_usize_param(request, "MaxRecords")?;
         let marker = optional_param(request, "Marker");
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = ElastiCacheState::new(&request.account_id, &request.region);
+        let state = accounts.get(&request.account_id).unwrap_or(&empty);
         let clusters: Vec<&CacheCluster> = if let Some(ref cluster_id) = cache_cluster_id {
             match state.cache_clusters.get(cluster_id) {
                 Some(cluster) => vec![cluster],
@@ -874,7 +892,8 @@ impl ElastiCacheService {
         let cache_cluster_id = required_param(request, "CacheClusterId")?;
 
         let cluster = {
-            let mut state = self.state.write();
+            let mut accounts = self.state.write();
+            let state = accounts.get_or_create(&request.account_id);
             let cluster = state
                 .cache_clusters
                 .remove(&cache_cluster_id)
@@ -886,11 +905,7 @@ impl ElastiCacheService {
                     )
                 })?;
             if let Some(ref group_id) = cluster.replication_group_id {
-                remove_cluster_from_replication_group(
-                    &mut state,
-                    group_id,
-                    &cluster.cache_cluster_id,
-                );
+                remove_cluster_from_replication_group(state, group_id, &cluster.cache_cluster_id);
             }
             state.tags.remove(&cluster.arn);
             cluster
@@ -956,7 +971,8 @@ impl ElastiCacheService {
                 .unwrap_or(false);
         // Reserve the ID under a write lock before starting the container.
         {
-            let mut state = self.state.write();
+            let mut accounts = self.state.write();
+            let state = accounts.get_or_create(&request.account_id);
             if !state.begin_replication_group_creation(&replication_group_id) {
                 return Err(AwsServiceError::aws_error(
                     StatusCode::BAD_REQUEST,
@@ -969,6 +985,7 @@ impl ElastiCacheService {
         let runtime = self.runtime.as_ref().ok_or_else(|| {
             self.state
                 .write()
+                .get_or_create(&request.account_id)
                 .cancel_replication_group_creation(&replication_group_id);
             AwsServiceError::aws_error(
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -983,6 +1000,7 @@ impl ElastiCacheService {
             Err(e) => {
                 self.state
                     .write()
+                    .get_or_create(&request.account_id)
                     .cancel_replication_group_creation(&replication_group_id);
                 return Err(runtime_error_to_service_error(e));
             }
@@ -993,7 +1011,9 @@ impl ElastiCacheService {
             .collect();
 
         let (arn, region) = {
-            let state = self.state.read();
+            let accounts = self.state.read();
+            let empty = ElastiCacheState::new(&request.account_id, &request.region);
+            let state = accounts.get(&request.account_id).unwrap_or(&empty);
             let arn = format!(
                 "arn:aws:elasticache:{}:{}:replicationgroup:{}",
                 state.region, state.account_id, replication_group_id
@@ -1024,7 +1044,10 @@ impl ElastiCacheService {
         };
 
         let xml = replication_group_xml(&group, &region);
-        self.state.write().finish_replication_group_creation(group);
+        self.state
+            .write()
+            .get_or_create(&request.account_id)
+            .finish_replication_group_creation(group);
 
         Ok(AwsResponse::xml(
             StatusCode::OK,
@@ -1045,7 +1068,8 @@ impl ElastiCacheService {
         let description =
             optional_param(request, "GlobalReplicationGroupDescription").unwrap_or_default();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&request.account_id);
         let region = state.region.clone();
         let account_id = state.account_id.clone();
         let global_replication_group_id = global_replication_group_id(&region, suffix.as_str());
@@ -1131,7 +1155,9 @@ impl ElastiCacheService {
             parse_optional_bool(optional_param(request, "ShowMemberInfo").as_deref())?
                 .unwrap_or(false);
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = ElastiCacheState::new(&request.account_id, &request.region);
+        let state = accounts.get(&request.account_id).unwrap_or(&empty);
         let groups: Vec<&GlobalReplicationGroup> = if let Some(ref global_replication_group_id) =
             global_replication_group_id
         {
@@ -1192,7 +1218,9 @@ impl ElastiCacheService {
         let max_records = optional_usize_param(request, "MaxRecords")?;
         let marker = optional_param(request, "Marker");
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = ElastiCacheState::new(&request.account_id, &request.region);
+        let state = accounts.get(&request.account_id).unwrap_or(&empty);
         let region = state.region.clone();
 
         let groups: Vec<&ReplicationGroup> = if let Some(ref id) = group_id {
@@ -1244,7 +1272,8 @@ impl ElastiCacheService {
         let global_replication_group_id = required_param(request, "GlobalReplicationGroupId")?;
         let retain_primary = parse_required_bool(request, "RetainPrimaryReplicationGroup")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&request.account_id);
         let mut group = state
             .global_replication_groups
             .remove(&global_replication_group_id)
@@ -1294,7 +1323,8 @@ impl ElastiCacheService {
         let replication_group_id = required_param(request, "ReplicationGroupId")?;
 
         let group = {
-            let mut state = self.state.write();
+            let mut accounts = self.state.write();
+            let state = accounts.get_or_create(&request.account_id);
             let g = state
                 .replication_groups
                 .remove(&replication_group_id)
@@ -1313,7 +1343,7 @@ impl ElastiCacheService {
             runtime.stop_container(&replication_group_id).await;
         }
 
-        let region = self.state.read().region.clone();
+        let region = self.state.read().region().to_string();
         let mut deleted_group = group;
         deleted_group.status = "deleting".to_string();
         let xml = replication_group_xml(&deleted_group, &region);
@@ -1352,7 +1382,8 @@ impl ElastiCacheService {
         let tags = parse_tags(request)?;
 
         let (arn, endpoint_address) = {
-            let mut state = self.state.write();
+            let mut accounts = self.state.write();
+            let state = accounts.get_or_create(&request.account_id);
             if !state.begin_serverless_cache_creation(&serverless_cache_name) {
                 return Err(AwsServiceError::aws_error(
                     StatusCode::BAD_REQUEST,
@@ -1393,6 +1424,7 @@ impl ElastiCacheService {
         let runtime = self.runtime.as_ref().ok_or_else(|| {
             self.state
                 .write()
+                .get_or_create(&request.account_id)
                 .cancel_serverless_cache_creation(&serverless_cache_name);
             AwsServiceError::aws_error(
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -1407,6 +1439,7 @@ impl ElastiCacheService {
             Err(e) => {
                 self.state
                     .write()
+                    .get_or_create(&request.account_id)
                     .cancel_serverless_cache_creation(&serverless_cache_name);
                 return Err(runtime_error_to_service_error(e));
             }
@@ -1444,7 +1477,8 @@ impl ElastiCacheService {
 
         let xml = serverless_cache_xml(&cache);
         {
-            let mut state = self.state.write();
+            let mut accounts = self.state.write();
+            let state = accounts.get_or_create(&request.account_id);
             state.finish_serverless_cache_creation(cache.clone());
             if !tags.is_empty() {
                 merge_tags(state.tags.entry(arn).or_default(), &tags);
@@ -1469,7 +1503,9 @@ impl ElastiCacheService {
         let max_results = optional_usize_param(request, "MaxResults")?;
         let next_token = optional_param(request, "NextToken");
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = ElastiCacheState::new(&request.account_id, &request.region);
+        let state = accounts.get(&request.account_id).unwrap_or(&empty);
         let caches: Vec<&ServerlessCache> = if let Some(ref name) = serverless_cache_name {
             match state.serverless_caches.get(name) {
                 Some(cache) => vec![cache],
@@ -1513,7 +1549,8 @@ impl ElastiCacheService {
         let serverless_cache_name = required_param(request, "ServerlessCacheName")?;
 
         let cache = {
-            let mut state = self.state.write();
+            let mut accounts = self.state.write();
+            let state = accounts.get_or_create(&request.account_id);
             let cache = state
                 .serverless_caches
                 .remove(&serverless_cache_name)
@@ -1560,7 +1597,8 @@ impl ElastiCacheService {
             optional_non_negative_i32_param(request, "SnapshotRetentionLimit")?;
         let daily_snapshot_time = optional_param(request, "DailySnapshotTime");
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&request.account_id);
 
         if let Some(ref group_id) = user_group_id {
             let user_group = state.user_groups.get(group_id).ok_or_else(|| {
@@ -1630,7 +1668,8 @@ impl ElastiCacheService {
         let kms_key_id = optional_param(request, "KmsKeyId");
         let tags = parse_tags(request)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&request.account_id);
         if state
             .serverless_cache_snapshots
             .contains_key(&serverless_cache_snapshot_name)
@@ -1700,7 +1739,9 @@ impl ElastiCacheService {
         let max_results = optional_usize_param(request, "MaxResults")?;
         let next_token = optional_param(request, "NextToken");
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = ElastiCacheState::new(&request.account_id, &request.region);
+        let state = accounts.get(&request.account_id).unwrap_or(&empty);
         let snapshots: Vec<&ServerlessCacheSnapshot> =
             if let Some(ref snapshot_name) = serverless_cache_snapshot_name {
                 match state.serverless_cache_snapshots.get(snapshot_name) {
@@ -1778,7 +1819,8 @@ impl ElastiCacheService {
         let serverless_cache_snapshot_name =
             required_param(request, "ServerlessCacheSnapshotName")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&request.account_id);
         let mut snapshot = state
             .serverless_cache_snapshots
             .remove(&serverless_cache_snapshot_name)
@@ -1818,7 +1860,8 @@ impl ElastiCacheService {
             ));
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&request.account_id);
 
         if state.snapshots.contains_key(&snapshot_name) {
             return Err(AwsServiceError::aws_error(
@@ -1910,7 +1953,9 @@ impl ElastiCacheService {
         let max_records = optional_usize_param(request, "MaxRecords")?;
         let marker = optional_param(request, "Marker");
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = ElastiCacheState::new(&request.account_id, &request.region);
+        let state = accounts.get(&request.account_id).unwrap_or(&empty);
 
         let snapshots: Vec<&CacheSnapshot> = if let Some(ref name) = snapshot_name {
             match state.snapshots.get(name) {
@@ -1970,7 +2015,8 @@ impl ElastiCacheService {
     fn delete_snapshot(&self, request: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let snapshot_name = required_param(request, "SnapshotName")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&request.account_id);
         let mut snapshot = state.snapshots.remove(&snapshot_name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
@@ -2029,7 +2075,8 @@ impl ElastiCacheService {
         let user_group_ids_to_remove =
             parse_member_list(&request.query_params, "UserGroupIdsToRemove", "member");
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&request.account_id);
 
         let group = state
             .replication_groups
@@ -2103,7 +2150,8 @@ impl ElastiCacheService {
         let new_automatic_failover =
             parse_optional_bool(optional_param(request, "AutomaticFailoverEnabled").as_deref())?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&request.account_id);
         let primary_replication_group_id = state
             .global_replication_groups
             .get(&global_replication_group_id)
@@ -2218,7 +2266,8 @@ impl ElastiCacheService {
             ));
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&request.account_id);
 
         let group = state
             .replication_groups
@@ -2310,7 +2359,8 @@ impl ElastiCacheService {
             ));
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&request.account_id);
 
         let group = state
             .replication_groups
@@ -2365,7 +2415,9 @@ impl ElastiCacheService {
         let replication_group_id = required_param(request, "ReplicationGroupId")?;
         let node_group_id = required_param(request, "NodeGroupId")?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = ElastiCacheState::new(&request.account_id, &request.region);
+        let state = accounts.get(&request.account_id).unwrap_or(&empty);
 
         let group = state
             .replication_groups
@@ -2408,7 +2460,9 @@ impl ElastiCacheService {
         let replication_group_id = required_param(request, "ReplicationGroupId")?;
         let replication_group_region = required_param(request, "ReplicationGroupRegion")?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = ElastiCacheState::new(&request.account_id, &request.region);
+        let state = accounts.get(&request.account_id).unwrap_or(&empty);
         let group = state
             .global_replication_groups
             .get(&global_replication_group_id)
@@ -2460,7 +2514,9 @@ impl ElastiCacheService {
         let primary_region = required_param(request, "PrimaryRegion")?;
         let primary_replication_group_id = required_param(request, "PrimaryReplicationGroupId")?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = ElastiCacheState::new(&request.account_id, &request.region);
+        let state = accounts.get(&request.account_id).unwrap_or(&empty);
         let group = state
             .global_replication_groups
             .get(&global_replication_group_id)
@@ -2574,7 +2630,8 @@ impl ElastiCacheService {
             "6.0".to_string()
         };
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&request.account_id);
 
         if state.users.contains_key(&user_id) {
             return Err(AwsServiceError::aws_error(
@@ -2617,7 +2674,9 @@ impl ElastiCacheService {
         let max_records = optional_usize_param(request, "MaxRecords")?;
         let marker = optional_param(request, "Marker");
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = ElastiCacheState::new(&request.account_id, &request.region);
+        let state = accounts.get(&request.account_id).unwrap_or(&empty);
 
         let users: Vec<&ElastiCacheUser> = if let Some(ref id) = user_id {
             match state.users.get(id) {
@@ -2667,7 +2726,8 @@ impl ElastiCacheService {
             ));
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&request.account_id);
 
         let user = state.users.remove(&user_id).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -2708,7 +2768,8 @@ impl ElastiCacheService {
             "6.0".to_string()
         };
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&request.account_id);
 
         if state.user_groups.contains_key(&user_group_id) {
             return Err(AwsServiceError::aws_error(
@@ -2780,7 +2841,9 @@ impl ElastiCacheService {
         let max_records = optional_usize_param(request, "MaxRecords")?;
         let marker = optional_param(request, "Marker");
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = ElastiCacheState::new(&request.account_id, &request.region);
+        let state = accounts.get(&request.account_id).unwrap_or(&empty);
 
         let groups: Vec<&ElastiCacheUserGroup> = if let Some(ref id) = user_group_id {
             match state.user_groups.get(id) {
@@ -2822,7 +2885,8 @@ impl ElastiCacheService {
     fn delete_user_group(&self, request: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let user_group_id = required_param(request, "UserGroupId")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&request.account_id);
 
         let group = state.user_groups.remove(&user_group_id).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -2855,7 +2919,8 @@ impl ElastiCacheService {
         let resource_name = required_param(request, "ResourceName")?;
         let tags = parse_tags(request)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&request.account_id);
         let tag_list = state.tags.get_mut(&resource_name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
@@ -2881,7 +2946,9 @@ impl ElastiCacheService {
     fn list_tags_for_resource(&self, request: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let resource_name = required_param(request, "ResourceName")?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = ElastiCacheState::new(&request.account_id, &request.region);
+        let state = accounts.get(&request.account_id).unwrap_or(&empty);
         let tag_list = state.tags.get(&resource_name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
@@ -2909,7 +2976,8 @@ impl ElastiCacheService {
         let resource_name = required_param(request, "ResourceName")?;
         let tag_keys = parse_tag_keys(request)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&request.account_id);
         let tag_list = state.tags.get_mut(&resource_name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
@@ -4390,8 +4458,9 @@ mod tests {
 
     #[test]
     fn create_user_returns_user_xml() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let service = ElastiCacheService::new(shared);
 
         let req = request(
@@ -4412,8 +4481,9 @@ mod tests {
 
     #[test]
     fn create_user_rejects_duplicate() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let service = ElastiCacheService::new(shared);
 
         let req = request(
@@ -4430,8 +4500,9 @@ mod tests {
 
     #[test]
     fn delete_user_rejects_default() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let service = ElastiCacheService::new(shared);
 
         let req = request("DeleteUser", &[("UserId", "default")]);
@@ -4440,8 +4511,9 @@ mod tests {
 
     #[test]
     fn describe_users_returns_default_user() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let service = ElastiCacheService::new(shared);
 
         let req = request("DescribeUsers", &[]);
@@ -4452,8 +4524,9 @@ mod tests {
 
     #[test]
     fn describe_reserved_cache_nodes_returns_empty_list_by_default() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let service = ElastiCacheService::new(shared);
 
         let resp = service
@@ -4465,11 +4538,13 @@ mod tests {
 
     #[test]
     fn describe_reserved_cache_nodes_filters_by_offering_id() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let service = ElastiCacheService::new(shared);
         {
-            let mut state = service.state.write();
+            let mut __a = service.state.write();
+            let state = __a.default_mut();
             state.reserved_cache_nodes.insert(
                 "rcn-a".to_string(),
                 sample_reserved_cache_node("rcn-a", "offering-a"),
@@ -4493,8 +4568,9 @@ mod tests {
 
     #[test]
     fn describe_reserved_cache_nodes_not_found_by_id() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let service = ElastiCacheService::new(shared);
 
         assert!(service
@@ -4507,11 +4583,13 @@ mod tests {
 
     #[test]
     fn describe_reserved_cache_nodes_offerings_filters_and_paginates() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let service = ElastiCacheService::new(shared);
         {
-            let mut state = service.state.write();
+            let mut __a = service.state.write();
+            let state = __a.default_mut();
             state.reserved_cache_nodes_offerings = vec![
                 sample_reserved_cache_node_offering("offering-a"),
                 ReservedCacheNodesOffering {
@@ -4564,8 +4642,9 @@ mod tests {
 
     #[test]
     fn describe_reserved_cache_nodes_offerings_not_found_by_id() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let service = ElastiCacheService::new(shared);
 
         assert!(service
@@ -4578,8 +4657,9 @@ mod tests {
 
     #[test]
     fn create_and_describe_user_group() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let service = ElastiCacheService::new(shared);
 
         let req = request(
@@ -4603,8 +4683,9 @@ mod tests {
 
     #[test]
     fn create_user_group_rejects_unknown_user() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let service = ElastiCacheService::new(shared);
 
         let req = request(
@@ -4620,8 +4701,9 @@ mod tests {
 
     #[test]
     fn delete_user_group_removes_from_state() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let service = ElastiCacheService::new(shared);
 
         let req = request(
@@ -4640,10 +4722,12 @@ mod tests {
     }
 
     fn service_with_cache_cluster(cluster_id: &str) -> ElastiCacheService {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared: SharedElastiCacheState = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         {
-            let mut s = shared.write();
+            let mut __a = shared.write();
+            let s = __a.default_mut();
             let arn = format!("arn:aws:elasticache:us-east-1:123456789012:cluster:{cluster_id}");
             s.tags.insert(arn.clone(), Vec::new());
             s.cache_clusters.insert(
@@ -4675,7 +4759,8 @@ mod tests {
     fn describe_cache_clusters_returns_all() {
         let service = service_with_cache_cluster("cluster-a");
         {
-            let mut state = service.state.write();
+            let mut __a = service.state.write();
+            let state = __a.default_mut();
             let arn = "arn:aws:elasticache:us-east-1:123456789012:cluster:cluster-b".to_string();
             state.tags.insert(arn.clone(), Vec::new());
             state.cache_clusters.insert(
@@ -4711,8 +4796,9 @@ mod tests {
 
     #[tokio::test]
     async fn create_cache_cluster_validates_engine_before_runtime() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let service = ElastiCacheService::new(shared);
 
         let req = request(
@@ -4724,14 +4810,16 @@ mod tests {
 
     #[tokio::test]
     async fn create_cache_cluster_without_runtime_cancels_reservation() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let service = ElastiCacheService::new(shared.clone());
 
         let req = request("CreateCacheCluster", &[("CacheClusterId", "no-runtime")]);
         assert!(service.create_cache_cluster(&req).await.is_err());
 
-        let mut state = shared.write();
+        let mut __a = shared.write();
+        let state = __a.default_mut();
         assert!(state.begin_cache_cluster_creation("no-runtime"));
     }
 
@@ -4773,9 +4861,10 @@ mod tests {
         assert!(!service
             .state
             .read()
+            .default_ref()
             .cache_clusters
             .contains_key("delete-me"));
-        assert!(!service.state.read().tags.contains_key(&arn));
+        assert!(!service.state.read().default_ref().tags.contains_key(&arn));
     }
 
     #[test]
@@ -4817,7 +4906,8 @@ mod tests {
     async fn delete_cache_cluster_removes_cluster_from_replication_group() {
         let service = service_with_cache_cluster("delete-rg-cluster");
         {
-            let mut state = service.state.write();
+            let mut __a = service.state.write();
+            let state = __a.default_mut();
             state
                 .cache_clusters
                 .get_mut("delete-rg-cluster")
@@ -4862,6 +4952,7 @@ mod tests {
         let group = service
             .state
             .read()
+            .default_ref()
             .replication_groups
             .get("delete-rg")
             .unwrap()
@@ -4884,10 +4975,12 @@ mod tests {
     }
 
     fn service_with_replication_group(group_id: &str, num_clusters: i32) -> ElastiCacheService {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared: SharedElastiCacheState = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         {
-            let mut s = shared.write();
+            let mut __a = shared.write();
+            let s = __a.default_mut();
             let member_clusters: Vec<String> = (1..=num_clusters)
                 .map(|i| format!("{group_id}-{i:03}"))
                 .collect();
@@ -4923,10 +5016,12 @@ mod tests {
     }
 
     fn service_with_serverless_cache(cache_name: &str) -> ElastiCacheService {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared: SharedElastiCacheState = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         {
-            let mut s = shared.write();
+            let mut __a = shared.write();
+            let s = __a.default_mut();
             let arn =
                 format!("arn:aws:elasticache:us-east-1:123456789012:serverlesscache:{cache_name}");
             s.tags.insert(arn.clone(), Vec::new());
@@ -4980,7 +5075,8 @@ mod tests {
     ) -> ElastiCacheService {
         let service = service_with_replication_group(replication_group_id, 1);
         {
-            let mut state = service.state.write();
+            let mut __a = service.state.write();
+            let state = __a.default_mut();
             state
                 .replication_groups
                 .get_mut(replication_group_id)
@@ -5037,7 +5133,8 @@ mod tests {
         assert!(body.contains("<ReplicationGroupId>primary-rg</ReplicationGroupId>"));
         assert!(body.contains("<Role>primary</Role>"));
 
-        let state = service.state.read();
+        let __a = service.state.read();
+        let state = __a.default_ref();
         let primary_group = state.replication_groups.get("primary-rg").unwrap();
         assert_eq!(
             primary_group.global_replication_group_id.as_deref(),
@@ -5095,7 +5192,8 @@ mod tests {
         assert!(body.contains("<CacheNodeType>cache.m5.large</CacheNodeType>"));
         assert!(body.contains("<EngineVersion>7.2</EngineVersion>"));
 
-        let state = service.state.read();
+        let __a = service.state.read();
+        let state = __a.default_ref();
         let primary_group = state.replication_groups.get("primary-rg").unwrap();
         assert_eq!(primary_group.cache_node_type, "cache.m5.large");
         assert_eq!(primary_group.engine_version, "7.2");
@@ -5117,7 +5215,8 @@ mod tests {
         let body = String::from_utf8(resp.body.expect_bytes().to_vec()).unwrap();
         assert!(body.contains("<Status>deleting</Status>"));
 
-        let state = service.state.read();
+        let __a = service.state.read();
+        let state = __a.default_ref();
         assert!(!state
             .global_replication_groups
             .contains_key("fc-us-east-1-global-a"));
@@ -5220,8 +5319,9 @@ mod tests {
 
     #[test]
     fn modify_replication_group_not_found() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let service = ElastiCacheService::new(shared);
         let req = request(
             "ModifyReplicationGroup",
@@ -5259,6 +5359,7 @@ mod tests {
         let cache = service_with_serverless_cache("cache-a")
             .state
             .read()
+            .default_ref()
             .serverless_caches["cache-a"]
             .clone();
 
@@ -5305,7 +5406,8 @@ mod tests {
     fn describe_serverless_caches_returns_all() {
         let service = service_with_serverless_cache("cache-a");
         {
-            let mut state = service.state.write();
+            let mut __a = service.state.write();
+            let state = __a.default_mut();
             state.serverless_caches.insert(
                 "cache-b".to_string(),
                 ServerlessCache {
@@ -5412,7 +5514,8 @@ mod tests {
     fn describe_serverless_cache_snapshots_filters_by_cache_name() {
         let service = service_with_serverless_cache("cache-a");
         {
-            let mut state = service.state.write();
+            let mut __a = service.state.write();
+            let state = __a.default_mut();
             state.serverless_cache_snapshots.insert(
                 "snap-a".to_string(),
                 ServerlessCacheSnapshot {
@@ -5446,7 +5549,8 @@ mod tests {
     fn delete_serverless_cache_snapshot_removes_tags() {
         let service = service_with_serverless_cache("cache-a");
         {
-            let mut state = service.state.write();
+            let mut __a = service.state.write();
+            let state = __a.default_mut();
             let arn =
                 "arn:aws:elasticache:us-east-1:123456789012:serverlesssnapshot:snap-a".to_string();
             state.tags.insert(arn.clone(), Vec::new());
@@ -5479,6 +5583,7 @@ mod tests {
         assert!(!service
             .state
             .read()
+            .default_ref()
             .tags
             .contains_key("arn:aws:elasticache:us-east-1:123456789012:serverlesssnapshot:snap-a"));
     }
@@ -5518,8 +5623,9 @@ mod tests {
 
     #[test]
     fn increase_replica_count_not_found() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let service = ElastiCacheService::new(shared);
         let req = request(
             "IncreaseReplicaCount",
@@ -5605,8 +5711,9 @@ mod tests {
 
     #[test]
     fn test_failover_not_found() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let service = ElastiCacheService::new(shared);
         let req = request(
             "TestFailover",
@@ -5678,8 +5785,9 @@ mod tests {
 
     #[test]
     fn create_snapshot_rejects_nonexistent_group() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let service = ElastiCacheService::new(shared);
         let req = request(
             "CreateSnapshot",
@@ -5710,7 +5818,8 @@ mod tests {
         );
         service.create_snapshot(&req).unwrap();
 
-        let state = service.state.read();
+        let __a = service.state.read();
+        let state = __a.default_ref();
         let arn = "arn:aws:elasticache:us-east-1:123456789012:snapshot:tag-snap".to_string();
         assert!(state.tags.contains_key(&arn));
     }
@@ -5776,8 +5885,9 @@ mod tests {
 
     #[test]
     fn describe_snapshots_not_found_by_name() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let service = ElastiCacheService::new(shared);
         let req = request("DescribeSnapshots", &[("SnapshotName", "nope")]);
         assert!(service.describe_snapshots(&req).is_err());
@@ -5802,7 +5912,12 @@ mod tests {
         assert!(body.contains("<DeleteSnapshotResponse"));
 
         // Verify it's gone
-        assert!(!service.state.read().snapshots.contains_key("del-snap"));
+        assert!(!service
+            .state
+            .read()
+            .default_ref()
+            .snapshots
+            .contains_key("del-snap"));
     }
 
     #[test]
@@ -5818,17 +5933,18 @@ mod tests {
         service.create_snapshot(&req).unwrap();
 
         let arn = "arn:aws:elasticache:us-east-1:123456789012:snapshot:tag-del-snap".to_string();
-        assert!(service.state.read().tags.contains_key(&arn));
+        assert!(service.state.read().default_ref().tags.contains_key(&arn));
 
         let req = request("DeleteSnapshot", &[("SnapshotName", "tag-del-snap")]);
         service.delete_snapshot(&req).unwrap();
-        assert!(!service.state.read().tags.contains_key(&arn));
+        assert!(!service.state.read().default_ref().tags.contains_key(&arn));
     }
 
     #[test]
     fn delete_snapshot_not_found() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let service = ElastiCacheService::new(shared);
         let req = request("DeleteSnapshot", &[("SnapshotName", "nope")]);
         assert!(service.delete_snapshot(&req).is_err());
@@ -5872,8 +5988,9 @@ mod tests {
 
     #[test]
     fn describe_cache_cluster_not_found() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
         expect_ec_err(
             svc.describe_cache_clusters(&request(
@@ -5886,8 +6003,9 @@ mod tests {
 
     #[tokio::test]
     async fn delete_cache_cluster_not_found() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
         expect_ec_err(
             svc.delete_cache_cluster(&request(
@@ -5901,8 +6019,9 @@ mod tests {
 
     #[test]
     fn describe_replication_group_not_found() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
         expect_ec_err(
             svc.describe_replication_groups(&request(
@@ -5915,8 +6034,9 @@ mod tests {
 
     #[tokio::test]
     async fn delete_replication_group_not_found() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
         expect_ec_err(
             svc.delete_replication_group(&request(
@@ -5930,8 +6050,9 @@ mod tests {
 
     #[test]
     fn describe_serverless_cache_not_found() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
         expect_ec_err(
             svc.describe_serverless_caches(&request(
@@ -5944,8 +6065,9 @@ mod tests {
 
     #[tokio::test]
     async fn delete_serverless_cache_not_found() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
         expect_ec_err(
             svc.delete_serverless_cache(&request(
@@ -5959,8 +6081,9 @@ mod tests {
 
     #[test]
     fn describe_user_not_found() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
         expect_ec_err(
             svc.describe_users(&request("DescribeUsers", &[("UserId", "nope")])),
@@ -5970,8 +6093,9 @@ mod tests {
 
     #[test]
     fn delete_user_not_found() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
         expect_ec_err(
             svc.delete_user(&request("DeleteUser", &[("UserId", "nope")])),
@@ -5981,8 +6105,9 @@ mod tests {
 
     #[test]
     fn describe_user_group_not_found() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
         expect_ec_err(
             svc.describe_user_groups(&request("DescribeUserGroups", &[("UserGroupId", "nope")])),
@@ -5992,8 +6117,9 @@ mod tests {
 
     #[test]
     fn delete_user_group_not_found() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
         expect_ec_err(
             svc.delete_user_group(&request("DeleteUserGroup", &[("UserGroupId", "nope")])),
@@ -6003,8 +6129,9 @@ mod tests {
 
     #[test]
     fn describe_cache_subnet_group_not_found() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
         expect_ec_err(
             svc.describe_cache_subnet_groups(&request(
@@ -6017,8 +6144,9 @@ mod tests {
 
     #[test]
     fn delete_cache_subnet_group_not_found() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
         expect_ec_err(
             svc.delete_cache_subnet_group(&request(
@@ -6031,8 +6159,9 @@ mod tests {
 
     #[test]
     fn describe_snapshot_not_found() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
         expect_ec_err(
             svc.describe_snapshots(&request("DescribeSnapshots", &[("SnapshotName", "nope")])),
@@ -6042,8 +6171,9 @@ mod tests {
 
     #[test]
     fn delete_snapshot_nonexistent() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
         expect_ec_err(
             svc.delete_snapshot(&request("DeleteSnapshot", &[("SnapshotName", "nope")])),
@@ -6053,8 +6183,9 @@ mod tests {
 
     #[test]
     fn create_user_duplicate() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
         let req = request(
             "CreateUser",
@@ -6073,8 +6204,9 @@ mod tests {
 
     #[test]
     fn describe_cache_engine_versions() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
 
         let resp = svc
@@ -6088,8 +6220,9 @@ mod tests {
 
     #[test]
     fn describe_reserved_cache_nodes_offerings_basic() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
 
         let resp = svc
@@ -6104,8 +6237,9 @@ mod tests {
 
     #[test]
     fn describe_reserved_cache_nodes_empty() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
 
         let resp = svc
@@ -6119,8 +6253,9 @@ mod tests {
 
     #[test]
     fn subnet_group_create_describe_delete() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
 
         svc.create_cache_subnet_group(&request(
@@ -6150,8 +6285,9 @@ mod tests {
 
     #[test]
     fn describe_global_replication_groups_empty() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
 
         let resp = svc
@@ -6165,8 +6301,9 @@ mod tests {
 
     #[test]
     fn create_user_missing_user_id_errors() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
         let req = request("CreateUser", &[("UserName", "u"), ("Engine", "redis")]);
         assert!(svc.create_user(&req).is_err());
@@ -6174,8 +6311,9 @@ mod tests {
 
     #[test]
     fn create_user_missing_engine_errors() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
         let req = request("CreateUser", &[("UserId", "u1"), ("UserName", "u")]);
         assert!(svc.create_user(&req).is_err());
@@ -6183,8 +6321,9 @@ mod tests {
 
     #[test]
     fn delete_user_group_not_found_is_error() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
         let req = request("DeleteUserGroup", &[("UserGroupId", "ghost")]);
         assert!(svc.delete_user_group(&req).is_err());
@@ -6194,8 +6333,9 @@ mod tests {
 
     #[test]
     fn describe_cache_clusters_invalid_marker_returns_error() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
         // no clusters, marker for a nonexistent cluster - returns empty list
         let req = request("DescribeCacheClusters", &[]);
@@ -6206,8 +6346,9 @@ mod tests {
 
     #[tokio::test]
     async fn delete_cache_cluster_missing_id_errors() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
         let req = request("DeleteCacheCluster", &[]);
         assert!(svc.delete_cache_cluster(&req).await.is_err());
@@ -6215,8 +6356,9 @@ mod tests {
 
     #[test]
     fn add_tags_missing_arn_errors() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
         let req = request("AddTagsToResource", &[("Tags.Tag.1.Key", "k")]);
         assert!(svc.add_tags_to_resource(&req).is_err());
@@ -6224,8 +6366,9 @@ mod tests {
 
     #[test]
     fn list_tags_missing_arn_errors() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
         let req = request("ListTagsForResource", &[]);
         assert!(svc.list_tags_for_resource(&req).is_err());
@@ -6233,8 +6376,9 @@ mod tests {
 
     #[test]
     fn remove_tags_missing_arn_errors() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
         let req = request("RemoveTagsFromResource", &[("TagKeys.member.1", "k")]);
         assert!(svc.remove_tags_from_resource(&req).is_err());
@@ -6244,8 +6388,9 @@ mod tests {
 
     #[tokio::test]
     async fn create_replication_group_missing_id_errors() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
         let req = request(
             "CreateReplicationGroup",
@@ -6256,8 +6401,9 @@ mod tests {
 
     #[tokio::test]
     async fn create_replication_group_missing_description_errors() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
         let req = request("CreateReplicationGroup", &[("ReplicationGroupId", "rg")]);
         assert!(svc.create_replication_group(&req).await.is_err());
@@ -6267,8 +6413,9 @@ mod tests {
 
     #[test]
     fn create_cache_subnet_group_missing_id_errors() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
         let req = request(
             "CreateCacheSubnetGroup",
@@ -6282,8 +6429,9 @@ mod tests {
 
     #[test]
     fn create_cache_subnet_group_duplicate_errors() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
         let params = &[
             ("CacheSubnetGroupName", "sg"),
@@ -6300,8 +6448,9 @@ mod tests {
 
     #[test]
     fn describe_snapshots_empty_returns_ok() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
         let req = request("DescribeSnapshots", &[]);
         let resp = svc.describe_snapshots(&req).unwrap();
@@ -6313,8 +6462,9 @@ mod tests {
 
     #[tokio::test]
     async fn create_serverless_cache_missing_name_errors() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
         let req = request("CreateServerlessCache", &[("Engine", "redis")]);
         assert!(svc.create_serverless_cache(&req).await.is_err());
@@ -6322,8 +6472,9 @@ mod tests {
 
     #[tokio::test]
     async fn delete_serverless_cache_missing_name_errors() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
         let req = request("DeleteServerlessCache", &[]);
         assert!(svc.delete_serverless_cache(&req).await.is_err());
@@ -6333,8 +6484,9 @@ mod tests {
 
     #[test]
     fn create_global_replication_group_missing_id_errors() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
         let req = request("CreateGlobalReplicationGroup", &[]);
         assert!(svc.create_global_replication_group(&req).is_err());
@@ -6342,8 +6494,9 @@ mod tests {
 
     #[test]
     fn describe_replication_groups_empty_ok() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
         let req = request("DescribeReplicationGroups", &[]);
         let resp = svc.describe_replication_groups(&req).unwrap();
@@ -6353,8 +6506,9 @@ mod tests {
 
     #[test]
     fn describe_cache_parameter_groups_has_defaults() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
         let req = request("DescribeCacheParameterGroups", &[]);
         let resp = svc.describe_cache_parameter_groups(&req).unwrap();
@@ -6364,8 +6518,9 @@ mod tests {
 
     #[test]
     fn describe_cache_subnet_groups_has_defaults() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
         let req = request("DescribeCacheSubnetGroups", &[]);
         let resp = svc.describe_cache_subnet_groups(&req).unwrap();
@@ -6375,8 +6530,9 @@ mod tests {
 
     #[test]
     fn describe_user_groups_empty_ok() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
         let req = request("DescribeUserGroups", &[]);
         let resp = svc.describe_user_groups(&req).unwrap();
@@ -6386,8 +6542,9 @@ mod tests {
 
     #[tokio::test]
     async fn create_cache_cluster_unsupported_engine_errors() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
         let req = request(
             "CreateCacheCluster",
@@ -6403,8 +6560,9 @@ mod tests {
 
     #[tokio::test]
     async fn delete_cache_cluster_unknown_errors() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
         let req = request("DeleteCacheCluster", &[("CacheClusterId", "ghost")]);
         assert!(svc.delete_cache_cluster(&req).await.is_err());
@@ -6412,8 +6570,9 @@ mod tests {
 
     #[test]
     fn delete_user_unknown_errors() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
         let req = request("DeleteUser", &[("UserId", "ghost")]);
         assert!(svc.delete_user(&req).is_err());
@@ -6421,8 +6580,9 @@ mod tests {
 
     #[test]
     fn list_tags_unknown_arn_errors() {
-        let state = crate::state::ElastiCacheState::new("123456789012", "us-east-1");
-        let shared = std::sync::Arc::new(parking_lot::RwLock::new(state));
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ));
         let svc = ElastiCacheService::new(shared);
         let req = request(
             "ListTagsForResource",

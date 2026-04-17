@@ -14,7 +14,7 @@ use fakecloud_persistence::SnapshotStore;
 use crate::runtime::{RdsRuntime, RuntimeError};
 use crate::state::{
     default_engine_versions, default_orderable_options, DbInstance, DbParameterGroup, DbSnapshot,
-    DbSubnetGroup, EngineVersionInfo, OrderableDbInstanceOption, RdsSnapshot, RdsTag,
+    DbSubnetGroup, EngineVersionInfo, OrderableDbInstanceOption, RdsSnapshot, RdsState, RdsTag,
     SharedRdsState, RDS_SNAPSHOT_SCHEMA_VERSION,
 };
 
@@ -101,7 +101,8 @@ impl RdsService {
         let _guard = self.snapshot_lock.lock().await;
         let snapshot = RdsSnapshot {
             schema_version: RDS_SNAPSHOT_SCHEMA_VERSION,
-            state: self.state.read().clone(),
+            state: None,
+            accounts: Some(self.state.read().clone()),
         };
         let join = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
             let bytes = serde_json::to_vec(&snapshot)
@@ -229,7 +230,8 @@ impl RdsService {
         )?;
 
         {
-            let mut state = self.state.write();
+            let mut accounts = self.state.write();
+            let state = accounts.get_or_create(&request.account_id);
             if !state.begin_instance_creation(&db_instance_identifier) {
                 return Err(AwsServiceError::aws_error(
                     StatusCode::BAD_REQUEST,
@@ -268,11 +270,13 @@ impl RdsService {
             .map_err(|error| {
                 self.state
                     .write()
+                    .get_or_create(&request.account_id)
                     .cancel_instance_creation(&db_instance_identifier);
                 runtime_error_to_service_error(error)
             })?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&request.account_id);
         let created_at = Utc::now();
         let instance = DbInstance {
             db_instance_identifier: db_instance_identifier.clone(),
@@ -351,7 +355,9 @@ impl RdsService {
 
         // Check deletion protection BEFORE creating snapshot or making any changes
         {
-            let state = self.state.read();
+            let accounts = self.state.read();
+            let empty = RdsState::new(&request.account_id, &request.region);
+            let state = accounts.get(&request.account_id).unwrap_or(&empty);
             if let Some(instance) = state.instances.get(&db_instance_identifier) {
                 if instance.deletion_protection {
                     return Err(AwsServiceError::aws_error(
@@ -369,12 +375,18 @@ impl RdsService {
         }
 
         if let Some(ref snapshot_id) = final_db_snapshot_identifier {
-            self.create_final_db_snapshot(&db_instance_identifier, snapshot_id)
-                .await?;
+            self.create_final_db_snapshot(
+                &db_instance_identifier,
+                snapshot_id,
+                &request.account_id,
+                &request.region,
+            )
+            .await?;
         }
 
         let instance = {
-            let mut state = self.state.write();
+            let mut accounts = self.state.write();
+            let state = accounts.get_or_create(&request.account_id);
             let instance = state
                 .instances
                 .remove(&db_instance_identifier)
@@ -423,6 +435,8 @@ impl RdsService {
         &self,
         db_instance_identifier: &str,
         snapshot_id: &str,
+        account_id: &str,
+        region: &str,
     ) -> Result<(), AwsServiceError> {
         let runtime = self.runtime.as_ref().ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -433,7 +447,9 @@ impl RdsService {
         })?;
 
         let (instance_for_snapshot, db_name) = {
-            let state = self.state.read();
+            let accounts = self.state.read();
+            let empty = RdsState::new(account_id, region);
+            let state = accounts.get(account_id).unwrap_or(&empty);
 
             if state.snapshots.contains_key(snapshot_id) {
                 return Err(AwsServiceError::aws_error(
@@ -470,7 +486,8 @@ impl RdsService {
             .await
             .map_err(runtime_error_to_service_error)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(account_id);
 
         if state.snapshots.contains_key(snapshot_id) {
             return Err(AwsServiceError::aws_error(
@@ -544,7 +561,8 @@ impl RdsService {
             validate_db_instance_class(class)?;
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&request.account_id);
         let instance = state
             .instances
             .get_mut(&db_instance_identifier)
@@ -608,7 +626,9 @@ impl RdsService {
         }
 
         let instance = {
-            let state = self.state.read();
+            let accounts = self.state.read();
+            let empty = RdsState::new(&request.account_id, &request.region);
+            let state = accounts.get(&request.account_id).unwrap_or(&empty);
             state
                 .instances
                 .get(&db_instance_identifier)
@@ -633,7 +653,8 @@ impl RdsService {
             .map_err(runtime_error_to_service_error)?;
 
         let instance = {
-            let mut state = self.state.write();
+            let mut accounts = self.state.write();
+            let state = accounts.get_or_create(&request.account_id);
             let instance = state
                 .instances
                 .get_mut(&db_instance_identifier)
@@ -717,7 +738,9 @@ impl RdsService {
         let marker = optional_param(request, "Marker");
         let max_records = optional_param(request, "MaxRecords");
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = RdsState::new(&request.account_id, &request.region);
+        let state = accounts.get(&request.account_id).unwrap_or(&empty);
 
         // If specific identifier requested, return just that one (no pagination)
         if let Some(identifier) = db_instance_identifier {
@@ -826,8 +849,9 @@ impl RdsService {
             ));
         }
 
-        let mut state = self.state.write();
-        let instance = find_instance_by_arn_mut(&mut state, &resource_name)?;
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&request.account_id);
+        let instance = find_instance_by_arn_mut(state, &resource_name)?;
         merge_tags(&mut instance.tags, &tags);
 
         Ok(AwsResponse::xml(
@@ -846,8 +870,10 @@ impl RdsService {
             ));
         }
 
-        let state = self.state.read();
-        let instance = find_instance_by_arn(&state, &resource_name)?;
+        let accounts = self.state.read();
+        let empty = RdsState::new(&request.account_id, &request.region);
+        let state = accounts.get(&request.account_id).unwrap_or(&empty);
+        let instance = find_instance_by_arn(state, &resource_name)?;
         let tag_xml = instance.tags.iter().map(tag_xml).collect::<String>();
 
         Ok(AwsResponse::xml(
@@ -875,8 +901,9 @@ impl RdsService {
             ));
         }
 
-        let mut state = self.state.write();
-        let instance = find_instance_by_arn_mut(&mut state, &resource_name)?;
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&request.account_id);
+        let instance = find_instance_by_arn_mut(state, &resource_name)?;
         instance
             .tags
             .retain(|tag| !tag_keys.iter().any(|key| key == &tag.key));
@@ -903,7 +930,9 @@ impl RdsService {
         })?;
 
         let (instance, db_name) = {
-            let state = self.state.write();
+            let accounts = self.state.read();
+            let empty = RdsState::new(&request.account_id, &request.region);
+            let state = accounts.get(&request.account_id).unwrap_or(&empty);
 
             if state.snapshots.contains_key(&db_snapshot_identifier) {
                 return Err(AwsServiceError::aws_error(
@@ -940,7 +969,8 @@ impl RdsService {
             .await
             .map_err(runtime_error_to_service_error)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&request.account_id);
 
         if state.snapshots.contains_key(&db_snapshot_identifier) {
             return Err(AwsServiceError::aws_error(
@@ -997,7 +1027,9 @@ impl RdsService {
             ));
         }
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = RdsState::new(&request.account_id, &request.region);
+        let state = accounts.get(&request.account_id).unwrap_or(&empty);
 
         // If specific snapshot requested, return just that one (no pagination)
         if let Some(snapshot_id) = db_snapshot_identifier {
@@ -1074,7 +1106,8 @@ impl RdsService {
     fn delete_db_snapshot(&self, request: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let db_snapshot_identifier = required_param(request, "DBSnapshotIdentifier")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&request.account_id);
 
         let snapshot = state
             .snapshots
@@ -1102,7 +1135,8 @@ impl RdsService {
         let runtime = self.require_runtime()?;
 
         let (snapshot, dbi_resource_id, db_instance_arn, created_at) = {
-            let mut state = self.state.write();
+            let mut accounts = self.state.write();
+            let state = accounts.get_or_create(&request.account_id);
 
             if !state.begin_instance_creation(&db_instance_identifier) {
                 return Err(AwsServiceError::aws_error(
@@ -1146,6 +1180,7 @@ impl RdsService {
             Err(e) => {
                 self.state
                     .write()
+                    .get_or_create(&request.account_id)
                     .cancel_instance_creation(&db_instance_identifier);
                 return Err(runtime_error_to_service_error(e));
             }
@@ -1164,6 +1199,7 @@ impl RdsService {
         {
             self.state
                 .write()
+                .get_or_create(&request.account_id)
                 .cancel_instance_creation(&db_instance_identifier);
             runtime.stop_container(&db_instance_identifier).await;
             return Err(runtime_error_to_service_error(e));
@@ -1181,6 +1217,7 @@ impl RdsService {
 
         self.state
             .write()
+            .get_or_create(&request.account_id)
             .finish_instance_creation(instance.clone());
 
         Ok(AwsResponse::xml(
@@ -1212,7 +1249,8 @@ impl RdsService {
         })?;
 
         let (source_instance, db_name) = {
-            let mut state = self.state.write();
+            let mut accounts = self.state.write();
+            let state = accounts.get_or_create(&request.account_id);
 
             if !state.begin_instance_creation(&db_instance_identifier) {
                 return Err(AwsServiceError::aws_error(
@@ -1255,13 +1293,21 @@ impl RdsService {
             Err(e) => {
                 self.state
                     .write()
+                    .get_or_create(&request.account_id)
                     .cancel_instance_creation(&db_instance_identifier);
                 return Err(runtime_error_to_service_error(e));
             }
         };
 
-        let dbi_resource_id = self.state.read().next_dbi_resource_id();
-        let db_instance_arn = self.state.read().db_instance_arn(&db_instance_identifier);
+        let (dbi_resource_id, db_instance_arn) = {
+            let accounts = self.state.read();
+            let empty = RdsState::new(&request.account_id, &request.region);
+            let s = accounts.get(&request.account_id).unwrap_or(&empty);
+            (
+                s.next_dbi_resource_id(),
+                s.db_instance_arn(&db_instance_identifier),
+            )
+        };
         let created_at = Utc::now();
 
         let running = match runtime
@@ -1279,6 +1325,7 @@ impl RdsService {
             Err(e) => {
                 self.state
                     .write()
+                    .get_or_create(&request.account_id)
                     .cancel_instance_creation(&db_instance_identifier);
                 return Err(runtime_error_to_service_error(e));
             }
@@ -1297,6 +1344,7 @@ impl RdsService {
         {
             self.state
                 .write()
+                .get_or_create(&request.account_id)
                 .cancel_instance_creation(&db_instance_identifier);
             runtime.stop_container(&db_instance_identifier).await;
             return Err(runtime_error_to_service_error(e));
@@ -1313,7 +1361,8 @@ impl RdsService {
         );
 
         let source_missing = {
-            let mut state = self.state.write();
+            let mut accounts = self.state.write();
+            let state = accounts.get_or_create(&request.account_id);
             match state.instances.get_mut(&source_db_instance_identifier) {
                 Some(source) => {
                     source
@@ -1368,7 +1417,8 @@ impl RdsService {
             ));
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&request.account_id);
 
         if state.subnet_groups.contains_key(&db_subnet_group_name) {
             return Err(AwsServiceError::aws_error(
@@ -1431,7 +1481,9 @@ impl RdsService {
         let marker = optional_param(request, "Marker");
         let max_records = optional_param(request, "MaxRecords");
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = RdsState::new(&request.account_id, &request.region);
+        let state = accounts.get(&request.account_id).unwrap_or(&empty);
 
         // If specific subnet group requested, return just that one (no pagination)
         if let Some(name) = db_subnet_group_name {
@@ -1491,7 +1543,8 @@ impl RdsService {
     fn delete_db_subnet_group(&self, request: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let db_subnet_group_name = required_param(request, "DBSubnetGroupName")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&request.account_id);
 
         if state.subnet_groups.remove(&db_subnet_group_name).is_none() {
             return Err(AwsServiceError::aws_error(
@@ -1527,7 +1580,8 @@ impl RdsService {
             ));
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&request.account_id);
 
         let region = state.region.clone();
 
@@ -1602,7 +1656,8 @@ impl RdsService {
             ));
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&request.account_id);
 
         if state
             .parameter_groups
@@ -1652,7 +1707,9 @@ impl RdsService {
         let marker = optional_param(request, "Marker");
         let max_records = optional_param(request, "MaxRecords");
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = RdsState::new(&request.account_id, &request.region);
+        let state = accounts.get(&request.account_id).unwrap_or(&empty);
 
         // If specific parameter group requested, return just that one (no pagination)
         if let Some(name) = db_parameter_group_name {
@@ -1724,7 +1781,8 @@ impl RdsService {
     ) -> Result<AwsResponse, AwsServiceError> {
         let db_parameter_group_name = required_param(request, "DBParameterGroupName")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&request.account_id);
 
         if db_parameter_group_name.starts_with("default.") {
             return Err(AwsServiceError::aws_error(
@@ -1758,7 +1816,8 @@ impl RdsService {
     ) -> Result<AwsResponse, AwsServiceError> {
         let db_parameter_group_name = required_param(request, "DBParameterGroupName")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&request.account_id);
 
         let parameter_group = state
             .parameter_groups
@@ -2708,9 +2767,7 @@ mod tests {
         db_instance_xml, filter_engine_versions, filter_orderable_options, merge_tags,
         optional_i32_param, parse_tag_keys, parse_tags, validate_create_request, RdsService,
     };
-    use crate::state::{
-        default_engine_versions, default_orderable_options, DbInstance, RdsState, RdsTag,
-    };
+    use crate::state::{default_engine_versions, default_orderable_options, DbInstance, RdsTag};
     use fakecloud_core::service::{AwsRequest, AwsService, AwsServiceError};
 
     #[test]
@@ -2869,10 +2926,9 @@ mod tests {
 
     #[tokio::test]
     async fn describe_engine_versions_returns_xml_body() {
-        let service = RdsService::new(Arc::new(RwLock::new(RdsState::new(
-            "123456789012",
-            "us-east-1",
-        ))));
+        let service = RdsService::new(Arc::new(RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        )));
         let request = request("DescribeDBEngineVersions", &[("Engine", "postgres")]);
 
         let response = service.handle(request).await.expect("response");
@@ -2911,10 +2967,9 @@ mod tests {
     // ── Helpers for handler tests ────────────────────────────────────
 
     fn make_service() -> RdsService {
-        RdsService::new(Arc::new(RwLock::new(RdsState::new(
-            "123456789012",
-            "us-east-1",
-        ))))
+        RdsService::new(Arc::new(RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        )))
     }
 
     fn body_of(resp: fakecloud_core::service::AwsResponse) -> String {
@@ -2923,7 +2978,8 @@ mod tests {
 
     fn seed_instance(svc: &RdsService, identifier: &str) -> String {
         let arn = format!("arn:aws:rds:us-east-1:123456789012:db:{identifier}");
-        let mut state = svc.state.write();
+        let mut accounts = svc.state.write();
+        let state = accounts.default_mut();
         state.instances.insert(
             identifier.to_string(),
             DbInstance {
@@ -3037,7 +3093,8 @@ mod tests {
         let svc = make_service();
         let arn = seed_instance(&svc, "db1");
         {
-            let mut state = svc.state.write();
+            let mut __a = svc.state.write();
+            let state = __a.default_mut();
             let inst = state.instances.get_mut("db1").unwrap();
             inst.tags = vec![
                 RdsTag {
@@ -3056,7 +3113,8 @@ mod tests {
         );
         svc.remove_tags_from_resource(&req).unwrap();
 
-        let state = svc.state.read();
+        let __a = svc.state.read();
+        let state = __a.default_ref();
         let tags = &state.instances.get("db1").unwrap().tags;
         assert_eq!(tags.len(), 1);
         assert_eq!(tags[0].key, "team");
@@ -3180,7 +3238,7 @@ mod tests {
         create_subnet_group(&svc, "sg1");
         let req = request("DeleteDBSubnetGroup", &[("DBSubnetGroupName", "sg1")]);
         svc.delete_db_subnet_group(&req).unwrap();
-        assert!(svc.state.read().subnet_groups.is_empty());
+        assert!(svc.state.read().default_ref().subnet_groups.is_empty());
     }
 
     #[test]
@@ -3197,7 +3255,8 @@ mod tests {
         );
         svc.modify_db_subnet_group(&req).unwrap();
 
-        let state = svc.state.read();
+        let __a = svc.state.read();
+        let state = __a.default_ref();
         let sg = state.subnet_groups.get("sg1").unwrap();
         assert_eq!(sg.subnet_ids, vec!["subnet-new1", "subnet-new2"]);
     }
@@ -3308,7 +3367,12 @@ mod tests {
         create_param_group(&svc, "pg1");
         let req = request("DeleteDBParameterGroup", &[("DBParameterGroupName", "pg1")]);
         svc.delete_db_parameter_group(&req).unwrap();
-        assert!(!svc.state.read().parameter_groups.contains_key("pg1"));
+        assert!(!svc
+            .state
+            .read()
+            .default_ref()
+            .parameter_groups
+            .contains_key("pg1"));
     }
 
     #[test]
@@ -3323,7 +3387,8 @@ mod tests {
             ],
         );
         svc.modify_db_parameter_group(&req).unwrap();
-        let state = svc.state.read();
+        let __a = svc.state.read();
+        let state = __a.default_ref();
         assert_eq!(
             state.parameter_groups.get("pg1").unwrap().description,
             "shiny new"
@@ -3414,7 +3479,8 @@ mod tests {
             ],
         );
         svc.modify_db_instance(&req).unwrap();
-        let state = svc.state.read();
+        let __a = svc.state.read();
+        let state = __a.default_ref();
         assert_eq!(
             state.instances.get("db1").unwrap().db_instance_class,
             "db.t3.small"
@@ -3434,7 +3500,8 @@ mod tests {
             ],
         );
         svc.modify_db_instance(&req).unwrap();
-        let state = svc.state.read();
+        let __a = svc.state.read();
+        let state = __a.default_ref();
         let inst = state.instances.get("db1").unwrap();
         assert_eq!(inst.db_instance_class, "db.t3.micro");
         assert_eq!(
@@ -3450,7 +3517,8 @@ mod tests {
     // ── Snapshots (sync ops only) ────────────────────────────────────
 
     fn seed_snapshot(svc: &RdsService, snapshot_id: &str, instance_id: &str) {
-        let mut state = svc.state.write();
+        let mut __a = svc.state.write();
+        let state = __a.default_mut();
         let arn = state.db_snapshot_arn(snapshot_id);
         state.snapshots.insert(
             snapshot_id.to_string(),
@@ -3481,7 +3549,7 @@ mod tests {
         seed_snapshot(&svc, "snap1", "db1");
         let req = request("DeleteDBSnapshot", &[("DBSnapshotIdentifier", "snap1")]);
         svc.delete_db_snapshot(&req).unwrap();
-        assert!(svc.state.read().snapshots.is_empty());
+        assert!(svc.state.read().default_ref().snapshots.is_empty());
     }
 
     #[test]

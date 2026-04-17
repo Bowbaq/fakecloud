@@ -6,14 +6,24 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub type SharedStepFunctionsState = Arc<RwLock<StepFunctionsState>>;
+pub type SharedStepFunctionsState =
+    Arc<RwLock<fakecloud_core::multi_account::MultiAccountState<StepFunctionsState>>>;
 
-pub const STEPFUNCTIONS_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+impl fakecloud_core::multi_account::AccountState for StepFunctionsState {
+    fn new_for_account(account_id: &str, region: &str, _endpoint: &str) -> Self {
+        Self::new(account_id, region)
+    }
+}
+
+pub const STEPFUNCTIONS_SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StepFunctionsSnapshot {
     pub schema_version: u32,
-    pub state: StepFunctionsState,
+    #[serde(default)]
+    pub accounts: Option<fakecloud_core::multi_account::MultiAccountState<StepFunctionsState>>,
+    #[serde(default)]
+    pub state: Option<StepFunctionsState>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

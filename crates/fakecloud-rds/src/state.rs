@@ -7,7 +7,13 @@ use fakecloud_aws::arn::Arn;
 use parking_lot::RwLock;
 use uuid::Uuid;
 
-pub type SharedRdsState = Arc<RwLock<RdsState>>;
+pub type SharedRdsState = Arc<RwLock<fakecloud_core::multi_account::MultiAccountState<RdsState>>>;
+
+impl fakecloud_core::multi_account::AccountState for RdsState {
+    fn new_for_account(account_id: &str, region: &str, _endpoint: &str) -> Self {
+        Self::new(account_id, region)
+    }
+}
 
 /// Supported DB instance classes — single source of truth.
 pub const SUPPORTED_INSTANCE_CLASSES: &[&str] = &[
@@ -464,12 +470,15 @@ pub fn default_parameter_groups(
     groups
 }
 
-pub const RDS_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+pub const RDS_SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RdsSnapshot {
     pub schema_version: u32,
-    pub state: RdsState,
+    #[serde(default)]
+    pub accounts: Option<fakecloud_core::multi_account::MultiAccountState<RdsState>>,
+    #[serde(default)]
+    pub state: Option<RdsState>,
 }
 
 #[cfg(test)]
