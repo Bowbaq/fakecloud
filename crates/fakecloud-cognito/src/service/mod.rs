@@ -6879,4 +6879,255 @@ mod tests {
         let b = resp_json(&resp);
         assert!(b["ConfiguredUserAuthFactors"].is_array());
     }
+
+    // ── Legacy operations (legacy.rs) coverage ─────────────────────────
+
+    fn issue_access_token_for(
+        state: &crate::state::SharedCognitoState,
+        pool_id: &str,
+        username: &str,
+        client_id: &str,
+    ) -> String {
+        let token = format!("access-{}", uuid::Uuid::new_v4());
+        let mut st = state.write();
+        let acct = st.get_or_create("123456789012");
+        acct.access_tokens.insert(
+            token.clone(),
+            AccessTokenData {
+                user_pool_id: pool_id.to_string(),
+                username: username.to_string(),
+                client_id: client_id.to_string(),
+                issued_at: chrono::Utc::now(),
+            },
+        );
+        token
+    }
+
+    #[test]
+    fn set_user_settings_invalid_token() {
+        let (svc, _) = make_svc();
+        let body = json!({"AccessToken": "nope", "MFAOptions": []});
+        let req = make_req("SetUserSettings", &body.to_string());
+        assert!(svc.set_user_settings(&req).is_err());
+    }
+
+    #[test]
+    fn set_user_settings_valid_token() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "alice");
+        let token = issue_access_token_for(&state, &pool_id, "alice", "c1");
+        let body = json!({
+            "AccessToken": token,
+            "MFAOptions": [{"DeliveryMedium": "SMS", "AttributeName": "phone_number"}]
+        });
+        let req = make_req("SetUserSettings", &body.to_string());
+        svc.set_user_settings(&req).unwrap();
+    }
+
+    #[test]
+    fn admin_link_and_disable_provider_for_user() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "eve");
+        let body = json!({
+            "UserPoolId": pool_id,
+            "DestinationUser": {"ProviderName": "Cognito", "ProviderAttributeValue": "eve"},
+            "SourceUser": {
+                "ProviderName": "Google",
+                "ProviderAttributeName": "Cognito_Subject",
+                "ProviderAttributeValue": "google-sub-123"
+            }
+        });
+        let req = make_req("AdminLinkProviderForUser", &body.to_string());
+        svc.admin_link_provider_for_user(&req).unwrap();
+
+        let body = json!({
+            "UserPoolId": pool_id,
+            "User": {"ProviderName": "Google", "ProviderAttributeValue": "google-sub-123"}
+        });
+        let req = make_req("AdminDisableProviderForUser", &body.to_string());
+        svc.admin_disable_provider_for_user(&req).unwrap();
+    }
+
+    #[test]
+    fn admin_link_provider_pool_not_found() {
+        let (svc, _) = make_svc();
+        let body = json!({
+            "UserPoolId": "us-east-1_no",
+            "DestinationUser": {"ProviderName": "Cognito", "ProviderAttributeValue": "x"},
+            "SourceUser": {"ProviderName": "Google", "ProviderAttributeValue": "v"}
+        });
+        let req = make_req("AdminLinkProviderForUser", &body.to_string());
+        assert!(svc.admin_link_provider_for_user(&req).is_err());
+    }
+
+    #[test]
+    fn admin_link_provider_destination_not_found() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({
+            "UserPoolId": pool_id,
+            "DestinationUser": {"ProviderName": "Cognito", "ProviderAttributeValue": "ghost"},
+            "SourceUser": {"ProviderName": "Google", "ProviderAttributeValue": "v"}
+        });
+        let req = make_req("AdminLinkProviderForUser", &body.to_string());
+        assert!(svc.admin_link_provider_for_user(&req).is_err());
+    }
+
+    #[test]
+    fn admin_disable_provider_user_not_found() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({
+            "UserPoolId": pool_id,
+            "User": {"ProviderName": "Google", "ProviderAttributeValue": "missing"}
+        });
+        let req = make_req("AdminDisableProviderForUser", &body.to_string());
+        assert!(svc.admin_disable_provider_for_user(&req).is_err());
+    }
+
+    #[test]
+    fn admin_list_user_auth_events_empty() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "alice");
+        let body = json!({"UserPoolId": pool_id, "Username": "alice"});
+        let req = make_req("AdminListUserAuthEvents", &body.to_string());
+        let resp = svc.admin_list_user_auth_events(&req).unwrap();
+        let b = resp_json(&resp);
+        assert!(b["AuthEvents"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn admin_list_user_auth_events_returns_stored() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "alice");
+        {
+            let mut st = state.write();
+            let acct = st.get_or_create("123456789012");
+            acct.auth_events.push(AuthEvent {
+                event_id: "ev-1".to_string(),
+                event_type: "SignIn".to_string(),
+                username: "alice".to_string(),
+                user_pool_id: pool_id.clone(),
+                client_id: None,
+                timestamp: chrono::Utc::now(),
+                success: true,
+                feedback_value: Some("Valid".to_string()),
+            });
+        }
+        let body = json!({"UserPoolId": pool_id, "Username": "alice"});
+        let req = make_req("AdminListUserAuthEvents", &body.to_string());
+        let resp = svc.admin_list_user_auth_events(&req).unwrap();
+        let b = resp_json(&resp);
+        let events = b["AuthEvents"].as_array().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["EventResponse"], "Pass");
+        assert_eq!(events[0]["EventFeedback"]["FeedbackValue"], "Valid");
+    }
+
+    #[test]
+    fn admin_list_user_auth_events_user_not_found() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id, "Username": "ghost"});
+        let req = make_req("AdminListUserAuthEvents", &body.to_string());
+        assert!(svc.admin_list_user_auth_events(&req).is_err());
+    }
+
+    #[test]
+    fn admin_update_auth_event_feedback_updates_event() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "alice");
+        {
+            let mut st = state.write();
+            let acct = st.get_or_create("123456789012");
+            acct.auth_events.push(AuthEvent {
+                event_id: "ev-7".to_string(),
+                event_type: "SignIn".to_string(),
+                username: "alice".to_string(),
+                user_pool_id: pool_id.clone(),
+                client_id: None,
+                timestamp: chrono::Utc::now(),
+                success: false,
+                feedback_value: None,
+            });
+        }
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Username": "alice",
+            "EventId": "ev-7",
+            "FeedbackValue": "Invalid"
+        });
+        let req = make_req("AdminUpdateAuthEventFeedback", &body.to_string());
+        svc.admin_update_auth_event_feedback(&req).unwrap();
+        let st = state.read();
+        assert_eq!(
+            st.default_ref().auth_events[0].feedback_value.as_deref(),
+            Some("Invalid")
+        );
+    }
+
+    #[test]
+    fn admin_update_auth_event_feedback_missing_event_id() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "alice2");
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Username": "alice2",
+            "EventId": "missing",
+            "FeedbackValue": "Invalid"
+        });
+        let req = make_req("AdminUpdateAuthEventFeedback", &body.to_string());
+        assert!(svc.admin_update_auth_event_feedback(&req).is_err());
+    }
+
+    #[test]
+    fn update_auth_event_feedback_updates_event() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "alice");
+        {
+            let mut st = state.write();
+            let acct = st.get_or_create("123456789012");
+            acct.auth_events.push(AuthEvent {
+                event_id: "ev-9".to_string(),
+                event_type: "SignIn".to_string(),
+                username: "alice".to_string(),
+                user_pool_id: pool_id.clone(),
+                client_id: None,
+                timestamp: chrono::Utc::now(),
+                success: true,
+                feedback_value: None,
+            });
+        }
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Username": "alice",
+            "EventId": "ev-9",
+            "FeedbackToken": "ft",
+            "FeedbackValue": "Valid"
+        });
+        let req = make_req("UpdateAuthEventFeedback", &body.to_string());
+        svc.update_auth_event_feedback(&req).unwrap();
+    }
+
+    #[test]
+    fn update_auth_event_feedback_user_not_found() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Username": "ghost",
+            "EventId": "ev",
+            "FeedbackToken": "t",
+            "FeedbackValue": "Valid"
+        });
+        let req = make_req("UpdateAuthEventFeedback", &body.to_string());
+        assert!(svc.update_auth_event_feedback(&req).is_err());
+    }
 }
