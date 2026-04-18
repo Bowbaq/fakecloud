@@ -4300,4 +4300,148 @@ mod tests {
             .unwrap()
             .is_empty());
     }
+
+    // ── documents.rs extra coverage ───────────────────────────────────
+
+    fn create_doc_basic(svc: &SsmService, name: &str) {
+        let req = make_request(
+            "CreateDocument",
+            json!({
+                "Name": name,
+                "Content": "{\"schemaVersion\":\"2.2\",\"description\":\"d\",\"mainSteps\":[]}",
+                "DocumentFormat": "JSON",
+                "DocumentType": "Command"
+            }),
+        );
+        svc.create_document(&req).unwrap();
+    }
+
+    #[test]
+    fn list_document_metadata_history_returns_stub() {
+        let svc = make_service();
+        create_doc_basic(&svc, "DocA");
+        let req = make_request(
+            "ListDocumentMetadataHistory",
+            json!({"Name": "DocA", "Metadata": "DocumentReviews"}),
+        );
+        let resp = svc.list_document_metadata_history(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["Name"], "DocA");
+        assert!(body["Metadata"]["ReviewerResponse"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn list_document_metadata_history_invalid_metadata_enum() {
+        let svc = make_service();
+        let req = make_request(
+            "ListDocumentMetadataHistory",
+            json!({"Name": "x", "Metadata": "Bogus"}),
+        );
+        assert!(svc.list_document_metadata_history(&req).is_err());
+    }
+
+    #[test]
+    fn update_document_metadata_not_found() {
+        let svc = make_service();
+        let req = make_request("UpdateDocumentMetadata", json!({"Name": "missing"}));
+        assert!(svc.update_document_metadata(&req).is_err());
+    }
+
+    #[test]
+    fn update_document_metadata_existing() {
+        let svc = make_service();
+        create_doc_basic(&svc, "DocB");
+        let req = make_request("UpdateDocumentMetadata", json!({"Name": "DocB"}));
+        svc.update_document_metadata(&req).unwrap();
+    }
+
+    #[test]
+    fn ssm_resource_policy_crud_full() {
+        let svc = make_service();
+        let arn = "arn:aws:ssm:us-east-1:123:parameter/foo";
+
+        let req = make_request(
+            "PutResourcePolicy",
+            json!({"ResourceArn": arn, "Policy": "{\"Version\":\"2012-10-17\"}"}),
+        );
+        let resp = svc.put_resource_policy(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        let policy_id = body["PolicyId"].as_str().unwrap().to_string();
+        let policy_hash = body["PolicyHash"].as_str().unwrap().to_string();
+
+        let req = make_request("GetResourcePolicies", json!({"ResourceArn": arn}));
+        let resp = svc.get_resource_policies(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["Policies"].as_array().unwrap().len(), 1);
+
+        let req = make_request(
+            "PutResourcePolicy",
+            json!({
+                "ResourceArn": arn,
+                "Policy": "{\"Version\":\"2012-10-17\",\"Statement\":[]}",
+                "PolicyId": policy_id,
+                "PolicyHash": policy_hash
+            }),
+        );
+        let resp = svc.put_resource_policy(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        let new_hash = body["PolicyHash"].as_str().unwrap().to_string();
+        assert_ne!(new_hash, policy_hash);
+
+        let req = make_request(
+            "DeleteResourcePolicy",
+            json!({
+                "ResourceArn": arn,
+                "PolicyId": policy_id,
+                "PolicyHash": new_hash
+            }),
+        );
+        svc.delete_resource_policy(&req).unwrap();
+
+        let req = make_request("GetResourcePolicies", json!({"ResourceArn": arn}));
+        let resp = svc.get_resource_policies(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(body["Policies"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn put_resource_policy_hash_mismatch_errors() {
+        let svc = make_service();
+        let arn = "arn:aws:ssm:us-east-1:123:parameter/hashtest";
+        let req = make_request(
+            "PutResourcePolicy",
+            json!({"ResourceArn": arn, "Policy": "{}"}),
+        );
+        let resp = svc.put_resource_policy(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        let policy_id = body["PolicyId"].as_str().unwrap().to_string();
+
+        let req = make_request(
+            "PutResourcePolicy",
+            json!({
+                "ResourceArn": arn,
+                "Policy": "{\"v\":1}",
+                "PolicyId": policy_id,
+                "PolicyHash": "wrong-hash"
+            }),
+        );
+        assert!(svc.put_resource_policy(&req).is_err());
+    }
+
+    #[test]
+    fn ssm_delete_resource_policy_not_found() {
+        let svc = make_service();
+        let req = make_request(
+            "DeleteResourcePolicy",
+            json!({
+                "ResourceArn": "arn:aws:ssm:us-east-1:123:parameter/ghost",
+                "PolicyId": "no-such-policy",
+                "PolicyHash": "h"
+            }),
+        );
+        assert!(svc.delete_resource_policy(&req).is_err());
+    }
 }
