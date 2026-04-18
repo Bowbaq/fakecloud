@@ -7237,4 +7237,92 @@ mod tests {
         let req = make_req("AdminRespondToAuthChallenge", &body.to_string());
         assert!(block_on(svc.admin_respond_to_auth_challenge(&req)).is_err());
     }
+
+    // ── Identity provider extra coverage ──────────────────────────────
+
+    fn make_idp_request(pool_id: &str, name: &str, ptype: &str) -> AwsRequest {
+        let body = json!({
+            "UserPoolId": pool_id,
+            "ProviderName": name,
+            "ProviderType": ptype,
+            "ProviderDetails": {"client_id": "cid", "client_secret": "sec"},
+            "AttributeMapping": {"email": "email"},
+            "IdpIdentifiers": ["id-a", "id-b"]
+        });
+        make_req("CreateIdentityProvider", &body.to_string())
+    }
+
+    #[test]
+    fn describe_identity_provider_unknown_provider_errors() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id, "ProviderName": "ghost"});
+        let req = make_req("DescribeIdentityProvider", &body.to_string());
+        assert!(svc.describe_identity_provider(&req).is_err());
+    }
+
+    #[test]
+    fn update_identity_provider_updates_and_not_found() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let req = make_idp_request(&pool_id, "Google", "Google");
+        svc.create_identity_provider(&req).unwrap();
+
+        let update_body = json!({
+            "UserPoolId": pool_id,
+            "ProviderName": "Google",
+            "ProviderDetails": {"client_id": "new-cid"},
+            "AttributeMapping": {"sub": "sub"},
+            "IdpIdentifiers": ["new-id"]
+        });
+        let req = make_req("UpdateIdentityProvider", &update_body.to_string());
+        svc.update_identity_provider(&req).unwrap();
+
+        let miss_body = json!({"UserPoolId": pool_id, "ProviderName": "missing"});
+        let req = make_req("UpdateIdentityProvider", &miss_body.to_string());
+        assert!(svc.update_identity_provider(&req).is_err());
+    }
+
+    #[test]
+    fn delete_identity_provider_unknown_errors() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id, "ProviderName": "ghost"});
+        let req = make_req("DeleteIdentityProvider", &body.to_string());
+        assert!(svc.delete_identity_provider(&req).is_err());
+    }
+
+    #[test]
+    fn list_identity_providers_paginates() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        for (idx, ptype) in ["Google", "Facebook", "SAML"].iter().enumerate() {
+            let req = make_idp_request(&pool_id, &format!("p{idx}"), ptype);
+            svc.create_identity_provider(&req).unwrap();
+        }
+        let body = json!({"UserPoolId": pool_id, "MaxResults": 2});
+        let req = make_req("ListIdentityProviders", &body.to_string());
+        let resp = svc.list_identity_providers(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["Providers"].as_array().unwrap().len(), 2);
+        assert!(b["NextToken"].is_string());
+    }
+
+    #[test]
+    fn get_identity_provider_by_identifier_hits_and_misses() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let req = make_idp_request(&pool_id, "Google", "Google");
+        svc.create_identity_provider(&req).unwrap();
+
+        let body = json!({"UserPoolId": pool_id, "IdpIdentifier": "id-a"});
+        let req = make_req("GetIdentityProviderByIdentifier", &body.to_string());
+        let resp = svc.get_identity_provider_by_identifier(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["IdentityProvider"]["ProviderName"], "Google");
+
+        let body = json!({"UserPoolId": pool_id, "IdpIdentifier": "missing"});
+        let req = make_req("GetIdentityProviderByIdentifier", &body.to_string());
+        assert!(svc.get_identity_provider_by_identifier(&req).is_err());
+    }
 }
