@@ -7462,4 +7462,142 @@ mod tests {
         let req = make_req("VerifyUserAttribute", &body.to_string());
         assert!(svc.verify_user_attribute(&req).is_err());
     }
+
+    // ── User pool custom attributes + client secrets ───────────────────
+
+    #[test]
+    fn add_custom_attributes_adds_with_prefix() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({
+            "UserPoolId": pool_id,
+            "CustomAttributes": [
+                {"Name": "tier", "AttributeDataType": "String"},
+                {"Name": "custom:ready", "AttributeDataType": "Boolean"}
+            ]
+        });
+        let req = make_req("AddCustomAttributes", &body.to_string());
+        svc.add_custom_attributes(&req).unwrap();
+
+        let req = make_req(
+            "DescribeUserPool",
+            &json!({"UserPoolId": pool_id}).to_string(),
+        );
+        let resp = svc.describe_user_pool(&req).unwrap();
+        let b = resp_json(&resp);
+        let schema = b["UserPool"]["SchemaAttributes"].as_array().unwrap();
+        assert!(schema.iter().any(|s| s["Name"] == "custom:tier"));
+        assert!(schema.iter().any(|s| s["Name"] == "custom:ready"));
+    }
+
+    #[test]
+    fn add_custom_attributes_missing_array_errors() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id});
+        let req = make_req("AddCustomAttributes", &body.to_string());
+        assert!(svc.add_custom_attributes(&req).is_err());
+    }
+
+    #[test]
+    fn add_custom_attributes_unknown_pool_errors() {
+        let (svc, _) = make_svc();
+        let body = json!({"UserPoolId": "us-east-1_no", "CustomAttributes": []});
+        let req = make_req("AddCustomAttributes", &body.to_string());
+        assert!(svc.add_custom_attributes(&req).is_err());
+    }
+
+    #[test]
+    fn user_pool_client_secret_crud() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+
+        let body = json!({
+            "UserPoolId": pool_id,
+            "ClientId": client_id,
+            "ClientSecret": "super-secret"
+        });
+        let req = make_req("AddUserPoolClientSecret", &body.to_string());
+        let resp = svc.add_user_pool_client_secret(&req).unwrap();
+        let b = resp_json(&resp);
+        let secret_id = b["ClientSecretDescriptor"]["ClientSecretId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            b["ClientSecretDescriptor"]["ClientSecretValue"],
+            "super-secret"
+        );
+
+        let body = json!({"UserPoolId": pool_id, "ClientId": client_id});
+        let req = make_req("ListUserPoolClientSecrets", &body.to_string());
+        let resp = svc.list_user_pool_client_secrets(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["ClientSecrets"].as_array().unwrap().len(), 1);
+
+        let body = json!({
+            "UserPoolId": pool_id,
+            "ClientId": client_id,
+            "ClientSecretId": secret_id
+        });
+        let req = make_req("DeleteUserPoolClientSecret", &body.to_string());
+        svc.delete_user_pool_client_secret(&req).unwrap();
+
+        let body = json!({"UserPoolId": pool_id, "ClientId": client_id});
+        let req = make_req("ListUserPoolClientSecrets", &body.to_string());
+        let resp = svc.list_user_pool_client_secrets(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["ClientSecrets"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn add_user_pool_client_secret_generates_secret_when_missing() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        let body = json!({"UserPoolId": pool_id, "ClientId": client_id});
+        let req = make_req("AddUserPoolClientSecret", &body.to_string());
+        let resp = svc.add_user_pool_client_secret(&req).unwrap();
+        let b = resp_json(&resp);
+        assert!(!b["ClientSecretDescriptor"]["ClientSecretValue"]
+            .as_str()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn add_user_pool_client_secret_unknown_client_errors() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({
+            "UserPoolId": pool_id,
+            "ClientId": "missing-client"
+        });
+        let req = make_req("AddUserPoolClientSecret", &body.to_string());
+        assert!(svc.add_user_pool_client_secret(&req).is_err());
+    }
+
+    #[test]
+    fn delete_user_pool_client_secret_unknown_secret_errors() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        let body = json!({
+            "UserPoolId": pool_id,
+            "ClientId": client_id,
+            "ClientSecretId": "nope"
+        });
+        let req = make_req("DeleteUserPoolClientSecret", &body.to_string());
+        assert!(svc.delete_user_pool_client_secret(&req).is_err());
+    }
+
+    #[test]
+    fn list_user_pool_client_secrets_unknown_client_errors() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id, "ClientId": "nope"});
+        let req = make_req("ListUserPoolClientSecrets", &body.to_string());
+        assert!(svc.list_user_pool_client_secrets(&req).is_err());
+    }
 }
