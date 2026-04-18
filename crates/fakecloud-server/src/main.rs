@@ -2069,10 +2069,9 @@ async fn main() {
                 let ls = lambda_invocations_state.clone();
                 move || async move {
                     let accounts = ls.read();
-                    let state = accounts.default_ref();
-                    let invocations = state
-                        .invocations
+                    let invocations = accounts
                         .iter()
+                        .flat_map(|(_, state)| state.invocations.iter())
                         .map(|inv| types::LambdaInvocation {
                             function_arn: inv.function_arn.clone(),
                             payload: inv.payload.clone(),
@@ -2330,10 +2329,9 @@ async fn main() {
                 let ss = sns_introspection_state;
                 move || async move {
                     let mas = ss.read();
-                    let state = mas.default_ref();
-                    let messages = state
-                        .published
+                    let messages = mas
                         .iter()
+                        .flat_map(|(_, state)| state.published.iter())
                         .map(|msg| types::SnsMessage {
                             message_id: msg.message_id.clone(),
                             topic_arn: msg.topic_arn.clone(),
@@ -2352,10 +2350,9 @@ async fn main() {
                 let ss = sqs_introspection_state;
                 move || async move {
                     let mas = ss.read();
-                    let state = mas.default_ref();
-                    let queues = state
-                        .queues
-                        .values()
+                    let queues = mas
+                        .iter()
+                        .flat_map(|(_, state)| state.queues.values())
                         .map(|queue| {
                             let mut messages: Vec<types::SqsMessageInfo> = queue
                                 .messages
@@ -2397,10 +2394,9 @@ async fn main() {
                 let es = eb_introspection_state;
                 move || async move {
                     let accounts = es.read();
-                    let state = accounts.default_ref();
-                    let events = state
-                        .events
+                    let events = accounts
                         .iter()
+                        .flat_map(|(_, state)| state.events.iter())
                         .map(|evt| types::EventBridgeEvent {
                             event_id: evt.event_id.clone(),
                             source: evt.source.clone(),
@@ -2410,18 +2406,18 @@ async fn main() {
                             timestamp: evt.time.to_rfc3339(),
                         })
                         .collect();
-                    let lambda = state
-                        .lambda_invocations
+                    let lambda = accounts
                         .iter()
+                        .flat_map(|(_, state)| state.lambda_invocations.iter())
                         .map(|inv| types::EventBridgeLambdaDelivery {
                             function_arn: inv.function_arn.clone(),
                             payload: inv.payload.clone(),
                             timestamp: inv.timestamp.to_rfc3339(),
                         })
                         .collect();
-                    let logs = state
-                        .log_deliveries
+                    let logs = accounts
                         .iter()
+                        .flat_map(|(_, state)| state.log_deliveries.iter())
                         .map(|ld| types::EventBridgeLogDelivery {
                             log_group_arn: ld.log_group_arn.clone(),
                             payload: ld.payload.clone(),
@@ -2511,10 +2507,9 @@ async fn main() {
                 let ss = s3_introspection_state;
                 move || async move {
                     let mas = ss.read();
-                    let state = mas.default_ref();
-                    let notifications = state
-                        .notification_events
+                    let notifications = mas
                         .iter()
+                        .flat_map(|(_, state)| state.notification_events.iter())
                         .map(|evt| types::S3Notification {
                             bucket: evt.bucket.clone(),
                             key: evt.key.clone(),
@@ -2984,6 +2979,26 @@ async fn main() {
                             axum::http::StatusCode::OK,
                             axum::Json(serde_json::json!(types::ResetServiceResponse {
                                 reset: service
+                            })),
+                        ),
+                        Err(msg) => (
+                            axum::http::StatusCode::NOT_FOUND,
+                            axum::Json(serde_json::json!({ "error": msg })),
+                        ),
+                    }
+                }
+            }),
+        )
+        .route(
+            "/_fakecloud/reset/{service}/{account_id}",
+            axum::routing::post({
+                let s = reset_state.clone();
+                move |axum::extract::Path((service, account_id)): axum::extract::Path<(String, String)>| async move {
+                    match s.reset_service_for_account(&service, &account_id) {
+                        Ok(()) => (
+                            axum::http::StatusCode::OK,
+                            axum::Json(serde_json::json!(types::ResetServiceResponse {
+                                reset: format!("{service}/{account_id}")
                             })),
                         ),
                         Err(msg) => (

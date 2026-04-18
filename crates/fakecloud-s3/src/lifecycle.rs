@@ -33,22 +33,22 @@ impl LifecycleProcessor {
         let now = Utc::now();
         let today = now.date_naive();
 
-        // Collect bucket names and their lifecycle configs (to avoid holding lock during processing)
-        let bucket_configs: Vec<(String, String)> = {
+        // Collect bucket names, their lifecycle configs, and owning account id
+        let bucket_configs: Vec<(String, String, String)> = {
             let __mas = self.state.read();
-            let state = __mas.default_ref();
-            state
-                .buckets
-                .values()
-                .filter_map(|b| {
-                    b.lifecycle_config
-                        .as_ref()
-                        .map(|cfg| (b.name.clone(), cfg.clone()))
+            __mas
+                .iter()
+                .flat_map(|(acct_id, state)| {
+                    state.buckets.values().filter_map(move |b| {
+                        b.lifecycle_config
+                            .as_ref()
+                            .map(|cfg| (b.name.clone(), cfg.clone(), acct_id.to_string()))
+                    })
                 })
                 .collect()
         };
 
-        for (bucket_name, config_xml) in bucket_configs {
+        for (bucket_name, config_xml, account_id) in bucket_configs {
             let rules = match parse_lifecycle_rules(&config_xml) {
                 Some(r) => r,
                 None => continue,
@@ -59,14 +59,23 @@ impl LifecycleProcessor {
                     continue;
                 }
 
-                self.process_rule(&bucket_name, rule, today);
+                self.process_rule(&account_id, &bucket_name, rule, today);
             }
         }
     }
 
-    fn process_rule(&self, bucket_name: &str, rule: &LifecycleRule, today: NaiveDate) {
+    fn process_rule(
+        &self,
+        account_id: &str,
+        bucket_name: &str,
+        rule: &LifecycleRule,
+        today: NaiveDate,
+    ) {
         let mut __mas = self.state.write();
-        let state = __mas.default_mut();
+        let state = match __mas.get_mut(account_id) {
+            Some(s) => s,
+            None => return,
+        };
         let bucket = match state.buckets.get_mut(bucket_name) {
             Some(b) => b,
             None => return,

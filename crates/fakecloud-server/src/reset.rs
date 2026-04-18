@@ -130,6 +130,148 @@ impl ResetState {
         Ok(())
     }
 
+    /// Reset a single service's state for a specific account only.
+    pub(crate) fn reset_service_for_account(
+        &self,
+        service: &str,
+        account_id: &str,
+    ) -> Result<(), String> {
+        match service {
+            "iam" | "sts" => {
+                let mut mas = self.iam.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                }
+            }
+            "sqs" => {
+                let mut mas = self.sqs.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                }
+            }
+            "sns" => {
+                let mut mas = self.sns.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                    state.seed_default_opted_out();
+                }
+            }
+            "events" | "eventbridge" => {
+                let mut mas = self.eb.write();
+                if let Some(eb) = mas.get_mut(account_id) {
+                    eb.reset();
+                }
+            }
+            "ssm" => {
+                let mut mas = self.ssm.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                }
+            }
+            "dynamodb" => {
+                let mut mas = self.dynamodb.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                }
+            }
+            "lambda" => {
+                let mut mas = self.lambda.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                }
+            }
+            "secretsmanager" => {
+                let mut mas = self.secretsmanager.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                }
+            }
+            "s3" => {
+                let mut mas = self.s3.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                }
+            }
+            "logs" => {
+                let mut mas = self.logs.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                }
+            }
+            "kms" => {
+                let mut mas = self.kms.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                }
+            }
+            "cloudformation" => {
+                let mut mas = self.cloudformation.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                }
+            }
+            "ses" => {
+                let mut mas = self.ses.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                }
+            }
+            "cognito" => {
+                let mut mas = self.cognito.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                }
+            }
+            "kinesis" => {
+                let mut mas = self.kinesis.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                }
+            }
+            "rds" => {
+                let mut mas = self.rds.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                }
+            }
+            "elasticache" => {
+                let mut mas = self.elasticache.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                }
+            }
+            "states" | "stepfunctions" => {
+                let mut mas = self.stepfunctions.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                }
+            }
+            "scheduler" => {
+                let mut mas = self.scheduler.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                }
+            }
+            "apigateway" | "apigatewayv2" => {
+                let mut mas = self.apigatewayv2.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                }
+            }
+            "bedrock" | "bedrock-runtime" => {
+                let mut mas = self.bedrock.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                }
+            }
+            _ => {
+                return Err(format!("Unknown service: {service}"));
+            }
+        }
+        tracing::info!(service = %service, account_id = %account_id, "service state reset for account via per-account reset API");
+        Ok(())
+    }
+
     pub(crate) fn reset(&self) -> axum::Json<types::ResetResponse> {
         self.iam.write().reset();
         self.sqs.write().reset();
