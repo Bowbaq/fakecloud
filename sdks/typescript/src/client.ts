@@ -30,6 +30,8 @@ import type {
   EventHistoryResponse,
   FireRuleRequest,
   FireRuleResponse,
+  FireScheduleResponse,
+  SchedulerSchedulesResponse,
   S3NotificationsResponse,
   LifecycleTickResponse,
   TtlTickResponse,
@@ -210,6 +212,26 @@ export class EventsClient {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(req),
     });
+    return parse(resp);
+  }
+}
+
+export class SchedulerClient {
+  constructor(private baseUrl: string) {}
+
+  async getSchedules(): Promise<SchedulerSchedulesResponse> {
+    const resp = await fetch(`${this.baseUrl}/_fakecloud/scheduler/schedules`);
+    return parse(resp);
+  }
+
+  async fireSchedule(
+    group: string,
+    name: string,
+  ): Promise<FireScheduleResponse> {
+    const resp = await fetch(
+      `${this.baseUrl}/_fakecloud/scheduler/fire/${encodeURIComponent(group)}/${encodeURIComponent(name)}`,
+      { method: "POST" },
+    );
     return parse(resp);
   }
 }
@@ -424,6 +446,7 @@ export class FakeCloud {
   private readonly _sns: SnsClient;
   private readonly _sqs: SqsClient;
   private readonly _events: EventsClient;
+  private readonly _scheduler: SchedulerClient;
   private readonly _s3: S3Client;
   private readonly _dynamodb: DynamoDbClient;
   private readonly _secretsmanager: SecretsManagerClient;
@@ -442,6 +465,7 @@ export class FakeCloud {
     this._sns = new SnsClient(this.baseUrl);
     this._sqs = new SqsClient(this.baseUrl);
     this._events = new EventsClient(this.baseUrl);
+    this._scheduler = new SchedulerClient(this.baseUrl);
     this._s3 = new S3Client(this.baseUrl);
     this._dynamodb = new DynamoDbClient(this.baseUrl);
     this._secretsmanager = new SecretsManagerClient(this.baseUrl);
@@ -513,6 +537,10 @@ export class FakeCloud {
 
   get events(): EventsClient {
     return this._events;
+  }
+
+  get scheduler(): SchedulerClient {
+    return this._scheduler;
   }
 
   get s3(): S3Client {

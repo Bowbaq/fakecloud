@@ -609,6 +609,60 @@ class FireRuleResponse:
         )
 
 
+# ── Scheduler (EventBridge Scheduler) ───────────────────────────────
+
+
+@dataclass
+class SchedulerSchedule:
+    account_id: str
+    group_name: str
+    name: str
+    arn: str
+    state: str
+    schedule_expression: str
+    target_arn: str
+    last_fired: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> SchedulerSchedule:
+        return cls(
+            account_id=data.get("accountId", ""),
+            group_name=data.get("groupName", ""),
+            name=data.get("name", ""),
+            arn=data.get("arn", ""),
+            state=data.get("state", ""),
+            schedule_expression=data.get("scheduleExpression", ""),
+            target_arn=data.get("targetArn", ""),
+            last_fired=data.get("lastFired"),
+        )
+
+
+@dataclass
+class SchedulerSchedulesResponse:
+    schedules: List[SchedulerSchedule]
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> SchedulerSchedulesResponse:
+        return cls(
+            schedules=[
+                SchedulerSchedule.from_dict(s) for s in data.get("schedules", [])
+            ],
+        )
+
+
+@dataclass
+class FireScheduleResponse:
+    schedule_arn: str
+    target_arn: str
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> FireScheduleResponse:
+        return cls(
+            schedule_arn=data.get("scheduleArn", ""),
+            target_arn=data.get("targetArn", ""),
+        )
+
+
 # ── S3 ──────────────────────────────────────────────────────────────
 
 

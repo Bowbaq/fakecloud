@@ -26,10 +26,13 @@ import (
 	ebtypes "github.com/aws/aws-sdk-go-v2/service/eventbridge/types"
 	"github.com/aws/aws-sdk-go-v2/service/rds"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/scheduler"
+	schedtypes "github.com/aws/aws-sdk-go-v2/service/scheduler/types"
 	"github.com/aws/aws-sdk-go-v2/service/sesv2"
 	sestypes "github.com/aws/aws-sdk-go-v2/service/sesv2/types"
 	"github.com/aws/aws-sdk-go-v2/service/sns"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
+	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 
 	fakecloud "github.com/faiscadev/fakecloud/sdks/go"
 )
@@ -824,5 +827,93 @@ func TestE2EBedrockFaults(t *testing.T) {
 	}
 	if len(after.Faults) != 0 {
 		t.Errorf("expected 0 faults after clear, got %d", len(after.Faults))
+	}
+}
+
+// ── Scheduler (EventBridge Scheduler) ─────────────────────────────────
+
+func schedulerClient(t *testing.T) *scheduler.Client {
+	return scheduler.NewFromConfig(awsConfig(t))
+}
+
+func TestSchedulerGetSchedules(t *testing.T) {
+	ctx := context.Background()
+	fc := fakecloud.New(fakecloudURL)
+	if err := fc.Reset(ctx); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	schedClient := schedulerClient(t)
+	_, err := schedClient.CreateSchedule(ctx, &scheduler.CreateScheduleInput{
+		Name:               aws.String("go-sdk-list"),
+		ScheduleExpression: aws.String("rate(1 hour)"),
+		FlexibleTimeWindow: &schedtypes.FlexibleTimeWindow{Mode: schedtypes.FlexibleTimeWindowModeOff},
+		Target: &schedtypes.Target{
+			Arn:     aws.String("arn:aws:sqs:us-east-1:000000000000:noop"),
+			RoleArn: aws.String("arn:aws:iam::000000000000:role/s"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("create_schedule: %v", err)
+	}
+	resp, err := fc.Scheduler().GetSchedules(ctx)
+	if err != nil {
+		t.Fatalf("GetSchedules: %v", err)
+	}
+	found := false
+	for _, s := range resp.Schedules {
+		if s.Name == "go-sdk-list" {
+			found = true
+			if s.ScheduleExpression != "rate(1 hour)" {
+				t.Errorf("expr mismatch: %q", s.ScheduleExpression)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("go-sdk-list not in %+v", resp.Schedules)
+	}
+}
+
+func TestSchedulerFireSchedule(t *testing.T) {
+	ctx := context.Background()
+	fc := fakecloud.New(fakecloudURL)
+	if err := fc.Reset(ctx); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	schedClient := schedulerClient(t)
+	sqsClient := sqs.NewFromConfig(awsConfig(t))
+	q, err := sqsClient.CreateQueue(ctx, &sqs.CreateQueueInput{QueueName: aws.String("go-fire-target")})
+	if err != nil {
+		t.Fatalf("create_queue: %v", err)
+	}
+	attrs, err := sqsClient.GetQueueAttributes(ctx, &sqs.GetQueueAttributesInput{
+		QueueUrl:       q.QueueUrl,
+		AttributeNames: []sqstypes.QueueAttributeName{sqstypes.QueueAttributeNameQueueArn},
+	})
+	if err != nil {
+		t.Fatalf("get_queue_attrs: %v", err)
+	}
+	qArn := attrs.Attributes[string(sqstypes.QueueAttributeNameQueueArn)]
+
+	if _, err := schedClient.CreateSchedule(ctx, &scheduler.CreateScheduleInput{
+		Name:               aws.String("go-sdk-fire"),
+		ScheduleExpression: aws.String("rate(365 days)"),
+		FlexibleTimeWindow: &schedtypes.FlexibleTimeWindow{Mode: schedtypes.FlexibleTimeWindowModeOff},
+		Target: &schedtypes.Target{
+			Arn:     aws.String(qArn),
+			RoleArn: aws.String("arn:aws:iam::000000000000:role/s"),
+			Input:   aws.String(`{"from":"gotest"}`),
+		},
+	}); err != nil {
+		t.Fatalf("create_schedule: %v", err)
+	}
+	resp, err := fc.Scheduler().FireSchedule(ctx, "default", "go-sdk-fire")
+	if err != nil {
+		t.Fatalf("FireSchedule: %v", err)
+	}
+	if !strings.Contains(resp.ScheduleArn, "schedule/default/go-sdk-fire") {
+		t.Errorf("unexpected schedule ARN: %q", resp.ScheduleArn)
+	}
+	if resp.TargetArn != qArn {
+		t.Errorf("target ARN mismatch: got %q, want %q", resp.TargetArn, qArn)
 	}
 }

@@ -41,6 +41,11 @@ import {
   EventBridgeClient,
   PutEventsCommand,
 } from "@aws-sdk/client-eventbridge";
+import {
+  SchedulerClient as AwsSchedulerClient,
+  CreateScheduleCommand,
+  FlexibleTimeWindowMode,
+} from "@aws-sdk/client-scheduler";
 import { RDSClient, CreateDBInstanceCommand } from "@aws-sdk/client-rds";
 import {
   ElastiCacheClient,
@@ -476,6 +481,60 @@ describe("eventbridge", () => {
     expect(event).toBeDefined();
     expect(event!.detailType).toBe("TestEvent");
     expect(JSON.parse(event!.detail)).toEqual({ key: "value" });
+  });
+});
+
+// ── Scheduler (EventBridge Scheduler) ───────────────────────────────
+
+describe("scheduler", () => {
+  it("getSchedules() lists created schedules", async () => {
+    const sched = new AwsSchedulerClient(awsConfig());
+    const name = `ts-sdk-list-${Date.now()}`;
+    await sched.send(
+      new CreateScheduleCommand({
+        Name: name,
+        ScheduleExpression: "rate(1 hour)",
+        FlexibleTimeWindow: { Mode: FlexibleTimeWindowMode.OFF },
+        Target: {
+          Arn: "arn:aws:sqs:us-east-1:000000000000:noop",
+          RoleArn: "arn:aws:iam::000000000000:role/s",
+        },
+      }),
+    );
+    const resp = await fc.scheduler.getSchedules();
+    const found = resp.schedules.find((s) => s.name === name);
+    expect(found).toBeDefined();
+    expect(found!.groupName).toBe("default");
+    expect(found!.scheduleExpression).toBe("rate(1 hour)");
+  });
+
+  it("fireSchedule() echoes the schedule ARN", async () => {
+    const sched = new AwsSchedulerClient(awsConfig());
+    const sqs = new SQSClient(awsConfig());
+    const q = await sqs.send(
+      new CreateQueueCommand({
+        QueueName: `ts-sdk-sched-${Date.now()}`,
+      }),
+    );
+    const qUrl = q.QueueUrl!;
+    const queueName = qUrl.split("/").pop()!;
+    const arn = `arn:aws:sqs:us-east-1:000000000000:${queueName}`;
+    const name = `ts-sdk-fire-${Date.now()}`;
+    await sched.send(
+      new CreateScheduleCommand({
+        Name: name,
+        ScheduleExpression: "rate(365 days)",
+        FlexibleTimeWindow: { Mode: FlexibleTimeWindowMode.OFF },
+        Target: {
+          Arn: arn,
+          RoleArn: "arn:aws:iam::000000000000:role/s",
+          Input: '{"from":"sdk"}',
+        },
+      }),
+    );
+    const fired = await fc.scheduler.fireSchedule("default", name);
+    expect(fired.scheduleArn).toContain(`schedule/default/${name}`);
+    expect(fired.targetArn).toBe(arn);
   });
 });
 
