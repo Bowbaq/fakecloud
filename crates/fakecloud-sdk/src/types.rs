@@ -299,6 +299,34 @@ pub struct FireRuleResponse {
     pub targets: Vec<FireRuleTarget>,
 }
 
+// ── Scheduler (EventBridge Scheduler) ───────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SchedulerSchedule {
+    pub account_id: String,
+    pub group_name: String,
+    pub name: String,
+    pub arn: String,
+    pub state: String,
+    pub schedule_expression: String,
+    pub target_arn: String,
+    pub last_fired: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SchedulerSchedulesResponse {
+    pub schedules: Vec<SchedulerSchedule>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FireScheduleResponse {
+    pub schedule_arn: String,
+    pub target_arn: String,
+}
+
 // ── S3 ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

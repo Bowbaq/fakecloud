@@ -1879,7 +1879,32 @@ async fn main() {
     }
     registry.register(Arc::new(bedrock_service));
 
-    let scheduler_service = SchedulerService::new(scheduler_state.clone());
+    let scheduler_snapshot_store: Option<Arc<dyn fakecloud_persistence::SnapshotStore>> =
+        if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
+            let data_path = persistence_config
+                .data_path
+                .as_ref()
+                .expect("validated above")
+                .clone();
+            let path = data_path.join("scheduler").join("snapshot.json");
+            let store = fakecloud_persistence::DiskSnapshotStore::new(path);
+            match fakecloud_scheduler::persistence::load_into(&store, &scheduler_state) {
+                Ok(fakecloud_scheduler::persistence::LoadOutcome::Loaded(accounts)) => {
+                    tracing::info!(accounts, "loaded scheduler persistence snapshot");
+                }
+                Ok(fakecloud_scheduler::persistence::LoadOutcome::Empty) => {
+                    tracing::info!("no scheduler persistence snapshot found; starting empty");
+                }
+                Err(err) => fatal_exit(format_args!("{err}")),
+            }
+            Some(Arc::new(store) as Arc<dyn fakecloud_persistence::SnapshotStore>)
+        } else {
+            None
+        };
+    let mut scheduler_service = SchedulerService::new(scheduler_state.clone());
+    if let Some(store) = scheduler_snapshot_store {
+        scheduler_service = scheduler_service.with_snapshot_store(store);
+    }
     registry.register(Arc::new(scheduler_service));
 
     // Spawn the Scheduler firing loop as a background task. Mirrors
@@ -1949,6 +1974,11 @@ async fn main() {
         }
         Arc::new(bus)
     };
+    let scheduler_state_for_list = scheduler_state.clone();
+    let scheduler_state_for_fire = scheduler_state.clone();
+    let delivery_for_scheduler_fire = delivery_for_scheduler.clone();
+    let default_account_for_scheduler_fire = cli.account_id.clone();
+    let default_region_for_scheduler_fire = cli.region.clone();
     let scheduler_ticker =
         fakecloud_scheduler::ticker::Ticker::new(scheduler_state.clone(), delivery_for_scheduler);
     tokio::spawn(scheduler_ticker.run());
@@ -2518,6 +2548,63 @@ async fn main() {
                         })
                         .collect();
                     axum::Json(types::S3NotificationsResponse { notifications })
+                }
+            }),
+        )
+        .route(
+            "/_fakecloud/scheduler/schedules",
+            axum::routing::get({
+                let state = scheduler_state_for_list;
+                move || async move {
+                    let rows = fakecloud_scheduler::simulation::list_all_schedules(&state);
+                    let schedules = rows
+                        .into_iter()
+                        .map(|r| types::SchedulerSchedule {
+                            account_id: r.account_id,
+                            group_name: r.group_name,
+                            name: r.name,
+                            arn: r.arn,
+                            state: r.state,
+                            schedule_expression: r.schedule_expression,
+                            target_arn: r.target_arn,
+                            last_fired: r.last_fired.map(|t| t.to_rfc3339()),
+                        })
+                        .collect();
+                    axum::Json(types::SchedulerSchedulesResponse { schedules })
+                }
+            }),
+        )
+        .route(
+            "/_fakecloud/scheduler/fire/{group}/{name}",
+            axum::routing::post({
+                let state = scheduler_state_for_fire;
+                let delivery = delivery_for_scheduler_fire;
+                let default_account = default_account_for_scheduler_fire;
+                let default_region = default_region_for_scheduler_fire;
+                move |axum::extract::Path((group, name)): axum::extract::Path<(String, String)>| {
+                    let state = state.clone();
+                    let delivery = delivery.clone();
+                    let default_account = default_account.clone();
+                    let default_region = default_region.clone();
+                    async move {
+                        match fakecloud_scheduler::simulation::fire_schedule_response(
+                            &state,
+                            &delivery,
+                            &default_region,
+                            &default_account,
+                            &group,
+                            &name,
+                        ) {
+                            Ok(body) => (
+                                axum::http::StatusCode::OK,
+                                axum::Json(serde_json::json!(body)),
+                            ),
+                            Err(msg) => (
+                                axum::http::StatusCode::NOT_FOUND,
+                                axum::Json(serde_json::json!({ "error": msg })),
+                            ),
+                        }
+                    }
                 }
             }),
         )
