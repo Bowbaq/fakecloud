@@ -542,3 +542,44 @@ def test_trailing_slash_stripped() -> None:
 def test_trailing_slash_stripped_sync() -> None:
     fc = FakeCloudSync("http://localhost:4566/")
     assert fc._base == "http://localhost:4566"
+
+
+# ── Scheduler (EventBridge Scheduler) ─────────────────────────────────
+
+
+def test_scheduler_get_schedules(fc: FakeCloudSync, fakecloud_url: str) -> None:
+    sched = boto3.client("scheduler", **_boto_kwargs(fakecloud_url))
+    sched.create_schedule(
+        Name="py-sdk-sched-list",
+        ScheduleExpression="rate(1 hour)",
+        FlexibleTimeWindow={"Mode": "OFF"},
+        Target={
+            "Arn": "arn:aws:sqs:us-east-1:000000000000:noop",
+            "RoleArn": "arn:aws:iam::000000000000:role/s",
+        },
+    )
+    resp = fc.scheduler.get_schedules()
+    names = [s.name for s in resp.schedules]
+    assert "py-sdk-sched-list" in names
+
+
+def test_scheduler_fire_schedule(fc: FakeCloudSync, fakecloud_url: str) -> None:
+    sched = boto3.client("scheduler", **_boto_kwargs(fakecloud_url))
+    sqs = boto3.client("sqs", **_boto_kwargs(fakecloud_url))
+    q_url = sqs.create_queue(QueueName="py-sdk-fire-target")["QueueUrl"]
+    q_arn = sqs.get_queue_attributes(QueueUrl=q_url, AttributeNames=["QueueArn"])[
+        "Attributes"
+    ]["QueueArn"]
+    sched.create_schedule(
+        Name="py-sdk-sched-fire",
+        ScheduleExpression="rate(365 days)",
+        FlexibleTimeWindow={"Mode": "OFF"},
+        Target={
+            "Arn": q_arn,
+            "RoleArn": "arn:aws:iam::000000000000:role/s",
+            "Input": '{"from":"pytest"}',
+        },
+    )
+    resp = fc.scheduler.fire_schedule("default", "py-sdk-sched-fire")
+    assert "schedule/default/py-sdk-sched-fire" in resp.schedule_arn
+    assert resp.target_arn == q_arn

@@ -468,3 +468,25 @@ export interface ApiGatewayV2Request {
 export interface ApiGatewayV2RequestsResponse {
   requests: ApiGatewayV2Request[];
 }
+
+// ── Scheduler (EventBridge Scheduler) ───────────────────────────────
+
+export interface SchedulerSchedule {
+  accountId: string;
+  groupName: string;
+  name: string;
+  arn: string;
+  state: string;
+  scheduleExpression: string;
+  targetArn: string;
+  lastFired?: string | null;
+}
+
+export interface SchedulerSchedulesResponse {
+  schedules: SchedulerSchedule[];
+}
+
+export interface FireScheduleResponse {
+  scheduleArn: string;
+  targetArn: string;
+}

@@ -711,6 +711,68 @@ final class FireRuleResponse
     }
 }
 
+// ── Scheduler (EventBridge Scheduler) ───────────────────────────
+
+final class SchedulerSchedule
+{
+    public function __construct(
+        public readonly string $accountId,
+        public readonly string $groupName,
+        public readonly string $name,
+        public readonly string $arn,
+        public readonly string $state,
+        public readonly string $scheduleExpression,
+        public readonly string $targetArn,
+        public readonly ?string $lastFired,
+    ) {}
+
+    public static function fromArray(array $data): self
+    {
+        return new self(
+            $data['accountId'] ?? '',
+            $data['groupName'] ?? '',
+            $data['name'] ?? '',
+            $data['arn'] ?? '',
+            $data['state'] ?? '',
+            $data['scheduleExpression'] ?? '',
+            $data['targetArn'] ?? '',
+            $data['lastFired'] ?? null,
+        );
+    }
+}
+
+final class SchedulerSchedulesResponse
+{
+    public function __construct(
+        /** @var SchedulerSchedule[] */
+        public readonly array $schedules,
+    ) {}
+
+    public static function fromArray(array $data): self
+    {
+        return new self(array_map(
+            SchedulerSchedule::fromArray(...),
+            $data['schedules'] ?? [],
+        ));
+    }
+}
+
+final class FireScheduleResponse
+{
+    public function __construct(
+        public readonly string $scheduleArn,
+        public readonly string $targetArn,
+    ) {}
+
+    public static function fromArray(array $data): self
+    {
+        return new self(
+            $data['scheduleArn'] ?? '',
+            $data['targetArn'] ?? '',
+        );
+    }
+}
+
 // ── S3 ─────────────────────────────────────────────────────────
 
 final class S3Notification

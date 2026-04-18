@@ -29,6 +29,7 @@ from fakecloud.types import (
     ExpireTokensResponse,
     FireRuleRequest,
     FireRuleResponse,
+    FireScheduleResponse,
     ForceDlqResponse,
     HealthResponse,
     InboundEmailRequest,
@@ -41,6 +42,7 @@ from fakecloud.types import (
     ResetServiceResponse,
     RotationTickResponse,
     S3NotificationsResponse,
+    SchedulerSchedulesResponse,
     SesEmailsResponse,
     SnsMessagesResponse,
     SqsMessagesResponse,
@@ -224,6 +226,26 @@ class EventsClient:
         )
         _check(resp)
         return FireRuleResponse.from_dict(resp.json())
+
+
+class SchedulerClient:
+    """Async EventBridge Scheduler introspection client."""
+
+    def __init__(self, client: httpx.AsyncClient, base_url: str) -> None:
+        self._client = client
+        self._base = base_url
+
+    async def get_schedules(self) -> SchedulerSchedulesResponse:
+        resp = await self._client.get(f"{self._base}/_fakecloud/scheduler/schedules")
+        _check(resp)
+        return SchedulerSchedulesResponse.from_dict(resp.json())
+
+    async def fire_schedule(self, group: str, name: str) -> FireScheduleResponse:
+        resp = await self._client.post(
+            f"{self._base}/_fakecloud/scheduler/fire/{group}/{name}"
+        )
+        _check(resp)
+        return FireScheduleResponse.from_dict(resp.json())
 
 
 class S3Client:
@@ -567,6 +589,24 @@ class _SyncEventsClient:
         return FireRuleResponse.from_dict(resp.json())
 
 
+class _SyncSchedulerClient:
+    def __init__(self, client: httpx.Client, base_url: str) -> None:
+        self._client = client
+        self._base = base_url
+
+    def get_schedules(self) -> SchedulerSchedulesResponse:
+        resp = self._client.get(f"{self._base}/_fakecloud/scheduler/schedules")
+        _check(resp)
+        return SchedulerSchedulesResponse.from_dict(resp.json())
+
+    def fire_schedule(self, group: str, name: str) -> FireScheduleResponse:
+        resp = self._client.post(
+            f"{self._base}/_fakecloud/scheduler/fire/{group}/{name}"
+        )
+        _check(resp)
+        return FireScheduleResponse.from_dict(resp.json())
+
+
 class _SyncS3Client:
     def __init__(self, client: httpx.Client, base_url: str) -> None:
         self._client = client
@@ -815,6 +855,10 @@ class FakeCloud:
         return EventsClient(self._client, self._base)
 
     @property
+    def scheduler(self) -> SchedulerClient:
+        return SchedulerClient(self._client, self._base)
+
+    @property
     def s3(self) -> S3Client:
         return S3Client(self._client, self._base)
 
@@ -923,6 +967,10 @@ class FakeCloudSync:
     @property
     def events(self) -> _SyncEventsClient:
         return _SyncEventsClient(self._client, self._base)
+
+    @property
+    def scheduler(self) -> _SyncSchedulerClient:
+        return _SyncSchedulerClient(self._client, self._base)
 
     @property
     def s3(self) -> _SyncS3Client:
