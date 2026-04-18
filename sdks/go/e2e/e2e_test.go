@@ -833,7 +833,15 @@ func TestE2EBedrockFaults(t *testing.T) {
 // ── Scheduler (EventBridge Scheduler) ─────────────────────────────────
 
 func schedulerClient(t *testing.T) *scheduler.Client {
-	return scheduler.NewFromConfig(awsConfig(t))
+	return scheduler.NewFromConfig(awsConfig(t), func(o *scheduler.Options) {
+		o.BaseEndpoint = aws.String(fakecloudURL)
+	})
+}
+
+func sqsTestClient(t *testing.T) *sqs.Client {
+	return sqs.NewFromConfig(awsConfig(t), func(o *sqs.Options) {
+		o.BaseEndpoint = aws.String(fakecloudURL)
+	})
 }
 
 func TestSchedulerGetSchedules(t *testing.T) {
@@ -880,7 +888,7 @@ func TestSchedulerFireSchedule(t *testing.T) {
 		t.Fatalf("reset: %v", err)
 	}
 	schedClient := schedulerClient(t)
-	sqsClient := sqs.NewFromConfig(awsConfig(t))
+	sqsClient := sqsTestClient(t)
 	q, err := sqsClient.CreateQueue(ctx, &sqs.CreateQueueInput{QueueName: aws.String("go-fire-target")})
 	if err != nil {
 		t.Fatalf("create_queue: %v", err)
