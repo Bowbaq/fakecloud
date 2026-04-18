@@ -6487,4 +6487,155 @@ mod tests {
         let req = make_req("DeleteUserAttributes", &body.to_string());
         assert!(svc.delete_user_attributes(&req).is_err());
     }
+
+    // ── UI / Log / Risk configuration (config.rs) ──
+
+    #[test]
+    fn ui_customization_client_specific_falls_back_to_pool_level() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+
+        // Set pool-level customization (empty ClientId).
+        let body = json!({
+            "UserPoolId": pool_id,
+            "CSS": ".banner { color: blue; }",
+            "ImageFile": "base64imagedata==",
+        });
+        let req = make_req("SetUICustomization", &body.to_string());
+        let resp = svc.set_ui_customization(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["UICustomization"]["ClientId"], "ALL");
+        assert!(b["UICustomization"]["ImageUrl"].as_str().unwrap().ends_with("/logo.png"));
+
+        // Get client-specific -> falls back to pool-level CSS.
+        let body = json!({"UserPoolId": pool_id, "ClientId": "client-123"});
+        let req = make_req("GetUICustomization", &body.to_string());
+        let resp = svc.get_ui_customization(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["UICustomization"]["CSS"], ".banner { color: blue; }");
+    }
+
+    #[test]
+    fn ui_customization_default_when_not_set() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id});
+        let req = make_req("GetUICustomization", &body.to_string());
+        let resp = svc.get_ui_customization(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["UICustomization"]["UserPoolId"], pool_id);
+        assert_eq!(b["UICustomization"]["ClientId"], "ALL");
+        assert!(b["UICustomization"]["CSS"].is_null());
+    }
+
+    #[test]
+    fn ui_customization_rejects_unknown_pool() {
+        let (svc, _) = make_svc();
+        let body = json!({"UserPoolId": "us-east-1_nosuch"});
+        let req = make_req("GetUICustomization", &body.to_string());
+        assert!(svc.get_ui_customization(&req).is_err());
+    }
+
+    #[test]
+    fn log_delivery_configuration_set_and_get() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+
+        let body = json!({
+            "UserPoolId": pool_id,
+            "LogConfigurations": [
+                {"LogLevel": "INFO", "EventSource": "userNotification",
+                 "CloudWatchLogsConfiguration": {"LogGroupArn": "arn:aws:logs:us-east-1:123:log-group:g"}}
+            ]
+        });
+        let req = make_req("SetLogDeliveryConfiguration", &body.to_string());
+        svc.set_log_delivery_configuration(&req).unwrap();
+
+        let body = json!({"UserPoolId": pool_id});
+        let req = make_req("GetLogDeliveryConfiguration", &body.to_string());
+        let resp = svc.get_log_delivery_configuration(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(
+            b["LogDeliveryConfiguration"]["LogConfigurations"][0]["LogLevel"],
+            "INFO"
+        );
+    }
+
+    #[test]
+    fn log_delivery_configuration_default_when_absent() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id});
+        let req = make_req("GetLogDeliveryConfiguration", &body.to_string());
+        let resp = svc.get_log_delivery_configuration(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(
+            b["LogDeliveryConfiguration"]["LogConfigurations"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+    }
+
+    #[test]
+    fn risk_configuration_set_and_describe_pool_level() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+
+        let body = json!({
+            "UserPoolId": pool_id,
+            "CompromisedCredentialsRiskConfiguration": {"EventFilter": ["SIGN_IN"], "Actions": {"EventAction": "BLOCK"}},
+            "AccountTakeoverRiskConfiguration": {"NotifyConfiguration": {"From": "no-reply@x"}},
+            "RiskExceptionConfiguration": {"BlockedIPRangeList": ["10.0.0.0/24"]}
+        });
+        let req = make_req("SetRiskConfiguration", &body.to_string());
+        svc.set_risk_configuration(&req).unwrap();
+
+        let body = json!({"UserPoolId": pool_id});
+        let req = make_req("DescribeRiskConfiguration", &body.to_string());
+        let resp = svc.describe_risk_configuration(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(
+            b["RiskConfiguration"]["CompromisedCredentialsRiskConfiguration"]["Actions"]
+                ["EventAction"],
+            "BLOCK"
+        );
+    }
+
+    #[test]
+    fn risk_configuration_client_specific_falls_back_to_pool_level() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+
+        // Pool-level config
+        let body = json!({
+            "UserPoolId": pool_id,
+            "RiskExceptionConfiguration": {"BlockedIPRangeList": ["10.0.0.0/24"]}
+        });
+        let req = make_req("SetRiskConfiguration", &body.to_string());
+        svc.set_risk_configuration(&req).unwrap();
+
+        // Describe for specific client -> falls back to pool level
+        let body = json!({"UserPoolId": pool_id, "ClientId": "abc"});
+        let req = make_req("DescribeRiskConfiguration", &body.to_string());
+        let resp = svc.describe_risk_configuration(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(
+            b["RiskConfiguration"]["RiskExceptionConfiguration"]["BlockedIPRangeList"][0],
+            "10.0.0.0/24"
+        );
+    }
+
+    #[test]
+    fn risk_configuration_default_when_absent() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id, "ClientId": "c1"});
+        let req = make_req("DescribeRiskConfiguration", &body.to_string());
+        let resp = svc.describe_risk_configuration(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["RiskConfiguration"]["UserPoolId"], pool_id);
+        assert_eq!(b["RiskConfiguration"]["ClientId"], "c1");
+    }
 }
