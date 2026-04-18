@@ -7130,4 +7130,111 @@ mod tests {
         let req = make_req("UpdateAuthEventFeedback", &body.to_string());
         assert!(svc.update_auth_event_feedback(&req).is_err());
     }
+
+    // ── RespondToAuthChallenge coverage (auth.rs) ─────────────────────
+
+    #[test]
+    fn respond_to_auth_challenge_new_password_flow_completes_user() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        admin_create_user_helper(&svc, &pool_id, "alex");
+
+        let body = json!({
+            "ClientId": client_id,
+            "AuthFlow": "USER_PASSWORD_AUTH",
+            "AuthParameters": {"USERNAME": "alex", "PASSWORD": "TempPass1!"}
+        });
+        let req = make_req("InitiateAuth", &body.to_string());
+        let resp = block_on(svc.initiate_auth(&req)).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["ChallengeName"], "NEW_PASSWORD_REQUIRED");
+        let session = b["Session"].as_str().unwrap().to_string();
+
+        let body = json!({
+            "ClientId": client_id,
+            "ChallengeName": "NEW_PASSWORD_REQUIRED",
+            "Session": session,
+            "ChallengeResponses": {
+                "USERNAME": "alex",
+                "NEW_PASSWORD": "Permanent1!"
+            }
+        });
+        let req = make_req("RespondToAuthChallenge", &body.to_string());
+        let resp = block_on(svc.respond_to_auth_challenge(&req)).unwrap();
+        let b = resp_json(&resp);
+        assert!(b["AuthenticationResult"]["AccessToken"].as_str().is_some());
+    }
+
+    #[test]
+    fn respond_to_auth_challenge_unsupported_challenge() {
+        let (svc, _) = make_svc();
+        let _pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &_pool_id);
+        let body = json!({
+            "ClientId": client_id,
+            "ChallengeName": "UNKNOWN_CHALLENGE",
+            "Session": "some-session",
+            "ChallengeResponses": {}
+        });
+        let req = make_req("RespondToAuthChallenge", &body.to_string());
+        assert!(block_on(svc.respond_to_auth_challenge(&req)).is_err());
+    }
+
+    #[test]
+    fn respond_to_auth_challenge_invalid_session() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        let body = json!({
+            "ClientId": client_id,
+            "ChallengeName": "NEW_PASSWORD_REQUIRED",
+            "Session": "bogus",
+            "ChallengeResponses": {"USERNAME": "u", "NEW_PASSWORD": "Permanent1!"}
+        });
+        let req = make_req("RespondToAuthChallenge", &body.to_string());
+        assert!(block_on(svc.respond_to_auth_challenge(&req)).is_err());
+    }
+
+    #[test]
+    fn respond_new_password_missing_new_password_errors() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        admin_create_user_helper(&svc, &pool_id, "joy");
+
+        let body = json!({
+            "ClientId": client_id,
+            "AuthFlow": "USER_PASSWORD_AUTH",
+            "AuthParameters": {"USERNAME": "joy", "PASSWORD": "TempPass1!"}
+        });
+        let req = make_req("InitiateAuth", &body.to_string());
+        let resp = block_on(svc.initiate_auth(&req)).unwrap();
+        let b = resp_json(&resp);
+        let session = b["Session"].as_str().unwrap().to_string();
+
+        let body = json!({
+            "ClientId": client_id,
+            "ChallengeName": "NEW_PASSWORD_REQUIRED",
+            "Session": session,
+            "ChallengeResponses": {"USERNAME": "joy"}
+        });
+        let req = make_req("RespondToAuthChallenge", &body.to_string());
+        assert!(block_on(svc.respond_to_auth_challenge(&req)).is_err());
+    }
+
+    #[test]
+    fn admin_respond_to_auth_challenge_missing_challenge_responses() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        let body = json!({
+            "UserPoolId": pool_id,
+            "ClientId": client_id,
+            "ChallengeName": "NEW_PASSWORD_REQUIRED",
+            "Session": "s",
+        });
+        let req = make_req("AdminRespondToAuthChallenge", &body.to_string());
+        assert!(block_on(svc.admin_respond_to_auth_challenge(&req)).is_err());
+    }
 }
