@@ -4101,4 +4101,203 @@ mod tests {
         let req = make_request("ListNodesSummary", json!({}));
         assert!(svc.list_nodes_summary(&req).is_err());
     }
+
+    // ── associations.rs extra coverage ────────────────────────────────
+
+    fn create_assoc_with_instance(svc: &SsmService, name: &str, instance_id: &str) -> String {
+        let req = make_request(
+            "CreateAssociation",
+            json!({
+                "Name": name,
+                "InstanceId": instance_id,
+                "Targets": [{"Key": "InstanceIds", "Values": [instance_id]}],
+            }),
+        );
+        let resp = svc.create_association(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        body["AssociationDescription"]["AssociationId"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    #[test]
+    fn describe_association_by_name_and_instance() {
+        let svc = make_service();
+        create_assoc_with_instance(&svc, "AWS-RunShellScript", "i-123");
+        let req = make_request(
+            "DescribeAssociation",
+            json!({"Name": "AWS-RunShellScript", "InstanceId": "i-123"}),
+        );
+        let resp = svc.describe_association(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(
+            body["AssociationDescription"]["Name"].as_str().unwrap(),
+            "AWS-RunShellScript"
+        );
+    }
+
+    #[test]
+    fn describe_association_missing_identifier_errors() {
+        let svc = make_service();
+        let req = make_request("DescribeAssociation", json!({}));
+        assert!(svc.describe_association(&req).is_err());
+    }
+
+    #[test]
+    fn delete_association_by_name_and_instance() {
+        let svc = make_service();
+        create_assoc_with_instance(&svc, "AWS-RunShellScript", "i-del");
+        let req = make_request(
+            "DeleteAssociation",
+            json!({"Name": "AWS-RunShellScript", "InstanceId": "i-del"}),
+        );
+        svc.delete_association(&req).unwrap();
+    }
+
+    #[test]
+    fn delete_association_missing_identifier_errors() {
+        let svc = make_service();
+        let req = make_request("DeleteAssociation", json!({}));
+        assert!(svc.delete_association(&req).is_err());
+    }
+
+    #[test]
+    fn update_association_changes_multiple_fields() {
+        let svc = make_service();
+        let assoc_id = create_assoc_with_instance(&svc, "AWS-RunShellScript", "i-upd");
+        let req = make_request(
+            "UpdateAssociation",
+            json!({
+                "AssociationId": assoc_id,
+                "Name": "AWS-RunPowerShell",
+                "Targets": [{"Key": "InstanceIds", "Values": ["i-upd2"]}],
+                "ScheduleExpression": "rate(30 minutes)",
+                "Parameters": {"p1": ["a", "b"]},
+                "AssociationName": "new-name",
+                "DocumentVersion": "2",
+                "MaxErrors": "5",
+                "MaxConcurrency": "10",
+                "ComplianceSeverity": "HIGH"
+            }),
+        );
+        let resp = svc.update_association(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["AssociationDescription"]["Name"], "AWS-RunPowerShell");
+        assert_eq!(
+            body["AssociationDescription"]["MaxErrors"]
+                .as_str()
+                .unwrap(),
+            "5"
+        );
+        assert_eq!(
+            body["AssociationDescription"]["ComplianceSeverity"]
+                .as_str()
+                .unwrap(),
+            "HIGH"
+        );
+    }
+
+    #[test]
+    fn update_association_status_updates_and_not_found() {
+        let svc = make_service();
+        create_assoc_with_instance(&svc, "AWS-RunShellScript", "i-aa");
+
+        // Success path
+        let req = make_request(
+            "UpdateAssociationStatus",
+            json!({
+                "Name": "AWS-RunShellScript",
+                "InstanceId": "i-aa",
+                "AssociationStatus": {
+                    "Name": "Success",
+                    "Date": "2026-01-01T00:00:00Z",
+                    "Message": "ok"
+                }
+            }),
+        );
+        let resp = svc.update_association_status(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["AssociationDescription"]["Status"]["Name"], "Success");
+
+        // Not found
+        let req = make_request(
+            "UpdateAssociationStatus",
+            json!({
+                "Name": "AWS-RunShellScript",
+                "InstanceId": "i-ghost",
+                "AssociationStatus": {"Name": "Success", "Date": "2026-01-01T00:00:00Z", "Message": "ok"}
+            }),
+        );
+        assert!(svc.update_association_status(&req).is_err());
+    }
+
+    #[test]
+    fn list_association_versions_not_found() {
+        let svc = make_service();
+        let req = make_request(
+            "ListAssociationVersions",
+            json!({"AssociationId": "missing"}),
+        );
+        assert!(svc.list_association_versions(&req).is_err());
+    }
+
+    #[test]
+    fn describe_effective_instance_associations_returns_matching() {
+        let svc = make_service();
+        create_assoc_with_instance(&svc, "AWS-RunShellScript", "i-xy");
+        let req = make_request(
+            "DescribeEffectiveInstanceAssociations",
+            json!({"InstanceId": "i-xy"}),
+        );
+        let resp = svc.describe_effective_instance_associations(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["Associations"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn describe_instance_associations_status_returns_matching() {
+        let svc = make_service();
+        create_assoc_with_instance(&svc, "AWS-RunShellScript", "i-ss");
+        let req = make_request(
+            "DescribeInstanceAssociationsStatus",
+            json!({"InstanceId": "i-ss"}),
+        );
+        let resp = svc.describe_instance_associations_status(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(
+            body["InstanceAssociationStatusInfos"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn describe_association_executions_empty() {
+        let svc = make_service();
+        let req = make_request(
+            "DescribeAssociationExecutions",
+            json!({"AssociationId": "any"}),
+        );
+        let resp = svc.describe_association_executions(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(body["AssociationExecutions"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn describe_association_execution_targets_empty() {
+        let svc = make_service();
+        let req = make_request(
+            "DescribeAssociationExecutionTargets",
+            json!({"AssociationId": "any", "ExecutionId": "ex"}),
+        );
+        let resp = svc.describe_association_execution_targets(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(body["AssociationExecutionTargets"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
 }
