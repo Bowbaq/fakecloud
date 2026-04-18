@@ -1,20 +1,11 @@
 //! Corpus-driven tests for DynamoDB expression grammars.
 //!
-//! The cases in this file are seeded from two reference sources:
-//!
-//!  * `aws-sdk-go-v2/feature/dynamodb/expression` — every compound shape its
-//!    builder can emit. The builder's output is what production Go callers
-//!    send on the wire, and fakecloud has historically failed on exactly those
-//!    shapes (PRs #257, #261, #368).
-//!  * `moto/dynamodb/parsing/*.py` — a mature, battle-hardened Python
-//!    implementation whose error messages and state machine document the
-//!    canonical grammar.
-//!
-//! Organization: one `#[test]` per dimension of the grammar. Each test is a
-//! small table so a failure points at exactly one shape.
-//!
-//! Current as of: seeded April 2026. New shapes discovered in the wild should
-//! be added here first and then fixed.
+//! Cases are seeded from two reference sources: `aws-sdk-go-v2`'s expression
+//! builder (every compound shape real SDK callers send on the wire) and
+//! `moto`'s parser (canonical grammar documented via its state machine and
+//! error messages). One `#[test]` per dimension of the grammar so a failure
+//! points at exactly one shape. New shapes discovered in the wild should be
+//! added here first, then fixed.
 
 #![cfg(test)]
 
@@ -23,7 +14,8 @@ use std::collections::HashMap;
 use serde_json::{json, Value};
 
 use super::{
-    apply_update_expression, evaluate_condition, evaluate_filter_expression, evaluate_key_condition,
+    apply_update_expression, evaluate_condition, evaluate_filter_expression,
+    evaluate_key_condition, AttributeValue,
 };
 
 // ---------------------------------------------------------------------------
@@ -73,9 +65,6 @@ fn values(pairs: &[(&str, Value)]) -> HashMap<String, Value> {
         .map(|(k, v)| ((*k).to_string(), v.clone()))
         .collect()
 }
-
-// Alias used by `super::` for clarity.
-type AttributeValue = Value;
 
 // ---------------------------------------------------------------------------
 // KeyConditionExpression — operators & paren shapes
@@ -439,8 +428,8 @@ fn filter_between() {
 
 #[test]
 fn filter_sdk_builder_claim_lease_shape() {
-    // Exact shape from PR #261 that slipped through — a representative test
-    // case for the compound-condition pattern:
+    // Representative compound-condition pattern with nested parens, OR
+    // inside AND, and the SDK's space-before-paren function syntax:
     //   (attribute_exists (#0)) AND ((attribute_not_exists (#1)) OR (#1 = :0))
     let names = names(&[("#0", "store_id"), ("#1", "lease_holder")]);
     let values = values(&[(":0", s("tab-A"))]);
@@ -545,7 +534,8 @@ fn condition_item_missing_semantics() {
 
 #[test]
 fn condition_sdk_builder_compound_shape() {
-    // Exact shape from PR #257 that slipped through.
+    // Compound `(#s <> :c) AND (#s <> :f)` — common "not-in-terminal-state"
+    // guard the SDK builder emits.
     let names = names(&[("#s", "state")]);
     let values = values(&[(":c", s("complete")), (":f", s("failed"))]);
     let existing = item(&[("state", s("active"))]);
@@ -606,9 +596,8 @@ fn update_single_clause_forms() {
 
 #[test]
 fn update_sdk_compound_newline_separated() {
-    // aws-sdk-go-v2 emits compound updates as newline-separated clauses in a
-    // fixed ADD/DELETE/REMOVE/SET ordering, each clause trailed by \n:
-    //   "ADD $c\nDELETE $c\nREMOVE $c\nSET $c\n"
+    // SDK-emitted compound update: newline-separated clauses in fixed
+    // ADD/DELETE/REMOVE/SET ordering, each clause trailed by `\n`.
     let mut it = item(&[
         ("counter", n("5")),
         ("tags", ss(&["a", "b"])),
@@ -683,7 +672,7 @@ fn update_set_arithmetic() {
 
 #[test]
 fn update_set_list_index_target() {
-    // SET #list[N] = :v is from PR #261.
+    // SET into a specific list slot: #list[N] = :v.
     let mut it = item(&[("xs", l(vec![s("a"), s("b"), s("c")]))]);
     let names = names(&[("#xs", "xs")]);
     let values = values(&[(":v", s("B"))]);
@@ -694,8 +683,9 @@ fn update_set_list_index_target() {
 
 #[test]
 fn update_set_multiple_with_list_append() {
-    // From PR #368: the inner comma in list_append was being split as a clause
-    // delimiter. Two SET assignments, one of them containing list_append.
+    // Two SET assignments separated by a top-level comma, where one of them
+    // contains a `list_append(a, b)` call — the inner comma must not split
+    // the clause list.
     let mut it = item(&[("xs", l(vec![s("a")])), ("name", s("old"))]);
     let names = HashMap::new();
     let values = values(&[(":tail", l(vec![s("b")])), (":n", s("new"))]);
@@ -712,10 +702,8 @@ fn update_set_multiple_with_list_append() {
 
 #[test]
 fn update_set_nested_map_path_target() {
-    // orderbot pattern from ws_connections.go:171:
-    //   SET #web.#tab_id = :tab, #web.#session_id = :sess
-    // The target is a dotted path into a nested M-type attribute. The parent
-    // map should already exist; the SET should update just the child keys.
+    // Dotted path into a nested M-type attribute. The parent map must already
+    // exist; the SET updates just the child keys, leaving sibling keys alone.
     let mut it = item(&[(
         "web",
         m(&[
@@ -752,9 +740,7 @@ fn update_set_nested_map_path_target() {
 
 #[test]
 fn update_set_nested_bool_single_descent() {
-    // orderbot pattern from ws_connections.go:252 — single SET into a nested
-    // bool:
-    //   SET #u.#rb = :val
+    // Single-level nested SET into a child key.
     let mut it = item(&[(
         "uploader",
         m(&[("rcv_blocked", b(false)), ("other", s("keep"))]),

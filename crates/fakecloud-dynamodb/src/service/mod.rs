@@ -1927,31 +1927,27 @@ fn assign_list_index(
     value: Value,
 ) -> Result<(), AwsServiceError> {
     let Some(existing) = item.get_mut(attr) else {
-        return Err(AwsServiceError::aws_error(
-            StatusCode::BAD_REQUEST,
-            "ValidationException",
-            "The document path provided in the update expression is invalid for update",
-        ));
+        return Err(invalid_document_path());
     };
     let Some(list) = existing.get_mut("L").and_then(|l| l.as_array_mut()) else {
-        return Err(AwsServiceError::aws_error(
-            StatusCode::BAD_REQUEST,
-            "ValidationException",
-            "The document path provided in the update expression is invalid for update",
-        ));
+        return Err(invalid_document_path());
     };
     if idx < list.len() {
         list[idx] = value;
     } else if idx == list.len() {
         list.push(value);
     } else {
-        return Err(AwsServiceError::aws_error(
-            StatusCode::BAD_REQUEST,
-            "ValidationException",
-            "The document path provided in the update expression is invalid for update",
-        ));
+        return Err(invalid_document_path());
     }
     Ok(())
+}
+
+fn invalid_document_path() -> AwsServiceError {
+    AwsServiceError::aws_error(
+        StatusCode::BAD_REQUEST,
+        "ValidationException",
+        "The document path provided in the update expression is invalid for update",
+    )
 }
 
 fn resolve_value(
@@ -1969,12 +1965,10 @@ fn resolve_value(
     }
 }
 
-/// True if `path` is a dotted path into an M-typed attribute (e.g. `a.b`,
-/// `#a.#b`). List-index suffixes like `a[0]` are not dotted paths, and `a.b[0]`
-/// is not yet supported by the nested-SET writer — callers should check this
-/// before dispatching.
+/// True if `path` targets a nested key inside an M-typed attribute. Bracketed
+/// list indices (`a[0]`, `a.b[0]`) are not supported by the nested-SET writer.
 fn is_dotted_path(path: &str) -> bool {
-    !path.contains('[') && path.contains('.')
+    path.contains('.') && !path.contains('[')
 }
 
 /// Write `value` at a dotted path inside an M-typed attribute.
@@ -1988,46 +1982,32 @@ fn assign_nested_path(
     expr_attr_names: &HashMap<String, String>,
     value: Value,
 ) -> Result<(), AwsServiceError> {
-    let segments: Vec<String> = path
+    let mut segments: Vec<String> = path
         .split('.')
         .map(|seg| resolve_attr_name(seg.trim(), expr_attr_names))
         .collect();
     if segments.len() < 2 {
-        return Err(AwsServiceError::aws_error(
-            StatusCode::BAD_REQUEST,
-            "ValidationException",
-            "The document path provided in the update expression is invalid for update",
-        ));
+        return Err(invalid_document_path());
     }
 
-    let (leaf, parents) = segments.split_last().expect("len >= 2");
-    let (top, inner) = parents.split_first().expect("len >= 1");
+    let leaf = segments.pop().expect("len >= 2");
+    let top = segments.remove(0);
 
-    let invalid = || {
-        AwsServiceError::aws_error(
-            StatusCode::BAD_REQUEST,
-            "ValidationException",
-            "The document path provided in the update expression is invalid for update",
-        )
-    };
-
-    let Some(top_attr) = item.get_mut(top) else {
-        return Err(invalid());
-    };
+    let top_attr = item.get_mut(&top).ok_or_else(invalid_document_path)?;
     let mut current = top_attr
         .get_mut("M")
         .and_then(|m| m.as_object_mut())
-        .ok_or_else(invalid)?;
+        .ok_or_else(invalid_document_path)?;
 
-    for seg in inner {
+    for seg in &segments {
         current = current
             .get_mut(seg)
             .and_then(|v| v.get_mut("M"))
             .and_then(|m| m.as_object_mut())
-            .ok_or_else(invalid)?;
+            .ok_or_else(invalid_document_path)?;
     }
 
-    current.insert(leaf.clone(), value);
+    current.insert(leaf, value);
     Ok(())
 }
 
@@ -2873,125 +2853,6 @@ mod tests {
 
         assert!(evaluate_key_condition(
             "pk = :pk",
-            &item,
-            "pk",
-            Some("sk"),
-            &HashMap::new(),
-            &expr_values,
-        ));
-    }
-
-    #[test]
-    fn test_evaluate_key_condition_parenthesized_clauses() {
-        // Before fix: (store_id = :s) AND (order_id > :a) was split into two
-        // clauses with the outer parens intact, and evaluate_single_key_condition
-        // read "(store_id" as the attribute name — silent 0 rows match.
-        let mut item = HashMap::new();
-        item.insert("store_id".to_string(), json!({"S": "s"}));
-        item.insert("order_id".to_string(), json!({"S": "zzz-1"}));
-
-        let mut expr_values = HashMap::new();
-        expr_values.insert(":s".to_string(), json!({"S": "s"}));
-        expr_values.insert(":a".to_string(), json!({"S": "aaa"}));
-
-        assert!(
-            evaluate_key_condition(
-                "(store_id = :s) AND (order_id > :a)",
-                &item,
-                "store_id",
-                Some("order_id"),
-                &HashMap::new(),
-                &expr_values,
-            ),
-            "parenthesized key-condition clauses must evaluate like bare clauses"
-        );
-    }
-
-    #[test]
-    fn test_evaluate_key_condition_parenthesized_with_placeholders() {
-        // Repro for the exact shape aws-sdk-go v2's expression builder emits:
-        //   (#0 = :0) AND (#1 > :1)
-        let mut item = HashMap::new();
-        item.insert("store_id".to_string(), json!({"S": "s"}));
-        item.insert("order_id".to_string(), json!({"S": "zzz-1"}));
-
-        let mut expr_names = HashMap::new();
-        expr_names.insert("#0".to_string(), "store_id".to_string());
-        expr_names.insert("#1".to_string(), "order_id".to_string());
-
-        let mut expr_values = HashMap::new();
-        expr_values.insert(":0".to_string(), json!({"S": "s"}));
-        expr_values.insert(":1".to_string(), json!({"S": "aaa"}));
-
-        assert!(
-            evaluate_key_condition(
-                "(#0 = :0) AND (#1 > :1)",
-                &item,
-                "store_id",
-                Some("order_id"),
-                &expr_names,
-                &expr_values,
-            ),
-            "SDK-builder-style parenthesized clauses with placeholders must match"
-        );
-    }
-
-    #[test]
-    fn test_evaluate_key_condition_doubly_wrapped() {
-        // Ensure recursion strips multiple layers of parens.
-        let mut item = HashMap::new();
-        item.insert("pk".to_string(), json!({"S": "u1"}));
-        item.insert("sk".to_string(), json!({"S": "o1"}));
-
-        let mut expr_values = HashMap::new();
-        expr_values.insert(":pk".to_string(), json!({"S": "u1"}));
-        expr_values.insert(":sk".to_string(), json!({"S": "o0"}));
-
-        assert!(evaluate_key_condition(
-            "((pk = :pk) AND (sk > :sk))",
-            &item,
-            "pk",
-            Some("sk"),
-            &HashMap::new(),
-            &expr_values,
-        ));
-    }
-
-    #[test]
-    fn test_evaluate_key_condition_parens_around_whole_expr() {
-        // (pk = :pk AND sk = :sk) — parens wrap the whole compound expression.
-        let mut item = HashMap::new();
-        item.insert("pk".to_string(), json!({"S": "u1"}));
-        item.insert("sk".to_string(), json!({"S": "o1"}));
-
-        let mut expr_values = HashMap::new();
-        expr_values.insert(":pk".to_string(), json!({"S": "u1"}));
-        expr_values.insert(":sk".to_string(), json!({"S": "o1"}));
-
-        assert!(evaluate_key_condition(
-            "(pk = :pk AND sk = :sk)",
-            &item,
-            "pk",
-            Some("sk"),
-            &HashMap::new(),
-            &expr_values,
-        ));
-    }
-
-    #[test]
-    fn test_evaluate_key_condition_parenthesized_mismatch() {
-        // Negative case: parens shouldn't turn a non-matching condition into
-        // a matching one.
-        let mut item = HashMap::new();
-        item.insert("pk".to_string(), json!({"S": "u1"}));
-        item.insert("sk".to_string(), json!({"S": "o1"}));
-
-        let mut expr_values = HashMap::new();
-        expr_values.insert(":pk".to_string(), json!({"S": "u1"}));
-        expr_values.insert(":sk".to_string(), json!({"S": "z9"}));
-
-        assert!(!evaluate_key_condition(
-            "(pk = :pk) AND (sk > :sk)",
             &item,
             "pk",
             Some("sk"),
