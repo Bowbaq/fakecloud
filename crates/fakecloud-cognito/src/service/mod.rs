@@ -7325,4 +7325,141 @@ mod tests {
         let req = make_req("GetIdentityProviderByIdentifier", &body.to_string());
         assert!(svc.get_identity_provider_by_identifier(&req).is_err());
     }
+
+    // ── users.rs extra coverage ──────────────────────────────────────
+
+    fn issue_at_for_users(
+        state: &crate::state::SharedCognitoState,
+        pool_id: &str,
+        username: &str,
+        client_id: &str,
+    ) -> String {
+        let token = format!("access-{}", uuid::Uuid::new_v4());
+        let mut st = state.write();
+        let acct = st.get_or_create("123456789012");
+        acct.access_tokens.insert(
+            token.clone(),
+            AccessTokenData {
+                user_pool_id: pool_id.to_string(),
+                username: username.to_string(),
+                client_id: client_id.to_string(),
+                issued_at: chrono::Utc::now(),
+            },
+        );
+        token
+    }
+
+    #[test]
+    fn resend_confirmation_code_unknown_client_errors() {
+        let (svc, _) = make_svc();
+        let body = json!({"ClientId": "ghost", "Username": "u"});
+        let req = make_req("ResendConfirmationCode", &body.to_string());
+        assert!(svc.resend_confirmation_code(&req).is_err());
+    }
+
+    #[test]
+    fn resend_confirmation_code_unknown_user_errors() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        let body = json!({"ClientId": client_id, "Username": "ghost"});
+        let req = make_req("ResendConfirmationCode", &body.to_string());
+        assert!(svc.resend_confirmation_code(&req).is_err());
+    }
+
+    #[test]
+    fn resend_confirmation_code_returns_masked_email() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        admin_create_user_helper(&svc, &pool_id, "steve");
+        let body = json!({"ClientId": client_id, "Username": "steve"});
+        let req = make_req("ResendConfirmationCode", &body.to_string());
+        let resp = svc.resend_confirmation_code(&req).unwrap();
+        let b = resp_json(&resp);
+        let dest = b["CodeDeliveryDetails"]["Destination"].as_str().unwrap();
+        assert!(dest.contains("***"));
+        assert!(dest.contains("@example.com"));
+    }
+
+    #[test]
+    fn get_user_attribute_verification_code_invalid_token() {
+        let (svc, _) = make_svc();
+        let body = json!({"AccessToken": "bad", "AttributeName": "email"});
+        let req = make_req("GetUserAttributeVerificationCode", &body.to_string());
+        assert!(svc.get_user_attribute_verification_code(&req).is_err());
+    }
+
+    #[test]
+    fn get_user_attribute_verification_code_email_path() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "kim");
+        let token = issue_at_for_users(&state, &pool_id, "kim", "c");
+
+        let body = json!({"AccessToken": token, "AttributeName": "email"});
+        let req = make_req("GetUserAttributeVerificationCode", &body.to_string());
+        let resp = svc.get_user_attribute_verification_code(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["CodeDeliveryDetails"]["DeliveryMedium"], "EMAIL");
+    }
+
+    #[test]
+    fn get_user_attribute_verification_code_phone_path() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "lee");
+
+        {
+            let mut st = state.write();
+            let acct = st.get_or_create("123456789012");
+            let user = acct
+                .users
+                .get_mut(&pool_id)
+                .unwrap()
+                .get_mut("lee")
+                .unwrap();
+            user.attributes.push(crate::state::UserAttribute {
+                name: "phone_number".to_string(),
+                value: "+15551234567".to_string(),
+            });
+        }
+
+        let token = issue_at_for_users(&state, &pool_id, "lee", "c");
+        let body = json!({"AccessToken": token, "AttributeName": "phone_number"});
+        let req = make_req("GetUserAttributeVerificationCode", &body.to_string());
+        let resp = svc.get_user_attribute_verification_code(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["CodeDeliveryDetails"]["DeliveryMedium"], "SMS");
+        let dest = b["CodeDeliveryDetails"]["Destination"].as_str().unwrap();
+        assert!(dest.contains("***"));
+    }
+
+    #[test]
+    fn verify_user_attribute_no_code_set() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "meg");
+        let token = issue_at_for_users(&state, &pool_id, "meg", "c");
+
+        let body = json!({"AccessToken": token, "AttributeName": "email", "Code": "123456"});
+        let req = make_req("VerifyUserAttribute", &body.to_string());
+        assert!(svc.verify_user_attribute(&req).is_err());
+    }
+
+    #[test]
+    fn verify_user_attribute_wrong_code() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "nin");
+        let token = issue_at_for_users(&state, &pool_id, "nin", "c");
+
+        let body = json!({"AccessToken": token, "AttributeName": "email"});
+        let req = make_req("GetUserAttributeVerificationCode", &body.to_string());
+        svc.get_user_attribute_verification_code(&req).unwrap();
+
+        let body = json!({"AccessToken": token, "AttributeName": "email", "Code": "000000"});
+        let req = make_req("VerifyUserAttribute", &body.to_string());
+        assert!(svc.verify_user_attribute(&req).is_err());
+    }
 }
