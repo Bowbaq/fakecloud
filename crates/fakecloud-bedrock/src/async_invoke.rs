@@ -192,3 +192,173 @@ fn invocation_summary_json(inv: &AsyncInvocation) -> Value {
     }
     obj
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::BedrockState;
+    use bytes::Bytes;
+    use fakecloud_core::multi_account::MultiAccountState;
+    use http::{HeaderMap, Method};
+    use parking_lot::RwLock;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    fn shared() -> SharedBedrockState {
+        let multi: MultiAccountState<BedrockState> =
+            MultiAccountState::new("123456789012", "us-east-1", "http://x");
+        Arc::new(RwLock::new(multi))
+    }
+
+    fn req() -> AwsRequest {
+        AwsRequest {
+            service: "bedrock".to_string(),
+            action: "a".to_string(),
+            method: Method::POST,
+            raw_path: "/".to_string(),
+            raw_query: String::new(),
+            path_segments: vec![],
+            query_params: HashMap::new(),
+            headers: HeaderMap::new(),
+            body: Bytes::new(),
+            account_id: "123456789012".to_string(),
+            region: "us-east-1".to_string(),
+            request_id: "r".to_string(),
+            is_query_protocol: false,
+            access_key_id: None,
+            principal: None,
+        }
+    }
+
+    fn valid_body(model_id: &str) -> Value {
+        json!({
+            "modelId": model_id,
+            "outputDataConfig": {"s3OutputDataConfig": {"s3Uri": "s3://b/p"}},
+            "modelInput": {"text": "hello"}
+        })
+    }
+
+    #[test]
+    fn start_missing_model_id_errors() {
+        let s = shared();
+        let err = start_async_invoke(&s, &req(), &json!({})).err().unwrap();
+        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn start_missing_output_data_config_errors() {
+        let s = shared();
+        let err = start_async_invoke(&s, &req(), &json!({"modelId": "m"}))
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn start_missing_model_input_errors() {
+        let s = shared();
+        let err = start_async_invoke(&s, &req(), &json!({"modelId": "m", "outputDataConfig": {}}))
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn start_builds_foundation_model_arn_when_plain_id() {
+        let s = shared();
+        start_async_invoke(&s, &req(), &valid_body("anthropic.claude")).unwrap();
+        let st = s.read();
+        let inv = st
+            .default_ref()
+            .async_invocations
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+        assert!(inv.model_arn.contains("foundation-model/anthropic.claude"));
+    }
+
+    #[test]
+    fn start_preserves_model_arn_when_already_arn() {
+        let s = shared();
+        let arn = "arn:aws:bedrock:us-east-1::foundation-model/my-model";
+        start_async_invoke(&s, &req(), &valid_body(arn)).unwrap();
+        let st = s.read();
+        let inv = st.default_ref().async_invocations.values().next().unwrap();
+        assert_eq!(inv.model_arn, arn);
+    }
+
+    #[test]
+    fn get_by_arn_or_by_id_suffix() {
+        let s = shared();
+        start_async_invoke(&s, &req(), &valid_body("m")).unwrap();
+        let arn = s
+            .read()
+            .default_ref()
+            .async_invocations
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
+        let id = arn.rsplit('/').next().unwrap().to_string();
+        assert!(get_async_invoke(&s, &req(), &arn).is_ok());
+        assert!(get_async_invoke(&s, &req(), &id).is_ok());
+    }
+
+    #[test]
+    fn get_unknown_returns_not_found() {
+        let s = shared();
+        let err = get_async_invoke(&s, &req(), "missing").err().unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn list_filters_by_status() {
+        let s = shared();
+        for _ in 0..2 {
+            start_async_invoke(&s, &req(), &valid_body("m")).unwrap();
+        }
+        // Mark one as Failed
+        {
+            let mut st = s.write();
+            let acct = st.default_mut();
+            let arn = acct.async_invocations.keys().next().unwrap().clone();
+            acct.async_invocations.get_mut(&arn).unwrap().status = "Failed".to_string();
+        }
+        let mut r = req();
+        r.query_params
+            .insert("statusEquals".to_string(), "Failed".to_string());
+        let resp = list_async_invokes(&s, &r).unwrap();
+        let v: Value =
+            serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
+        assert_eq!(v["asyncInvokeSummaries"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn list_paginates() {
+        let s = shared();
+        for _ in 0..3 {
+            start_async_invoke(&s, &req(), &valid_body("m")).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let mut r = req();
+        r.query_params
+            .insert("maxResults".to_string(), "2".to_string());
+        let resp = list_async_invokes(&s, &r).unwrap();
+        let v: Value =
+            serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
+        assert_eq!(v["asyncInvokeSummaries"].as_array().unwrap().len(), 2);
+        assert!(v["nextToken"].is_string());
+    }
+
+    #[test]
+    fn start_stores_client_request_token_when_provided() {
+        let s = shared();
+        let mut body = valid_body("m");
+        body["clientRequestToken"] = json!("unique-token");
+        start_async_invoke(&s, &req(), &body).unwrap();
+        let st = s.read();
+        let inv = st.default_ref().async_invocations.values().next().unwrap();
+        assert_eq!(inv.client_request_token.as_deref(), Some("unique-token"));
+    }
+}
