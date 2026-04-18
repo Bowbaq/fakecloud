@@ -7711,4 +7711,167 @@ mod tests {
         assert!(b["AuthenticationResult"]["AccessToken"].as_str().is_some());
         assert!(b["AuthenticationResult"]["IdToken"].as_str().is_some());
     }
+
+    // ── Branding + WebAuthn extra coverage (branding.rs) ──────────────
+
+    fn issue_at(
+        state: &crate::state::SharedCognitoState,
+        pool_id: &str,
+        username: &str,
+        client_id: &str,
+    ) -> String {
+        let token = format!("access-{}", uuid::Uuid::new_v4());
+        let mut st = state.write();
+        let acct = st.get_or_create("123456789012");
+        acct.access_tokens.insert(
+            token.clone(),
+            AccessTokenData {
+                user_pool_id: pool_id.to_string(),
+                username: username.to_string(),
+                client_id: client_id.to_string(),
+                issued_at: chrono::Utc::now(),
+            },
+        );
+        token
+    }
+
+    #[test]
+    fn describe_managed_login_branding_unknown_errors() {
+        let (svc, _) = make_svc();
+        let body = json!({"ManagedLoginBrandingId": "nope"});
+        let req = make_req("DescribeManagedLoginBranding", &body.to_string());
+        assert!(svc.describe_managed_login_branding(&req).is_err());
+    }
+
+    #[test]
+    fn describe_managed_login_branding_by_client_unknown_client() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id, "ClientId": "ghost"});
+        let req = make_req("DescribeManagedLoginBrandingByClient", &body.to_string());
+        assert!(svc.describe_managed_login_branding_by_client(&req).is_err());
+    }
+
+    #[test]
+    fn delete_managed_login_branding_unknown_errors() {
+        let (svc, _) = make_svc();
+        let body = json!({"UserPoolId": "us-east-1_x", "ManagedLoginBrandingId": "bid"});
+        let req = make_req("DeleteManagedLoginBranding", &body.to_string());
+        assert!(svc.delete_managed_login_branding(&req).is_err());
+    }
+
+    #[test]
+    fn update_managed_login_branding_unknown_errors() {
+        let (svc, _) = make_svc();
+        let body = json!({"UserPoolId": "us-east-1_x", "ManagedLoginBrandingId": "bid"});
+        let req = make_req("UpdateManagedLoginBranding", &body.to_string());
+        assert!(svc.update_managed_login_branding(&req).is_err());
+    }
+
+    #[test]
+    fn describe_terms_unknown_errors() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id, "TermsId": "no-such"});
+        let req = make_req("DescribeTerms", &body.to_string());
+        assert!(svc.describe_terms(&req).is_err());
+    }
+
+    #[test]
+    fn delete_terms_unknown_errors() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id, "TermsId": "no-such"});
+        let req = make_req("DeleteTerms", &body.to_string());
+        assert!(svc.delete_terms(&req).is_err());
+    }
+
+    #[test]
+    fn update_terms_unknown_errors() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id, "TermsId": "no-such", "Links": []});
+        let req = make_req("UpdateTerms", &body.to_string());
+        assert!(svc.update_terms(&req).is_err());
+    }
+
+    #[test]
+    fn start_web_authn_registration_invalid_token() {
+        let (svc, _) = make_svc();
+        let body = json!({"AccessToken": "nope"});
+        let req = make_req("StartWebAuthnRegistration", &body.to_string());
+        assert!(svc.start_web_authn_registration(&req).is_err());
+    }
+
+    #[test]
+    fn start_web_authn_registration_returns_options() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "bill");
+        let token = issue_at(&state, &pool_id, "bill", "c");
+        let body = json!({"AccessToken": token});
+        let req = make_req("StartWebAuthnRegistration", &body.to_string());
+        let resp = svc.start_web_authn_registration(&req).unwrap();
+        let b = resp_json(&resp);
+        assert!(b["CredentialCreationOptions"]["challenge"].is_string());
+    }
+
+    #[test]
+    fn complete_web_authn_registration_missing_credential() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "ally");
+        let token = issue_at(&state, &pool_id, "ally", "c");
+        let body = json!({"AccessToken": token});
+        let req = make_req("CompleteWebAuthnRegistration", &body.to_string());
+        assert!(svc.complete_web_authn_registration(&req).is_err());
+    }
+
+    #[test]
+    fn complete_web_authn_registration_invalid_token() {
+        let (svc, _) = make_svc();
+        let body = json!({"AccessToken": "bad", "Credential": {"id": "abc"}});
+        let req = make_req("CompleteWebAuthnRegistration", &body.to_string());
+        assert!(svc.complete_web_authn_registration(&req).is_err());
+    }
+
+    #[test]
+    fn delete_web_authn_credential_invalid_token() {
+        let (svc, _) = make_svc();
+        let body = json!({"AccessToken": "bad", "CredentialId": "c"});
+        let req = make_req("DeleteWebAuthnCredential", &body.to_string());
+        assert!(svc.delete_web_authn_credential(&req).is_err());
+    }
+
+    #[test]
+    fn delete_web_authn_credential_no_credentials_registered() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "zed");
+        let token = issue_at(&state, &pool_id, "zed", "c");
+        let body = json!({"AccessToken": token, "CredentialId": "c"});
+        let req = make_req("DeleteWebAuthnCredential", &body.to_string());
+        assert!(svc.delete_web_authn_credential(&req).is_err());
+    }
+
+    #[test]
+    fn list_web_authn_credentials_invalid_token() {
+        let (svc, _) = make_svc();
+        let body = json!({"AccessToken": "bad"});
+        let req = make_req("ListWebAuthnCredentials", &body.to_string());
+        assert!(svc.list_web_authn_credentials(&req).is_err());
+    }
+
+    #[test]
+    fn list_web_authn_credentials_empty_when_none() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "fred");
+        let token = issue_at(&state, &pool_id, "fred", "c");
+        let body = json!({"AccessToken": token});
+        let req = make_req("ListWebAuthnCredentials", &body.to_string());
+        let resp = svc.list_web_authn_credentials(&req).unwrap();
+        let b = resp_json(&resp);
+        assert!(b["Credentials"].as_array().unwrap().is_empty());
+    }
 }
