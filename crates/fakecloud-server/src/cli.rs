@@ -118,7 +118,7 @@ impl Cli {
     /// **Note:** when ``--addr`` uses port ``0`` the OS assigns the real port at
     /// bind time; in that case ``main`` computes the URL directly from the
     /// bound ``SocketAddr`` rather than calling this method.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub fn endpoint_url(&self) -> String {
         let addr = &self.addr;
         let port = addr.rsplit(':').next().unwrap_or("4566");

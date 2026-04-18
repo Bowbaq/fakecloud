@@ -469,7 +469,7 @@ async fn read_bound_port(child: &mut Child) -> Option<u16> {
         }
     });
     match tokio::time::timeout(Duration::from_secs(30), result).await {
-        Ok(Ok(port)) => port,
+        Ok(Ok(Some(port))) => Some(port),
         _ => None,
     }
 }
