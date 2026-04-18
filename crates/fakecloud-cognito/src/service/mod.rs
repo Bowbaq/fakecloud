@@ -6641,4 +6641,242 @@ mod tests {
         assert_eq!(b["RiskConfiguration"]["UserPoolId"], pool_id);
         assert_eq!(b["RiskConfiguration"]["ClientId"], "c1");
     }
+
+    // ── MFA (mfa.rs) coverage ─────────────────────────────────────────
+
+    fn issue_access_token(
+        state: &crate::state::SharedCognitoState,
+        pool_id: &str,
+        username: &str,
+        client_id: &str,
+    ) -> String {
+        let token = format!("access-{}", uuid::Uuid::new_v4());
+        let mut st = state.write();
+        let acct = st.get_or_create("123456789012");
+        acct.access_tokens.insert(
+            token.clone(),
+            AccessTokenData {
+                user_pool_id: pool_id.to_string(),
+                username: username.to_string(),
+                client_id: client_id.to_string(),
+                issued_at: chrono::Utc::now(),
+            },
+        );
+        token
+    }
+
+    #[test]
+    fn set_user_pool_mfa_config_full_shape() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({
+            "UserPoolId": pool_id,
+            "MfaConfiguration": "ON",
+            "SoftwareTokenMfaConfiguration": {"Enabled": true},
+            "SmsMfaConfiguration": {
+                "Enabled": true,
+                "SmsConfiguration": {
+                    "SnsCallerArn": "arn:aws:iam::123:role/sms",
+                    "ExternalId": "eid",
+                    "SnsRegion": "us-east-1"
+                }
+            }
+        });
+        let req = make_req("SetUserPoolMfaConfig", &body.to_string());
+        let resp = svc.set_user_pool_mfa_config(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["MfaConfiguration"], "ON");
+        assert_eq!(b["SoftwareTokenMfaConfiguration"]["Enabled"], true);
+        assert_eq!(b["SmsMfaConfiguration"]["Enabled"], true);
+        assert_eq!(
+            b["SmsMfaConfiguration"]["SmsConfiguration"]["SnsCallerArn"],
+            "arn:aws:iam::123:role/sms"
+        );
+    }
+
+    #[test]
+    fn set_user_pool_mfa_config_unknown_pool() {
+        let (svc, _) = make_svc();
+        let body = json!({"UserPoolId": "us-east-1_no", "MfaConfiguration": "ON"});
+        let req = make_req("SetUserPoolMfaConfig", &body.to_string());
+        assert!(svc.set_user_pool_mfa_config(&req).is_err());
+    }
+
+    #[test]
+    fn get_user_pool_mfa_config_unknown_pool() {
+        let (svc, _) = make_svc();
+        let body = json!({"UserPoolId": "us-east-1_no"});
+        let req = make_req("GetUserPoolMfaConfig", &body.to_string());
+        assert!(svc.get_user_pool_mfa_config(&req).is_err());
+    }
+
+    #[test]
+    fn get_user_pool_mfa_config_returns_stored_shape() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({
+            "UserPoolId": pool_id,
+            "MfaConfiguration": "OPTIONAL",
+            "SoftwareTokenMfaConfiguration": {"Enabled": true},
+            "SmsMfaConfiguration": {"Enabled": true}
+        });
+        let req = make_req("SetUserPoolMfaConfig", &body.to_string());
+        svc.set_user_pool_mfa_config(&req).unwrap();
+
+        let req = make_req(
+            "GetUserPoolMfaConfig",
+            &json!({"UserPoolId": pool_id}).to_string(),
+        );
+        let resp = svc.get_user_pool_mfa_config(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["MfaConfiguration"], "OPTIONAL");
+        assert_eq!(b["SoftwareTokenMfaConfiguration"]["Enabled"], true);
+    }
+
+    #[test]
+    fn admin_set_user_mfa_preference_unknown_user() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Username": "ghost",
+            "SMSMfaSettings": {"Enabled": true, "PreferredMfa": true}
+        });
+        let req = make_req("AdminSetUserMFAPreference", &body.to_string());
+        assert!(svc.admin_set_user_mfa_preference(&req).is_err());
+    }
+
+    #[test]
+    fn admin_set_user_mfa_preference_updates_prefs() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "alice");
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Username": "alice",
+            "SMSMfaSettings": {"Enabled": true, "PreferredMfa": false},
+            "SoftwareTokenMfaSettings": {"Enabled": true, "PreferredMfa": true},
+        });
+        let req = make_req("AdminSetUserMFAPreference", &body.to_string());
+        svc.admin_set_user_mfa_preference(&req).unwrap();
+    }
+
+    #[test]
+    fn set_user_mfa_preference_invalid_token() {
+        let (svc, _) = make_svc();
+        let body = json!({
+            "AccessToken": "bad",
+            "SMSMfaSettings": {"Enabled": true}
+        });
+        let req = make_req("SetUserMFAPreference", &body.to_string());
+        assert!(svc.set_user_mfa_preference(&req).is_err());
+    }
+
+    #[test]
+    fn set_user_mfa_preference_valid_token() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "alice");
+        let token = issue_access_token(&state, &pool_id, "alice", "client-id");
+        let body = json!({
+            "AccessToken": token,
+            "SMSMfaSettings": {"Enabled": true, "PreferredMfa": true},
+            "SoftwareTokenMfaSettings": {"Enabled": true, "PreferredMfa": false},
+        });
+        let req = make_req("SetUserMFAPreference", &body.to_string());
+        svc.set_user_mfa_preference(&req).unwrap();
+    }
+
+    #[test]
+    fn associate_software_token_requires_token_or_session() {
+        let (svc, _) = make_svc();
+        let req = make_req("AssociateSoftwareToken", "{}");
+        assert!(svc.associate_software_token(&req).is_err());
+    }
+
+    #[test]
+    fn associate_software_token_invalid_token() {
+        let (svc, _) = make_svc();
+        let body = json!({"AccessToken": "nope"});
+        let req = make_req("AssociateSoftwareToken", &body.to_string());
+        assert!(svc.associate_software_token(&req).is_err());
+    }
+
+    #[test]
+    fn associate_software_token_returns_secret() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "bob");
+        let token = issue_access_token(&state, &pool_id, "bob", "client-id");
+        let body = json!({"AccessToken": token});
+        let req = make_req("AssociateSoftwareToken", &body.to_string());
+        let resp = svc.associate_software_token(&req).unwrap();
+        let b = resp_json(&resp);
+        assert!(!b["SecretCode"].as_str().unwrap().is_empty());
+        assert!(!b["Session"].as_str().unwrap().is_empty());
+    }
+
+    #[test]
+    fn verify_software_token_invalid_code_format() {
+        let (svc, _) = make_svc();
+        let body = json!({"UserCode": "abcdef", "AccessToken": "t"});
+        let req = make_req("VerifySoftwareToken", &body.to_string());
+        assert!(svc.verify_software_token(&req).is_err());
+    }
+
+    #[test]
+    fn verify_software_token_requires_token_or_session() {
+        let (svc, _) = make_svc();
+        let body = json!({"UserCode": "123456"});
+        let req = make_req("VerifySoftwareToken", &body.to_string());
+        assert!(svc.verify_software_token(&req).is_err());
+    }
+
+    #[test]
+    fn verify_software_token_without_associated_secret() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "carl");
+        let token = issue_access_token(&state, &pool_id, "carl", "client-id");
+        let body = json!({"UserCode": "123456", "AccessToken": token});
+        let req = make_req("VerifySoftwareToken", &body.to_string());
+        assert!(svc.verify_software_token(&req).is_err());
+    }
+
+    #[test]
+    fn verify_software_token_after_associate_succeeds() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "dave");
+        let token = issue_access_token(&state, &pool_id, "dave", "client-id");
+        let body = json!({"AccessToken": token});
+        let req = make_req("AssociateSoftwareToken", &body.to_string());
+        svc.associate_software_token(&req).unwrap();
+        let body = json!({"UserCode": "123456", "AccessToken": token});
+        let req = make_req("VerifySoftwareToken", &body.to_string());
+        let resp = svc.verify_software_token(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["Status"], "SUCCESS");
+    }
+
+    #[test]
+    fn get_user_auth_factors_invalid_token() {
+        let (svc, _) = make_svc();
+        let body = json!({"AccessToken": "none"});
+        let req = make_req("GetUserAuthFactors", &body.to_string());
+        assert!(svc.get_user_auth_factors(&req).is_err());
+    }
+
+    #[test]
+    fn get_user_auth_factors_returns_factors() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "eve");
+        let token = issue_access_token(&state, &pool_id, "eve", "client-id");
+        let body = json!({"AccessToken": token});
+        let req = make_req("GetUserAuthFactors", &body.to_string());
+        let resp = svc.get_user_auth_factors(&req).unwrap();
+        let b = resp_json(&resp);
+        assert!(b["ConfiguredUserAuthFactors"].is_array());
+    }
 }
