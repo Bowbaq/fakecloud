@@ -7600,4 +7600,115 @@ mod tests {
         let req = make_req("ListUserPoolClientSecrets", &body.to_string());
         assert!(svc.list_user_pool_client_secrets(&req).is_err());
     }
+
+    // ── misc.rs additional coverage (refresh tokens, revoke) ─────────
+
+    #[test]
+    fn revoke_token_unknown_client_errors() {
+        let (svc, _) = make_svc();
+        let body = json!({"Token": "t", "ClientId": "nope"});
+        let req = make_req("RevokeToken", &body.to_string());
+        assert!(svc.revoke_token(&req).is_err());
+    }
+
+    #[test]
+    fn revoke_token_removes_refresh_token() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        let token = "rt-abc".to_string();
+        {
+            let mut st = state.write();
+            let acct = st.get_or_create("123456789012");
+            acct.refresh_tokens.insert(
+                token.clone(),
+                crate::state::RefreshTokenData {
+                    user_pool_id: pool_id.clone(),
+                    username: "alice".to_string(),
+                    client_id: client_id.clone(),
+                    issued_at: chrono::Utc::now(),
+                },
+            );
+        }
+        let body = json!({"Token": token, "ClientId": client_id});
+        let req = make_req("RevokeToken", &body.to_string());
+        svc.revoke_token(&req).unwrap();
+        assert!(!state
+            .read()
+            .default_ref()
+            .refresh_tokens
+            .contains_key(&token));
+    }
+
+    #[test]
+    fn get_tokens_from_refresh_token_unknown_client_errors() {
+        let (svc, _) = make_svc();
+        let body = json!({"RefreshToken": "rt", "ClientId": "nope"});
+        let req = make_req("GetTokensFromRefreshToken", &body.to_string());
+        assert!(svc.get_tokens_from_refresh_token(&req).is_err());
+    }
+
+    #[test]
+    fn get_tokens_from_refresh_token_invalid_refresh_token() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        let body = json!({"RefreshToken": "bogus", "ClientId": client_id});
+        let req = make_req("GetTokensFromRefreshToken", &body.to_string());
+        assert!(svc.get_tokens_from_refresh_token(&req).is_err());
+    }
+
+    #[test]
+    fn get_tokens_from_refresh_token_client_mismatch_errors() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_a = create_client(&svc, &pool_id);
+        let client_b = create_client(&svc, &pool_id);
+        admin_create_user_helper(&svc, &pool_id, "may");
+        let rt = "rt-x".to_string();
+        {
+            let mut st = state.write();
+            let acct = st.get_or_create("123456789012");
+            acct.refresh_tokens.insert(
+                rt.clone(),
+                crate::state::RefreshTokenData {
+                    user_pool_id: pool_id.clone(),
+                    username: "may".to_string(),
+                    client_id: client_a,
+                    issued_at: chrono::Utc::now(),
+                },
+            );
+        }
+        let body = json!({"RefreshToken": rt, "ClientId": client_b});
+        let req = make_req("GetTokensFromRefreshToken", &body.to_string());
+        assert!(svc.get_tokens_from_refresh_token(&req).is_err());
+    }
+
+    #[test]
+    fn get_tokens_from_refresh_token_returns_new_tokens() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        admin_create_user_helper(&svc, &pool_id, "oli");
+        let rt = "rt-ok".to_string();
+        {
+            let mut st = state.write();
+            let acct = st.get_or_create("123456789012");
+            acct.refresh_tokens.insert(
+                rt.clone(),
+                crate::state::RefreshTokenData {
+                    user_pool_id: pool_id.clone(),
+                    username: "oli".to_string(),
+                    client_id: client_id.clone(),
+                    issued_at: chrono::Utc::now(),
+                },
+            );
+        }
+        let body = json!({"RefreshToken": rt, "ClientId": client_id});
+        let req = make_req("GetTokensFromRefreshToken", &body.to_string());
+        let resp = svc.get_tokens_from_refresh_token(&req).unwrap();
+        let b = resp_json(&resp);
+        assert!(b["AuthenticationResult"]["AccessToken"].as_str().is_some());
+        assert!(b["AuthenticationResult"]["IdToken"].as_str().is_some());
+    }
 }
