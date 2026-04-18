@@ -267,7 +267,8 @@ mod tests {
         let buf = encode_event("chunk", "application/json", payload);
         let (total, headers_len) = parse_prelude(&buf);
         assert_eq!(total as usize, buf.len());
-        let expected_headers = 1 + ":event-type".len()
+        let expected_headers = 1
+            + ":event-type".len()
             + 1
             + 2
             + "chunk".len()
