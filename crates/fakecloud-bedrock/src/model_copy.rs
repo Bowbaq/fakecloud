@@ -130,3 +130,94 @@ pub fn list_model_copy_jobs(
 
     Ok(AwsResponse::ok_json(resp))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::BedrockState;
+    use bytes::Bytes;
+    use fakecloud_core::multi_account::MultiAccountState;
+    use http::{HeaderMap, Method};
+    use parking_lot::RwLock;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    fn shared() -> SharedBedrockState {
+        let multi: MultiAccountState<BedrockState> =
+            MultiAccountState::new("123456789012", "us-east-1", "http://x");
+        Arc::new(RwLock::new(multi))
+    }
+
+    fn req() -> AwsRequest {
+        AwsRequest {
+            service: "bedrock".to_string(),
+            action: "a".to_string(),
+            method: Method::POST,
+            raw_path: "/".to_string(),
+            raw_query: String::new(),
+            path_segments: vec![],
+            query_params: HashMap::new(),
+            headers: HeaderMap::new(),
+            body: Bytes::new(),
+            account_id: "123456789012".to_string(),
+            region: "us-east-1".to_string(),
+            request_id: "r".to_string(),
+            is_query_protocol: false,
+            access_key_id: None,
+            principal: None,
+        }
+    }
+
+    fn create(state: &SharedBedrockState, target: &str) -> String {
+        let body = json!({
+            "sourceModelArn": "arn:aws:bedrock:us-east-1:123:custom-model/src",
+            "targetModelName": target,
+        });
+        let resp = create_model_copy_job(state, &req(), &body).unwrap();
+        let v: Value =
+            serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
+        v["jobArn"].as_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn create_builds_target_model_arn() {
+        let s = shared();
+        let arn = create(&s, "cpy");
+        let st = s.read();
+        let job = st.default_ref().model_copy_jobs.get(&arn).unwrap();
+        assert_eq!(job.target_model_name, "cpy");
+        assert!(job.target_model_arn.ends_with("/cpy"));
+    }
+
+    #[test]
+    fn get_by_full_arn_or_suffix() {
+        let s = shared();
+        let arn = create(&s, "t");
+        let id = arn.rsplit('/').next().unwrap().to_string();
+        assert!(get_model_copy_job(&s, &req(), &arn).is_ok());
+        assert!(get_model_copy_job(&s, &req(), &id).is_ok());
+    }
+
+    #[test]
+    fn get_unknown_returns_not_found() {
+        let s = shared();
+        let err = get_model_copy_job(&s, &req(), "missing").err().unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn list_paginates() {
+        let s = shared();
+        for i in 0..3 {
+            create(&s, &format!("t{i}"));
+        }
+        let mut r = req();
+        r.query_params
+            .insert("maxResults".to_string(), "2".to_string());
+        let resp = list_model_copy_jobs(&s, &r).unwrap();
+        let v: Value =
+            serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
+        assert_eq!(v["modelCopyJobSummaries"].as_array().unwrap().len(), 2);
+        assert!(v["nextToken"].is_string());
+    }
+}
