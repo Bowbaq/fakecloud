@@ -266,3 +266,216 @@ fn throughput_to_json(t: &ProvisionedThroughput) -> Value {
         "lastModifiedTime": t.last_modified_at.to_rfc3339(),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::BedrockState;
+    use bytes::Bytes;
+    use fakecloud_core::multi_account::MultiAccountState;
+    use http::{HeaderMap, Method};
+    use parking_lot::RwLock;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    fn shared() -> SharedBedrockState {
+        let multi: MultiAccountState<BedrockState> =
+            MultiAccountState::new("123456789012", "us-east-1", "http://x");
+        Arc::new(RwLock::new(multi))
+    }
+
+    fn req() -> AwsRequest {
+        AwsRequest {
+            service: "bedrock".to_string(),
+            action: "a".to_string(),
+            method: Method::POST,
+            raw_path: "/".to_string(),
+            raw_query: String::new(),
+            path_segments: vec![],
+            query_params: HashMap::new(),
+            headers: HeaderMap::new(),
+            body: Bytes::new(),
+            account_id: "123456789012".to_string(),
+            region: "us-east-1".to_string(),
+            request_id: "r".to_string(),
+            is_query_protocol: false,
+            access_key_id: None,
+            principal: None,
+        }
+    }
+
+    fn create(
+        state: &SharedBedrockState,
+        name: &str,
+        units: i64,
+        duration: Option<&str>,
+    ) -> String {
+        let mut body = json!({
+            "provisionedModelName": name,
+            "modelId": "anthropic.claude",
+            "modelUnits": units
+        });
+        if let Some(d) = duration {
+            body["commitmentDuration"] = json!(d);
+        }
+        let resp = create_provisioned_model_throughput(state, &req(), &body).unwrap();
+        let v: Value =
+            serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
+        v["provisionedModelArn"].as_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn create_missing_name_errors() {
+        let s = shared();
+        let err = create_provisioned_model_throughput(&s, &req(), &json!({}))
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn create_zero_model_units_errors() {
+        let s = shared();
+        let err = create_provisioned_model_throughput(
+            &s,
+            &req(),
+            &json!({"provisionedModelName": "p", "modelUnits": 0}),
+        )
+        .err()
+        .unwrap();
+        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn create_invalid_commitment_duration_errors() {
+        let s = shared();
+        let err = create_provisioned_model_throughput(
+            &s,
+            &req(),
+            &json!({"provisionedModelName": "p", "commitmentDuration": "TwoYears"}),
+        )
+        .err()
+        .unwrap();
+        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn create_with_valid_commitment_duration() {
+        let s = shared();
+        let arn = create(&s, "p", 2, Some("SixMonths"));
+        let accts = s.read();
+        let state = accts.default_ref();
+        let key = state
+            .provisioned_throughputs
+            .iter()
+            .find(|(_, t)| t.provisioned_model_arn == arn)
+            .unwrap()
+            .0;
+        assert_eq!(
+            state.provisioned_throughputs[key]
+                .commitment_duration
+                .as_deref(),
+            Some("SixMonths")
+        );
+    }
+
+    #[test]
+    fn create_builds_foundation_model_arn_when_no_colon() {
+        let s = shared();
+        let arn = create(&s, "p", 1, None);
+        let state = s.read();
+        let key = state
+            .default_ref()
+            .provisioned_throughputs
+            .iter()
+            .find(|(_, t)| t.provisioned_model_arn == arn)
+            .unwrap()
+            .0;
+        assert!(state.default_ref().provisioned_throughputs[key]
+            .model_arn
+            .contains("foundation-model/"));
+    }
+
+    #[test]
+    fn get_by_id_or_arn() {
+        let s = shared();
+        let arn = create(&s, "p", 1, None);
+        let id = arn.rsplit('/').next().unwrap().to_string();
+        assert!(get_provisioned_model_throughput(&s, &req(), &arn).is_ok());
+        assert!(get_provisioned_model_throughput(&s, &req(), &id).is_ok());
+    }
+
+    #[test]
+    fn get_unknown_returns_not_found() {
+        let s = shared();
+        let err = get_provisioned_model_throughput(&s, &req(), "missing")
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn list_paginates() {
+        let s = shared();
+        for i in 0..3 {
+            create(&s, &format!("p{i}"), 1, None);
+        }
+        let mut r = req();
+        r.query_params
+            .insert("maxResults".to_string(), "2".to_string());
+        let resp = list_provisioned_model_throughputs(&s, &r).unwrap();
+        let v: Value =
+            serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
+        assert_eq!(v["provisionedModelSummaries"].as_array().unwrap().len(), 2);
+        assert!(v["nextToken"].is_string());
+    }
+
+    #[test]
+    fn update_changes_units_and_name() {
+        let s = shared();
+        let arn = create(&s, "p-old", 1, None);
+        update_provisioned_model_throughput(
+            &s,
+            &req(),
+            &arn,
+            &json!({"desiredModelUnits": 5, "desiredProvisionedModelName": "p-new"}),
+        )
+        .unwrap();
+        let state = s.read();
+        let acct = state.default_ref();
+        let t = acct
+            .provisioned_throughputs
+            .values()
+            .find(|t| t.provisioned_model_arn == arn)
+            .unwrap();
+        assert_eq!(t.desired_model_units, 5);
+        assert_eq!(t.model_units, 5);
+        assert_eq!(t.provisioned_model_name, "p-new");
+    }
+
+    #[test]
+    fn update_unknown_returns_not_found() {
+        let s = shared();
+        let err = update_provisioned_model_throughput(&s, &req(), "miss", &json!({}))
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn delete_removes_entry() {
+        let s = shared();
+        let arn = create(&s, "p", 1, None);
+        delete_provisioned_model_throughput(&s, &req(), &arn).unwrap();
+        assert!(s.read().default_ref().provisioned_throughputs.is_empty());
+    }
+
+    #[test]
+    fn delete_unknown_returns_not_found() {
+        let s = shared();
+        let err = delete_provisioned_model_throughput(&s, &req(), "miss")
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+}
