@@ -4199,4 +4199,262 @@ mod tests {
         );
         assert!(svc.update_role(&req).is_err());
     }
+
+    // ── SAML / OIDC providers + update paths (oidc.rs) ────────────────
+
+    #[test]
+    fn saml_provider_full_lifecycle() {
+        let svc = make_service();
+
+        let create = svc
+            .create_saml_provider(&make_request(
+                "CreateSAMLProvider",
+                vec![
+                    ("Name", "my-saml"),
+                    ("SAMLMetadataDocument", "<EntityDescriptor/>"),
+                ],
+            ))
+            .unwrap();
+        let body = std::str::from_utf8(create.body.expect_bytes()).unwrap();
+        let arn = extract_xml_tag(body, "SAMLProviderArn").to_string();
+        assert!(arn.ends_with(":saml-provider/my-saml"));
+
+        let get = svc
+            .get_saml_provider(&make_request(
+                "GetSAMLProvider",
+                vec![("SAMLProviderArn", &arn)],
+            ))
+            .unwrap();
+        let get_body = std::str::from_utf8(get.body.expect_bytes()).unwrap();
+        assert!(get_body.contains("&lt;EntityDescriptor/&gt;"));
+
+        let list = svc
+            .list_saml_providers(&make_request("ListSAMLProviders", vec![]))
+            .unwrap();
+        let list_body = std::str::from_utf8(list.body.expect_bytes()).unwrap();
+        assert!(list_body.contains(&arn));
+
+        let update = svc
+            .update_saml_provider(&make_request(
+                "UpdateSAMLProvider",
+                vec![
+                    ("SAMLProviderArn", &arn),
+                    ("SAMLMetadataDocument", "<NewMetadata/>"),
+                ],
+            ))
+            .unwrap();
+        let update_body = std::str::from_utf8(update.body.expect_bytes()).unwrap();
+        assert!(update_body.contains(&arn));
+
+        svc.delete_saml_provider(&make_request(
+            "DeleteSAMLProvider",
+            vec![("SAMLProviderArn", &arn)],
+        ))
+        .unwrap();
+        assert!(svc
+            .get_saml_provider(&make_request(
+                "GetSAMLProvider",
+                vec![("SAMLProviderArn", &arn)]
+            ))
+            .is_err());
+    }
+
+    #[test]
+    fn oidc_provider_duplicate_rejected() {
+        let svc = make_service();
+        let params = vec![
+            ("Url", "https://example.com"),
+            (
+                "ThumbprintList.member.1",
+                "abcdef1234567890abcdef1234567890abcdef12",
+            ),
+            ("ClientIDList.member.1", "client-1"),
+        ];
+        svc.create_oidc_provider(&make_request("CreateOpenIDConnectProvider", params.clone()))
+            .unwrap();
+        let err = svc
+            .create_oidc_provider(&make_request("CreateOpenIDConnectProvider", params))
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn oidc_add_and_remove_client_id() {
+        let svc = make_service();
+        let create = svc
+            .create_oidc_provider(&make_request(
+                "CreateOpenIDConnectProvider",
+                vec![
+                    ("Url", "https://client-ops.example.com"),
+                    (
+                        "ThumbprintList.member.1",
+                        "abcdef1234567890abcdef1234567890abcdef12",
+                    ),
+                    ("ClientIDList.member.1", "original-client"),
+                ],
+            ))
+            .unwrap();
+        let body = std::str::from_utf8(create.body.expect_bytes()).unwrap();
+        let arn = extract_xml_tag(body, "OpenIDConnectProviderArn").to_string();
+
+        svc.add_client_id_to_oidc(&make_request(
+            "AddClientIDToOpenIDConnectProvider",
+            vec![
+                ("OpenIDConnectProviderArn", &arn),
+                ("ClientID", "new-client"),
+            ],
+        ))
+        .unwrap();
+
+        let get = svc
+            .get_oidc_provider(&make_request(
+                "GetOpenIDConnectProvider",
+                vec![("OpenIDConnectProviderArn", &arn)],
+            ))
+            .unwrap();
+        let get_body = std::str::from_utf8(get.body.expect_bytes()).unwrap();
+        assert!(get_body.contains("new-client"));
+
+        svc.remove_client_id_from_oidc(&make_request(
+            "RemoveClientIDFromOpenIDConnectProvider",
+            vec![
+                ("OpenIDConnectProviderArn", &arn),
+                ("ClientID", "new-client"),
+            ],
+        ))
+        .unwrap();
+        let get2 = svc
+            .get_oidc_provider(&make_request(
+                "GetOpenIDConnectProvider",
+                vec![("OpenIDConnectProviderArn", &arn)],
+            ))
+            .unwrap();
+        let get2_body = std::str::from_utf8(get2.body.expect_bytes()).unwrap();
+        assert!(!get2_body.contains("new-client"));
+    }
+
+    #[test]
+    fn oidc_add_client_id_unknown_arn_errors() {
+        let svc = make_service();
+        let err = svc
+            .add_client_id_to_oidc(&make_request(
+                "AddClientIDToOpenIDConnectProvider",
+                vec![
+                    (
+                        "OpenIDConnectProviderArn",
+                        "arn:aws:iam::123:oidc-provider/ghost",
+                    ),
+                    ("ClientID", "c"),
+                ],
+            ))
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn oidc_remove_client_id_unknown_arn_errors() {
+        let svc = make_service();
+        let err = svc
+            .remove_client_id_from_oidc(&make_request(
+                "RemoveClientIDFromOpenIDConnectProvider",
+                vec![
+                    (
+                        "OpenIDConnectProviderArn",
+                        "arn:aws:iam::123:oidc-provider/ghost",
+                    ),
+                    ("ClientID", "c"),
+                ],
+            ))
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn oidc_update_thumbprint_unknown_arn_errors() {
+        let svc = make_service();
+        let err = svc
+            .update_oidc_thumbprint(&make_request(
+                "UpdateOpenIDConnectProviderThumbprint",
+                vec![
+                    (
+                        "OpenIDConnectProviderArn",
+                        "arn:aws:iam::123:oidc-provider/ghost",
+                    ),
+                    (
+                        "ThumbprintList.member.1",
+                        "abcdef1234567890abcdef1234567890abcdef12",
+                    ),
+                ],
+            ))
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn oidc_update_thumbprint_succeeds() {
+        let svc = make_service();
+        let create = svc
+            .create_oidc_provider(&make_request(
+                "CreateOpenIDConnectProvider",
+                vec![
+                    ("Url", "https://thumb.example.com"),
+                    (
+                        "ThumbprintList.member.1",
+                        "abcdef1234567890abcdef1234567890abcdef12",
+                    ),
+                    ("ClientIDList.member.1", "c"),
+                ],
+            ))
+            .unwrap();
+        let body = std::str::from_utf8(create.body.expect_bytes()).unwrap();
+        let arn = extract_xml_tag(body, "OpenIDConnectProviderArn").to_string();
+
+        svc.update_oidc_thumbprint(&make_request(
+            "UpdateOpenIDConnectProviderThumbprint",
+            vec![
+                ("OpenIDConnectProviderArn", &arn),
+                (
+                    "ThumbprintList.member.1",
+                    "fedcba0987654321fedcba0987654321fedcba09",
+                ),
+            ],
+        ))
+        .unwrap();
+
+        let get = svc
+            .get_oidc_provider(&make_request(
+                "GetOpenIDConnectProvider",
+                vec![("OpenIDConnectProviderArn", &arn)],
+            ))
+            .unwrap();
+        let get_body = std::str::from_utf8(get.body.expect_bytes()).unwrap();
+        assert!(get_body.contains("fedcba0987654321"));
+    }
+
+    #[test]
+    fn list_oidc_providers_includes_created() {
+        let svc = make_service();
+        svc.create_oidc_provider(&make_request(
+            "CreateOpenIDConnectProvider",
+            vec![
+                ("Url", "https://list.example.com"),
+                (
+                    "ThumbprintList.member.1",
+                    "abcdef1234567890abcdef1234567890abcdef12",
+                ),
+                ("ClientIDList.member.1", "cx"),
+            ],
+        ))
+        .unwrap();
+
+        let list = svc
+            .list_oidc_providers(&make_request("ListOpenIDConnectProviders", vec![]))
+            .unwrap();
+        let list_body = std::str::from_utf8(list.body.expect_bytes()).unwrap();
+        assert!(list_body.contains("list.example.com"));
+    }
 }
