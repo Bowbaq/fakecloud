@@ -4158,4 +4158,166 @@ mod tests {
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::NOT_FOUND);
     }
+
+    // ── misc.rs extra coverage (import/export jobs, tenant resources) ─
+
+    #[tokio::test]
+    async fn test_import_job_not_found() {
+        let state = make_state();
+        let svc = SesV2Service::new(state);
+        let req = make_request(Method::GET, "/v2/email/import-jobs/nope", "");
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_export_job_not_found() {
+        let state = make_state();
+        let svc = SesV2Service::new(state);
+        let req = make_request(Method::GET, "/v2/email/export-jobs/nope", "");
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_create_import_job_missing_destination() {
+        let state = make_state();
+        let svc = SesV2Service::new(state);
+        let req = make_request(
+            Method::POST,
+            "/v2/email/import-jobs",
+            r#"{"ImportDataSource": {"S3Url": "s3://b/k", "DataFormat": "CSV"}}"#,
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_create_import_job_missing_data_source() {
+        let state = make_state();
+        let svc = SesV2Service::new(state);
+        let req = make_request(
+            Method::POST,
+            "/v2/email/import-jobs",
+            r#"{"ImportDestination": {"SuppressionListDestination": {"SuppressionListImportAction": "PUT"}}}"#,
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_list_import_jobs_filter_by_suppression_list() {
+        let state = make_state();
+        let svc = SesV2Service::new(state);
+
+        let req = make_request(
+            Method::POST,
+            "/v2/email/import-jobs",
+            r#"{
+                "ImportDestination": {"SuppressionListDestination": {"SuppressionListImportAction": "PUT"}},
+                "ImportDataSource": {"S3Url": "s3://b/k", "DataFormat": "CSV"}
+            }"#,
+        );
+        svc.handle(req).await.unwrap();
+
+        let req = make_request(
+            Method::POST,
+            "/v2/email/import-jobs",
+            r#"{
+                "ImportDestination": {"ContactListDestination": {"ContactListName": "x", "ContactListImportAction": "PUT"}},
+                "ImportDataSource": {"S3Url": "s3://b/k", "DataFormat": "CSV"}
+            }"#,
+        );
+        svc.handle(req).await.unwrap();
+
+        let req = make_request(
+            Method::POST,
+            "/v2/email/import-jobs/list",
+            r#"{"ImportDestinationType": "SUPPRESSION_LIST"}"#,
+        );
+        let resp = svc.handle(req).await.unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["ImportJobs"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_cancel_export_job_conflict() {
+        let state = make_state();
+        let svc = SesV2Service::new(state);
+        let req = make_request(
+            Method::POST,
+            "/v2/email/export-jobs",
+            r#"{
+                "ExportDataSource": {"MessageInsightsDataSource": {"StartDate": 0, "EndDate": 0}},
+                "ExportDestination": {"DataFormat": "CSV"}
+            }"#,
+        );
+        let resp = svc.handle(req).await.unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        let job_id = body["JobId"].as_str().unwrap().to_string();
+
+        let path = format!("/v2/email/export-jobs/{}/cancel", job_id);
+        let req = make_request(Method::PUT, &path, "{}");
+        let resp = svc.handle(req).await.unwrap();
+        // First cancel: COMPLETED -> Conflict, since jobs finish immediately
+        assert_eq!(resp.status, StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn test_cancel_export_job_not_found() {
+        let state = make_state();
+        let svc = SesV2Service::new(state);
+        let req = make_request(Method::PUT, "/v2/email/export-jobs/ghost/cancel", "{}");
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_tenant_resource_association_crud() {
+        let state = make_state();
+        let svc = SesV2Service::new(state);
+
+        // Create tenant
+        let req = make_request(
+            Method::POST,
+            "/v2/email/tenants",
+            r#"{"TenantName": "tenant-a"}"#,
+        );
+        svc.handle(req).await.unwrap();
+
+        // Create identity so resource exists
+        let req = make_request(
+            Method::POST,
+            "/v2/email/identities",
+            r#"{"EmailIdentity": "tres@example.com"}"#,
+        );
+        svc.handle(req).await.unwrap();
+
+        // Associate
+        let req = make_request(
+            Method::POST,
+            "/v2/email/tenants/resources",
+            r#"{"TenantName": "tenant-a", "ResourceArn": "arn:aws:ses:us-east-1:123456789012:identity/tres@example.com"}"#,
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+
+        // List tenant resources
+        let req = make_request(
+            Method::POST,
+            "/v2/email/tenants/resources/list",
+            r#"{"TenantName": "tenant-a"}"#,
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+
+        // Delete association
+        let req = make_request(
+            Method::POST,
+            "/v2/email/tenants/resources/delete",
+            r#"{"TenantName": "tenant-a", "ResourceArn": "arn:aws:ses:us-east-1:123456789012:identity/tres@example.com"}"#,
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+    }
 }
