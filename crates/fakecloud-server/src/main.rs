@@ -93,7 +93,31 @@ async fn main() {
         }
     }
 
-    let endpoint_url = cli.endpoint_url();
+    // Bind early so we know the actual port before initialising service state.
+    // When the caller passes `--addr 0.0.0.0:0` the OS assigns a free port
+    // atomically, eliminating the race between find-a-free-port and bind that
+    // previously caused sporadic "Connection refused" in parallel tests.
+    let listener = TcpListener::bind(&cli.addr)
+        .await
+        .unwrap_or_else(|e| fatal_exit(format_args!("failed to bind {}: {e}", cli.addr)));
+    let bound_addr = listener.local_addr().unwrap();
+    // Print the actual port to stdout so test harnesses can discover it.
+    println!("{}", bound_addr.port());
+    tracing::info!(addr = %bound_addr, "fakecloud is ready");
+
+    // Build the endpoint URL from the *actual* bound address so that port 0
+    // resolves to the real OS-assigned port in all internal resource URLs
+    // (SQS queue URLs, SNS ARNs, etc.).
+    let endpoint_url = {
+        let port = bound_addr.port();
+        let host = bound_addr.ip();
+        let host_str = if host.is_unspecified() {
+            "localhost".to_string()
+        } else {
+            host.to_string()
+        };
+        format!("http://{host_str}:{port}")
+    };
 
     // Shared state
     let iam_state = Arc::new(parking_lot::RwLock::new(
@@ -3322,9 +3346,6 @@ async fn main() {
         .layer(Extension(Arc::new(registry)))
         .layer(Extension(Arc::new(config)))
         .layer(TraceLayer::new_for_http());
-
-    let listener = TcpListener::bind(&cli.addr).await.unwrap();
-    tracing::info!(addr = %cli.addr, "fakecloud is ready");
 
     axum::serve(
         listener,
