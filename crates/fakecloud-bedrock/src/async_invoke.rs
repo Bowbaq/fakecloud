@@ -257,13 +257,9 @@ mod tests {
     #[test]
     fn start_missing_model_input_errors() {
         let s = shared();
-        let err = start_async_invoke(
-            &s,
-            &req(),
-            &json!({"modelId": "m", "outputDataConfig": {}}),
-        )
-        .err()
-        .unwrap();
+        let err = start_async_invoke(&s, &req(), &json!({"modelId": "m", "outputDataConfig": {}}))
+            .err()
+            .unwrap();
         assert_eq!(err.status(), StatusCode::BAD_REQUEST);
     }
 
@@ -346,7 +342,8 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         let mut r = req();
-        r.query_params.insert("maxResults".to_string(), "2".to_string());
+        r.query_params
+            .insert("maxResults".to_string(), "2".to_string());
         let resp = list_async_invokes(&s, &r).unwrap();
         let v: Value =
             serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
