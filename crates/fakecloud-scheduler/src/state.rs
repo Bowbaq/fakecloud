@@ -104,8 +104,41 @@ pub struct SchedulerState {
     pub region: String,
     #[serde(default)]
     pub groups: HashMap<String, ScheduleGroup>,
-    #[serde(default)]
+    // JSON can't represent a tuple-keyed map, so we (de)serialize
+    // schedules as a flat Vec<Schedule> and rebuild the in-memory
+    // `(group, name)` index on read. Pre-refactor versions silently
+    // dropped the entire map during save — the regression that broke
+    // schedule-survives-restart.
+    #[serde(default, with = "schedules_vec_serde")]
     pub schedules: HashMap<ScheduleKey, Schedule>,
+}
+
+mod schedules_vec_serde {
+    use super::{Schedule, ScheduleKey};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::HashMap;
+
+    pub fn serialize<S: Serializer>(
+        schedules: &HashMap<ScheduleKey, Schedule>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let mut sorted: Vec<&Schedule> = schedules.values().collect();
+        sorted.sort_by(|a, b| {
+            a.group_name
+                .cmp(&b.group_name)
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        sorted.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<HashMap<ScheduleKey, Schedule>, D::Error> {
+        let v: Vec<Schedule> = Vec::deserialize(deserializer)?;
+        Ok(v.into_iter()
+            .map(|s| ((s.group_name.clone(), s.name.clone()), s))
+            .collect())
+    }
 }
 
 impl SchedulerState {
