@@ -6505,7 +6505,10 @@ mod tests {
         let resp = svc.set_ui_customization(&req).unwrap();
         let b = resp_json(&resp);
         assert_eq!(b["UICustomization"]["ClientId"], "ALL");
-        assert!(b["UICustomization"]["ImageUrl"].as_str().unwrap().ends_with("/logo.png"));
+        assert!(b["UICustomization"]["ImageUrl"]
+            .as_str()
+            .unwrap()
+            .ends_with("/logo.png"));
 
         // Get client-specific -> falls back to pool-level CSS.
         let body = json!({"UserPoolId": pool_id, "ClientId": "client-123"});
