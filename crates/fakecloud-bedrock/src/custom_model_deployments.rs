@@ -212,3 +212,144 @@ fn deployment_summary_json(d: &CustomModelDeployment) -> Value {
     }
     obj
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::BedrockState;
+    use bytes::Bytes;
+    use fakecloud_core::multi_account::MultiAccountState;
+    use http::{HeaderMap, Method};
+    use parking_lot::RwLock;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    fn shared() -> SharedBedrockState {
+        let multi: MultiAccountState<BedrockState> =
+            MultiAccountState::new("123456789012", "us-east-1", "http://x");
+        Arc::new(RwLock::new(multi))
+    }
+
+    fn req() -> AwsRequest {
+        AwsRequest {
+            service: "bedrock".to_string(),
+            action: "a".to_string(),
+            method: Method::POST,
+            raw_path: "/".to_string(),
+            raw_query: String::new(),
+            path_segments: vec![],
+            query_params: HashMap::new(),
+            headers: HeaderMap::new(),
+            body: Bytes::new(),
+            account_id: "123456789012".to_string(),
+            region: "us-east-1".to_string(),
+            request_id: "r".to_string(),
+            is_query_protocol: false,
+            access_key_id: None,
+            principal: None,
+        }
+    }
+
+    fn create(state: &SharedBedrockState, name: &str) -> String {
+        let resp = create_custom_model_deployment(
+            state,
+            &req(),
+            &json!({
+                "modelDeploymentName": name,
+                "modelArn": "arn:aws:bedrock:us-east-1:123:custom-model/m",
+                "description": "desc"
+            }),
+        )
+        .unwrap();
+        let v: Value =
+            serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
+        v["customModelDeploymentArn"].as_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn create_default_name_when_omitted() {
+        let s = shared();
+        let resp =
+            create_custom_model_deployment(&s, &req(), &json!({"modelArn": "arn-x"})).unwrap();
+        assert_eq!(resp.status, StatusCode::CREATED);
+        let state = s.read();
+        let acct = state.default_ref();
+        let dep = acct.custom_model_deployments.values().next().unwrap();
+        assert!(dep.deployment_name.starts_with("deployment-"));
+    }
+
+    #[test]
+    fn get_by_arn_or_name_or_id() {
+        let s = shared();
+        let arn = create(&s, "my-deploy");
+        let id = arn.rsplit('/').next().unwrap().to_string();
+        assert!(get_custom_model_deployment(&s, &req(), &arn).is_ok());
+        assert!(get_custom_model_deployment(&s, &req(), &id).is_ok());
+        assert!(get_custom_model_deployment(&s, &req(), "my-deploy").is_ok());
+    }
+
+    #[test]
+    fn get_unknown_returns_not_found() {
+        let s = shared();
+        let err = get_custom_model_deployment(&s, &req(), "missing")
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn list_paginates() {
+        let s = shared();
+        for i in 0..3 {
+            create(&s, &format!("d{i}"));
+        }
+        let mut r = req();
+        r.query_params
+            .insert("maxResults".to_string(), "2".to_string());
+        let resp = list_custom_model_deployments(&s, &r).unwrap();
+        let v: Value =
+            serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
+        assert_eq!(v["modelDeploymentSummaries"].as_array().unwrap().len(), 2);
+        assert!(v["nextToken"].is_string());
+    }
+
+    #[test]
+    fn update_changes_model_arn() {
+        let s = shared();
+        let arn = create(&s, "up");
+        update_custom_model_deployment(&s, &req(), &arn, &json!({"modelArn": "new-arn"})).unwrap();
+        let state = s.read();
+        let d = state
+            .default_ref()
+            .custom_model_deployments
+            .get(&arn)
+            .unwrap();
+        assert_eq!(d.model_arn, "new-arn");
+    }
+
+    #[test]
+    fn update_unknown_returns_not_found() {
+        let s = shared();
+        let err = update_custom_model_deployment(&s, &req(), "missing", &json!({"modelArn": "x"}))
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn delete_removes_deployment() {
+        let s = shared();
+        let arn = create(&s, "del");
+        delete_custom_model_deployment(&s, &req(), &arn).unwrap();
+        assert!(s.read().default_ref().custom_model_deployments.is_empty());
+    }
+
+    #[test]
+    fn delete_unknown_returns_not_found() {
+        let s = shared();
+        let err = delete_custom_model_deployment(&s, &req(), "missing")
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+}
