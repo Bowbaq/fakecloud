@@ -3427,7 +3427,10 @@ fn endpoint_url_from_addr(addr: std::net::SocketAddr) -> String {
     let host_str = if addr.ip().is_unspecified() {
         "localhost".to_string()
     } else {
-        addr.ip().to_string()
+        match addr.ip() {
+            std::net::IpAddr::V4(ip) => ip.to_string(),
+            std::net::IpAddr::V6(ip) => format!("[{ip}]"),
+        }
     };
     format!("http://{host_str}:{port}")
 }
@@ -3452,6 +3455,12 @@ mod endpoint_url_tests {
     fn explicit_loopback_is_preserved() {
         let addr: std::net::SocketAddr = "127.0.0.1:9000".parse().unwrap();
         assert_eq!(endpoint_url_from_addr(addr), "http://127.0.0.1:9000");
+    }
+
+    #[test]
+    fn explicit_ipv6_loopback_is_bracketed() {
+        let addr: std::net::SocketAddr = "[::1]:9000".parse().unwrap();
+        assert_eq!(endpoint_url_from_addr(addr), "http://[::1]:9000");
     }
 
     #[test]
