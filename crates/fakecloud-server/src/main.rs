@@ -108,16 +108,7 @@ async fn main() {
     // Build the endpoint URL from the *actual* bound address so that port 0
     // resolves to the real OS-assigned port in all internal resource URLs
     // (SQS queue URLs, SNS ARNs, etc.).
-    let endpoint_url = {
-        let port = bound_addr.port();
-        let host = bound_addr.ip();
-        let host_str = if host.is_unspecified() {
-            "localhost".to_string()
-        } else {
-            host.to_string()
-        };
-        format!("http://{host_str}:{port}")
-    };
+    let endpoint_url = endpoint_url_from_addr(bound_addr);
 
     // Shared state
     let iam_state = Arc::new(parking_lot::RwLock::new(
@@ -3423,4 +3414,55 @@ fn install_panic_hook() {
         tracing::error!(location = %location, payload = %payload, "panic");
         default(info);
     }));
+}
+
+/// Build a public-facing endpoint URL from the address the server actually
+/// bound to. Wildcard hosts (``0.0.0.0`` / ``[::]``) are rewritten to
+/// ``localhost`` so the URL is useful when embedded in resource identifiers
+/// such as SQS queue URLs or SNS ARNs.
+fn endpoint_url_from_addr(addr: std::net::SocketAddr) -> String {
+    let port = addr.port();
+    let host_str = if addr.ip().is_unspecified() {
+        "localhost".to_string()
+    } else {
+        addr.ip().to_string()
+    };
+    format!("http://{host_str}:{port}")
+}
+
+#[cfg(test)]
+mod endpoint_url_tests {
+    use super::*;
+
+    #[test]
+    fn wildcard_v4_resolves_to_localhost() {
+        let addr: std::net::SocketAddr = "0.0.0.0:4566".parse().unwrap();
+        assert_eq!(endpoint_url_from_addr(addr), "http://localhost:4566");
+    }
+
+    #[test]
+    fn wildcard_v6_resolves_to_localhost() {
+        let addr: std::net::SocketAddr = "[::]:4566".parse().unwrap();
+        assert_eq!(endpoint_url_from_addr(addr), "http://localhost:4566");
+    }
+
+    #[test]
+    fn explicit_loopback_is_preserved() {
+        let addr: std::net::SocketAddr = "127.0.0.1:9000".parse().unwrap();
+        assert_eq!(endpoint_url_from_addr(addr), "http://127.0.0.1:9000");
+    }
+
+    #[test]
+    fn os_assigned_port_is_reflected() {
+        // Simulate the common test-harness case: bind on :0 and check that
+        // the returned URL contains the OS-assigned port, not zero.
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let bound = listener.local_addr().unwrap();
+        let url = endpoint_url_from_addr(bound);
+        assert!(url.starts_with("http://127.0.0.1:"));
+        let port_str = url.trim_start_matches("http://127.0.0.1:");
+        let port: u16 = port_str.parse().unwrap();
+        assert!(port > 0);
+    }
 }
