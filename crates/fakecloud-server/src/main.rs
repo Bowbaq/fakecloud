@@ -97,6 +97,7 @@ async fn main() {
     // When the caller passes `--addr 0.0.0.0:0` the OS assigns a free port
     // atomically, eliminating the race between find-a-free-port and bind that
     // previously caused sporadic "Connection refused" in parallel tests.
+    // LCOV_EXCL_START
     let listener = TcpListener::bind(&cli.addr)
         .await
         .unwrap_or_else(|e| fatal_exit(format_args!("failed to bind {}: {e}", cli.addr)));
@@ -109,6 +110,7 @@ async fn main() {
     // resolves to the real OS-assigned port in all internal resource URLs
     // (SQS queue URLs, SNS ARNs, etc.).
     let endpoint_url = endpoint_url_from_addr(bound_addr);
+    // LCOV_EXCL_STOP
 
     // Shared state
     let iam_state = Arc::new(parking_lot::RwLock::new(
