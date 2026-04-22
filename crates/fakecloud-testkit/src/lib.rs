@@ -29,7 +29,6 @@
 //! override API and a reset endpoint — worth doing later but not the
 //! right shape for a single PR.
 
-use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::Duration;
@@ -105,12 +104,13 @@ impl TestServer {
         let extra_args_owned: Vec<String> = extra_args.iter().map(|s| (*s).to_string()).collect();
 
         for _ in 0..3 {
-            let port = find_available_port();
-            let endpoint = format!("http://127.0.0.1:{port}");
-
             let mut cmd = Command::new(&bin);
+            // Use port 0 so the OS assigns a free port atomically, eliminating
+            // the race window between `find_available_port()` releasing the
+            // port and fakecloud binding to it. The actual port is printed to
+            // stdout by fakecloud on startup.
             cmd.arg("--addr")
-                .arg(format!("0.0.0.0:{port}"))
+                .arg("0.0.0.0:0")
                 .arg("--log-level")
                 .arg(&log_level)
                 .args(&extra_args_owned)
@@ -123,16 +123,19 @@ impl TestServer {
 
             let mut child = cmd.spawn().expect("failed to start fakecloud");
 
-            if wait_for_port(&mut child, port).await {
-                return Self {
-                    child: Some(child),
-                    port,
-                    endpoint,
-                    container_cli,
-                    extra_args: extra_args_owned,
-                    env_vars,
-                    log_level,
-                };
+            if let Some(port) = read_bound_port(&mut child).await {
+                let endpoint = format!("http://127.0.0.1:{port}");
+                if wait_for_http(&mut child, port).await {
+                    return Self {
+                        child: Some(child),
+                        port,
+                        endpoint,
+                        container_cli,
+                        extra_args: extra_args_owned,
+                        env_vars,
+                        log_level,
+                    };
+                }
             }
 
             graceful_kill(&mut child);
@@ -143,7 +146,7 @@ impl TestServer {
     }
 
     /// Kill the current child and respawn with the same extra args/env.
-    /// Allocates a new port because the previous one may still be in TIME_WAIT.
+    /// Uses port 0 so the OS assigns a free port, avoiding TIME_WAIT conflicts.
     pub async fn restart(&mut self) {
         if let Some(mut child) = self.child.take() {
             let pid = child.id();
@@ -152,11 +155,9 @@ impl TestServer {
         }
         let bin = find_binary();
         for _ in 0..5 {
-            let port = find_available_port();
-            let endpoint = format!("http://127.0.0.1:{port}");
             let mut cmd = Command::new(&bin);
             cmd.arg("--addr")
-                .arg(format!("0.0.0.0:{port}"))
+                .arg("0.0.0.0:0")
                 .arg("--log-level")
                 .arg(&self.log_level)
                 .args(&self.extra_args)
@@ -166,11 +167,14 @@ impl TestServer {
                 cmd.env(key, value);
             }
             let mut child = cmd.spawn().expect("failed to respawn fakecloud");
-            if wait_for_port(&mut child, port).await {
-                self.child = Some(child);
-                self.port = port;
-                self.endpoint = endpoint;
-                return;
+            if let Some(port) = read_bound_port(&mut child).await {
+                let endpoint = format!("http://127.0.0.1:{port}");
+                if wait_for_http(&mut child, port).await {
+                    self.child = Some(child);
+                    self.port = port;
+                    self.endpoint = endpoint;
+                    return;
+                }
             }
             let pid = child.id();
             graceful_kill(&mut child);
@@ -335,10 +339,9 @@ pub fn run_until_exit(
     timeout: Duration,
 ) -> (std::process::ExitStatus, String) {
     let bin = find_binary();
-    let port = find_available_port();
     let mut cmd = Command::new(&bin);
     cmd.arg("--addr")
-        .arg(format!("127.0.0.1:{port}"))
+        .arg("127.0.0.1:0")
         .arg("--log-level")
         .arg("warn")
         .args(extra_args)
@@ -406,11 +409,6 @@ impl CliOutput {
     }
 }
 
-fn find_available_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind to random port");
-    listener.local_addr().unwrap().port()
-}
-
 fn find_binary() -> String {
     // testkit lives at crates/fakecloud-testkit, and every consumer crate
     // also lives at crates/<name>, so ../../target is the workspace target.
@@ -453,38 +451,47 @@ fn cli_available(cli: &str) -> bool {
         .unwrap_or(false)
 }
 
-async fn wait_for_port(child: &mut Child, port: u16) -> bool {
-    // Two-stage readiness: (1) TCP connect succeeds, (2) an HTTP request
-    // actually reaches an axum handler. A bare TCP connect only proves
-    // the kernel accepted SYNs into fakecloud's listen queue -- it does
-    // not prove axum has reached `serve().await` and installed request
-    // handlers. Tests that hit the server immediately after a bare TCP
-    // connect occasionally saw ConnectionRefused / EOF mid-flight.
-    //
-    // Poll every 20ms rather than 100ms: axum typically binds within
-    // ~20-40ms, so a 100ms tick wastes a full tick after the bind
-    // already landed. At 20ms the tail tracks the real bind latency
-    // and ~300-400 spawns in an e2e partition save ~50ms each.
-    let loopback = format!("127.0.0.1:{port}");
-    let wildcard = format!("0.0.0.0:{port}");
+/// Read the port that fakecloud printed to stdout after binding.
+///
+/// fakecloud prints one line — the port number — to stdout immediately after
+/// `TcpListener::bind` succeeds. Reading this line tells us both that the TCP
+/// port is bound (no racy "find port, release, rebind" window) and what the
+/// actual OS-assigned port is when `--addr 0.0.0.0:0` is used.
+async fn read_bound_port(child: &mut Child) -> Option<u16> {
+    use std::io::BufRead;
+    let stdout = child.stdout.take()?;
+    let result = tokio::task::spawn_blocking(move || {
+        let mut reader = std::io::BufReader::new(stdout);
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) | Err(_) => None,
+            Ok(_) => line.trim().parse::<u16>().ok(),
+        }
+    });
+    match tokio::time::timeout(Duration::from_secs(30), result).await {
+        Ok(Ok(Some(port))) => Some(port),
+        _ => None,
+    }
+}
+
+/// Wait until fakecloud's HTTP handler is accepting requests.
+///
+/// By the time `read_bound_port` returns the port is already bound; this
+/// function just waits for axum to start serving so the very first test
+/// request does not race the server's call to `axum::serve`.
+async fn wait_for_http(child: &mut Child, port: u16) -> bool {
     let health_url = format!("http://127.0.0.1:{port}/");
     let client = reqwest::Client::builder()
         .timeout(Duration::from_millis(500))
         .build()
         .expect("build reqwest client");
 
-    // Use a wall-clock deadline rather than a fixed iteration count:
-    // each health-check request has its own 500ms timeout, so a naive
-    // loop of N iterations × (500ms + 20ms) would delay failure well
-    // past the intended budget when the server never binds.
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     while std::time::Instant::now() < deadline {
         if child.try_wait().ok().flatten().is_some() {
             return false;
         }
-        let tcp_ok = std::net::TcpStream::connect(&loopback).is_ok()
-            || std::net::TcpStream::connect(&wildcard).is_ok();
-        if tcp_ok && client.get(&health_url).send().await.is_ok() {
+        if client.get(&health_url).send().await.is_ok() {
             return true;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
