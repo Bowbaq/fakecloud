@@ -349,9 +349,18 @@ impl ResetState {
 /// credentials for a non-default account via the normal AWS API.
 pub(crate) fn create_admin_in_account(
     iam: &fakecloud_iam::state::SharedIamState,
+    organizations: &fakecloud_organizations::state::SharedOrganizationsState,
     account_id: &str,
     user_name: &str,
 ) -> types::CreateAdminResponse {
+    // Auto-enroll the account into the organization's root OU if an
+    // org exists. Matches AWS's InviteAccount path in spirit: tests
+    // bootstrapping admin credentials for a second account expect
+    // that account to immediately participate in SCP evaluation.
+    if let Some(org) = organizations.write().as_mut() {
+        org.enroll_account_if_missing(account_id);
+    }
+
     let mut accounts = iam.write();
     let state = accounts.get_or_create(account_id);
 
@@ -618,7 +627,9 @@ mod tests {
         let iam: fakecloud_iam::state::SharedIamState = Arc::new(parking_lot::RwLock::new(
             fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
         ));
-        let resp = super::create_admin_in_account(&iam, "123456789012", "admin");
+        let orgs: fakecloud_organizations::state::SharedOrganizationsState =
+            Arc::new(parking_lot::RwLock::new(None));
+        let resp = super::create_admin_in_account(&iam, &orgs, "123456789012", "admin");
         assert_eq!(resp.account_id, "123456789012");
         assert!(resp.access_key_id.starts_with("FKIA"));
         assert!(resp.arn.contains("123456789012"));
@@ -637,7 +648,9 @@ mod tests {
         let iam: fakecloud_iam::state::SharedIamState = Arc::new(parking_lot::RwLock::new(
             fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
         ));
-        let resp = super::create_admin_in_account(&iam, "999999999999", "bob");
+        let orgs: fakecloud_organizations::state::SharedOrganizationsState =
+            Arc::new(parking_lot::RwLock::new(None));
+        let resp = super::create_admin_in_account(&iam, &orgs, "999999999999", "bob");
         assert_eq!(resp.account_id, "999999999999");
         assert!(resp.arn.contains("999999999999"));
 
@@ -660,7 +673,9 @@ mod tests {
         let iam: fakecloud_iam::state::SharedIamState = Arc::new(parking_lot::RwLock::new(
             fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
         ));
-        let resp = super::create_admin_in_account(&iam, "222222222222", "admin");
+        let orgs: fakecloud_organizations::state::SharedOrganizationsState =
+            Arc::new(parking_lot::RwLock::new(None));
+        let resp = super::create_admin_in_account(&iam, &orgs, "222222222222", "admin");
 
         let evaluator = fakecloud_iam::policy_evaluator::IamPolicyEvaluatorImpl::new(iam.clone());
         let principal = Principal {
@@ -689,7 +704,9 @@ mod tests {
         let iam: fakecloud_iam::state::SharedIamState = Arc::new(parking_lot::RwLock::new(
             fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
         ));
-        let resp = super::create_admin_in_account(&iam, "222222222222", "alice");
+        let orgs: fakecloud_organizations::state::SharedOrganizationsState =
+            Arc::new(parking_lot::RwLock::new(None));
+        let resp = super::create_admin_in_account(&iam, &orgs, "222222222222", "alice");
 
         // Verify the credential resolver can find this key
         let mut accounts = iam.write();

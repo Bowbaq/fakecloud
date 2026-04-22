@@ -6,14 +6,27 @@ use serde_json::{json, Value};
 
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
 
-use crate::state::{OrganizationState, SharedOrganizationsState, FEATURE_SET_ALL};
+use crate::state::{
+    MemberAccount, OrgError, OrganizationState, OrganizationalUnit, SharedOrganizationsState,
+    FEATURE_SET_ALL,
+};
 
 /// Single source of truth for supported Organizations actions. Expanded
-/// across subsequent batches (OUs, Policy CRUD, attachment ops).
+/// across subsequent batches (SCP CRUD + attachment ops).
 pub static ORGANIZATIONS_ACTIONS: &[&str] = &[
     "CreateOrganization",
     "DescribeOrganization",
     "DeleteOrganization",
+    "ListRoots",
+    "CreateOrganizationalUnit",
+    "UpdateOrganizationalUnit",
+    "DeleteOrganizationalUnit",
+    "DescribeOrganizationalUnit",
+    "ListOrganizationalUnitsForParent",
+    "ListAccounts",
+    "ListAccountsForParent",
+    "DescribeAccount",
+    "MoveAccount",
 ];
 
 pub struct OrganizationsService {
@@ -112,6 +125,186 @@ impl OrganizationsService {
         *guard = None;
         Ok(AwsResponse::ok_json(Value::Null))
     }
+
+    fn list_roots(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let guard = self.state.read();
+        let org = self.require_member(&guard, &req.account_id)?;
+        let root = json!({
+            "Id": org.root_id,
+            "Arn": org.root_arn,
+            "Name": org.root_name,
+            "PolicyTypes": [
+                {"Type": "SERVICE_CONTROL_POLICY", "Status": "ENABLED"}
+            ],
+        });
+        Ok(AwsResponse::ok_json(json!({ "Roots": [root] })))
+    }
+
+    fn create_organizational_unit(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = req.json_body();
+        let parent_id = required_str(&body, "ParentId")?;
+        let name = required_str(&body, "Name")?;
+        let mut guard = self.state.write();
+        self.require_member_management(&guard, &req.account_id)?;
+        let org = guard.as_mut().unwrap();
+        let ou = org.create_ou(parent_id, name).map_err(org_error_to_aws)?;
+        Ok(AwsResponse::ok_json(
+            json!({ "OrganizationalUnit": ou_payload(&ou) }),
+        ))
+    }
+
+    fn update_organizational_unit(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = req.json_body();
+        let ou_id = required_str(&body, "OrganizationalUnitId")?;
+        let new_name = required_str(&body, "Name")?;
+        let mut guard = self.state.write();
+        self.require_member_management(&guard, &req.account_id)?;
+        let org = guard.as_mut().unwrap();
+        let ou = org.rename_ou(ou_id, new_name).map_err(org_error_to_aws)?;
+        Ok(AwsResponse::ok_json(
+            json!({ "OrganizationalUnit": ou_payload(&ou) }),
+        ))
+    }
+
+    fn delete_organizational_unit(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = req.json_body();
+        let ou_id = required_str(&body, "OrganizationalUnitId")?;
+        let mut guard = self.state.write();
+        self.require_member_management(&guard, &req.account_id)?;
+        let org = guard.as_mut().unwrap();
+        org.delete_ou(ou_id).map_err(org_error_to_aws)?;
+        Ok(AwsResponse::ok_json(Value::Null))
+    }
+
+    fn describe_organizational_unit(
+        &self,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let body = req.json_body();
+        let ou_id = required_str(&body, "OrganizationalUnitId")?;
+        let guard = self.state.read();
+        let org = self.require_member(&guard, &req.account_id)?;
+        let ou = org.ous.get(ou_id).ok_or_else(|| {
+            org_error_to_aws(OrgError::OrganizationalUnitNotFound(ou_id.to_string()))
+        })?;
+        Ok(AwsResponse::ok_json(
+            json!({ "OrganizationalUnit": ou_payload(ou) }),
+        ))
+    }
+
+    fn list_organizational_units_for_parent(
+        &self,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let body = req.json_body();
+        let parent_id = required_str(&body, "ParentId")?;
+        let guard = self.state.read();
+        let org = self.require_member(&guard, &req.account_id)?;
+        if parent_id != org.root_id && !org.ous.contains_key(parent_id) {
+            return Err(org_error_to_aws(OrgError::ParentNotFound(
+                parent_id.to_string(),
+            )));
+        }
+        let children: Vec<Value> = org
+            .ous
+            .values()
+            .filter(|ou| ou.parent_id == parent_id)
+            .map(ou_payload)
+            .collect();
+        Ok(AwsResponse::ok_json(
+            json!({ "OrganizationalUnits": children }),
+        ))
+    }
+
+    fn list_accounts(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let guard = self.state.read();
+        let org = self.require_member(&guard, &req.account_id)?;
+        let accounts: Vec<Value> = org.accounts.values().map(account_payload).collect();
+        Ok(AwsResponse::ok_json(json!({ "Accounts": accounts })))
+    }
+
+    fn list_accounts_for_parent(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = req.json_body();
+        let parent_id = required_str(&body, "ParentId")?;
+        let guard = self.state.read();
+        let org = self.require_member(&guard, &req.account_id)?;
+        if parent_id != org.root_id && !org.ous.contains_key(parent_id) {
+            return Err(org_error_to_aws(OrgError::ParentNotFound(
+                parent_id.to_string(),
+            )));
+        }
+        let accounts: Vec<Value> = org
+            .accounts
+            .values()
+            .filter(|a| a.parent_id == parent_id)
+            .map(account_payload)
+            .collect();
+        Ok(AwsResponse::ok_json(json!({ "Accounts": accounts })))
+    }
+
+    fn describe_account(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = req.json_body();
+        let account_id = required_str(&body, "AccountId")?;
+        let guard = self.state.read();
+        let org = self.require_member(&guard, &req.account_id)?;
+        let account = org
+            .accounts
+            .get(account_id)
+            .ok_or_else(|| org_error_to_aws(OrgError::AccountNotFound(account_id.to_string())))?;
+        Ok(AwsResponse::ok_json(
+            json!({ "Account": account_payload(account) }),
+        ))
+    }
+
+    fn move_account(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = req.json_body();
+        let account_id = required_str(&body, "AccountId")?;
+        let source = required_str(&body, "SourceParentId")?;
+        let dest = required_str(&body, "DestinationParentId")?;
+        let mut guard = self.state.write();
+        self.require_member_management(&guard, &req.account_id)?;
+        let org = guard.as_mut().unwrap();
+        org.move_account(account_id, source, dest)
+            .map_err(org_error_to_aws)?;
+        Ok(AwsResponse::ok_json(Value::Null))
+    }
+
+    /// Read-side helper: enforce that an org exists and the caller is a
+    /// member. Returns the borrowed org on success.
+    fn require_member<'a>(
+        &self,
+        guard: &'a parking_lot::RwLockReadGuard<'_, Option<OrganizationState>>,
+        account_id: &str,
+    ) -> Result<&'a OrganizationState, AwsServiceError> {
+        let org = guard.as_ref().ok_or_else(organizations_not_in_use)?;
+        if !org.accounts.contains_key(account_id) {
+            return Err(organizations_not_in_use());
+        }
+        Ok(org)
+    }
+
+    /// Write-side helper for mutating ops: caller must be the
+    /// management account of an existing organization. Returns the
+    /// management-only error rather than an Option, so the caller can
+    /// unwrap the guard safely right after.
+    fn require_member_management(
+        &self,
+        guard: &parking_lot::RwLockWriteGuard<'_, Option<OrganizationState>>,
+        account_id: &str,
+    ) -> Result<(), AwsServiceError> {
+        let org = guard.as_ref().ok_or_else(organizations_not_in_use)?;
+        if !org.accounts.contains_key(account_id) {
+            return Err(organizations_not_in_use());
+        }
+        if !org.is_management(account_id) {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::FORBIDDEN,
+                "AccessDeniedException",
+                "This operation can be called only from the organization's management account.",
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -125,6 +318,16 @@ impl AwsService for OrganizationsService {
             "CreateOrganization" => self.create_organization(&req),
             "DescribeOrganization" => self.describe_organization(&req),
             "DeleteOrganization" => self.delete_organization(&req),
+            "ListRoots" => self.list_roots(&req),
+            "CreateOrganizationalUnit" => self.create_organizational_unit(&req),
+            "UpdateOrganizationalUnit" => self.update_organizational_unit(&req),
+            "DeleteOrganizationalUnit" => self.delete_organizational_unit(&req),
+            "DescribeOrganizationalUnit" => self.describe_organizational_unit(&req),
+            "ListOrganizationalUnitsForParent" => self.list_organizational_units_for_parent(&req),
+            "ListAccounts" => self.list_accounts(&req),
+            "ListAccountsForParent" => self.list_accounts_for_parent(&req),
+            "DescribeAccount" => self.describe_account(&req),
+            "MoveAccount" => self.move_account(&req),
             _ => Err(AwsServiceError::action_not_implemented(
                 "organizations",
                 &req.action,
@@ -143,6 +346,76 @@ fn organizations_not_in_use() -> AwsServiceError {
         "AWSOrganizationsNotInUseException",
         "Your account is not a member of an organization.",
     )
+}
+
+fn ou_payload(ou: &OrganizationalUnit) -> Value {
+    json!({
+        "Id": ou.id,
+        "Arn": ou.arn,
+        "Name": ou.name,
+    })
+}
+
+fn account_payload(account: &MemberAccount) -> Value {
+    json!({
+        "Id": account.id,
+        "Arn": account.arn,
+        "Email": account.email,
+        "Name": account.name,
+        "Status": account.status,
+        "JoinedMethod": account.joined_method,
+        "JoinedTimestamp": account.joined_timestamp.timestamp() as f64,
+    })
+}
+
+fn required_str<'a>(body: &'a Value, key: &str) -> Result<&'a str, AwsServiceError> {
+    body.get(key).and_then(|v| v.as_str()).ok_or_else(|| {
+        AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "InvalidInputException",
+            format!("Missing required parameter: {key}"),
+        )
+    })
+}
+
+fn org_error_to_aws(err: OrgError) -> AwsServiceError {
+    match err {
+        OrgError::ParentNotFound(id) => AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "ParentNotFoundException",
+            format!("The parent with id {id} was not found."),
+        ),
+        OrgError::DuplicateOrganizationalUnit(name) => AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "DuplicateOrganizationalUnitException",
+            format!("An organizational unit named {name} already exists under this parent."),
+        ),
+        OrgError::OrganizationalUnitNotFound(id) => AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "OrganizationalUnitNotFoundException",
+            format!("The organizational unit with id {id} was not found."),
+        ),
+        OrgError::OrganizationalUnitNotEmpty(id) => AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "OrganizationalUnitNotEmptyException",
+            format!("The organizational unit {id} still contains accounts or child OUs."),
+        ),
+        OrgError::AccountNotFound(id) => AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "AccountNotFoundException",
+            format!("The account with id {id} was not found."),
+        ),
+        OrgError::SourceParentNotFound(id) => AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "SourceParentNotFoundException",
+            format!("The source parent {id} does not contain this account."),
+        ),
+        OrgError::DestinationParentNotFound(id) => AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "DestinationParentNotFoundException",
+            format!("The destination parent {id} does not exist."),
+        ),
+    }
 }
 
 fn organization_payload(org: &OrganizationState) -> Value {

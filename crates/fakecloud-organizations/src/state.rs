@@ -126,6 +126,157 @@ impl OrganizationState {
     pub fn is_management(&self, account_id: &str) -> bool {
         account_id == self.management_account_id
     }
+
+    /// Enroll `account_id` into the root OU as a member of the
+    /// organization if not already known. No-op when the account is
+    /// already enrolled anywhere in the tree. Used as the
+    /// auto-enrollment hook when a new IAM admin bootstraps via
+    /// `/_fakecloud/iam/create-admin` while an organization exists.
+    pub fn enroll_account_if_missing(&mut self, account_id: &str) {
+        if self.accounts.contains_key(account_id) {
+            return;
+        }
+        let arn = format!(
+            "arn:aws:organizations::{}:account/{}/{}",
+            self.management_account_id, self.org_id, account_id
+        );
+        self.accounts.insert(
+            account_id.to_string(),
+            MemberAccount {
+                id: account_id.to_string(),
+                arn,
+                email: format!("{}@example.com", account_id),
+                name: format!("Account {}", account_id),
+                status: "ACTIVE".to_string(),
+                joined_method: "INVITED".to_string(),
+                joined_timestamp: Utc::now(),
+                parent_id: self.root_id.clone(),
+            },
+        );
+    }
+
+    /// Create a new OU under `parent_id` (which must be the root or
+    /// another existing OU). Returns the created OU on success.
+    ///
+    /// Errors:
+    /// - `ParentNotFoundException` — `parent_id` does not exist in
+    ///   this org (neither root nor a known OU).
+    /// - `DuplicateOrganizationalUnitException` — another OU with the
+    ///   same name already lives directly under `parent_id`.
+    pub fn create_ou(
+        &mut self,
+        parent_id: &str,
+        name: &str,
+    ) -> Result<OrganizationalUnit, OrgError> {
+        if parent_id != self.root_id && !self.ous.contains_key(parent_id) {
+            return Err(OrgError::ParentNotFound(parent_id.to_string()));
+        }
+        let dup = self
+            .ous
+            .values()
+            .any(|ou| ou.parent_id == parent_id && ou.name == name);
+        if dup {
+            return Err(OrgError::DuplicateOrganizationalUnit(name.to_string()));
+        }
+        let root_suffix = self.root_id.strip_prefix("r-").unwrap_or(&self.root_id);
+        let id = format!("ou-{}-{}", root_suffix, random_id(8));
+        let arn = format!(
+            "arn:aws:organizations::{}:ou/{}/{}",
+            self.management_account_id, self.org_id, id
+        );
+        let ou = OrganizationalUnit {
+            id: id.clone(),
+            arn,
+            name: name.to_string(),
+            parent_id: parent_id.to_string(),
+        };
+        self.ous.insert(id, ou.clone());
+        Ok(ou)
+    }
+
+    /// Rename an existing OU.
+    pub fn rename_ou(
+        &mut self,
+        ou_id: &str,
+        new_name: &str,
+    ) -> Result<OrganizationalUnit, OrgError> {
+        let parent_id = self
+            .ous
+            .get(ou_id)
+            .ok_or_else(|| OrgError::OrganizationalUnitNotFound(ou_id.to_string()))?
+            .parent_id
+            .clone();
+        let dup = self
+            .ous
+            .values()
+            .any(|ou| ou.id != ou_id && ou.parent_id == parent_id && ou.name == new_name);
+        if dup {
+            return Err(OrgError::DuplicateOrganizationalUnit(new_name.to_string()));
+        }
+        let ou = self.ous.get_mut(ou_id).unwrap();
+        ou.name = new_name.to_string();
+        Ok(ou.clone())
+    }
+
+    /// Delete an OU. Fails with `OrganizationalUnitNotEmptyException`
+    /// if the OU contains any child OUs or member accounts.
+    pub fn delete_ou(&mut self, ou_id: &str) -> Result<(), OrgError> {
+        if !self.ous.contains_key(ou_id) {
+            return Err(OrgError::OrganizationalUnitNotFound(ou_id.to_string()));
+        }
+        let has_child_ou = self.ous.values().any(|ou| ou.parent_id == ou_id);
+        let has_account = self.accounts.values().any(|a| a.parent_id == ou_id);
+        if has_child_ou || has_account {
+            return Err(OrgError::OrganizationalUnitNotEmpty(ou_id.to_string()));
+        }
+        // Detach all policies from the deleted target so stale pointers
+        // don't survive.
+        self.attachments.remove(ou_id);
+        self.ous.remove(ou_id);
+        Ok(())
+    }
+
+    /// Move an account between OUs.
+    ///
+    /// Errors:
+    /// - `AccountNotFoundException`
+    /// - `SourceParentNotFoundException` when `source_parent` is not
+    ///   the account's current parent
+    /// - `DestinationParentNotFoundException` when `dest_parent` is
+    ///   not root or a known OU
+    pub fn move_account(
+        &mut self,
+        account_id: &str,
+        source_parent: &str,
+        dest_parent: &str,
+    ) -> Result<(), OrgError> {
+        let account = self
+            .accounts
+            .get_mut(account_id)
+            .ok_or_else(|| OrgError::AccountNotFound(account_id.to_string()))?;
+        if account.parent_id != source_parent {
+            return Err(OrgError::SourceParentNotFound(source_parent.to_string()));
+        }
+        let dest_exists = dest_parent == self.root_id || self.ous.contains_key(dest_parent);
+        if !dest_exists {
+            return Err(OrgError::DestinationParentNotFound(dest_parent.to_string()));
+        }
+        account.parent_id = dest_parent.to_string();
+        Ok(())
+    }
+}
+
+/// Typed errors used by organization state mutations so the service
+/// layer can translate each into the correct AWS exception code.
+#[derive(Debug)]
+pub enum OrgError {
+    ParentNotFound(String),
+    DuplicateOrganizationalUnit(String),
+    OrganizationalUnitNotFound(String),
+    OrganizationalUnitNotEmpty(String),
+    AccountNotFound(String),
+    SourceParentNotFound(String),
+    DestinationParentNotFound(String),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -220,5 +371,112 @@ mod tests {
             let id = random_id(len);
             assert_eq!(id.len(), len);
         }
+    }
+
+    #[test]
+    fn enroll_account_if_missing_adds_to_root() {
+        let mut org = OrganizationState::bootstrap("111111111111");
+        org.enroll_account_if_missing("222222222222");
+        let member = org.accounts.get("222222222222").expect("enrolled");
+        assert_eq!(member.parent_id, org.root_id);
+    }
+
+    #[test]
+    fn enroll_account_if_missing_is_idempotent() {
+        let mut org = OrganizationState::bootstrap("111111111111");
+        org.enroll_account_if_missing("111111111111");
+        assert_eq!(org.accounts.len(), 1);
+    }
+
+    #[test]
+    fn create_ou_rejects_unknown_parent() {
+        let mut org = OrganizationState::bootstrap("111111111111");
+        let err = org.create_ou("ou-nope", "team").unwrap_err();
+        assert!(matches!(err, OrgError::ParentNotFound(_)));
+    }
+
+    #[test]
+    fn create_ou_rejects_duplicate_name_under_same_parent() {
+        let mut org = OrganizationState::bootstrap("111111111111");
+        let root = org.root_id.clone();
+        org.create_ou(&root, "engineering").unwrap();
+        let err = org.create_ou(&root, "engineering").unwrap_err();
+        assert!(matches!(err, OrgError::DuplicateOrganizationalUnit(_)));
+    }
+
+    #[test]
+    fn create_ou_allows_same_name_under_different_parents() {
+        let mut org = OrganizationState::bootstrap("111111111111");
+        let root = org.root_id.clone();
+        let parent = org.create_ou(&root, "top").unwrap();
+        // Same leaf name under a different parent OU must succeed.
+        org.create_ou(&parent.id, "engineering").unwrap();
+        org.create_ou(&root, "engineering").unwrap();
+    }
+
+    #[test]
+    fn delete_ou_rejects_non_empty_with_accounts() {
+        let mut org = OrganizationState::bootstrap("111111111111");
+        let root = org.root_id.clone();
+        let ou = org.create_ou(&root, "team").unwrap();
+        org.enroll_account_if_missing("222222222222");
+        org.move_account("222222222222", &root, &ou.id).unwrap();
+        let err = org.delete_ou(&ou.id).unwrap_err();
+        assert!(matches!(err, OrgError::OrganizationalUnitNotEmpty(_)));
+    }
+
+    #[test]
+    fn delete_ou_rejects_non_empty_with_child_ou() {
+        let mut org = OrganizationState::bootstrap("111111111111");
+        let root = org.root_id.clone();
+        let parent = org.create_ou(&root, "parent").unwrap();
+        org.create_ou(&parent.id, "child").unwrap();
+        let err = org.delete_ou(&parent.id).unwrap_err();
+        assert!(matches!(err, OrgError::OrganizationalUnitNotEmpty(_)));
+    }
+
+    #[test]
+    fn delete_ou_clears_attachments() {
+        let mut org = OrganizationState::bootstrap("111111111111");
+        let root = org.root_id.clone();
+        let ou = org.create_ou(&root, "team").unwrap();
+        org.attachments
+            .entry(ou.id.clone())
+            .or_default()
+            .insert("p-custom".to_string());
+        org.delete_ou(&ou.id).unwrap();
+        assert!(!org.attachments.contains_key(&ou.id));
+    }
+
+    #[test]
+    fn move_account_enforces_source_parent() {
+        let mut org = OrganizationState::bootstrap("111111111111");
+        let root = org.root_id.clone();
+        let ou = org.create_ou(&root, "team").unwrap();
+        org.enroll_account_if_missing("222222222222");
+        let err = org.move_account("222222222222", &ou.id, &root).unwrap_err();
+        assert!(matches!(err, OrgError::SourceParentNotFound(_)));
+    }
+
+    #[test]
+    fn move_account_rejects_unknown_destination() {
+        let mut org = OrganizationState::bootstrap("111111111111");
+        let root = org.root_id.clone();
+        let err = org
+            .move_account("111111111111", &root, "ou-nope")
+            .unwrap_err();
+        assert!(matches!(err, OrgError::DestinationParentNotFound(_)));
+    }
+
+    #[test]
+    fn rename_ou_rejects_duplicate() {
+        let mut org = OrganizationState::bootstrap("111111111111");
+        let root = org.root_id.clone();
+        let a = org.create_ou(&root, "a").unwrap();
+        let b = org.create_ou(&root, "b").unwrap();
+        let err = org.rename_ou(&b.id, "a").unwrap_err();
+        assert!(matches!(err, OrgError::DuplicateOrganizationalUnit(_)));
+        // Renaming in place is fine.
+        org.rename_ou(&a.id, "a").unwrap();
     }
 }

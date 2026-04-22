@@ -121,3 +121,125 @@ async fn only_management_can_delete_organization() {
     let err = orgs_a.describe_organization().send().await.unwrap_err();
     assert!(format!("{err:?}").contains("AWSOrganizationsNotInUseException"));
 }
+
+#[tokio::test]
+async fn list_roots_after_create() {
+    let server = start().await;
+    let (akid, secret) = server.create_admin(ACCOUNT_A, "admin-a").await;
+    let cfg = config_with(&server, &akid, &secret).await;
+    let orgs = OrgsClient::new(&cfg);
+
+    orgs.create_organization().send().await.unwrap();
+    let roots = orgs.list_roots().send().await.unwrap();
+    let roots = roots.roots();
+    assert_eq!(roots.len(), 1);
+    assert!(roots[0].id().unwrap().starts_with("r-"));
+}
+
+#[tokio::test]
+async fn ou_tree_crud_and_move_account() {
+    let server = start().await;
+    let (a_akid, a_secret) = server.create_admin(ACCOUNT_A, "admin-a").await;
+    let a_cfg = config_with(&server, &a_akid, &a_secret).await;
+    let orgs = OrgsClient::new(&a_cfg);
+
+    orgs.create_organization().send().await.unwrap();
+    let root_id = orgs.list_roots().send().await.unwrap().roots()[0]
+        .id()
+        .unwrap()
+        .to_string();
+
+    // Create OU, account B auto-enrolls into root when admin created.
+    let (_b_akid, _b_secret) = server.create_admin(ACCOUNT_B, "admin-b").await;
+
+    let ou = orgs
+        .create_organizational_unit()
+        .parent_id(&root_id)
+        .name("engineering")
+        .send()
+        .await
+        .unwrap();
+    let ou_id = ou.organizational_unit().unwrap().id().unwrap().to_string();
+
+    // Duplicate name under same parent -> DuplicateOrganizationalUnitException.
+    let err = orgs
+        .create_organizational_unit()
+        .parent_id(&root_id)
+        .name("engineering")
+        .send()
+        .await
+        .unwrap_err();
+    assert!(format!("{err:?}").contains("DuplicateOrganizationalUnitException"));
+
+    // Move account B from root to the new OU.
+    orgs.move_account()
+        .account_id(ACCOUNT_B)
+        .source_parent_id(&root_id)
+        .destination_parent_id(&ou_id)
+        .send()
+        .await
+        .unwrap();
+
+    let in_ou = orgs
+        .list_accounts_for_parent()
+        .parent_id(&ou_id)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(in_ou.accounts().len(), 1);
+    assert_eq!(in_ou.accounts()[0].id().unwrap(), ACCOUNT_B);
+
+    // Deleting the non-empty OU must fail.
+    let err = orgs
+        .delete_organizational_unit()
+        .organizational_unit_id(&ou_id)
+        .send()
+        .await
+        .unwrap_err();
+    assert!(format!("{err:?}").contains("OrganizationalUnitNotEmptyException"));
+
+    // Move back, then delete — should succeed.
+    orgs.move_account()
+        .account_id(ACCOUNT_B)
+        .source_parent_id(&ou_id)
+        .destination_parent_id(&root_id)
+        .send()
+        .await
+        .unwrap();
+    orgs.delete_organizational_unit()
+        .organizational_unit_id(&ou_id)
+        .send()
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn non_management_member_cannot_create_ou() {
+    let server = start().await;
+    let (a_akid, a_secret) = server.create_admin(ACCOUNT_A, "admin-a").await;
+    let a_cfg = config_with(&server, &a_akid, &a_secret).await;
+    let orgs_a = OrgsClient::new(&a_cfg);
+
+    // Create the org before bootstrapping account B so B auto-enrolls
+    // into root as a member — otherwise B is a non-member and the
+    // attempt would return `AWSOrganizationsNotInUseException` instead
+    // of `AccessDeniedException`.
+    orgs_a.create_organization().send().await.unwrap();
+    let root_id = orgs_a.list_roots().send().await.unwrap().roots()[0]
+        .id()
+        .unwrap()
+        .to_string();
+
+    let (b_akid, b_secret) = server.create_admin(ACCOUNT_B, "admin-b").await;
+    let b_cfg = config_with(&server, &b_akid, &b_secret).await;
+    let orgs_b = OrgsClient::new(&b_cfg);
+
+    let err = orgs_b
+        .create_organizational_unit()
+        .parent_id(&root_id)
+        .name("forbidden")
+        .send()
+        .await
+        .unwrap_err();
+    assert!(format!("{err:?}").contains("AccessDeniedException"));
+}
