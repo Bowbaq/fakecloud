@@ -7,12 +7,12 @@ use serde_json::{json, Value};
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
 
 use crate::state::{
-    MemberAccount, OrgError, OrganizationState, OrganizationalUnit, SharedOrganizationsState,
-    FEATURE_SET_ALL,
+    MemberAccount, OrgError, OrganizationState, OrganizationalUnit, Policy,
+    SharedOrganizationsState, FEATURE_SET_ALL, POLICY_TYPE_SCP,
 };
 
-/// Single source of truth for supported Organizations actions. Expanded
-/// across subsequent batches (SCP CRUD + attachment ops).
+/// Single source of truth for supported Organizations actions.
+/// Enforcement of attached SCPs ships in Batch 4.
 pub static ORGANIZATIONS_ACTIONS: &[&str] = &[
     "CreateOrganization",
     "DescribeOrganization",
@@ -27,6 +27,15 @@ pub static ORGANIZATIONS_ACTIONS: &[&str] = &[
     "ListAccountsForParent",
     "DescribeAccount",
     "MoveAccount",
+    "CreatePolicy",
+    "UpdatePolicy",
+    "DeletePolicy",
+    "DescribePolicy",
+    "ListPolicies",
+    "AttachPolicy",
+    "DetachPolicy",
+    "ListPoliciesForTarget",
+    "ListTargetsForPolicy",
 ];
 
 pub struct OrganizationsService {
@@ -269,6 +278,155 @@ impl OrganizationsService {
         Ok(AwsResponse::ok_json(Value::Null))
     }
 
+    fn create_policy(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = req.json_body();
+        let name = required_str(&body, "Name")?;
+        let policy_type = required_str(&body, "Type")?;
+        let content = required_str(&body, "Content")?;
+        let description = body
+            .get("Description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let mut guard = self.state.write();
+        self.require_member_management(&guard, &req.account_id)?;
+        let org = guard.as_mut().unwrap();
+        let policy = org
+            .create_policy(name, description, content, policy_type)
+            .map_err(org_error_to_aws)?;
+        Ok(AwsResponse::ok_json(
+            json!({ "Policy": policy_with_content(&policy) }),
+        ))
+    }
+
+    fn update_policy(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = req.json_body();
+        let policy_id = required_str(&body, "PolicyId")?;
+        let name = body.get("Name").and_then(|v| v.as_str());
+        let description = body.get("Description").and_then(|v| v.as_str());
+        let content = body.get("Content").and_then(|v| v.as_str());
+        let mut guard = self.state.write();
+        self.require_member_management(&guard, &req.account_id)?;
+        let org = guard.as_mut().unwrap();
+        let policy = org
+            .update_policy(policy_id, name, description, content)
+            .map_err(org_error_to_aws)?;
+        Ok(AwsResponse::ok_json(
+            json!({ "Policy": policy_with_content(&policy) }),
+        ))
+    }
+
+    fn delete_policy(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = req.json_body();
+        let policy_id = required_str(&body, "PolicyId")?;
+        let mut guard = self.state.write();
+        self.require_member_management(&guard, &req.account_id)?;
+        let org = guard.as_mut().unwrap();
+        org.delete_policy(policy_id).map_err(org_error_to_aws)?;
+        Ok(AwsResponse::ok_json(Value::Null))
+    }
+
+    fn describe_policy(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = req.json_body();
+        let policy_id = required_str(&body, "PolicyId")?;
+        let guard = self.state.read();
+        let org = self.require_member(&guard, &req.account_id)?;
+        let policy = org
+            .policies
+            .get(policy_id)
+            .ok_or_else(|| org_error_to_aws(OrgError::PolicyNotFound(policy_id.to_string())))?;
+        Ok(AwsResponse::ok_json(
+            json!({ "Policy": policy_with_content(policy) }),
+        ))
+    }
+
+    fn list_policies(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = req.json_body();
+        // Filter is a required parameter on the AWS API. Reject missing
+        // filter so the SDK wire format matches and callers learn about
+        // their typo rather than getting an implicit SCP default.
+        let filter = required_str(&body, "Filter")?;
+        if filter != POLICY_TYPE_SCP {
+            return Err(org_error_to_aws(OrgError::PolicyTypeNotSupported(
+                filter.to_string(),
+            )));
+        }
+        let guard = self.state.read();
+        let org = self.require_member(&guard, &req.account_id)?;
+        let mut policies: Vec<&Policy> = org
+            .policies
+            .values()
+            .filter(|p| p.policy_type == filter)
+            .collect();
+        policies.sort_by(|a, b| a.name.cmp(&b.name));
+        let summaries: Vec<Value> = policies.iter().map(|p| policy_summary(p)).collect();
+        Ok(AwsResponse::ok_json(json!({ "Policies": summaries })))
+    }
+
+    fn attach_policy(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = req.json_body();
+        let policy_id = required_str(&body, "PolicyId")?;
+        let target_id = required_str(&body, "TargetId")?;
+        let mut guard = self.state.write();
+        self.require_member_management(&guard, &req.account_id)?;
+        let org = guard.as_mut().unwrap();
+        org.attach_policy(policy_id, target_id)
+            .map_err(org_error_to_aws)?;
+        Ok(AwsResponse::ok_json(Value::Null))
+    }
+
+    fn detach_policy(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = req.json_body();
+        let policy_id = required_str(&body, "PolicyId")?;
+        let target_id = required_str(&body, "TargetId")?;
+        let mut guard = self.state.write();
+        self.require_member_management(&guard, &req.account_id)?;
+        let org = guard.as_mut().unwrap();
+        org.detach_policy(policy_id, target_id)
+            .map_err(org_error_to_aws)?;
+        Ok(AwsResponse::ok_json(Value::Null))
+    }
+
+    fn list_policies_for_target(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = req.json_body();
+        let target_id = required_str(&body, "TargetId")?;
+        let filter = required_str(&body, "Filter")?;
+        if filter != POLICY_TYPE_SCP {
+            return Err(org_error_to_aws(OrgError::PolicyTypeNotSupported(
+                filter.to_string(),
+            )));
+        }
+        let guard = self.state.read();
+        let org = self.require_member(&guard, &req.account_id)?;
+        let mut policies = org
+            .policies_for_target(target_id)
+            .map_err(org_error_to_aws)?;
+        policies.sort_by(|a, b| a.name.cmp(&b.name));
+        let summaries: Vec<Value> = policies.iter().map(|p| policy_summary(p)).collect();
+        Ok(AwsResponse::ok_json(json!({ "Policies": summaries })))
+    }
+
+    fn list_targets_for_policy(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = req.json_body();
+        let policy_id = required_str(&body, "PolicyId")?;
+        let guard = self.state.read();
+        let org = self.require_member(&guard, &req.account_id)?;
+        let targets = org
+            .targets_for_policy(policy_id)
+            .map_err(org_error_to_aws)?;
+        let payload: Vec<Value> = targets
+            .iter()
+            .map(|(id, name, ttype)| {
+                json!({
+                    "TargetId": id,
+                    "Name": name,
+                    "Type": ttype,
+                    "Arn": target_arn(org, id, ttype),
+                })
+            })
+            .collect();
+        Ok(AwsResponse::ok_json(json!({ "Targets": payload })))
+    }
+
     /// Read-side helper: enforce that an org exists and the caller is a
     /// member. Returns the borrowed org on success.
     fn require_member<'a>(
@@ -328,6 +486,15 @@ impl AwsService for OrganizationsService {
             "ListAccountsForParent" => self.list_accounts_for_parent(&req),
             "DescribeAccount" => self.describe_account(&req),
             "MoveAccount" => self.move_account(&req),
+            "CreatePolicy" => self.create_policy(&req),
+            "UpdatePolicy" => self.update_policy(&req),
+            "DeletePolicy" => self.delete_policy(&req),
+            "DescribePolicy" => self.describe_policy(&req),
+            "ListPolicies" => self.list_policies(&req),
+            "AttachPolicy" => self.attach_policy(&req),
+            "DetachPolicy" => self.detach_policy(&req),
+            "ListPoliciesForTarget" => self.list_policies_for_target(&req),
+            "ListTargetsForPolicy" => self.list_targets_for_policy(&req),
             _ => Err(AwsServiceError::action_not_implemented(
                 "organizations",
                 &req.action,
@@ -346,6 +513,41 @@ fn organizations_not_in_use() -> AwsServiceError {
         "AWSOrganizationsNotInUseException",
         "Your account is not a member of an organization.",
     )
+}
+
+fn policy_summary(policy: &Policy) -> Value {
+    json!({
+        "Id": policy.id,
+        "Arn": policy.arn,
+        "Name": policy.name,
+        "Description": policy.description,
+        "Type": policy.policy_type,
+        "AwsManaged": policy.aws_managed,
+    })
+}
+
+fn policy_with_content(policy: &Policy) -> Value {
+    json!({
+        "PolicySummary": policy_summary(policy),
+        "Content": policy.content,
+    })
+}
+
+fn target_arn(org: &OrganizationState, target_id: &str, target_type: &str) -> String {
+    match target_type {
+        "ROOT" => org.root_arn.clone(),
+        "ORGANIZATIONAL_UNIT" => org
+            .ous
+            .get(target_id)
+            .map(|ou| ou.arn.clone())
+            .unwrap_or_default(),
+        "ACCOUNT" => org
+            .accounts
+            .get(target_id)
+            .map(|a| a.arn.clone())
+            .unwrap_or_default(),
+        _ => String::new(),
+    }
 }
 
 fn ou_payload(ou: &OrganizationalUnit) -> Value {
@@ -414,6 +616,46 @@ fn org_error_to_aws(err: OrgError) -> AwsServiceError {
             StatusCode::BAD_REQUEST,
             "DestinationParentNotFoundException",
             format!("The destination parent {id} does not exist."),
+        ),
+        OrgError::PolicyNotFound(id) => AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "PolicyNotFoundException",
+            format!("The policy with id {id} was not found."),
+        ),
+        OrgError::DuplicatePolicy(name) => AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "DuplicatePolicyException",
+            format!("A policy named {name} already exists for this policy type."),
+        ),
+        OrgError::MalformedPolicyDocument => AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "MalformedPolicyDocumentException",
+            "The policy document is not valid JSON.",
+        ),
+        OrgError::PolicyTypeNotSupported(t) => AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "PolicyTypeNotSupportedException",
+            format!("fakecloud only supports SERVICE_CONTROL_POLICY; got {t}."),
+        ),
+        OrgError::PolicyChangesNotAllowed(id) => AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "PolicyChangesNotAllowedException",
+            format!("Policy {id} is AWS-managed and cannot be modified or deleted."),
+        ),
+        OrgError::PolicyInUse(id) => AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "PolicyInUseException",
+            format!("Policy {id} is attached to one or more targets; detach before deleting."),
+        ),
+        OrgError::PolicyNotAttached(id) => AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "PolicyNotAttachedException",
+            format!("Policy {id} is not attached to this target."),
+        ),
+        OrgError::TargetNotFound(id) => AwsServiceError::aws_error(
+            StatusCode::BAD_REQUEST,
+            "TargetNotFoundException",
+            format!("The target with id {id} was not found."),
         ),
     }
 }
@@ -1173,5 +1415,382 @@ mod tests {
         );
         // ActionNotImplemented carries NOT_IMPLEMENTED status.
         assert_eq!(err.status(), StatusCode::NOT_IMPLEMENTED);
+    }
+
+    const SCP_ALLOW_ALL: &str =
+        r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}"#;
+
+    async fn create_scp(svc: &Arc<OrganizationsService>, name: &str) -> String {
+        let resp = svc
+            .handle(req_with(
+                "111111111111",
+                "CreatePolicy",
+                json!({
+                    "Name": name,
+                    "Description": "",
+                    "Type": "SERVICE_CONTROL_POLICY",
+                    "Content": SCP_ALLOW_ALL,
+                }),
+            ))
+            .await
+            .unwrap();
+        body_json(&resp)["Policy"]["PolicySummary"]["Id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn create_policy_happy_path() {
+        let (svc, _state) = OrganizationsService::shared();
+        create_org_with_root(&svc).await;
+        let id = create_scp(&svc, "Custom").await;
+        assert!(id.starts_with("p-"));
+    }
+
+    #[tokio::test]
+    async fn create_policy_rejects_non_scp_type() {
+        let (svc, _state) = OrganizationsService::shared();
+        create_org_with_root(&svc).await;
+        let err = expect_err(
+            svc.handle(req_with(
+                "111111111111",
+                "CreatePolicy",
+                json!({
+                    "Name": "T",
+                    "Description": "",
+                    "Type": "TAG_POLICY",
+                    "Content": SCP_ALLOW_ALL,
+                }),
+            ))
+            .await,
+        );
+        assert_eq!(err.code(), "PolicyTypeNotSupportedException");
+    }
+
+    #[tokio::test]
+    async fn create_policy_malformed_content_rejected() {
+        let (svc, _state) = OrganizationsService::shared();
+        create_org_with_root(&svc).await;
+        let err = expect_err(
+            svc.handle(req_with(
+                "111111111111",
+                "CreatePolicy",
+                json!({
+                    "Name": "X",
+                    "Description": "",
+                    "Type": "SERVICE_CONTROL_POLICY",
+                    "Content": "not json",
+                }),
+            ))
+            .await,
+        );
+        assert_eq!(err.code(), "MalformedPolicyDocumentException");
+    }
+
+    #[tokio::test]
+    async fn create_policy_missing_required_fields() {
+        let (svc, _state) = OrganizationsService::shared();
+        create_org_with_root(&svc).await;
+        let err = expect_err(
+            svc.handle(req_with(
+                "111111111111",
+                "CreatePolicy",
+                json!({"Name": "X", "Type": "SERVICE_CONTROL_POLICY"}),
+            ))
+            .await,
+        );
+        assert_eq!(err.code(), "InvalidInputException");
+    }
+
+    #[tokio::test]
+    async fn create_policy_non_management_rejected() {
+        let (svc, state) = OrganizationsService::shared();
+        create_org_with_root(&svc).await;
+        {
+            let mut guard = state.write();
+            guard
+                .as_mut()
+                .unwrap()
+                .enroll_account_if_missing("222222222222");
+        }
+        let err = expect_err(
+            svc.handle(req_with(
+                "222222222222",
+                "CreatePolicy",
+                json!({
+                    "Name": "X",
+                    "Description": "",
+                    "Type": "SERVICE_CONTROL_POLICY",
+                    "Content": SCP_ALLOW_ALL,
+                }),
+            ))
+            .await,
+        );
+        assert_eq!(err.code(), "AccessDeniedException");
+    }
+
+    #[tokio::test]
+    async fn update_policy_roundtrip_and_blocks_aws_managed() {
+        let (svc, _state) = OrganizationsService::shared();
+        create_org_with_root(&svc).await;
+        let id = create_scp(&svc, "Original").await;
+        let renamed = svc
+            .handle(req_with(
+                "111111111111",
+                "UpdatePolicy",
+                json!({"PolicyId": id, "Name": "Renamed"}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            body_json(&renamed)["Policy"]["PolicySummary"]["Name"],
+            "Renamed"
+        );
+        // FullAWSAccess is AWS-managed -> blocked.
+        let err = expect_err(
+            svc.handle(req_with(
+                "111111111111",
+                "UpdatePolicy",
+                json!({"PolicyId": "p-FullAWSAccess", "Name": "Hacked"}),
+            ))
+            .await,
+        );
+        assert_eq!(err.code(), "PolicyChangesNotAllowedException");
+    }
+
+    #[tokio::test]
+    async fn delete_policy_blocked_when_attached_and_aws_managed() {
+        let (svc, _state) = OrganizationsService::shared();
+        let root_id = create_org_with_root(&svc).await;
+        let id = create_scp(&svc, "InUse").await;
+        svc.handle(req_with(
+            "111111111111",
+            "AttachPolicy",
+            json!({"PolicyId": id, "TargetId": root_id}),
+        ))
+        .await
+        .unwrap();
+        let err = expect_err(
+            svc.handle(req_with(
+                "111111111111",
+                "DeletePolicy",
+                json!({"PolicyId": id}),
+            ))
+            .await,
+        );
+        assert_eq!(err.code(), "PolicyInUseException");
+        // AWS-managed cannot be deleted either.
+        let err = expect_err(
+            svc.handle(req_with(
+                "111111111111",
+                "DeletePolicy",
+                json!({"PolicyId": "p-FullAWSAccess"}),
+            ))
+            .await,
+        );
+        assert_eq!(err.code(), "PolicyChangesNotAllowedException");
+    }
+
+    #[tokio::test]
+    async fn describe_policy_unknown_and_known() {
+        let (svc, _state) = OrganizationsService::shared();
+        create_org_with_root(&svc).await;
+        let id = create_scp(&svc, "X").await;
+        let ok = svc
+            .handle(req_with(
+                "111111111111",
+                "DescribePolicy",
+                json!({"PolicyId": id}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(body_json(&ok)["Policy"]["PolicySummary"]["Id"], id);
+        let err = expect_err(
+            svc.handle(req_with(
+                "111111111111",
+                "DescribePolicy",
+                json!({"PolicyId": "p-none"}),
+            ))
+            .await,
+        );
+        assert_eq!(err.code(), "PolicyNotFoundException");
+    }
+
+    #[tokio::test]
+    async fn list_policies_rejects_unsupported_filter() {
+        let (svc, _state) = OrganizationsService::shared();
+        create_org_with_root(&svc).await;
+        let err = expect_err(
+            svc.handle(req_with(
+                "111111111111",
+                "ListPolicies",
+                json!({"Filter": "TAG_POLICY"}),
+            ))
+            .await,
+        );
+        assert_eq!(err.code(), "PolicyTypeNotSupportedException");
+    }
+
+    #[tokio::test]
+    async fn list_policies_includes_full_aws_access() {
+        let (svc, _state) = OrganizationsService::shared();
+        create_org_with_root(&svc).await;
+        let resp = svc
+            .handle(req_with(
+                "111111111111",
+                "ListPolicies",
+                json!({"Filter": "SERVICE_CONTROL_POLICY"}),
+            ))
+            .await
+            .unwrap();
+        let v = body_json(&resp);
+        assert!(v["Policies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["Id"] == "p-FullAWSAccess"));
+    }
+
+    #[tokio::test]
+    async fn attach_detach_lifecycle_and_errors() {
+        let (svc, _state) = OrganizationsService::shared();
+        let root_id = create_org_with_root(&svc).await;
+        let id = create_scp(&svc, "X").await;
+
+        // Attach then detach.
+        svc.handle(req_with(
+            "111111111111",
+            "AttachPolicy",
+            json!({"PolicyId": id, "TargetId": root_id}),
+        ))
+        .await
+        .unwrap();
+        // Re-attach is idempotent.
+        svc.handle(req_with(
+            "111111111111",
+            "AttachPolicy",
+            json!({"PolicyId": id, "TargetId": root_id}),
+        ))
+        .await
+        .unwrap();
+
+        // Unknown target.
+        let err = expect_err(
+            svc.handle(req_with(
+                "111111111111",
+                "AttachPolicy",
+                json!({"PolicyId": id, "TargetId": "ou-bogus"}),
+            ))
+            .await,
+        );
+        assert_eq!(err.code(), "TargetNotFoundException");
+
+        // Unknown policy.
+        let err = expect_err(
+            svc.handle(req_with(
+                "111111111111",
+                "AttachPolicy",
+                json!({"PolicyId": "p-none", "TargetId": root_id}),
+            ))
+            .await,
+        );
+        assert_eq!(err.code(), "PolicyNotFoundException");
+
+        // Detach unattached policy.
+        let id2 = create_scp(&svc, "Y").await;
+        let err = expect_err(
+            svc.handle(req_with(
+                "111111111111",
+                "DetachPolicy",
+                json!({"PolicyId": id2, "TargetId": root_id}),
+            ))
+            .await,
+        );
+        assert_eq!(err.code(), "PolicyNotAttachedException");
+
+        // Happy-path detach of the first policy.
+        svc.handle(req_with(
+            "111111111111",
+            "DetachPolicy",
+            json!({"PolicyId": id, "TargetId": root_id}),
+        ))
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn list_policies_for_target_and_targets_for_policy() {
+        let (svc, _state) = OrganizationsService::shared();
+        let root_id = create_org_with_root(&svc).await;
+        let id = create_scp(&svc, "Custom").await;
+        svc.handle(req_with(
+            "111111111111",
+            "AttachPolicy",
+            json!({"PolicyId": id, "TargetId": root_id}),
+        ))
+        .await
+        .unwrap();
+
+        let list = svc
+            .handle(req_with(
+                "111111111111",
+                "ListPoliciesForTarget",
+                json!({"TargetId": root_id, "Filter": "SERVICE_CONTROL_POLICY"}),
+            ))
+            .await
+            .unwrap();
+        let v = body_json(&list);
+        let names: Vec<_> = v["Policies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["Name"].as_str().unwrap().to_string())
+            .collect();
+        assert!(names.contains(&"Custom".to_string()));
+        assert!(names.contains(&"FullAWSAccess".to_string()));
+
+        let targets = svc
+            .handle(req_with(
+                "111111111111",
+                "ListTargetsForPolicy",
+                json!({"PolicyId": id}),
+            ))
+            .await
+            .unwrap();
+        let v = body_json(&targets);
+        assert_eq!(v["Targets"].as_array().unwrap().len(), 1);
+        assert_eq!(v["Targets"][0]["TargetId"], root_id);
+        assert_eq!(v["Targets"][0]["Type"], "ROOT");
+    }
+
+    #[tokio::test]
+    async fn list_policies_for_target_rejects_bad_filter() {
+        let (svc, _state) = OrganizationsService::shared();
+        let root_id = create_org_with_root(&svc).await;
+        let err = expect_err(
+            svc.handle(req_with(
+                "111111111111",
+                "ListPoliciesForTarget",
+                json!({"TargetId": root_id, "Filter": "TAG_POLICY"}),
+            ))
+            .await,
+        );
+        assert_eq!(err.code(), "PolicyTypeNotSupportedException");
+    }
+
+    #[tokio::test]
+    async fn list_targets_for_unknown_policy() {
+        let (svc, _state) = OrganizationsService::shared();
+        create_org_with_root(&svc).await;
+        let err = expect_err(
+            svc.handle(req_with(
+                "111111111111",
+                "ListTargetsForPolicy",
+                json!({"PolicyId": "p-none"}),
+            ))
+            .await,
+        );
+        assert_eq!(err.code(), "PolicyNotFoundException");
     }
 }
