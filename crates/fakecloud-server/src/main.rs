@@ -99,20 +99,23 @@ async fn main() {
     // When the caller passes `--addr 0.0.0.0:0` the OS assigns a free port
     // atomically, eliminating the race between find-a-free-port and bind that
     // previously caused sporadic "Connection refused" in parallel tests.
-    // LCOV_EXCL_START
-    let listener = TcpListener::bind(&cli.addr)
+    let (listener, bound_addr) = bind_listener(&cli.addr)
         .await
         .unwrap_or_else(|e| fatal_exit(format_args!("failed to bind {}: {e}", cli.addr)));
-    let bound_addr = listener.local_addr().unwrap();
-    // Print the actual port to stdout so test harnesses can discover it.
-    println!("{}", bound_addr.port());
+
+    // Announce the bound port to stdout so test harnesses (fakecloud-testkit)
+    // can discover the OS-assigned port when `--addr :0` is used. The prefix
+    // makes the line self-identifying: if anything ever prints to stdout
+    // before this line, the parser on the other side still finds the port.
+    if let Err(e) = announce_bound_port(bound_addr.port(), &mut std::io::stdout().lock()) {
+        fatal_exit(format_args!("failed to announce bound port: {e}"));
+    }
     tracing::info!(addr = %bound_addr, "fakecloud is ready");
 
     // Build the endpoint URL from the *actual* bound address so that port 0
     // resolves to the real OS-assigned port in all internal resource URLs
     // (SQS queue URLs, SNS ARNs, etc.).
     let endpoint_url = endpoint_url_from_addr(bound_addr);
-    // LCOV_EXCL_STOP
 
     // Shared state
     let iam_state = Arc::new(parking_lot::RwLock::new(
@@ -3438,6 +3441,26 @@ fn install_panic_hook() {
     }));
 }
 
+/// Prefix used to announce the bound port on stdout. `fakecloud-testkit`
+/// scans stdout for the first line starting with this prefix to discover
+/// the OS-assigned port when the server was launched with `--addr :0`.
+const PORT_HANDSHAKE_PREFIX: &str = "FAKECLOUD_PORT=";
+
+/// Bind a `TcpListener` and return the listener together with the address
+/// the OS actually chose. Separated from `main` so the happy/error paths
+/// are reachable from unit tests.
+async fn bind_listener(addr: &str) -> std::io::Result<(TcpListener, std::net::SocketAddr)> {
+    let listener = TcpListener::bind(addr).await?;
+    let bound = listener.local_addr()?;
+    Ok((listener, bound))
+}
+
+/// Emit the port-handshake line used by test harnesses. Taking a generic
+/// writer keeps this testable without capturing process stdout.
+fn announce_bound_port<W: std::io::Write>(port: u16, writer: &mut W) -> std::io::Result<()> {
+    writeln!(writer, "{PORT_HANDSHAKE_PREFIX}{port}")
+}
+
 /// Build a public-facing endpoint URL from the address the server actually
 /// bound to. Wildcard hosts (``0.0.0.0`` / ``[::]``) are rewritten to
 /// ``localhost`` so the URL is useful when embedded in resource identifiers
@@ -3495,5 +3518,36 @@ mod endpoint_url_tests {
         let port_str = url.trim_start_matches("http://127.0.0.1:");
         let port: u16 = port_str.parse().unwrap();
         assert!(port > 0);
+    }
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use super::*;
+
+    #[test]
+    fn announce_bound_port_uses_tagged_prefix() {
+        let mut buf: Vec<u8> = Vec::new();
+        announce_bound_port(4566, &mut buf).unwrap();
+        assert_eq!(String::from_utf8(buf).unwrap(), "FAKECLOUD_PORT=4566\n",);
+    }
+
+    #[test]
+    fn announce_bound_port_prefix_matches_constant() {
+        // Guard against accidental drift between the constant and the
+        // literal parser in fakecloud-testkit.
+        assert_eq!(PORT_HANDSHAKE_PREFIX, "FAKECLOUD_PORT=");
+    }
+
+    #[tokio::test]
+    async fn bind_listener_reports_os_assigned_port() {
+        let (_listener, bound) = bind_listener("127.0.0.1:0").await.unwrap();
+        assert!(bound.port() > 0);
+        assert_eq!(bound.ip().to_string(), "127.0.0.1");
+    }
+
+    #[tokio::test]
+    async fn bind_listener_errors_on_invalid_addr() {
+        assert!(bind_listener("not-a-socket-addr").await.is_err());
     }
 }
