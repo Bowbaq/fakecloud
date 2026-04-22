@@ -25,6 +25,7 @@ final class FakeCloud
     private SnsClient $sns;
     private SqsClient $sqs;
     private EventsClient $events;
+    private SchedulerClient $scheduler;
     private S3Client $s3;
     private DynamoDbClient $dynamodb;
     private SecretsManagerClient $secretsmanager;
@@ -43,6 +44,7 @@ final class FakeCloud
         $this->sns = new SnsClient($this->http);
         $this->sqs = new SqsClient($this->http);
         $this->events = new EventsClient($this->http);
+        $this->scheduler = new SchedulerClient($this->http);
         $this->s3 = new S3Client($this->http);
         $this->dynamodb = new DynamoDbClient($this->http);
         $this->secretsmanager = new SecretsManagerClient($this->http);
@@ -97,6 +99,8 @@ final class FakeCloud
     public function sns(): SnsClient { return $this->sns; }
     public function sqs(): SqsClient { return $this->sqs; }
     public function events(): EventsClient { return $this->events; }
+
+    public function scheduler(): SchedulerClient { return $this->scheduler; }
     public function s3(): S3Client { return $this->s3; }
     public function dynamodb(): DynamoDbClient { return $this->dynamodb; }
     public function secretsmanager(): SecretsManagerClient { return $this->secretsmanager; }
@@ -258,6 +262,25 @@ final class EventsClient
     {
         return FireRuleResponse::fromArray(
             $this->http->postJson('/_fakecloud/events/fire-rule', $req->toArray())
+        );
+    }
+}
+
+final class SchedulerClient
+{
+    public function __construct(private readonly HttpTransport $http) {}
+
+    public function getSchedules(): SchedulerSchedulesResponse
+    {
+        return SchedulerSchedulesResponse::fromArray(
+            $this->http->get('/_fakecloud/scheduler/schedules')
+        );
+    }
+
+    public function fireSchedule(string $group, string $name): FireScheduleResponse
+    {
+        return FireScheduleResponse::fromArray(
+            $this->http->postEmpty("/_fakecloud/scheduler/fire/{$group}/{$name}")
         );
     }
 }

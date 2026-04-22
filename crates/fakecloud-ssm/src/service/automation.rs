@@ -8,7 +8,7 @@ use fakecloud_aws::arn::Arn;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 use fakecloud_core::validation::*;
 
-use crate::state::{AutomationExecution, ExecutionPreview};
+use crate::state::{AutomationExecution, ExecutionPreview, SsmState};
 
 use super::{missing, SsmService};
 
@@ -59,7 +59,8 @@ impl SsmService {
         let max_errors = body["MaxErrors"].as_str().map(|s| s.to_string());
 
         let now = Utc::now();
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         state.automation_execution_counter += 1;
         let exec_id = format!(
             "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
@@ -107,7 +108,8 @@ impl SsmService {
             .as_str()
             .ok_or_else(|| missing("AutomationExecutionId"))?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let exec = state
             .automation_executions
             .get_mut(exec_id)
@@ -134,7 +136,9 @@ impl SsmService {
             .as_str()
             .ok_or_else(|| missing("AutomationExecutionId"))?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let exec = state.automation_executions.get(exec_id).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -154,7 +158,9 @@ impl SsmService {
     ) -> Result<AwsResponse, AwsServiceError> {
         let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let items: Vec<Value> = state
             .automation_executions
             .values()
@@ -185,7 +191,9 @@ impl SsmService {
             .as_str()
             .ok_or_else(|| missing("AutomationExecutionId"))?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let exec = state.automation_executions.get(exec_id).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -224,7 +232,9 @@ impl SsmService {
             .as_str()
             .ok_or_else(|| missing("SignalType"))?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         if !state.automation_executions.contains_key(exec_id) {
             return Err(AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -261,7 +271,8 @@ impl SsmService {
             body["Runbooks"].as_array().cloned().unwrap_or_default();
 
         let now = Utc::now();
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         state.automation_execution_counter += 1;
         let exec_id = format!(
             "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
@@ -311,7 +322,8 @@ impl SsmService {
             .to_string();
 
         let now = Utc::now();
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         state.execution_preview_counter += 1;
         let preview_id = format!(
             "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
@@ -340,7 +352,9 @@ impl SsmService {
             .as_str()
             .ok_or_else(|| missing("ExecutionPreviewId"))?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let preview = state.execution_previews.get(preview_id).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,

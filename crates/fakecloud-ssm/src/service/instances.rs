@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 use fakecloud_core::validation::*;
 
-use crate::state::SsmActivation;
+use crate::state::{SsmActivation, SsmState};
 
 use super::{missing, SsmService};
 
@@ -52,7 +52,8 @@ impl SsmService {
             .unwrap_or_default();
 
         let now = Utc::now();
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         state.activation_counter += 1;
         let activation_id = format!(
             "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
@@ -89,7 +90,8 @@ impl SsmService {
             .as_str()
             .ok_or_else(|| missing("ActivationId"))?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         if state.activations.remove(activation_id).is_none() {
             return Err(AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -107,7 +109,9 @@ impl SsmService {
     ) -> Result<AwsResponse, AwsServiceError> {
         let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let activations: Vec<Value> = state
             .activations
             .values()
@@ -155,7 +159,8 @@ impl SsmService {
             .as_str()
             .ok_or_else(|| missing("InstanceId"))?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         state.managed_instances.remove(instance_id);
         // AWS doesn't error on non-existent instances
 
@@ -168,7 +173,9 @@ impl SsmService {
     ) -> Result<AwsResponse, AwsServiceError> {
         let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 5, 50)?;
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let instances: Vec<Value> = state
             .managed_instances
             .values()
@@ -202,7 +209,9 @@ impl SsmService {
     ) -> Result<AwsResponse, AwsServiceError> {
         let body = req.json_body();
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 5, 1000)?;
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let instances: Vec<Value> = state
             .managed_instances
             .values()
@@ -240,7 +249,8 @@ impl SsmService {
             .ok_or_else(|| missing("IamRole"))?
             .to_string();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let instance = state
             .managed_instances
             .get_mut(instance_id)

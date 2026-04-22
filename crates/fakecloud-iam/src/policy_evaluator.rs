@@ -37,6 +37,7 @@ impl IamPolicyEvaluator for IamPolicyEvaluatorImpl {
         action: &IamAction,
         context: &ConditionContext,
         session_policies: &[String],
+        scps: Option<&[String]>,
     ) -> IamDecision {
         let states = self.state.read();
         let Some(state) = states.get(&principal.account_id) else {
@@ -45,16 +46,18 @@ impl IamPolicyEvaluator for IamPolicyEvaluatorImpl {
         let identity_policies = evaluator::collect_identity_policies(state, principal);
         let boundary = evaluator::collect_boundary_policies(state, principal);
         let session = parse_session_policies(session_policies);
+        let scp_docs = parse_scp_policies(scps, principal);
         let request = EvalRequest {
             principal,
             action: action.action_string(),
             resource: action.resource.clone(),
             context: context.clone(),
         };
-        decision_to_core(evaluator::evaluate_with_gates(
+        decision_to_core(evaluator::evaluate_with_gates_and_scps(
             &identity_policies,
             boundary.as_deref(),
             session.as_deref(),
+            scp_docs.as_deref(),
             &request,
         ))
     }
@@ -67,6 +70,7 @@ impl IamPolicyEvaluator for IamPolicyEvaluatorImpl {
         resource_policy_json: Option<&str>,
         resource_account_id: &str,
         session_policies: &[String],
+        scps: Option<&[String]>,
     ) -> IamDecision {
         let states = self.state.read();
         let Some(state) = states.get(&principal.account_id) else {
@@ -75,6 +79,7 @@ impl IamPolicyEvaluator for IamPolicyEvaluatorImpl {
         let identity_policies = evaluator::collect_identity_policies(state, principal);
         let boundary = evaluator::collect_boundary_policies(state, principal);
         let session = parse_session_policies(session_policies);
+        let scp_docs = parse_scp_policies(scps, principal);
         let request = EvalRequest {
             principal,
             action: action.action_string(),
@@ -82,10 +87,11 @@ impl IamPolicyEvaluator for IamPolicyEvaluatorImpl {
             context: context.clone(),
         };
         let resource_policy = resource_policy_json.map(evaluator::PolicyDocument::parse);
-        decision_to_core(evaluator::evaluate_with_resource_policy_and_gates(
+        decision_to_core(evaluator::evaluate_with_resource_policy_and_gates_and_scps(
             &identity_policies,
             boundary.as_deref(),
             session.as_deref(),
+            scp_docs.as_deref(),
             resource_policy.as_ref(),
             &request,
             resource_account_id,
@@ -102,6 +108,44 @@ fn parse_session_policies(raw: &[String]) -> Option<Vec<evaluator::PolicyDocumen
             .map(|doc| evaluator::PolicyDocument::parse(doc))
             .collect(),
     )
+}
+
+/// Parse the ordered SCP documents returned by the resolver into the
+/// evaluator's `PolicyDocument` shape.
+///
+/// Returns `None` when the resolver indicated that SCPs don't apply
+/// to this principal (no organization, management account, SLR, or
+/// account not enrolled). Returns `Some(vec![])` when the resolver
+/// returned an empty chain — the evaluator treats that as deny-all,
+/// matching AWS's default when every SCP has been detached from every
+/// target up the chain.
+///
+/// Individual JSON parse failures are skipped with a debug log on
+/// `fakecloud::iam::audit` — the "no gaming" rule from the task brief
+/// says we must never silently treat a broken SCP as "matches".
+fn parse_scp_policies(
+    raw: Option<&[String]>,
+    principal: &Principal,
+) -> Option<Vec<evaluator::PolicyDocument>> {
+    let raw = raw?;
+    let mut docs = Vec::with_capacity(raw.len());
+    for (i, json) in raw.iter().enumerate() {
+        // PolicyDocument::parse already logs a warn on malformed JSON
+        // and returns an empty (implicit-deny) document. That makes
+        // the evaluator deny the action rather than silently allow —
+        // the safer direction for an SCP ceiling. Emit an audit
+        // breadcrumb so operators can see which attachment is bad.
+        if serde_json::from_str::<serde_json::Value>(json).is_err() {
+            tracing::debug!(
+                target: "fakecloud::iam::audit",
+                principal_arn = %principal.arn,
+                scp_index = i,
+                "SCP JSON failed to parse; treating as implicit-deny document"
+            );
+        }
+        docs.push(evaluator::PolicyDocument::parse(json));
+    }
+    Some(docs)
 }
 
 fn decision_to_core(decision: Decision) -> IamDecision {
@@ -182,7 +226,13 @@ mod tests {
             resource: "arn:aws:s3:::bucket/key".into(),
         };
         assert_eq!(
-            eval.evaluate(&principal(), &action, &ConditionContext::default(), &[]),
+            eval.evaluate(
+                &principal(),
+                &action,
+                &ConditionContext::default(),
+                &[],
+                None
+            ),
             IamDecision::Allow
         );
     }
@@ -211,7 +261,13 @@ mod tests {
             resource: "arn:aws:s3:::bucket/key".into(),
         };
         assert_eq!(
-            eval.evaluate(&principal(), &action, &ConditionContext::default(), &[]),
+            eval.evaluate(
+                &principal(),
+                &action,
+                &ConditionContext::default(),
+                &[],
+                None
+            ),
             IamDecision::ExplicitDeny
         );
     }
@@ -285,7 +341,8 @@ mod tests {
                 &principal(),
                 &s3_get_object_action(),
                 &ConditionContext::default(),
-                &[]
+                &[],
+                None,
             ),
             IamDecision::Allow
         );
@@ -294,7 +351,8 @@ mod tests {
                 &principal(),
                 &s3_put_object_action(),
                 &ConditionContext::default(),
-                &[]
+                &[],
+                None,
             ),
             IamDecision::ImplicitDeny
         );
@@ -327,7 +385,8 @@ mod tests {
                 &principal(),
                 &s3_put_object_action(),
                 &ConditionContext::default(),
-                &[]
+                &[],
+                None,
             ),
             IamDecision::ExplicitDeny
         );
@@ -357,7 +416,8 @@ mod tests {
                 &principal(),
                 &s3_get_object_action(),
                 &ConditionContext::default(),
-                &[]
+                &[],
+                None,
             ),
             IamDecision::ImplicitDeny
         );
@@ -412,7 +472,8 @@ mod tests {
                 &principal,
                 &s3_get_object_action(),
                 &ConditionContext::default(),
-                &[]
+                &[],
+                None,
             ),
             IamDecision::Allow
         );
@@ -428,7 +489,13 @@ mod tests {
             resource: "arn:aws:s3:::bucket/key".into(),
         };
         assert_eq!(
-            eval.evaluate(&principal(), &action, &ConditionContext::default(), &[]),
+            eval.evaluate(
+                &principal(),
+                &action,
+                &ConditionContext::default(),
+                &[],
+                None
+            ),
             IamDecision::ImplicitDeny
         );
     }

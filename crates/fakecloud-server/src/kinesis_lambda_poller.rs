@@ -39,18 +39,23 @@ impl KinesisLambdaPoller {
 
     async fn poll(&self) {
         let mappings: Vec<(String, String, String, i64)> = {
-            let lambda = self.lambda_state.read();
-            lambda
-                .event_source_mappings
-                .values()
-                .filter(|m| m.enabled && m.event_source_arn.contains(":kinesis:"))
-                .map(|m| {
-                    (
-                        m.uuid.clone(),
-                        m.event_source_arn.clone(),
-                        m.function_arn.clone(),
-                        m.batch_size,
-                    )
+            let lambda_accounts = self.lambda_state.read();
+            lambda_accounts
+                .iter()
+                .flat_map(|(_, lambda)| {
+                    lambda
+                        .event_source_mappings
+                        .values()
+                        .filter(|m| m.enabled && m.event_source_arn.contains(":kinesis:"))
+                        .map(|m| {
+                            (
+                                m.uuid.clone(),
+                                m.event_source_arn.clone(),
+                                m.function_arn.clone(),
+                                m.batch_size,
+                            )
+                        })
+                        .collect::<Vec<_>>()
                 })
                 .collect()
         };
@@ -61,7 +66,13 @@ impl KinesisLambdaPoller {
 
         for (mapping_uuid, stream_arn, function_arn, batch_size) in mappings {
             let deliveries = {
-                let kinesis = self.kinesis_state.read();
+                let kinesis_accounts = self.kinesis_state.read();
+                // Extract account_id from stream ARN: arn:aws:kinesis:region:ACCOUNT:stream/Name
+                let account_id = stream_arn.split(':').nth(4).unwrap_or("");
+                let kinesis = match kinesis_accounts.get(account_id) {
+                    Some(k) => k,
+                    None => continue,
+                };
                 let stream = match kinesis
                     .streams
                     .values()
@@ -137,12 +148,16 @@ impl KinesisLambdaPoller {
                 }
 
                 {
-                    let mut kinesis = self.kinesis_state.write();
+                    let account_id = stream_arn.split(':').nth(4).unwrap_or("");
+                    let mut kinesis_accounts = self.kinesis_state.write();
+                    let kinesis = kinesis_accounts.get_or_create(account_id);
                     kinesis.set_lambda_checkpoint(&mapping_uuid, &shard_id, end);
                 }
 
                 if !used_real_delivery {
-                    let mut lambda = self.lambda_state.write();
+                    let fn_account = function_arn.split(':').nth(4).unwrap_or("");
+                    let mut lambda_accounts = self.lambda_state.write();
+                    let lambda = lambda_accounts.get_or_create(fn_account);
                     lambda.invocations.push(LambdaInvocation {
                         function_arn: function_arn.clone(),
                         payload,

@@ -29,7 +29,8 @@ impl LogsService {
         validate_string_length("logGroupName", log_group_name, 1, 512)?;
         validate_optional_string_length("queryString", Some(&query_string), 0, 10000)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Verify log group exists
         if !state.log_groups.contains_key(log_group_name) {
@@ -77,7 +78,9 @@ impl LogsService {
 
         validate_string_length("queryId", query_id, 1, 256)?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::LogsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let query_info = state.queries.get(query_id).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -152,7 +155,9 @@ impl LogsService {
             &["CWLI", "SQL", "PPL"],
         )?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::LogsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let queries: Vec<Value> = state
             .queries
             .values()
@@ -244,7 +249,8 @@ impl LogsService {
 
         let now = Utc::now().timestamp_millis();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         state.query_definitions.insert(
             query_definition_id.clone(),
             QueryDefinition {
@@ -285,7 +291,9 @@ impl LogsService {
             &["CWLI", "SQL", "PPL"],
         )?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::LogsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let defs: Vec<Value> = state
             .query_definitions
             .values()
@@ -322,7 +330,8 @@ impl LogsService {
 
         validate_string_length("queryDefinitionId", qd_id, 1, 256)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let success = state.query_definitions.remove(qd_id).is_some();
 
         Ok(AwsResponse::json(
@@ -341,7 +350,8 @@ impl LogsService {
             )
         })?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let query = state.queries.get_mut(query_id).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -502,5 +512,192 @@ mod tests {
             // success should be false for a non-running query
             assert!(!body["success"].as_bool().unwrap_or(true));
         }
+    }
+
+    // ---- start_query error paths ----
+
+    #[test]
+    fn start_query_missing_log_group_name_errors() {
+        let svc = make_service();
+        let req = make_request("StartQuery", json!({ "queryString": "fields @timestamp" }));
+        assert!(svc.start_query(&req).is_err());
+    }
+
+    #[test]
+    fn start_query_unknown_log_group_errors() {
+        let svc = make_service();
+        let req = make_request(
+            "StartQuery",
+            json!({
+                "logGroupName": "missing",
+                "startTime": 0,
+                "endTime": 0,
+                "queryString": "fields @timestamp"
+            }),
+        );
+        assert!(svc.start_query(&req).is_err());
+    }
+
+    #[test]
+    fn start_query_ok_path() {
+        let svc = make_service();
+        create_group(&svc, "app");
+        let req = make_request(
+            "StartQuery",
+            json!({
+                "logGroupName": "app",
+                "startTime": 0,
+                "endTime": 0,
+                "queryString": "fields @timestamp"
+            }),
+        );
+        let resp = svc.start_query(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(body["queryId"].is_string());
+    }
+
+    // ---- get_query_results error paths ----
+
+    #[test]
+    fn get_query_results_missing_query_id_errors() {
+        let svc = make_service();
+        let req = make_request("GetQueryResults", json!({}));
+        assert!(svc.get_query_results(&req).is_err());
+    }
+
+    #[test]
+    fn get_query_results_unknown_id_errors() {
+        let svc = make_service();
+        let req = make_request("GetQueryResults", json!({"queryId": "missing"}));
+        assert!(svc.get_query_results(&req).is_err());
+    }
+
+    #[test]
+    fn get_query_results_returns_complete_status() {
+        let svc = make_service();
+        create_group(&svc, "app");
+        let start = make_request(
+            "StartQuery",
+            json!({
+                "logGroupName": "app",
+                "startTime": 0,
+                "endTime": 0,
+                "queryString": "fields @timestamp"
+            }),
+        );
+        let resp = svc.start_query(&start).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        let qid = body["queryId"].as_str().unwrap().to_string();
+        let get = make_request("GetQueryResults", json!({"queryId": qid}));
+        let resp = svc.get_query_results(&get).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["status"], "Complete");
+        assert!(body["results"].is_array());
+    }
+
+    // ---- put_query_definition error paths ----
+
+    #[test]
+    fn put_query_definition_update_existing() {
+        let svc = make_service();
+        let put = make_request(
+            "PutQueryDefinition",
+            json!({"name": "qd-1", "queryString": "fields @timestamp"}),
+        );
+        let resp = svc.put_query_definition(&put).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        let qid = body["queryDefinitionId"].as_str().unwrap().to_string();
+
+        // Update using queryDefinitionId
+        let update = make_request(
+            "PutQueryDefinition",
+            json!({
+                "queryDefinitionId": qid,
+                "name": "qd-1-updated",
+                "queryString": "fields @timestamp | limit 10"
+            }),
+        );
+        svc.put_query_definition(&update).unwrap();
+
+        let list = make_request("DescribeQueryDefinitions", json!({}));
+        let resp = svc.describe_query_definitions(&list).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        let defs = body["queryDefinitions"].as_array().unwrap();
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0]["name"], "qd-1-updated");
+    }
+
+    #[test]
+    fn describe_queries_filters_by_log_group() {
+        let svc = make_service();
+        create_group(&svc, "app-a");
+        create_group(&svc, "app-b");
+        for g in &["app-a", "app-b"] {
+            let req = make_request(
+                "StartQuery",
+                json!({
+                    "logGroupName": g,
+                    "startTime": 0,
+                    "endTime": 0,
+                    "queryString": "fields @timestamp"
+                }),
+            );
+            svc.start_query(&req).unwrap();
+        }
+        let req = make_request("DescribeQueries", json!({"logGroupName": "app-a"}));
+        let resp = svc.describe_queries(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        let queries = body["queries"].as_array().unwrap();
+        assert_eq!(queries.len(), 1);
+        assert_eq!(queries[0]["logGroupName"], "app-a");
+    }
+
+    #[test]
+    fn describe_queries_returns_all_when_no_filter() {
+        let svc = make_service();
+        create_group(&svc, "g1");
+        let req = make_request(
+            "StartQuery",
+            json!({
+                "logGroupName": "g1",
+                "startTime": 0,
+                "endTime": 0,
+                "queryString": "fields @timestamp"
+            }),
+        );
+        svc.start_query(&req).unwrap();
+        let req = make_request("DescribeQueries", json!({}));
+        let resp = svc.describe_queries(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["queries"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn list_log_groups_for_query_returns_stub_list() {
+        let svc = make_service();
+        create_group(&svc, "app");
+        let start = make_request(
+            "StartQuery",
+            json!({
+                "logGroupName": "app",
+                "startTime": 0,
+                "endTime": 0,
+                "queryString": "fields @timestamp"
+            }),
+        );
+        let resp = svc.start_query(&start).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        let qid = body["queryId"].as_str().unwrap().to_string();
+        let req = make_request("ListLogGroupsForQuery", json!({"queryId": qid}));
+        let resp = svc.list_log_groups_for_query(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(body["logGroupIdentifiers"].is_array());
+    }
+
+    #[test]
+    fn list_log_groups_for_query_missing_id_errors() {
+        let svc = make_service();
+        let req = make_request("ListLogGroupsForQuery", json!({}));
+        assert!(svc.list_log_groups_for_query(&req).is_err());
     }
 }

@@ -23,8 +23,10 @@ pub(crate) struct ResetState {
     pub rds: fakecloud_rds::state::SharedRdsState,
     pub elasticache: fakecloud_elasticache::state::SharedElastiCacheState,
     pub stepfunctions: fakecloud_stepfunctions::state::SharedStepFunctionsState,
+    pub scheduler: fakecloud_scheduler::state::SharedSchedulerState,
     pub apigatewayv2: fakecloud_apigatewayv2::state::SharedApiGatewayV2State,
     pub bedrock: fakecloud_bedrock::state::SharedBedrockState,
+    pub organizations: fakecloud_organizations::state::SharedOrganizationsState,
     pub container_runtime: Option<Arc<fakecloud_lambda::runtime::ContainerRuntime>>,
     pub rds_runtime: Option<Arc<fakecloud_rds::runtime::RdsRuntime>>,
     pub elasticache_runtime: Option<Arc<fakecloud_elasticache::runtime::ElastiCacheRuntime>>,
@@ -45,7 +47,8 @@ impl ResetState {
                 s.default_mut().seed_default_opted_out();
             }
             "events" | "eventbridge" => {
-                let mut eb = self.eb.write();
+                let mut eb_accounts = self.eb.write();
+                let eb = eb_accounts.default_mut();
                 eb.rules.clear();
                 eb.events.clear();
                 eb.archives.clear();
@@ -111,17 +114,165 @@ impl ResetState {
             "states" | "stepfunctions" => {
                 self.stepfunctions.write().reset();
             }
+            "scheduler" => {
+                self.scheduler.write().reset();
+            }
             "apigateway" | "apigatewayv2" => {
-                self.apigatewayv2.write().apis.clear();
+                self.apigatewayv2.write().reset();
             }
             "bedrock" | "bedrock-runtime" => {
                 self.bedrock.write().reset();
+            }
+            "organizations" => {
+                *self.organizations.write() = None;
             }
             _ => {
                 return Err(format!("Unknown service: {service}"));
             }
         }
         tracing::info!(service = %service, "service state reset via per-service reset API");
+        Ok(())
+    }
+
+    /// Reset a single service's state for a specific account only.
+    pub(crate) fn reset_service_for_account(
+        &self,
+        service: &str,
+        account_id: &str,
+    ) -> Result<(), String> {
+        match service {
+            "iam" | "sts" => {
+                let mut mas = self.iam.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                }
+            }
+            "sqs" => {
+                let mut mas = self.sqs.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                }
+            }
+            "sns" => {
+                let mut mas = self.sns.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                    state.seed_default_opted_out();
+                }
+            }
+            "events" | "eventbridge" => {
+                let mut mas = self.eb.write();
+                if let Some(eb) = mas.get_mut(account_id) {
+                    eb.reset();
+                }
+            }
+            "ssm" => {
+                let mut mas = self.ssm.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                }
+            }
+            "dynamodb" => {
+                let mut mas = self.dynamodb.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                }
+            }
+            "lambda" => {
+                let mut mas = self.lambda.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                }
+            }
+            "secretsmanager" => {
+                let mut mas = self.secretsmanager.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                }
+            }
+            "s3" => {
+                let mut mas = self.s3.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                }
+            }
+            "logs" => {
+                let mut mas = self.logs.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                }
+            }
+            "kms" => {
+                let mut mas = self.kms.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                }
+            }
+            "cloudformation" => {
+                let mut mas = self.cloudformation.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                }
+            }
+            "ses" => {
+                let mut mas = self.ses.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                }
+            }
+            "cognito" => {
+                let mut mas = self.cognito.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                }
+            }
+            "kinesis" => {
+                let mut mas = self.kinesis.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                }
+            }
+            "rds" => {
+                let mut mas = self.rds.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                }
+            }
+            "elasticache" => {
+                let mut mas = self.elasticache.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                }
+            }
+            "states" | "stepfunctions" => {
+                let mut mas = self.stepfunctions.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                }
+            }
+            "scheduler" => {
+                let mut mas = self.scheduler.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                }
+            }
+            "apigateway" | "apigatewayv2" => {
+                let mut mas = self.apigatewayv2.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                }
+            }
+            "bedrock" | "bedrock-runtime" => {
+                let mut mas = self.bedrock.write();
+                if let Some(state) = mas.get_mut(account_id) {
+                    state.reset();
+                }
+            }
+            _ => {
+                return Err(format!("Unknown service: {service}"));
+            }
+        }
+        tracing::info!(service = %service, account_id = %account_id, "service state reset for account via per-account reset API");
         Ok(())
     }
 
@@ -134,7 +285,8 @@ impl ResetState {
             sns.default_mut().seed_default_opted_out();
         }
         {
-            let mut eb = self.eb.write();
+            let mut eb_accounts = self.eb.write();
+            let eb = eb_accounts.default_mut();
             eb.rules.clear();
             eb.events.clear();
             eb.archives.clear();
@@ -148,7 +300,7 @@ impl ResetState {
         }
         self.ssm.write().reset();
         self.dynamodb.write().reset();
-        self.lambda.write().reset();
+        self.lambda.write().default_mut().reset();
         // Stop all Lambda containers on reset
         if let Some(ref rt) = self.container_runtime {
             let rt = rt.clone();
@@ -156,7 +308,7 @@ impl ResetState {
         }
         self.secretsmanager.write().reset();
         self.s3.write().reset();
-        self.logs.write().reset();
+        self.logs.write().default_mut().reset();
         self.kms.write().reset();
         self.cloudformation.write().reset();
         self.ses.write().reset();
@@ -173,8 +325,13 @@ impl ResetState {
             tokio::spawn(async move { rt.stop_all().await });
         }
         self.stepfunctions.write().reset();
-        self.apigatewayv2.write().apis.clear();
+        self.scheduler.write().reset();
+        self.apigatewayv2.write().reset();
         self.bedrock.write().reset();
+        // Organizations is a cross-account singleton (not MultiAccountState);
+        // a full reset drops the org entirely so subsequent runs start
+        // with no org, matching the no-in-use default state.
+        *self.organizations.write() = None;
         tracing::info!("state reset via reset API");
         axum::Json(types::ResetResponse {
             status: "ok".to_string(),
@@ -192,9 +349,18 @@ impl ResetState {
 /// credentials for a non-default account via the normal AWS API.
 pub(crate) fn create_admin_in_account(
     iam: &fakecloud_iam::state::SharedIamState,
+    organizations: &fakecloud_organizations::state::SharedOrganizationsState,
     account_id: &str,
     user_name: &str,
 ) -> types::CreateAdminResponse {
+    // Auto-enroll the account into the organization's root OU if an
+    // org exists. Matches AWS's InviteAccount path in spirit: tests
+    // bootstrapping admin credentials for a second account expect
+    // that account to immediately participate in SCP evaluation.
+    if let Some(org) = organizations.write().as_mut() {
+        org.enroll_account_if_missing(account_id);
+    }
+
     let mut accounts = iam.write();
     let state = accounts.get_or_create(account_id);
 
@@ -264,7 +430,9 @@ mod tests {
 
     #[test]
     fn reset_service_clears_rds_state() {
-        let mut rds = RdsState::new("123456789012", "us-east-1");
+        let mut rds_mas: fakecloud_core::multi_account::MultiAccountState<RdsState> =
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", "");
+        let rds = rds_mas.default_mut();
         let created_at = Utc::now();
         rds.instances.insert(
             "db-1".to_string(),
@@ -324,10 +492,18 @@ mod tests {
                 ),
             )),
             eb: Arc::new(parking_lot::RwLock::new(
-                fakecloud_eventbridge::state::EventBridgeState::new("123456789012", "us-east-1"),
+                fakecloud_core::multi_account::MultiAccountState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "",
+                ),
             )),
             ssm: Arc::new(parking_lot::RwLock::new(
-                fakecloud_ssm::state::SsmState::new("123456789012", "us-east-1"),
+                fakecloud_core::multi_account::MultiAccountState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "http://localhost:4566",
+                ),
             )),
             dynamodb: Arc::new(parking_lot::RwLock::new(
                 fakecloud_core::multi_account::MultiAccountState::new(
@@ -337,12 +513,17 @@ mod tests {
                 ),
             )),
             lambda: Arc::new(parking_lot::RwLock::new(
-                fakecloud_lambda::state::LambdaState::new("123456789012", "us-east-1"),
-            )),
-            secretsmanager: Arc::new(parking_lot::RwLock::new(
-                fakecloud_secretsmanager::state::SecretsManagerState::new(
+                fakecloud_core::multi_account::MultiAccountState::new(
                     "123456789012",
                     "us-east-1",
+                    "",
+                ),
+            )),
+            secretsmanager: Arc::new(parking_lot::RwLock::new(
+                fakecloud_core::multi_account::MultiAccountState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "http://localhost:4566",
                 ),
             )),
             s3: Arc::new(parking_lot::RwLock::new(
@@ -353,42 +534,84 @@ mod tests {
                 ),
             )),
             logs: Arc::new(parking_lot::RwLock::new(
-                fakecloud_logs::state::LogsState::new("123456789012", "us-east-1"),
-            )),
-            kms: Arc::new(parking_lot::RwLock::new(
-                fakecloud_kms::state::KmsState::new("123456789012", "us-east-1"),
-            )),
-            cloudformation: Arc::new(parking_lot::RwLock::new(
-                fakecloud_cloudformation::state::CloudFormationState::new(
+                fakecloud_core::multi_account::MultiAccountState::new(
                     "123456789012",
                     "us-east-1",
+                    "",
+                ),
+            )),
+            kms: Arc::new(parking_lot::RwLock::new(
+                fakecloud_core::multi_account::MultiAccountState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "http://localhost:4566",
+                ),
+            )),
+            cloudformation: Arc::new(parking_lot::RwLock::new(
+                fakecloud_core::multi_account::MultiAccountState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "http://localhost:4566",
                 ),
             )),
             ses: Arc::new(parking_lot::RwLock::new(
-                fakecloud_ses::state::SesState::new("123456789012", "us-east-1"),
-            )),
-            cognito: Arc::new(parking_lot::RwLock::new(
-                fakecloud_cognito::state::CognitoState::new("123456789012", "us-east-1"),
-            )),
-            kinesis: Arc::new(parking_lot::RwLock::new(
-                fakecloud_kinesis::state::KinesisState::new("123456789012", "us-east-1"),
-            )),
-            rds: Arc::new(parking_lot::RwLock::new(rds)),
-            elasticache: Arc::new(parking_lot::RwLock::new(
-                fakecloud_elasticache::state::ElastiCacheState::new("123456789012", "us-east-1"),
-            )),
-            stepfunctions: Arc::new(parking_lot::RwLock::new(
-                fakecloud_stepfunctions::state::StepFunctionsState::new(
+                fakecloud_core::multi_account::MultiAccountState::new(
                     "123456789012",
                     "us-east-1",
+                    "http://localhost:4566",
+                ),
+            )),
+            cognito: Arc::new(parking_lot::RwLock::new(
+                fakecloud_core::multi_account::MultiAccountState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "http://localhost:4566",
+                ),
+            )),
+            kinesis: Arc::new(parking_lot::RwLock::new(
+                fakecloud_core::multi_account::MultiAccountState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "http://localhost:4566",
+                ),
+            )),
+            rds: Arc::new(parking_lot::RwLock::new(rds_mas)),
+            elasticache: Arc::new(parking_lot::RwLock::new(
+                fakecloud_core::multi_account::MultiAccountState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "",
+                ),
+            )),
+            stepfunctions: Arc::new(parking_lot::RwLock::new(
+                fakecloud_core::multi_account::MultiAccountState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "",
+                ),
+            )),
+            scheduler: Arc::new(parking_lot::RwLock::new(
+                fakecloud_core::multi_account::MultiAccountState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "",
                 ),
             )),
             apigatewayv2: Arc::new(parking_lot::RwLock::new(
-                fakecloud_apigatewayv2::state::ApiGatewayV2State::new("123456789012", "us-east-1"),
+                fakecloud_core::multi_account::MultiAccountState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "",
+                ),
             )),
             bedrock: Arc::new(parking_lot::RwLock::new(
-                fakecloud_bedrock::state::BedrockState::new("123456789012", "us-east-1"),
+                fakecloud_core::multi_account::MultiAccountState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "http://localhost:4566",
+                ),
             )),
+            organizations: Arc::new(parking_lot::RwLock::new(None)),
             container_runtime: None,
             rds_runtime: None,
             elasticache_runtime: None,
@@ -396,7 +619,7 @@ mod tests {
 
         state.reset_service("rds").expect("reset rds");
 
-        assert!(state.rds.read().instances.is_empty());
+        assert!(state.rds.read().default_ref().instances.is_empty());
     }
 
     #[test]
@@ -404,7 +627,9 @@ mod tests {
         let iam: fakecloud_iam::state::SharedIamState = Arc::new(parking_lot::RwLock::new(
             fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
         ));
-        let resp = super::create_admin_in_account(&iam, "123456789012", "admin");
+        let orgs: fakecloud_organizations::state::SharedOrganizationsState =
+            Arc::new(parking_lot::RwLock::new(None));
+        let resp = super::create_admin_in_account(&iam, &orgs, "123456789012", "admin");
         assert_eq!(resp.account_id, "123456789012");
         assert!(resp.access_key_id.starts_with("FKIA"));
         assert!(resp.arn.contains("123456789012"));
@@ -423,7 +648,9 @@ mod tests {
         let iam: fakecloud_iam::state::SharedIamState = Arc::new(parking_lot::RwLock::new(
             fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
         ));
-        let resp = super::create_admin_in_account(&iam, "999999999999", "bob");
+        let orgs: fakecloud_organizations::state::SharedOrganizationsState =
+            Arc::new(parking_lot::RwLock::new(None));
+        let resp = super::create_admin_in_account(&iam, &orgs, "999999999999", "bob");
         assert_eq!(resp.account_id, "999999999999");
         assert!(resp.arn.contains("999999999999"));
 
@@ -446,7 +673,9 @@ mod tests {
         let iam: fakecloud_iam::state::SharedIamState = Arc::new(parking_lot::RwLock::new(
             fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
         ));
-        let resp = super::create_admin_in_account(&iam, "222222222222", "admin");
+        let orgs: fakecloud_organizations::state::SharedOrganizationsState =
+            Arc::new(parking_lot::RwLock::new(None));
+        let resp = super::create_admin_in_account(&iam, &orgs, "222222222222", "admin");
 
         let evaluator = fakecloud_iam::policy_evaluator::IamPolicyEvaluatorImpl::new(iam.clone());
         let principal = Principal {
@@ -462,7 +691,8 @@ mod tests {
             action: "ListBuckets",
             resource: "*".to_string(),
         };
-        let decision = evaluator.evaluate(&principal, &action, &ConditionContext::default(), &[]);
+        let decision =
+            evaluator.evaluate(&principal, &action, &ConditionContext::default(), &[], None);
         assert_eq!(
             decision,
             IamDecision::Allow,
@@ -475,7 +705,9 @@ mod tests {
         let iam: fakecloud_iam::state::SharedIamState = Arc::new(parking_lot::RwLock::new(
             fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
         ));
-        let resp = super::create_admin_in_account(&iam, "222222222222", "alice");
+        let orgs: fakecloud_organizations::state::SharedOrganizationsState =
+            Arc::new(parking_lot::RwLock::new(None));
+        let resp = super::create_admin_in_account(&iam, &orgs, "222222222222", "alice");
 
         // Verify the credential resolver can find this key
         let mut accounts = iam.write();

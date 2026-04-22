@@ -263,7 +263,8 @@ impl KmsService {
         let _guard = self.snapshot_lock.lock().await;
         let snapshot = KmsSnapshot {
             schema_version: KMS_SNAPSHOT_SCHEMA_VERSION,
-            state: self.state.read().clone(),
+            state: None,
+            accounts: Some(self.state.read().clone()),
         };
         let join = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
             let bytes = serde_json::to_vec(&snapshot)
@@ -377,7 +378,9 @@ impl AwsService for KmsService {
             return Some(std::collections::HashMap::new());
         }
         let key_id = resource_arn.rsplit_once(":key/")?.1;
-        let state = self.state.read();
+        let account_id = resource_arn.split(':').nth(4).unwrap_or("").to_string();
+        let accounts = self.state.read();
+        let state = accounts.get(&account_id)?;
         let key = state.keys.get(key_id)?;
         Some(key.tags.clone())
     }
@@ -436,7 +439,9 @@ fn kms_resource_for(action: &str, state: &SharedKmsState, request: &AwsRequest) 
         let body = request.json_body();
         // Resolve alias -> key ARN when possible.
         if let Some(alias_name) = body["AliasName"].as_str() {
-            let s = state.read();
+            let accts = state.read();
+            let empty = KmsState::new(&request.account_id, &request.region);
+            let s = accts.get(&request.account_id).unwrap_or(&empty);
             if let Some(alias) = s.aliases.get(alias_name) {
                 if let Some(key) = s.keys.get(&alias.target_key_id) {
                     return key.arn.clone();
@@ -444,7 +449,7 @@ fn kms_resource_for(action: &str, state: &SharedKmsState, request: &AwsRequest) 
             }
             // For CreateAlias the target may be in TargetKeyId.
             if let Some(target) = body["TargetKeyId"].as_str() {
-                if let Some(key_id) = KmsService::resolve_key_id_with_state(&s, target) {
+                if let Some(key_id) = KmsService::resolve_key_id_with_state(s, target) {
                     if let Some(key) = s.keys.get(&key_id) {
                         return key.arn.clone();
                     }
@@ -457,8 +462,10 @@ fn kms_resource_for(action: &str, state: &SharedKmsState, request: &AwsRequest) 
     // All remaining operations carry a KeyId parameter.
     let body = request.json_body();
     if let Some(key_id_input) = body["KeyId"].as_str() {
-        let s = state.read();
-        if let Some(key_id) = KmsService::resolve_key_id_with_state(&s, key_id_input) {
+        let accts = state.read();
+        let empty = KmsState::new(&request.account_id, &request.region);
+        let s = accts.get(&request.account_id).unwrap_or(&empty);
+        if let Some(key_id) = KmsService::resolve_key_id_with_state(s, key_id_input) {
             if let Some(key) = s.keys.get(&key_id) {
                 return key.arn.clone();
             }
@@ -779,9 +786,16 @@ fn rand_bytes(n: usize) -> Vec<u8> {
 }
 
 impl KmsService {
-    fn resolve_key_id(&self, key_id_or_arn: &str) -> Option<String> {
-        let state = self.state.read();
-        Self::resolve_key_id_with_state(&state, key_id_or_arn)
+    fn resolve_key_id_for(
+        &self,
+        account_id: &str,
+        region: &str,
+        key_id_or_arn: &str,
+    ) -> Option<String> {
+        let accounts = self.state.read();
+        let empty = KmsState::new(account_id, region);
+        let state = accounts.get(account_id).unwrap_or(&empty);
+        Self::resolve_key_id_with_state(state, key_id_or_arn)
     }
 
     pub(crate) fn resolve_key_id_with_state(
@@ -836,21 +850,27 @@ impl KmsService {
             })
     }
 
-    fn resolve_required_key(&self, body: &Value) -> Result<String, AwsServiceError> {
+    fn resolve_required_key(
+        &self,
+        req: &AwsRequest,
+        body: &Value,
+    ) -> Result<String, AwsServiceError> {
         let key_id_input = Self::require_key_id(body)?;
-        self.resolve_key_id(&key_id_input).ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "NotFoundException",
-                format!("Key '{key_id_input}' does not exist"),
-            )
-        })
+        self.resolve_key_id_for(&req.account_id, &req.region, &key_id_input)
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "NotFoundException",
+                    format!("Key '{key_id_input}' does not exist"),
+                )
+            })
     }
 
     fn create_key(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let input = CreateKeyInput::from_body(&req.json_body())?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let key_id = if input.multi_region {
             format!("mrk-{}", Uuid::new_v4().as_simple())
@@ -926,10 +946,12 @@ impl KmsService {
             )
         })?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = KmsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         // Check key policy for Deny rules
-        let resolved = Self::resolve_key_id_with_state(&state, key_id_input).ok_or_else(|| {
+        let resolved = Self::resolve_key_id_with_state(state, key_id_input).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
                 "NotFoundException",
@@ -964,7 +986,9 @@ impl KmsService {
         let limit = body["Limit"].as_i64().unwrap_or(1000) as usize;
         let marker = body["Marker"].as_str();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = KmsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let all_keys: Vec<Value> = state
             .keys
             .values()
@@ -1008,9 +1032,10 @@ impl KmsService {
 
     fn enable_key(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = req.json_body();
-        let resolved = self.resolve_required_key(&body)?;
+        let resolved = self.resolve_required_key(req, &body)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let key = state.keys.get_mut(&resolved).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1026,9 +1051,10 @@ impl KmsService {
 
     fn disable_key(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = req.json_body();
-        let resolved = self.resolve_required_key(&body)?;
+        let resolved = self.resolve_required_key(req, &body)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let key = state.keys.get_mut(&resolved).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1044,10 +1070,11 @@ impl KmsService {
 
     fn schedule_key_deletion(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = req.json_body();
-        let resolved = self.resolve_required_key(&body)?;
+        let resolved = self.resolve_required_key(req, &body)?;
         let pending_days = body["PendingWindowInDays"].as_i64().unwrap_or(30);
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let key = state.keys.get_mut(&resolved).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1075,9 +1102,10 @@ impl KmsService {
 
     fn cancel_key_deletion(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = req.json_body();
-        let resolved = self.resolve_required_key(&body)?;
+        let resolved = self.resolve_required_key(req, &body)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let key = state.keys.get_mut(&resolved).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1109,15 +1137,19 @@ impl KmsService {
         })?;
         let plaintext_bytes = decode_plaintext(plaintext_b64)?;
 
-        let resolved = self.resolve_key_id(&key_id).ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "NotFoundException",
-                format!("Key '{key_id}' does not exist"),
-            )
-        })?;
+        let resolved = self
+            .resolve_key_id_for(&req.account_id, &req.region, &key_id)
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "NotFoundException",
+                    format!("Key '{key_id}' does not exist"),
+                )
+            })?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = KmsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let key = state.keys.get(&resolved).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1156,8 +1188,10 @@ impl KmsService {
             )
         })?;
 
-        let state = self.state.read();
-        let decoded = decode_ciphertext_envelope(&state, ciphertext_b64)?;
+        let accounts = self.state.read();
+        let empty = KmsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
+        let decoded = decode_ciphertext_envelope(state, ciphertext_b64)?;
 
         Ok(AwsResponse::json(
             StatusCode::OK,
@@ -1187,11 +1221,13 @@ impl KmsService {
             )
         })?;
 
-        let state = self.state.read();
-        let decoded = decode_ciphertext_envelope(&state, ciphertext_b64)?;
+        let accounts = self.state.read();
+        let empty = KmsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
+        let decoded = decode_ciphertext_envelope(state, ciphertext_b64)?;
 
         let dest_resolved =
-            Self::resolve_key_id_with_state(&state, dest_key_id).ok_or_else(|| {
+            Self::resolve_key_id_with_state(state, dest_key_id).ok_or_else(|| {
                 AwsServiceError::aws_error(
                     StatusCode::BAD_REQUEST,
                     "NotFoundException",
@@ -1244,15 +1280,19 @@ impl KmsService {
         let body = req.json_body();
         let key_id = Self::require_key_id(&body)?;
 
-        let resolved = self.resolve_key_id(&key_id).ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "NotFoundException",
-                format!("Key '{key_id}' does not exist"),
-            )
-        })?;
+        let resolved = self
+            .resolve_key_id_for(&req.account_id, &req.region, &key_id)
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "NotFoundException",
+                    format!("Key '{key_id}' does not exist"),
+                )
+            })?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = KmsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let key = state.keys.get(&resolved).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1295,15 +1335,19 @@ impl KmsService {
         let body = req.json_body();
         let key_id = Self::require_key_id(&body)?;
 
-        let resolved = self.resolve_key_id(&key_id).ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "NotFoundException",
-                format!("Key '{key_id}' does not exist"),
-            )
-        })?;
+        let resolved = self
+            .resolve_key_id_for(&req.account_id, &req.region, &key_id)
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "NotFoundException",
+                    format!("Key '{key_id}' does not exist"),
+                )
+            })?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = KmsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let key = state.keys.get(&resolved).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1371,15 +1415,18 @@ impl KmsService {
         validate_alias_name(&alias_name)?;
         validate_alias_target(&target_key_id)?;
 
-        let resolved = self.resolve_key_id(&target_key_id).ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "NotFoundException",
-                format!("Key '{target_key_id}' does not exist"),
-            )
-        })?;
+        let resolved = self
+            .resolve_key_id_for(&req.account_id, &req.region, &target_key_id)
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "NotFoundException",
+                    format!("Key '{target_key_id}' does not exist"),
+                )
+            })?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if state.aliases.contains_key(&alias_name) {
             let alias_arn = format!(
@@ -1429,7 +1476,8 @@ impl KmsService {
             ));
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         if state.aliases.remove(alias_name).is_none() {
             let alias_arn = format!(
                 "arn:aws:kms:{}:{}:{}",
@@ -1462,15 +1510,18 @@ impl KmsService {
             )
         })?;
 
-        let resolved = self.resolve_key_id(target_key_id).ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "NotFoundException",
-                format!("Key '{target_key_id}' does not exist"),
-            )
-        })?;
+        let resolved = self
+            .resolve_key_id_for(&req.account_id, &req.region, target_key_id)
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "NotFoundException",
+                    format!("Key '{target_key_id}' does not exist"),
+                )
+            })?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let alias = state.aliases.get_mut(alias_name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -1501,11 +1552,13 @@ impl KmsService {
 
         let key_id_filter = body["KeyId"].as_str();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = KmsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         // Resolve key_id_filter to actual key ID if needed
         let resolved_filter =
-            key_id_filter.and_then(|kid| Self::resolve_key_id_with_state(&state, kid));
+            key_id_filter.and_then(|kid| Self::resolve_key_id_with_state(state, kid));
 
         let aliases: Vec<Value> = state
             .aliases
@@ -1538,15 +1591,18 @@ impl KmsService {
         let body = req.json_body();
         let key_id = Self::require_key_id(&body)?;
 
-        let resolved = self.resolve_key_id(&key_id).ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "NotFoundException",
-                format!("Invalid keyId {key_id}"),
-            )
-        })?;
+        let resolved = self
+            .resolve_key_id_for(&req.account_id, &req.region, &key_id)
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "NotFoundException",
+                    format!("Invalid keyId {key_id}"),
+                )
+            })?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let key = state.keys.get_mut(&resolved).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1571,15 +1627,18 @@ impl KmsService {
         let body = req.json_body();
         let key_id = Self::require_key_id(&body)?;
 
-        let resolved = self.resolve_key_id(&key_id).ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "NotFoundException",
-                format!("Invalid keyId {key_id}"),
-            )
-        })?;
+        let resolved = self
+            .resolve_key_id_for(&req.account_id, &req.region, &key_id)
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "NotFoundException",
+                    format!("Invalid keyId {key_id}"),
+                )
+            })?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let key = state.keys.get_mut(&resolved).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1603,15 +1662,19 @@ impl KmsService {
         let body = req.json_body();
         let key_id = Self::require_key_id(&body)?;
 
-        let resolved = self.resolve_key_id(&key_id).ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "NotFoundException",
-                format!("Invalid keyId {key_id}"),
-            )
-        })?;
+        let resolved = self
+            .resolve_key_id_for(&req.account_id, &req.region, &key_id)
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "NotFoundException",
+                    format!("Invalid keyId {key_id}"),
+                )
+            })?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = KmsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let key = state.keys.get(&resolved).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1633,10 +1696,11 @@ impl KmsService {
 
     fn update_key_description(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = req.json_body();
-        let resolved = self.resolve_required_key(&body)?;
+        let resolved = self.resolve_required_key(req, &body)?;
         let description = body["Description"].as_str().unwrap_or("").to_string();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let key = state.keys.get_mut(&resolved).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1662,15 +1726,19 @@ impl KmsService {
             ));
         }
 
-        let resolved = self.resolve_key_id(&key_id).ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "NotFoundException",
-                format!("Key '{key_id}' does not exist"),
-            )
-        })?;
+        let resolved = self
+            .resolve_key_id_for(&req.account_id, &req.region, &key_id)
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "NotFoundException",
+                    format!("Key '{key_id}' does not exist"),
+                )
+            })?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = KmsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let key = state.keys.get(&resolved).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1701,17 +1769,20 @@ impl KmsService {
             ));
         }
 
-        let resolved = self.resolve_key_id(&key_id).ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "NotFoundException",
-                format!("Key '{key_id}' does not exist"),
-            )
-        })?;
+        let resolved = self
+            .resolve_key_id_for(&req.account_id, &req.region, &key_id)
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "NotFoundException",
+                    format!("Key '{key_id}' does not exist"),
+                )
+            })?;
 
         let policy = body["Policy"].as_str().unwrap_or("").to_string();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let key = state.keys.get_mut(&resolved).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1726,7 +1797,7 @@ impl KmsService {
 
     fn list_key_policies(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = req.json_body();
-        let _resolved = self.resolve_required_key(&body)?;
+        let _resolved = self.resolve_required_key(req, &body)?;
 
         Ok(AwsResponse::json(
             StatusCode::OK,
@@ -1751,15 +1822,19 @@ impl KmsService {
             ));
         }
 
-        let resolved = self.resolve_key_id(&key_id).ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "NotFoundException",
-                format!("Key '{key_id}' does not exist"),
-            )
-        })?;
+        let resolved = self
+            .resolve_key_id_for(&req.account_id, &req.region, &key_id)
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "NotFoundException",
+                    format!("Key '{key_id}' does not exist"),
+                )
+            })?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = KmsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let key = state.keys.get(&resolved).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1789,15 +1864,18 @@ impl KmsService {
             ));
         }
 
-        let resolved = self.resolve_key_id(&key_id).ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "NotFoundException",
-                format!("Key '{key_id}' does not exist"),
-            )
-        })?;
+        let resolved = self
+            .resolve_key_id_for(&req.account_id, &req.region, &key_id)
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "NotFoundException",
+                    format!("Key '{key_id}' does not exist"),
+                )
+            })?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let key = state.keys.get_mut(&resolved).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1822,15 +1900,18 @@ impl KmsService {
             ));
         }
 
-        let resolved = self.resolve_key_id(&key_id).ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "NotFoundException",
-                format!("Key '{key_id}' does not exist"),
-            )
-        })?;
+        let resolved = self
+            .resolve_key_id_for(&req.account_id, &req.region, &key_id)
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "NotFoundException",
+                    format!("Key '{key_id}' does not exist"),
+                )
+            })?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let key = state.keys.get_mut(&resolved).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1845,9 +1926,10 @@ impl KmsService {
 
     fn rotate_key_on_demand(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = req.json_body();
-        let resolved = self.resolve_required_key(&body)?;
+        let resolved = self.resolve_required_key(req, &body)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let key = state.keys.get_mut(&resolved).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1874,12 +1956,14 @@ impl KmsService {
 
     fn list_key_rotations(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let body = req.json_body();
-        let resolved = self.resolve_required_key(&body)?;
+        let resolved = self.resolve_required_key(req, &body)?;
         validate_optional_json_range("limit", &body["Limit"], 1, 1000)?;
         let limit = body["Limit"].as_i64().unwrap_or(1000) as usize;
         let marker = body["Marker"].as_str();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = KmsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let key = state.keys.get(&resolved).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1945,15 +2029,19 @@ impl KmsService {
             ));
         }
 
-        let resolved = self.resolve_key_id(&key_id).ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "NotFoundException",
-                format!("Key '{key_id}' does not exist"),
-            )
-        })?;
+        let resolved = self
+            .resolve_key_id_for(&req.account_id, &req.region, &key_id)
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "NotFoundException",
+                    format!("Key '{key_id}' does not exist"),
+                )
+            })?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = KmsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let key = state.keys.get(&resolved).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -2023,15 +2111,19 @@ impl KmsService {
         require_non_empty_b64("Message", message_b64)?;
         require_non_empty_b64("Signature", signature_b64)?;
 
-        let resolved = self.resolve_key_id(&key_id).ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "NotFoundException",
-                format!("Key '{key_id}' does not exist"),
-            )
-        })?;
+        let resolved = self
+            .resolve_key_id_for(&req.account_id, &req.region, &key_id)
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "NotFoundException",
+                    format!("Key '{key_id}' does not exist"),
+                )
+            })?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = KmsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let key = state.keys.get(&resolved).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -2068,15 +2160,19 @@ impl KmsService {
         let body = req.json_body();
         let key_id = Self::require_key_id(&body)?;
 
-        let resolved = self.resolve_key_id(&key_id).ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "NotFoundException",
-                format!("Key '{key_id}' does not exist"),
-            )
-        })?;
+        let resolved = self
+            .resolve_key_id_for(&req.account_id, &req.region, &key_id)
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "NotFoundException",
+                    format!("Key '{key_id}' does not exist"),
+                )
+            })?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = KmsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let key = state.keys.get(&resolved).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -2114,13 +2210,15 @@ impl KmsService {
         let body = req.json_body();
         let key_id = Self::require_key_id(&body)?;
 
-        let resolved = self.resolve_key_id(&key_id).ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "NotFoundException",
-                format!("Key '{key_id}' does not exist"),
-            )
-        })?;
+        let resolved = self
+            .resolve_key_id_for(&req.account_id, &req.region, &key_id)
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "NotFoundException",
+                    format!("Key '{key_id}' does not exist"),
+                )
+            })?;
 
         let grantee_principal = body["GranteePrincipal"].as_str().unwrap_or("").to_string();
         let retiring_principal = body["RetiringPrincipal"].as_str().map(|s| s.to_string());
@@ -2142,7 +2240,8 @@ impl KmsService {
         let grant_id = Uuid::new_v4().to_string();
         let grant_token = Uuid::new_v4().to_string();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         state.grants.push(KmsGrant {
             grant_id: grant_id.clone(),
             grant_token: grant_token.clone(),
@@ -2169,17 +2268,21 @@ impl KmsService {
         let body = req.json_body();
         let key_id = Self::require_key_id(&body)?;
 
-        let resolved = self.resolve_key_id(&key_id).ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "NotFoundException",
-                format!("Key '{key_id}' does not exist"),
-            )
-        })?;
+        let resolved = self
+            .resolve_key_id_for(&req.account_id, &req.region, &key_id)
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "NotFoundException",
+                    format!("Key '{key_id}' does not exist"),
+                )
+            })?;
 
         let grant_id_filter = body["GrantId"].as_str();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = KmsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let grants: Vec<Value> = state
             .grants
             .iter()
@@ -2222,7 +2325,9 @@ impl KmsService {
         let limit = body["Limit"].as_i64().unwrap_or(1000) as usize;
         let marker = body["Marker"].as_str();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = KmsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let all_grants: Vec<Value> = state
             .grants
             .iter()
@@ -2269,15 +2374,18 @@ impl KmsService {
         let key_id = Self::require_key_id(&body)?;
         let grant_id = body["GrantId"].as_str().unwrap_or("");
 
-        let resolved = self.resolve_key_id(&key_id).ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "NotFoundException",
-                format!("Key '{key_id}' does not exist"),
-            )
-        })?;
+        let resolved = self
+            .resolve_key_id_for(&req.account_id, &req.region, &key_id)
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "NotFoundException",
+                    format!("Key '{key_id}' does not exist"),
+                )
+            })?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let idx = state
             .grants
             .iter()
@@ -2302,12 +2410,13 @@ impl KmsService {
         let grant_id = body["GrantId"].as_str();
         let key_id = body["KeyId"].as_str();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let idx = if let Some(token) = grant_token {
             state.grants.iter().position(|g| g.grant_token == token)
         } else if let (Some(kid), Some(gid)) = (key_id, grant_id) {
-            let resolved = Self::resolve_key_id_with_state(&state, kid);
+            let resolved = Self::resolve_key_id_with_state(state, kid);
             resolved.and_then(|r| {
                 state
                     .grants
@@ -2337,15 +2446,19 @@ impl KmsService {
         let mac_algorithm = body["MacAlgorithm"].as_str().unwrap_or("").to_string();
         let message_b64 = body["Message"].as_str().unwrap_or("");
 
-        let resolved = self.resolve_key_id(&key_id).ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "NotFoundException",
-                format!("Key '{key_id}' does not exist"),
-            )
-        })?;
+        let resolved = self
+            .resolve_key_id_for(&req.account_id, &req.region, &key_id)
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "NotFoundException",
+                    format!("Key '{key_id}' does not exist"),
+                )
+            })?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = KmsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let key = state.keys.get(&resolved).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -2397,15 +2510,19 @@ impl KmsService {
         let message_b64 = body["Message"].as_str().unwrap_or("");
         let mac_b64 = body["Mac"].as_str().unwrap_or("");
 
-        let resolved = self.resolve_key_id(&key_id).ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "NotFoundException",
-                format!("Key '{key_id}' does not exist"),
-            )
-        })?;
+        let resolved = self
+            .resolve_key_id_for(&req.account_id, &req.region, &key_id)
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "NotFoundException",
+                    format!("Key '{key_id}' does not exist"),
+                )
+            })?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = KmsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let key = state.keys.get(&resolved).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -2457,15 +2574,18 @@ impl KmsService {
         let key_id = Self::require_key_id(&body)?;
         let replica_region = body["ReplicaRegion"].as_str().unwrap_or("").to_string();
 
-        let resolved = self.resolve_key_id(&key_id).ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "NotFoundException",
-                format!("Key '{key_id}' does not exist"),
-            )
-        })?;
+        let resolved = self
+            .resolve_key_id_for(&req.account_id, &req.region, &key_id)
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "NotFoundException",
+                    format!("Key '{key_id}' does not exist"),
+                )
+            })?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Clone the source key once and drop the borrow — the replica reuses
         // every field except the region-dependent ones.
@@ -2548,15 +2668,19 @@ impl KmsService {
             .unwrap_or("RSA_2048")
             .to_string();
 
-        let resolved = self.resolve_key_id(&key_id).ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "NotFoundException",
-                format!("Key '{key_id}' does not exist"),
-            )
-        })?;
+        let resolved = self
+            .resolve_key_id_for(&req.account_id, &req.region, &key_id)
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "NotFoundException",
+                    format!("Key '{key_id}' does not exist"),
+                )
+            })?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = KmsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let key = state.keys.get(&resolved).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -2610,15 +2734,19 @@ impl KmsService {
             .unwrap_or("RSA_2048")
             .to_string();
 
-        let resolved = self.resolve_key_id(&key_id).ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "NotFoundException",
-                format!("Key '{key_id}' does not exist"),
-            )
-        })?;
+        let resolved = self
+            .resolve_key_id_for(&req.account_id, &req.region, &key_id)
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "NotFoundException",
+                    format!("Key '{key_id}' does not exist"),
+                )
+            })?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = KmsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let key = state.keys.get(&resolved).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -2674,15 +2802,19 @@ impl KmsService {
             )
         })?;
 
-        let resolved = self.resolve_key_id(&key_id).ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "NotFoundException",
-                format!("Key '{key_id}' does not exist"),
-            )
-        })?;
+        let resolved = self
+            .resolve_key_id_for(&req.account_id, &req.region, &key_id)
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "NotFoundException",
+                    format!("Key '{key_id}' does not exist"),
+                )
+            })?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = KmsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let key = state.keys.get(&resolved).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -2741,15 +2873,19 @@ impl KmsService {
         let body = req.json_body();
         let key_id = Self::require_key_id(&body)?;
 
-        let resolved = self.resolve_key_id(&key_id).ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "NotFoundException",
-                format!("Key '{key_id}' does not exist"),
-            )
-        })?;
+        let resolved = self
+            .resolve_key_id_for(&req.account_id, &req.region, &key_id)
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "NotFoundException",
+                    format!("Key '{key_id}' does not exist"),
+                )
+            })?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = KmsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let key = state.keys.get(&resolved).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -2807,15 +2943,18 @@ impl KmsService {
             )
         })?;
 
-        let resolved = self.resolve_key_id(&key_id).ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "NotFoundException",
-                format!("Key '{key_id}' does not exist"),
-            )
-        })?;
+        let resolved = self
+            .resolve_key_id_for(&req.account_id, &req.region, &key_id)
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "NotFoundException",
+                    format!("Key '{key_id}' does not exist"),
+                )
+            })?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let key = state.keys.get_mut(&resolved).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -2866,15 +3005,18 @@ impl KmsService {
         let body = req.json_body();
         let key_id = Self::require_key_id(&body)?;
 
-        let resolved = self.resolve_key_id(&key_id).ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "NotFoundException",
-                format!("Key '{key_id}' does not exist"),
-            )
-        })?;
+        let resolved = self
+            .resolve_key_id_for(&req.account_id, &req.region, &key_id)
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "NotFoundException",
+                    format!("Key '{key_id}' does not exist"),
+                )
+            })?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let key = state.keys.get_mut(&resolved).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -2913,15 +3055,18 @@ impl KmsService {
             })?
             .to_string();
 
-        let resolved = self.resolve_key_id(&key_id).ok_or_else(|| {
-            AwsServiceError::aws_error(
-                StatusCode::BAD_REQUEST,
-                "NotFoundException",
-                format!("Key '{key_id}' does not exist"),
-            )
-        })?;
+        let resolved = self
+            .resolve_key_id_for(&req.account_id, &req.region, &key_id)
+            .ok_or_else(|| {
+                AwsServiceError::aws_error(
+                    StatusCode::BAD_REQUEST,
+                    "NotFoundException",
+                    format!("Key '{key_id}' does not exist"),
+                )
+            })?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let account_id = state.account_id.clone();
         let key = state.keys.get_mut(&resolved).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -2975,7 +3120,8 @@ impl KmsService {
             &["AWS_CLOUDHSM", "EXTERNAL_KEY_STORE"],
         )?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Name must be unique
         if state
@@ -3033,7 +3179,8 @@ impl KmsService {
             })?
             .to_string();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let store = state.custom_key_stores.get(&store_id).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -3072,7 +3219,9 @@ impl KmsService {
         let limit = body["Limit"].as_i64().unwrap_or(1000) as usize;
         let marker = body["Marker"].as_str();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = KmsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let mut stores: Vec<&CustomKeyStore> = state
             .custom_key_stores
@@ -3142,7 +3291,8 @@ impl KmsService {
             })?
             .to_string();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let store = state.custom_key_stores.get_mut(&store_id).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -3174,7 +3324,8 @@ impl KmsService {
             })?
             .to_string();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let store = state.custom_key_stores.get_mut(&store_id).ok_or_else(|| {
             AwsServiceError::aws_error(
@@ -3203,7 +3354,8 @@ impl KmsService {
             })?
             .to_string();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Check uniqueness of new name before borrowing store mutably
         if let Some(new_name) = body["NewCustomKeyStoreName"].as_str() {
@@ -3551,10 +3703,13 @@ mod tests {
     use std::sync::Arc;
 
     fn make_service() -> KmsService {
-        let state: SharedKmsState = Arc::new(RwLock::new(crate::state::KmsState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state: SharedKmsState = Arc::new(RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4566",
+            ),
+        ));
         KmsService::new(state)
     }
 
@@ -3848,7 +4003,8 @@ mod tests {
 
         // Key should be enabled
         {
-            let state = svc.state.read();
+            let _accts = svc.state.read();
+            let state = _accts.default_ref();
             let key = state.keys.get(&key_id).unwrap();
             assert!(key.imported_key_material);
             assert!(key.enabled);
@@ -3860,7 +4016,8 @@ mod tests {
 
         // Key should be disabled and pending import
         {
-            let state = svc.state.read();
+            let _accts = svc.state.read();
+            let state = _accts.default_ref();
             let key = state.keys.get(&key_id).unwrap();
             assert!(!key.imported_key_material);
             assert!(!key.enabled);
@@ -3907,7 +4064,8 @@ mod tests {
         );
         svc.update_primary_region(&req).unwrap();
 
-        let state = svc.state.read();
+        let _accts = svc.state.read();
+        let state = _accts.default_ref();
         let key = state.keys.get(&key_id).unwrap();
         assert_eq!(key.primary_region.as_deref(), Some("eu-west-1"));
         assert!(key.arn.contains("eu-west-1"));
@@ -4339,7 +4497,7 @@ mod tests {
         let key_id = create_key(&svc);
 
         // Delete the key from state directly to simulate inconsistency
-        svc.state.write().keys.remove(&key_id);
+        svc.state.write().default_mut().keys.remove(&key_id);
 
         let req = make_request("EnableKey", json!({ "KeyId": key_id }));
         let result = svc.enable_key(&req);
@@ -4350,7 +4508,7 @@ mod tests {
     fn disable_key_with_nonexistent_id_returns_error() {
         let svc = make_service();
         let key_id = create_key(&svc);
-        svc.state.write().keys.remove(&key_id);
+        svc.state.write().default_mut().keys.remove(&key_id);
 
         let req = make_request("DisableKey", json!({ "KeyId": key_id }));
         let result = svc.disable_key(&req);
@@ -4361,7 +4519,7 @@ mod tests {
     fn tag_resource_with_nonexistent_key_returns_error() {
         let svc = make_service();
         let key_id = create_key(&svc);
-        svc.state.write().keys.remove(&key_id);
+        svc.state.write().default_mut().keys.remove(&key_id);
 
         let req = make_request(
             "TagResource",
@@ -4387,7 +4545,8 @@ mod tests {
 
         // Verify key is pending deletion
         {
-            let state = svc.state.read();
+            let _accts = svc.state.read();
+            let state = _accts.default_ref();
             let key = state.keys.get(&key_id).unwrap();
             assert_eq!(key.key_state, "PendingDeletion");
             assert!(!key.enabled);
@@ -4402,7 +4561,8 @@ mod tests {
 
         // Key should be disabled (not enabled) with no deletion date
         {
-            let state = svc.state.read();
+            let _accts = svc.state.read();
+            let state = _accts.default_ref();
             let key = state.keys.get(&key_id).unwrap();
             assert_eq!(key.key_state, "Disabled");
             assert!(key.deletion_date.is_none());
@@ -4413,7 +4573,8 @@ mod tests {
         svc.enable_key(&req).unwrap();
 
         {
-            let state = svc.state.read();
+            let _accts = svc.state.read();
+            let state = _accts.default_ref();
             let key = state.keys.get(&key_id).unwrap();
             assert!(key.enabled);
             assert_eq!(key.key_state, "Enabled");
@@ -4896,7 +5057,8 @@ mod tests {
 
         // Verify alias points to key A
         {
-            let state = svc.state.read();
+            let _accts = svc.state.read();
+            let state = _accts.default_ref();
             let alias = state.aliases.get("alias/switchable").unwrap();
             assert_eq!(alias.target_key_id, key_a);
         }
@@ -4910,7 +5072,8 @@ mod tests {
 
         // Verify alias now points to key B
         {
-            let state = svc.state.read();
+            let _accts = svc.state.read();
+            let state = _accts.default_ref();
             let alias = state.aliases.get("alias/switchable").unwrap();
             assert_eq!(alias.target_key_id, key_b);
         }
@@ -4923,7 +5086,8 @@ mod tests {
 
         // Initially empty description
         {
-            let state = svc.state.read();
+            let _accts = svc.state.read();
+            let state = _accts.default_ref();
             let key = state.keys.get(&key_id).unwrap();
             assert_eq!(key.description, "");
         }
@@ -4936,7 +5100,8 @@ mod tests {
         svc.update_key_description(&req).unwrap();
 
         {
-            let state = svc.state.read();
+            let _accts = svc.state.read();
+            let state = _accts.default_ref();
             let key = state.keys.get(&key_id).unwrap();
             assert_eq!(key.description, "new description");
         }
@@ -4949,7 +5114,8 @@ mod tests {
         svc.update_key_description(&req).unwrap();
 
         {
-            let state = svc.state.read();
+            let _accts = svc.state.read();
+            let state = _accts.default_ref();
             let key = state.keys.get(&key_id).unwrap();
             assert_eq!(key.description, "updated again");
         }

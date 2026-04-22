@@ -69,6 +69,23 @@ impl FakeCloud {
         Self::parse(resp).await
     }
 
+    /// Reset a single service's state for a specific account only.
+    pub async fn reset_service_for_account(
+        &self,
+        service: &str,
+        account_id: &str,
+    ) -> Result<ResetServiceResponse, Error> {
+        let resp = self
+            .client
+            .post(format!(
+                "{}/_fakecloud/reset/{}/{}",
+                self.base_url, service, account_id
+            ))
+            .send()
+            .await?;
+        Self::parse(resp).await
+    }
+
     // ── Sub-clients ─────────────────────────────────────────────────
 
     pub fn lambda(&self) -> LambdaClient<'_> {

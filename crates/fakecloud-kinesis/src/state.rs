@@ -5,7 +5,14 @@ use chrono::{DateTime, Duration, Utc};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
-pub type SharedKinesisState = Arc<RwLock<KinesisState>>;
+pub type SharedKinesisState =
+    Arc<RwLock<fakecloud_core::multi_account::MultiAccountState<KinesisState>>>;
+
+impl fakecloud_core::multi_account::AccountState for KinesisState {
+    fn new_for_account(account_id: &str, region: &str, _endpoint: &str) -> Self {
+        Self::new(account_id, region)
+    }
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct KinesisState {
@@ -165,10 +172,13 @@ impl KinesisState {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct KinesisSnapshot {
     pub schema_version: u32,
-    pub state: KinesisState,
+    #[serde(default)]
+    pub accounts: Option<fakecloud_core::multi_account::MultiAccountState<KinesisState>>,
+    #[serde(default)]
+    pub state: Option<KinesisState>,
 }
 
-pub const KINESIS_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+pub const KINESIS_SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 
 #[cfg(test)]
 mod tests {

@@ -149,7 +149,8 @@ pub fn classify_recipients(recipients: &[String]) -> (Vec<SesEventType>, bool) {
 /// Check if any recipient is on the suppression list.
 /// Returns the suppressed address if found.
 pub fn check_suppression_list(ses_state: &SharedSesState, recipients: &[String]) -> Option<String> {
-    let state = ses_state.read();
+    let mas = ses_state.read();
+    let state = mas.default_ref();
     for addr in recipients {
         if state.suppressed_destinations.contains_key(addr) {
             return Some(addr.clone());
@@ -170,7 +171,8 @@ pub fn resolve_config_set(
     }
 
     // Check identity's default configuration set
-    let state = ses_state.read();
+    let mas = ses_state.read();
+    let state = mas.default_ref();
     if let Some(identity) = state.identities.get(from_address) {
         return identity.configuration_set_name.clone();
     }
@@ -190,7 +192,8 @@ fn get_matching_destinations(
     config_set_name: &str,
     event_type: SesEventType,
 ) -> Vec<EventDestination> {
-    let state = ses_state.read();
+    let mas = ses_state.read();
+    let state = mas.default_ref();
     let event_type_str = event_type.as_str();
 
     state
@@ -286,7 +289,8 @@ pub fn process_send_events(
 
     // Handle suppression list addition
     if add_to_suppression {
-        let mut state = ctx.ses_state.write();
+        let mut mas = ctx.ses_state.write();
+        let state = mas.default_mut();
         for addr in &email.to {
             if addr == SUPPRESSION_ADDR {
                 state.suppressed_destinations.insert(
@@ -466,5 +470,132 @@ mod tests {
         let (events, suppress) = classify_recipients(&[]);
         assert!(!events.is_empty());
         assert!(!suppress);
+    }
+
+    fn shared_state() -> SharedSesState {
+        use fakecloud_core::multi_account::MultiAccountState;
+        Arc::new(parking_lot::RwLock::new(MultiAccountState::new(
+            "123456789012",
+            "us-east-1",
+            "http://localhost:4566",
+        )))
+    }
+
+    #[test]
+    fn check_suppression_list_finds_suppressed() {
+        let state = shared_state();
+        state.write().default_mut().suppressed_destinations.insert(
+            "blocked@example.com".to_string(),
+            SuppressedDestination {
+                email_address: "blocked@example.com".to_string(),
+                reason: "BOUNCE".to_string(),
+                last_update_time: Utc::now(),
+            },
+        );
+        let hit = check_suppression_list(
+            &state,
+            &[
+                "ok@example.com".to_string(),
+                "blocked@example.com".to_string(),
+            ],
+        );
+        assert_eq!(hit.as_deref(), Some("blocked@example.com"));
+    }
+
+    #[test]
+    fn check_suppression_list_none_when_clean() {
+        let state = shared_state();
+        let hit = check_suppression_list(&state, &["ok@example.com".to_string()]);
+        assert!(hit.is_none());
+    }
+
+    fn make_identity(name: &str, config_set: Option<&str>) -> crate::state::EmailIdentity {
+        crate::state::EmailIdentity {
+            identity_name: name.to_string(),
+            identity_type: "EmailAddress".to_string(),
+            verified: true,
+            created_at: Utc::now(),
+            dkim_signing_enabled: false,
+            dkim_signing_attributes_origin: "AWS_SES".to_string(),
+            dkim_domain_signing_private_key: None,
+            dkim_domain_signing_selector: None,
+            dkim_next_signing_key_length: None,
+            email_forwarding_enabled: true,
+            mail_from_domain: None,
+            mail_from_behavior_on_mx_failure: "USE_DEFAULT_VALUE".to_string(),
+            configuration_set_name: config_set.map(|s| s.to_string()),
+        }
+    }
+
+    #[test]
+    fn resolve_config_set_uses_explicit_arg_first() {
+        let state = shared_state();
+        let resolved = resolve_config_set(&state, Some("my-cs"), "sender@example.com");
+        assert_eq!(resolved.as_deref(), Some("my-cs"));
+    }
+
+    #[test]
+    fn resolve_config_set_uses_identity_default_when_no_explicit() {
+        let state = shared_state();
+        state.write().default_mut().identities.insert(
+            "sender@example.com".to_string(),
+            make_identity("sender@example.com", Some("identity-cs")),
+        );
+        let resolved = resolve_config_set(&state, None, "sender@example.com");
+        assert_eq!(resolved.as_deref(), Some("identity-cs"));
+    }
+
+    #[test]
+    fn resolve_config_set_falls_back_to_domain_identity() {
+        let state = shared_state();
+        state.write().default_mut().identities.insert(
+            "example.com".to_string(),
+            make_identity("example.com", Some("domain-cs")),
+        );
+        let resolved = resolve_config_set(&state, None, "sender@example.com");
+        assert_eq!(resolved.as_deref(), Some("domain-cs"));
+    }
+
+    #[test]
+    fn resolve_config_set_none_when_nothing_set() {
+        let state = shared_state();
+        assert!(resolve_config_set(&state, None, "sender@example.com").is_none());
+    }
+
+    #[test]
+    fn get_matching_destinations_filters_by_enabled_and_event_type() {
+        let state = shared_state();
+        state.write().default_mut().event_destinations.insert(
+            "cs".to_string(),
+            vec![
+                EventDestination {
+                    name: "sns-dest".to_string(),
+                    enabled: true,
+                    matching_event_types: vec!["SEND".to_string(), "BOUNCE".to_string()],
+                    kinesis_firehose_destination: None,
+                    cloud_watch_destination: None,
+                    sns_destination: Some(serde_json::json!({"TopicArn": "arn"})),
+                    event_bridge_destination: None,
+                    pinpoint_destination: None,
+                },
+                EventDestination {
+                    name: "disabled".to_string(),
+                    enabled: false,
+                    matching_event_types: vec!["SEND".to_string()],
+                    kinesis_firehose_destination: None,
+                    cloud_watch_destination: None,
+                    sns_destination: None,
+                    event_bridge_destination: None,
+                    pinpoint_destination: None,
+                },
+            ],
+        );
+        let dests = get_matching_destinations(&state, "cs", SesEventType::Send);
+        assert_eq!(dests.len(), 1);
+        assert_eq!(dests[0].name, "sns-dest");
+        let none = get_matching_destinations(&state, "cs", SesEventType::Delivery);
+        assert!(none.is_empty());
+        let missing = get_matching_destinations(&state, "unknown", SesEventType::Send);
+        assert!(missing.is_empty());
     }
 }

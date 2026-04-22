@@ -6,7 +6,8 @@ use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 
 use crate::state::{
     CustomVerificationEmailTemplate, DedicatedIp, DedicatedIpPool, ExportJob, ImportJob,
-    MultiRegionEndpoint, ReputationEntityState, SentEmail, Tenant, TenantResourceAssociation,
+    MultiRegionEndpoint, ReputationEntityState, SentEmail, SesState, Tenant,
+    TenantResourceAssociation,
 };
 
 use super::SesV2Service;
@@ -16,8 +17,10 @@ impl SesV2Service {
 
     /// Validate that a resource ARN refers to an existing resource.
     /// Returns `None` if the resource exists, or `Some(error_response)` if not.
-    pub(super) fn validate_resource_arn(&self, arn: &str) -> Option<AwsResponse> {
-        let state = self.state.read();
+    pub(super) fn validate_resource_arn(&self, arn: &str, req: &AwsRequest) -> Option<AwsResponse> {
+        let accounts = self.state.read();
+        let empty = SesState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         // Parse ARN: arn:aws:ses:{region}:{account}:{resource-type}/{name}
         let parts: Vec<&str> = arn.split(':').collect();
@@ -76,11 +79,12 @@ impl SesV2Service {
             }
         };
 
-        if let Some(resp) = self.validate_resource_arn(&arn) {
+        if let Some(resp) = self.validate_resource_arn(&arn, req) {
             return Ok(resp);
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let tag_map = state.tags.entry(arn).or_default();
         for tag in tags_arr {
             if let (Some(k), Some(v)) = (tag["Key"].as_str(), tag["Value"].as_str()) {
@@ -104,7 +108,7 @@ impl SesV2Service {
             }
         };
 
-        if let Some(resp) = self.validate_resource_arn(&arn) {
+        if let Some(resp) = self.validate_resource_arn(&arn, req) {
             return Ok(resp);
         }
 
@@ -114,7 +118,8 @@ impl SesV2Service {
             .map(|(_, v)| v.into_owned())
             .collect();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         if let Some(tag_map) = state.tags.get_mut(&arn) {
             for key in &tag_keys {
                 tag_map.remove(key);
@@ -139,11 +144,13 @@ impl SesV2Service {
             }
         };
 
-        if let Some(resp) = self.validate_resource_arn(&arn) {
+        if let Some(resp) = self.validate_resource_arn(&arn, req) {
             return Ok(resp);
         }
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SesState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let tags = state.tags.get(&arn);
         let tags_json = match tags {
             Some(t) => fakecloud_core::tags::tags_to_json(t, "Key", "Value"),
@@ -188,7 +195,8 @@ impl SesV2Service {
             .unwrap_or("")
             .to_string();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if state
             .custom_verification_email_templates
@@ -223,8 +231,11 @@ impl SesV2Service {
     pub(super) fn get_custom_verification_email_template(
         &self,
         name: &str,
+        req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SesState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let tmpl = match state.custom_verification_email_templates.get(name) {
             Some(t) => t,
             None => {
@@ -252,7 +263,9 @@ impl SesV2Service {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SesState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let page_size: usize = req
             .query_params
@@ -309,7 +322,8 @@ impl SesV2Service {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let body: Value = Self::parse_body(req)?;
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let tmpl = match state.custom_verification_email_templates.get_mut(name) {
             Some(t) => t,
@@ -344,8 +358,10 @@ impl SesV2Service {
     pub(super) fn delete_custom_verification_email_template(
         &self,
         name: &str,
+        req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if state
             .custom_verification_email_templates
@@ -392,7 +408,9 @@ impl SesV2Service {
 
         // Verify template exists
         {
-            let state = self.state.read();
+            let accounts = self.state.read();
+            let empty = SesState::new(&req.account_id, &req.region);
+            let state = accounts.get(&req.account_id).unwrap_or(&empty);
             if !state
                 .custom_verification_email_templates
                 .contains_key(&template_name)
@@ -426,7 +444,11 @@ impl SesV2Service {
             timestamp: Utc::now(),
         };
 
-        self.state.write().sent_emails.push(sent);
+        self.state
+            .write()
+            .get_or_create(&req.account_id)
+            .sent_emails
+            .push(sent);
 
         let response = json!({
             "MessageId": message_id,
@@ -457,7 +479,8 @@ impl SesV2Service {
             .unwrap_or("STANDARD")
             .to_string();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if state.dedicated_ip_pools.contains_key(&pool_name) {
             return Ok(Self::json_error(
@@ -495,8 +518,13 @@ impl SesV2Service {
         Ok(AwsResponse::json(StatusCode::OK, "{}"))
     }
 
-    pub(super) fn list_dedicated_ip_pools(&self) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+    pub(super) fn list_dedicated_ip_pools(
+        &self,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let accounts = self.state.read();
+        let empty = SesState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let pools: Vec<&str> = state
             .dedicated_ip_pools
             .keys()
@@ -509,8 +537,10 @@ impl SesV2Service {
     pub(super) fn delete_dedicated_ip_pool(
         &self,
         name: &str,
+        req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         if state.dedicated_ip_pools.remove(name).is_none() {
             return Ok(Self::json_error(
                 StatusCode::NOT_FOUND,
@@ -540,7 +570,8 @@ impl SesV2Service {
             }
         };
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let pool = match state.dedicated_ip_pools.get_mut(name) {
             Some(p) => p,
             None => {
@@ -585,8 +616,14 @@ impl SesV2Service {
 
     // ── Dedicated IPs ───────────────────────────────────────────────────
 
-    pub(super) fn get_dedicated_ip(&self, ip: &str) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+    pub(super) fn get_dedicated_ip(
+        &self,
+        ip: &str,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let accounts = self.state.read();
+        let empty = SesState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let dip = match state.dedicated_ips.get(ip) {
             Some(d) => d,
             None => {
@@ -612,7 +649,9 @@ impl SesV2Service {
         &self,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SesState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let pool_filter = req.query_params.get("PoolName").map(|s| s.as_str());
         let ips: Vec<Value> = state
             .dedicated_ips
@@ -651,7 +690,8 @@ impl SesV2Service {
             }
         };
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if !state.dedicated_ip_pools.contains_key(&dest_pool) {
             return Ok(Self::json_error(
@@ -692,7 +732,8 @@ impl SesV2Service {
             }
         };
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let dip = match state.dedicated_ips.get_mut(ip) {
             Some(d) => d,
             None => {
@@ -730,7 +771,8 @@ impl SesV2Service {
             }
         };
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         if state.multi_region_endpoints.contains_key(&endpoint_name) {
             return Ok(Self::json_error(
                 StatusCode::CONFLICT,
@@ -784,8 +826,11 @@ impl SesV2Service {
     pub(super) fn get_multi_region_endpoint(
         &self,
         name: &str,
+        req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SesState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let ep = match state.multi_region_endpoints.get(name) {
             Some(e) => e,
             None => {
@@ -810,8 +855,13 @@ impl SesV2Service {
         Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
     }
 
-    pub(super) fn list_multi_region_endpoints(&self) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+    pub(super) fn list_multi_region_endpoints(
+        &self,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let accounts = self.state.read();
+        let empty = SesState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let endpoints: Vec<Value> = state
             .multi_region_endpoints
             .values()
@@ -833,8 +883,10 @@ impl SesV2Service {
     pub(super) fn delete_multi_region_endpoint(
         &self,
         name: &str,
+        req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         if state.multi_region_endpoints.remove(name).is_none() {
             return Ok(Self::json_error(
                 StatusCode::NOT_FOUND,
@@ -890,14 +942,24 @@ impl SesV2Service {
             failed_records_count: 0,
         };
 
-        self.state.write().import_jobs.insert(job_id.clone(), job);
+        self.state
+            .write()
+            .get_or_create(&req.account_id)
+            .import_jobs
+            .insert(job_id.clone(), job);
 
         let response = json!({ "JobId": job_id });
         Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
     }
 
-    pub(super) fn get_import_job(&self, job_id: &str) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+    pub(super) fn get_import_job(
+        &self,
+        job_id: &str,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let accounts = self.state.read();
+        let empty = SesState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let job = match state.import_jobs.get(job_id) {
             Some(j) => j,
             None => {
@@ -932,7 +994,9 @@ impl SesV2Service {
         let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
         let filter_type = body["ImportDestinationType"].as_str();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SesState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let jobs: Vec<Value> = state
             .import_jobs
             .values()
@@ -1026,14 +1090,24 @@ impl SesV2Service {
             completed_timestamp: Some(now),
         };
 
-        self.state.write().export_jobs.insert(job_id.clone(), job);
+        self.state
+            .write()
+            .get_or_create(&req.account_id)
+            .export_jobs
+            .insert(job_id.clone(), job);
 
         let response = json!({ "JobId": job_id });
         Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
     }
 
-    pub(super) fn get_export_job(&self, job_id: &str) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+    pub(super) fn get_export_job(
+        &self,
+        job_id: &str,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let accounts = self.state.read();
+        let empty = SesState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let job = match state.export_jobs.get(job_id) {
             Some(j) => j,
             None => {
@@ -1072,7 +1146,9 @@ impl SesV2Service {
         let filter_status = body["JobStatus"].as_str();
         let filter_type = body["ExportSourceType"].as_str();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SesState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let jobs: Vec<Value> = state
             .export_jobs
             .values()
@@ -1107,8 +1183,13 @@ impl SesV2Service {
         Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
     }
 
-    pub(super) fn cancel_export_job(&self, job_id: &str) -> Result<AwsResponse, AwsServiceError> {
-        let mut state = self.state.write();
+    pub(super) fn cancel_export_job(
+        &self,
+        job_id: &str,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let job = match state.export_jobs.get_mut(job_id) {
             Some(j) => j,
             None => {
@@ -1147,7 +1228,8 @@ impl SesV2Service {
             }
         };
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if state.tenants.contains_key(&tenant_name) {
             return Ok(Self::json_error(
@@ -1205,7 +1287,9 @@ impl SesV2Service {
             }
         };
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SesState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let tenant = match state.tenants.get(tenant_name) {
             Some(t) => t,
             None => {
@@ -1230,8 +1314,10 @@ impl SesV2Service {
         Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
     }
 
-    pub(super) fn list_tenants(&self, _req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+    pub(super) fn list_tenants(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let accounts = self.state.read();
+        let empty = SesState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let tenants: Vec<Value> = state
             .tenants
             .values()
@@ -1262,7 +1348,8 @@ impl SesV2Service {
             }
         };
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if state.tenants.remove(tenant_name).is_none() {
             return Ok(Self::json_error(
@@ -1303,7 +1390,8 @@ impl SesV2Service {
             }
         };
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if !state.tenants.contains_key(&tenant_name) {
             return Ok(Self::json_error(
@@ -1353,7 +1441,8 @@ impl SesV2Service {
             }
         };
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if let Some(assocs) = state.tenant_resource_associations.get_mut(tenant_name) {
             let before = assocs.len();
@@ -1392,7 +1481,9 @@ impl SesV2Service {
             }
         };
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SesState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         if !state.tenants.contains_key(tenant_name) {
             return Ok(Self::json_error(
@@ -1438,7 +1529,9 @@ impl SesV2Service {
             }
         };
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SesState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let mut resource_tenants: Vec<Value> = Vec::new();
 
         for (tenant_name, assocs) in &state.tenant_resource_associations {
@@ -1466,9 +1559,12 @@ impl SesV2Service {
         &self,
         entity_type: &str,
         entity_ref: &str,
+        req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let key = format!("{}/{}", entity_type, entity_ref);
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SesState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let entity = match state.reputation_entities.get(&key) {
             Some(e) => e,
@@ -1510,9 +1606,11 @@ impl SesV2Service {
 
     pub(super) fn list_reputation_entities(
         &self,
-        _req: &AwsRequest,
+        req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SesState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let entities: Vec<Value> = state
             .reputation_entities
             .values()
@@ -1542,7 +1640,8 @@ impl SesV2Service {
             .to_string();
 
         let key = format!("{}/{}", entity_type, entity_ref);
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let entity =
             state
@@ -1573,7 +1672,8 @@ impl SesV2Service {
             .map(|s| s.to_string());
 
         let key = format!("{}/{}", entity_type, entity_ref);
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let entity =
             state

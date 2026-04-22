@@ -8,6 +8,8 @@ use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 
 use crate::state::Group;
 
+use crate::state::CognitoState;
+
 use super::{ensure_user_pool_exists, group_to_json, require_str, user_to_json, CognitoService};
 
 impl CognitoService {
@@ -20,9 +22,10 @@ impl CognitoService {
         let precedence = body["Precedence"].as_i64();
         let role_arn = body["RoleArn"].as_str().map(|s| s.to_string());
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         let pool_groups = state.groups.entry(pool_id.to_string()).or_default();
         if pool_groups.contains_key(group_name) {
@@ -57,9 +60,10 @@ impl CognitoService {
         let group_name = require_str(&body, "GroupName")?;
         let pool_id = require_str(&body, "UserPoolId")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         let removed = state
             .groups
@@ -90,9 +94,11 @@ impl CognitoService {
         let group_name = require_str(&body, "GroupName")?;
         let pool_id = require_str(&body, "UserPoolId")?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = CognitoState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         let group = state
             .groups
@@ -117,9 +123,10 @@ impl CognitoService {
         let group_name = require_str(&body, "GroupName")?;
         let pool_id = require_str(&body, "UserPoolId")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         let group = state
             .groups
@@ -159,9 +166,11 @@ impl CognitoService {
         let limit = body["Limit"].as_i64().unwrap_or(60).clamp(1, 60) as usize;
         let next_token = body["NextToken"].as_str();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = CognitoState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         let empty = std::collections::HashMap::new();
         let pool_groups = state.groups.get(pool_id).unwrap_or(&empty);
@@ -206,9 +215,10 @@ impl CognitoService {
         let username = require_str(&body, "Username")?;
         let group_name = require_str(&body, "GroupName")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         // Validate user exists
         if !state
@@ -260,9 +270,10 @@ impl CognitoService {
         let username = require_str(&body, "Username")?;
         let group_name = require_str(&body, "GroupName")?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         // Validate user exists
         if !state
@@ -312,9 +323,11 @@ impl CognitoService {
         let limit = body["Limit"].as_i64().unwrap_or(60).clamp(1, 60) as usize;
         let next_token = body["NextToken"].as_str();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = CognitoState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         // Validate user exists
         if !state
@@ -386,9 +399,11 @@ impl CognitoService {
         let limit = body["Limit"].as_i64().unwrap_or(60).clamp(1, 60) as usize;
         let next_token = body["NextToken"].as_str();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = CognitoState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
-        ensure_user_pool_exists(&state, pool_id)?;
+        ensure_user_pool_exists(state, pool_id)?;
 
         // Validate group exists
         if !state

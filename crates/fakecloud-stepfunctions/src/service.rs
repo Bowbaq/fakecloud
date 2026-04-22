@@ -17,7 +17,8 @@ use fakecloud_persistence::SnapshotStore;
 use crate::interpreter;
 use crate::state::{
     Execution, ExecutionStatus, SharedStepFunctionsState, StateMachine, StateMachineStatus,
-    StateMachineType, StepFunctionsSnapshot, STEPFUNCTIONS_SNAPSHOT_SCHEMA_VERSION,
+    StateMachineType, StepFunctionsSnapshot, StepFunctionsState,
+    STEPFUNCTIONS_SNAPSHOT_SCHEMA_VERSION,
 };
 
 const SUPPORTED: &[&str] = &[
@@ -78,7 +79,8 @@ impl StepFunctionsService {
         let _guard = self.snapshot_lock.lock().await;
         let snapshot = StepFunctionsSnapshot {
             schema_version: STEPFUNCTIONS_SNAPSHOT_SCHEMA_VERSION,
-            state: self.state.read().clone(),
+            state: None,
+            accounts: Some(self.state.read().clone()),
         };
         let join = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
             let bytes = serde_json::to_vec(&snapshot)
@@ -181,7 +183,8 @@ impl StepFunctionsService {
             StateMachineType::Standard
         };
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let arn = state.state_machine_arn(name);
 
         // Check if name already exists
@@ -242,7 +245,9 @@ impl StepFunctionsService {
             .ok_or_else(|| missing("stateMachineArn"))?;
         validate_arn(arn)?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = StepFunctionsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let sm = state
             .state_machines
             .get(arn)
@@ -257,7 +262,9 @@ impl StepFunctionsService {
         validate_range_i64("maxResults", max_results as i64, 1, 1000)?;
         let next_token = body["nextToken"].as_str();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = StepFunctionsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let mut machines: Vec<&StateMachine> = state.state_machines.values().collect();
         machines.sort_by(|a, b| a.name.cmp(&b.name));
 
@@ -290,7 +297,8 @@ impl StepFunctionsService {
             .ok_or_else(|| missing("stateMachineArn"))?;
         validate_arn(arn)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         // AWS returns success even if it doesn't exist
         state.state_machines.remove(arn);
 
@@ -305,7 +313,8 @@ impl StepFunctionsService {
             .ok_or_else(|| missing("stateMachineArn"))?;
         validate_arn(arn)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let sm = state
             .state_machines
             .get_mut(arn)
@@ -379,7 +388,8 @@ impl StepFunctionsService {
             validate_name(name)?;
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let sm = state
             .state_machines
             .get(sm_arn)
@@ -415,7 +425,7 @@ impl StepFunctionsService {
         };
 
         state.executions.insert(exec_arn.clone(), execution);
-        drop(state);
+        drop(accounts);
 
         // Spawn async execution
         let shared_state = self.state.clone();
@@ -451,7 +461,8 @@ impl StepFunctionsService {
         let error = body["error"].as_str().map(|s| s.to_string());
         let cause = body["cause"].as_str().map(|s| s.to_string());
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let exec = state
             .executions
             .get_mut(exec_arn)
@@ -483,7 +494,9 @@ impl StepFunctionsService {
             .as_str()
             .ok_or_else(|| missing("executionArn"))?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = StepFunctionsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let exec = state
             .executions
             .get(exec_arn)
@@ -505,7 +518,9 @@ impl StepFunctionsService {
         let next_token = body["nextToken"].as_str();
         let status_filter = body["statusFilter"].as_str();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = StepFunctionsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         // Verify state machine exists
         if !state.state_machines.contains_key(sm_arn) {
@@ -564,7 +579,9 @@ impl StepFunctionsService {
         let next_token = body["nextToken"].as_str();
         let reverse_order = body["reverseOrder"].as_bool().unwrap_or(false);
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = StepFunctionsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let exec = state
             .executions
             .get(exec_arn)
@@ -607,7 +624,9 @@ impl StepFunctionsService {
             .as_str()
             .ok_or_else(|| missing("executionArn"))?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = StepFunctionsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let exec = state
             .executions
             .get(exec_arn)
@@ -632,7 +651,8 @@ impl StepFunctionsService {
         validate_arn(arn)?;
         validate_required("tags", &body["tags"])?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let sm = state
             .state_machines
             .get_mut(arn)
@@ -660,7 +680,8 @@ impl StepFunctionsService {
         validate_arn(arn)?;
         validate_required("tagKeys", &body["tagKeys"])?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let sm = state
             .state_machines
             .get_mut(arn)
@@ -685,7 +706,9 @@ impl StepFunctionsService {
             .ok_or_else(|| missing("resourceArn"))?;
         validate_arn(arn)?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = StepFunctionsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let sm = state
             .state_machines
             .get(arn)
@@ -804,15 +827,17 @@ fn validate_definition(definition: &str) -> Result<(), AwsServiceError> {
         ));
     }
 
-    let states = parsed.get("States").and_then(|v| v.as_object());
-    if states.is_none() {
-        return Err(AwsServiceError::aws_error(
-            StatusCode::BAD_REQUEST,
-            "InvalidDefinition",
-            "Invalid State Machine Definition: 'MISSING_STATES' (States field is required)"
-                .to_string(),
-        ));
-    }
+    let states_obj = parsed
+        .get("States")
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| {
+            AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidDefinition",
+                "Invalid State Machine Definition: 'MISSING_STATES' (States field is required)"
+                    .to_string(),
+            )
+        })?;
 
     let start_at = parsed["StartAt"].as_str().ok_or_else(|| {
         AwsServiceError::aws_error(
@@ -822,7 +847,6 @@ fn validate_definition(definition: &str) -> Result<(), AwsServiceError> {
                 .to_string(),
         )
     })?;
-    let states_obj = states.unwrap();
     if !states_obj.contains_key(start_at) {
         return Err(AwsServiceError::aws_error(
             StatusCode::BAD_REQUEST,
@@ -919,7 +943,15 @@ pub fn start_execution_from_delivery(
 
     let execution_name = uuid::Uuid::new_v4().to_string();
 
-    let mut st = state.write();
+    // Extract account_id from the state machine ARN
+    let account_id = state_machine_arn
+        .split(':')
+        .nth(4)
+        .unwrap_or("000000000000")
+        .to_string();
+
+    let mut accounts = state.write();
+    let st = accounts.get_or_create(&account_id);
     let sm = match st.state_machines.get(state_machine_arn) {
         Some(sm) => sm,
         None => {
@@ -952,7 +984,7 @@ pub fn start_execution_from_delivery(
     };
 
     st.executions.insert(exec_arn.clone(), execution);
-    drop(st);
+    drop(accounts);
 
     let shared_state = state.clone();
     let delivery = delivery.clone();
@@ -974,17 +1006,15 @@ pub fn start_execution_from_delivery(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::StepFunctionsState;
     use http::{HeaderMap, Method};
     use parking_lot::RwLock;
     use serde_json::Value;
     use std::sync::Arc;
 
     fn make_state() -> SharedStepFunctionsState {
-        Arc::new(RwLock::new(StepFunctionsState::new(
-            "123456789012",
-            "us-east-1",
-        )))
+        Arc::new(RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ))
     }
 
     fn make_request(action: &str, body: &str) -> AwsRequest {

@@ -60,17 +60,27 @@ impl SecretsManagerState {
     }
 }
 
-pub type SharedSecretsManagerState = Arc<RwLock<SecretsManagerState>>;
+pub type SharedSecretsManagerState =
+    Arc<RwLock<fakecloud_core::multi_account::MultiAccountState<SecretsManagerState>>>;
+
+impl fakecloud_core::multi_account::AccountState for SecretsManagerState {
+    fn new_for_account(account_id: &str, region: &str, _endpoint: &str) -> Self {
+        Self::new(account_id, region)
+    }
+}
 
 /// On-disk snapshot envelope for Secrets Manager state. Versioned so
 /// format changes fail loudly on upgrade.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SecretsManagerSnapshot {
     pub schema_version: u32,
-    pub state: SecretsManagerState,
+    #[serde(default)]
+    pub accounts: Option<fakecloud_core::multi_account::MultiAccountState<SecretsManagerState>>,
+    #[serde(default)]
+    pub state: Option<SecretsManagerState>,
 }
 
-pub const SECRETSMANAGER_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+pub const SECRETSMANAGER_SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 
 #[cfg(test)]
 mod tests {

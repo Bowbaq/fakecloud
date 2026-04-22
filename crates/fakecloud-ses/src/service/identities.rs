@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 
 use crate::state::EmailIdentity;
+use crate::state::SesState;
 
 use super::SesV2Service;
 
@@ -25,7 +26,8 @@ impl SesV2Service {
             }
         };
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if state.identities.contains_key(&identity_name) {
             return Ok(Self::json_error(
@@ -76,8 +78,13 @@ impl SesV2Service {
         Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
     }
 
-    pub(super) fn list_email_identities(&self) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+    pub(super) fn list_email_identities(
+        &self,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let accounts = self.state.read();
+        let empty = SesState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let identities: Vec<Value> = state
             .identities
             .values()
@@ -100,8 +107,11 @@ impl SesV2Service {
     pub(super) fn get_email_identity(
         &self,
         identity_name: &str,
+        req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SesState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let identity = match state.identities.get(identity_name) {
             Some(id) => id,
             None => {
@@ -154,7 +164,8 @@ impl SesV2Service {
         identity_name: &str,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if state.identities.remove(identity_name).is_none() {
             return Ok(Self::json_error(
@@ -198,7 +209,8 @@ impl SesV2Service {
             }
         };
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if !state.identities.contains_key(identity_name) {
             return Ok(Self::json_error(
@@ -229,8 +241,11 @@ impl SesV2Service {
     pub(super) fn get_email_identity_policies(
         &self,
         identity_name: &str,
+        req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SesState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         if !state.identities.contains_key(identity_name) {
             return Ok(Self::json_error(
@@ -278,7 +293,8 @@ impl SesV2Service {
             }
         };
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if !state.identities.contains_key(identity_name) {
             return Ok(Self::json_error(
@@ -310,8 +326,10 @@ impl SesV2Service {
         &self,
         identity_name: &str,
         policy_name: &str,
+        req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if !state.identities.contains_key(identity_name) {
             return Ok(Self::json_error(
@@ -345,7 +363,8 @@ impl SesV2Service {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let body: Value = Self::parse_body(req)?;
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let identity = match state.identities.get_mut(identity_name) {
             Some(id) => id,
@@ -371,7 +390,8 @@ impl SesV2Service {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let body: Value = Self::parse_body(req)?;
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let identity = match state.identities.get_mut(identity_name) {
             Some(id) => id,
@@ -414,7 +434,8 @@ impl SesV2Service {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let body: Value = Self::parse_body(req)?;
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let identity = match state.identities.get_mut(identity_name) {
             Some(id) => id,
@@ -440,7 +461,8 @@ impl SesV2Service {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let body: Value = Self::parse_body(req)?;
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let identity = match state.identities.get_mut(identity_name) {
             Some(id) => id,
@@ -469,7 +491,8 @@ impl SesV2Service {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let body: Value = Self::parse_body(req)?;
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let identity = match state.identities.get_mut(identity_name) {
             Some(id) => id,

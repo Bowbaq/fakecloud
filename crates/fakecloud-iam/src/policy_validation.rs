@@ -985,4 +985,94 @@ mod tests {
         let doc = r#"{"Version":"2012-10-17","Statement":{"Effect":"Allow","Action":"s3:ListBucket","Resource":"arn:aws:s3:::example_bucket","Condition":{"DateGreaterThan":{"aws:CurrentTime":"2017-07-01T00:00:00Z"}}}}"#;
         assert!(validate_policy_document(doc).is_ok());
     }
+
+    #[test]
+    fn array_actions_accepted() {
+        let doc = r#"{"Version":"2012-10-17","Statement":{"Effect":"Allow","Action":["s3:GetObject","s3:PutObject"],"Resource":"*"}}"#;
+        assert!(validate_policy_document(doc).is_ok());
+    }
+
+    #[test]
+    fn deny_effect_accepted() {
+        let doc = r#"{"Version":"2012-10-17","Statement":{"Effect":"Deny","Action":"s3:*","Resource":"*"}}"#;
+        assert!(validate_policy_document(doc).is_ok());
+    }
+
+    #[test]
+    fn wildcard_resource_accepted() {
+        let doc = r#"{"Version":"2012-10-17","Statement":{"Effect":"Allow","Action":"s3:*","Resource":"*"}}"#;
+        assert!(validate_policy_document(doc).is_ok());
+    }
+
+    #[test]
+    fn action_non_string_entry_is_invalid() {
+        let doc = r#"{"Version":"2012-10-17","Statement":{"Effect":"Allow","Action":[1,2],"Resource":"*"}}"#;
+        assert!(validate_policy_document(doc).is_err());
+    }
+
+    #[test]
+    fn arn_with_wildcard_segment_accepted() {
+        let doc = r#"{"Version":"2012-10-17","Statement":{"Effect":"Allow","Action":"s3:*","Resource":"arn:aws:s3:::bucket/*"}}"#;
+        assert!(validate_policy_document(doc).is_ok());
+    }
+
+    #[test]
+    fn arn_with_fewer_segments_invalid() {
+        let doc = r#"{"Version":"2012-10-17","Statement":{"Effect":"Allow","Action":"s3:*","Resource":"arn:aws"}}"#;
+        assert!(validate_policy_document(doc).is_err());
+    }
+
+    #[test]
+    fn condition_must_be_object() {
+        let doc = r#"{"Version":"2012-10-17","Statement":{"Effect":"Allow","Action":"s3:*","Resource":"*","Condition":"not-object"}}"#;
+        assert!(validate_policy_document(doc).is_err());
+    }
+
+    #[test]
+    fn is_date_operator_covers_all_variants() {
+        assert!(is_date_operator("DateEquals"));
+        assert!(is_date_operator("DateNotEquals"));
+        assert!(is_date_operator("DateLessThan"));
+        assert!(is_date_operator("DateLessThanEquals"));
+        assert!(is_date_operator("DateGreaterThan"));
+        assert!(is_date_operator("DateGreaterThanEquals"));
+        assert!(!is_date_operator("StringEquals"));
+        assert!(!is_date_operator(""));
+    }
+
+    #[test]
+    fn is_valid_date_value_accepts_iso_and_rejects_garbage() {
+        assert!(is_valid_date_value("2017-07-01T00:00:00Z"));
+        assert!(is_valid_date_value("2017-07-01"));
+        assert!(!is_valid_date_value(""));
+        assert!(!is_valid_date_value("not-a-date"));
+    }
+
+    #[test]
+    fn is_valid_condition_operator_accepts_common() {
+        assert!(is_valid_condition_operator("StringEquals"));
+        assert!(is_valid_condition_operator("NumericLessThan"));
+        assert!(is_valid_condition_operator("Bool"));
+        assert!(is_valid_condition_operator("IpAddress"));
+        assert!(is_valid_condition_operator("ArnEquals"));
+        assert!(!is_valid_condition_operator("NotAnOperator"));
+    }
+
+    #[test]
+    fn resource_array_accepted_and_validated_per_entry() {
+        let doc = r#"{"Version":"2012-10-17","Statement":{"Effect":"Allow","Action":"s3:*","Resource":["arn:aws:s3:::b1","arn:aws:s3:::b2"]}}"#;
+        assert!(validate_policy_document(doc).is_ok());
+    }
+
+    #[test]
+    fn notresource_only_statement_accepted() {
+        let doc = r#"{"Version":"2012-10-17","Statement":{"Effect":"Deny","Action":"s3:*","NotResource":"arn:aws:s3:::sensitive/*"}}"#;
+        assert!(validate_policy_document(doc).is_ok());
+    }
+
+    #[test]
+    fn notaction_only_statement_accepted() {
+        let doc = r#"{"Version":"2012-10-17","Statement":{"Effect":"Deny","NotAction":"s3:DeleteObject","Resource":"*"}}"#;
+        assert!(validate_policy_document(doc).is_ok());
+    }
 }

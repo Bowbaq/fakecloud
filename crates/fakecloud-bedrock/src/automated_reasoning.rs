@@ -41,7 +41,8 @@ pub fn create_automated_reasoning_policy(
         updated_at: now,
     };
 
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     s.automated_reasoning_policies
         .insert(policy_arn.clone(), policy);
 
@@ -53,9 +54,12 @@ pub fn create_automated_reasoning_policy(
 
 pub fn get_automated_reasoning_policy(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     identifier: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let policy = find_policy(&s.automated_reasoning_policies, identifier).ok_or_else(|| {
         AwsServiceError::aws_error(
             StatusCode::NOT_FOUND,
@@ -79,7 +83,9 @@ pub fn list_automated_reasoning_policies(
         .max(1);
     let next_token = req.query_params.get("nextToken");
 
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let mut items: Vec<&AutomatedReasoningPolicy> =
         s.automated_reasoning_policies.values().collect();
     items.sort_by(|a, b| a.policy_arn.cmp(&b.policy_arn));
@@ -123,10 +129,12 @@ pub fn list_automated_reasoning_policies(
 
 pub fn update_automated_reasoning_policy(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     identifier: &str,
     body: &Value,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
 
     let key = find_policy_key(&s.automated_reasoning_policies, identifier).ok_or_else(|| {
         AwsServiceError::aws_error(
@@ -158,9 +166,11 @@ pub fn update_automated_reasoning_policy(
 
 pub fn delete_automated_reasoning_policy(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     identifier: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
 
     let key = find_policy_key(&s.automated_reasoning_policies, identifier).ok_or_else(|| {
         AwsServiceError::aws_error(
@@ -183,10 +193,12 @@ pub fn delete_automated_reasoning_policy(
 
 pub fn create_automated_reasoning_policy_version(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     identifier: &str,
     _body: &Value,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
 
     let key = find_policy_key(&s.automated_reasoning_policies, identifier).ok_or_else(|| {
         AwsServiceError::aws_error(
@@ -223,7 +235,9 @@ pub fn export_automated_reasoning_policy_version(
     identifier: &str,
     req: &AwsRequest,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let policy = find_policy(&s.automated_reasoning_policies, identifier).ok_or_else(|| {
         AwsServiceError::aws_error(
             StatusCode::NOT_FOUND,
@@ -254,6 +268,7 @@ pub fn export_automated_reasoning_policy_version(
 
 pub fn create_automated_reasoning_policy_test_case(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     policy_identifier: &str,
     body: &Value,
 ) -> Result<AwsResponse, AwsServiceError> {
@@ -265,7 +280,8 @@ pub fn create_automated_reasoning_policy_test_case(
         )
     })?;
 
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
 
     let policy_arn = find_policy_key(&s.automated_reasoning_policies, policy_identifier)
         .ok_or_else(|| {
@@ -300,10 +316,13 @@ pub fn create_automated_reasoning_policy_test_case(
 
 pub fn get_automated_reasoning_policy_test_case(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     policy_identifier: &str,
     test_case_id: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
 
     let policy_arn = find_policy_key(&s.automated_reasoning_policies, policy_identifier)
         .ok_or_else(|| {
@@ -341,7 +360,9 @@ pub fn list_automated_reasoning_policy_test_cases(
         .max(1);
     let next_token = req.query_params.get("nextToken");
 
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
 
     let policy_arn = find_policy_key(&s.automated_reasoning_policies, policy_identifier)
         .ok_or_else(|| {
@@ -397,11 +418,13 @@ pub fn list_automated_reasoning_policy_test_cases(
 
 pub fn update_automated_reasoning_policy_test_case(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     policy_identifier: &str,
     test_case_id: &str,
     body: &Value,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
 
     let policy_arn = find_policy_key(&s.automated_reasoning_policies, policy_identifier)
         .ok_or_else(|| {
@@ -442,10 +465,12 @@ pub fn update_automated_reasoning_policy_test_case(
 
 pub fn delete_automated_reasoning_policy_test_case(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     policy_identifier: &str,
     test_case_id: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
 
     let policy_arn = find_policy_key(&s.automated_reasoning_policies, policy_identifier)
         .ok_or_else(|| {
@@ -525,7 +550,6 @@ fn test_case_to_json(tc: &AutomatedReasoningTestCase) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::BedrockState;
     use bytes::Bytes;
     use http::{HeaderMap, Method};
     use parking_lot::RwLock;
@@ -533,7 +557,13 @@ mod tests {
     use std::sync::Arc;
 
     fn shared() -> SharedBedrockState {
-        Arc::new(RwLock::new(BedrockState::new("123456789012", "us-east-1")))
+        Arc::new(RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4566",
+            ),
+        ))
     }
 
     fn req() -> AwsRequest {
@@ -581,7 +611,7 @@ mod tests {
     fn create_policy_persists() {
         let s = shared();
         create_policy(&s, "pol-1");
-        assert_eq!(s.read().automated_reasoning_policies.len(), 1);
+        assert_eq!(s.read().default_ref().automated_reasoning_policies.len(), 1);
     }
 
     #[test]
@@ -589,15 +619,17 @@ mod tests {
         let s = shared();
         let arn = create_policy(&s, "pol-lookup");
         let id = arn.rsplit('/').next().unwrap().to_string();
-        assert!(get_automated_reasoning_policy(&s, &arn).is_ok());
-        assert!(get_automated_reasoning_policy(&s, &id).is_ok());
-        assert!(get_automated_reasoning_policy(&s, "pol-lookup").is_ok());
+        assert!(get_automated_reasoning_policy(&s, &req(), &arn).is_ok());
+        assert!(get_automated_reasoning_policy(&s, &req(), &id).is_ok());
+        assert!(get_automated_reasoning_policy(&s, &req(), "pol-lookup").is_ok());
     }
 
     #[test]
     fn get_policy_unknown_not_found() {
         let s = shared();
-        let err = get_automated_reasoning_policy(&s, "missing").err().unwrap();
+        let err = get_automated_reasoning_policy(&s, &req(), "missing")
+            .err()
+            .unwrap();
         assert_eq!(err.status(), StatusCode::NOT_FOUND);
     }
 
@@ -623,11 +655,13 @@ mod tests {
         let arn = create_policy(&s, "upd");
         update_automated_reasoning_policy(
             &s,
+            &req(),
             &arn,
             &json!({"policyName": "new-name", "description": "desc"}),
         )
         .unwrap();
-        let p = &s.read().automated_reasoning_policies[&arn];
+        let guard = s.read();
+        let p = &guard.default_ref().automated_reasoning_policies[&arn];
         assert_eq!(p.policy_name, "new-name");
         assert_eq!(p.description.as_deref(), Some("desc"));
     }
@@ -635,7 +669,7 @@ mod tests {
     #[test]
     fn update_policy_unknown_not_found() {
         let s = shared();
-        let err = update_automated_reasoning_policy(&s, "miss", &json!({}))
+        let err = update_automated_reasoning_policy(&s, &req(), "miss", &json!({}))
             .err()
             .unwrap();
         assert_eq!(err.status(), StatusCode::NOT_FOUND);
@@ -645,17 +679,32 @@ mod tests {
     fn delete_policy_removes_test_cases() {
         let s = shared();
         let arn = create_policy(&s, "del");
-        create_automated_reasoning_policy_test_case(&s, &arn, &json!({"testCaseName": "tc"}))
-            .unwrap();
-        delete_automated_reasoning_policy(&s, &arn).unwrap();
-        assert!(s.read().automated_reasoning_policies.is_empty());
-        assert!(s.read().automated_reasoning_test_cases.is_empty());
+        create_automated_reasoning_policy_test_case(
+            &s,
+            &req(),
+            &arn,
+            &json!({"testCaseName": "tc"}),
+        )
+        .unwrap();
+        delete_automated_reasoning_policy(&s, &req(), &arn).unwrap();
+        assert!(s
+            .read()
+            .default_ref()
+            .automated_reasoning_policies
+            .is_empty());
+        assert!(s
+            .read()
+            .default_ref()
+            .automated_reasoning_test_cases
+            .is_empty());
     }
 
     #[test]
     fn delete_policy_unknown_not_found() {
         let s = shared();
-        let err = delete_automated_reasoning_policy(&s, "miss").err().unwrap();
+        let err = delete_automated_reasoning_policy(&s, &req(), "miss")
+            .err()
+            .unwrap();
         assert_eq!(err.status(), StatusCode::NOT_FOUND);
     }
 
@@ -663,8 +712,9 @@ mod tests {
     fn create_version_bumps_and_appends() {
         let s = shared();
         let arn = create_policy(&s, "ver");
-        create_automated_reasoning_policy_version(&s, &arn, &json!({})).unwrap();
-        let p = &s.read().automated_reasoning_policies[&arn];
+        create_automated_reasoning_policy_version(&s, &req(), &arn, &json!({})).unwrap();
+        let guard = s.read();
+        let p = &guard.default_ref().automated_reasoning_policies[&arn];
         assert_eq!(p.version, "2");
         assert_eq!(p.versions, vec!["1".to_string(), "2".to_string()]);
     }
@@ -672,7 +722,7 @@ mod tests {
     #[test]
     fn create_version_unknown_not_found() {
         let s = shared();
-        let err = create_automated_reasoning_policy_version(&s, "miss", &json!({}))
+        let err = create_automated_reasoning_policy_version(&s, &req(), "miss", &json!({}))
             .err()
             .unwrap();
         assert_eq!(err.status(), StatusCode::NOT_FOUND);
@@ -708,6 +758,7 @@ mod tests {
         let arn = create_policy(&s, "tc-host");
         let resp = create_automated_reasoning_policy_test_case(
             &s,
+            &req(),
             &arn,
             &json!({"testCaseName": "tc1", "input": {"q": 1}, "expectedOutput": {"r": 2}}),
         )
@@ -716,32 +767,38 @@ mod tests {
             serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
         let id = v["testCaseId"].as_str().unwrap().to_string();
 
-        let resp = get_automated_reasoning_policy_test_case(&s, &arn, &id).unwrap();
+        let resp = get_automated_reasoning_policy_test_case(&s, &req(), &arn, &id).unwrap();
         let v: Value =
             serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
         assert_eq!(v["testCaseName"], "tc1");
 
         update_automated_reasoning_policy_test_case(
             &s,
+            &req(),
             &arn,
             &id,
             &json!({"testCaseName": "tc1-new", "description": "d"}),
         )
         .unwrap();
-        let updated_name = s.read().automated_reasoning_test_cases[&(arn.clone(), id.clone())]
+        let updated_name = s.read().default_ref().automated_reasoning_test_cases
+            [&(arn.clone(), id.clone())]
             .test_case_name
             .clone();
         assert_eq!(updated_name, "tc1-new");
 
-        delete_automated_reasoning_policy_test_case(&s, &arn, &id).unwrap();
-        assert!(s.read().automated_reasoning_test_cases.is_empty());
+        delete_automated_reasoning_policy_test_case(&s, &req(), &arn, &id).unwrap();
+        assert!(s
+            .read()
+            .default_ref()
+            .automated_reasoning_test_cases
+            .is_empty());
     }
 
     #[test]
     fn create_test_case_missing_name_errors() {
         let s = shared();
         let arn = create_policy(&s, "p");
-        let err = create_automated_reasoning_policy_test_case(&s, &arn, &json!({}))
+        let err = create_automated_reasoning_policy_test_case(&s, &req(), &arn, &json!({}))
             .err()
             .unwrap();
         assert_eq!(err.status(), StatusCode::BAD_REQUEST);
@@ -752,6 +809,7 @@ mod tests {
         let s = shared();
         let err = create_automated_reasoning_policy_test_case(
             &s,
+            &req(),
             "missing-policy",
             &json!({"testCaseName": "tc"}),
         )
@@ -763,7 +821,7 @@ mod tests {
     #[test]
     fn get_test_case_unknown_policy_not_found() {
         let s = shared();
-        let err = get_automated_reasoning_policy_test_case(&s, "miss", "id")
+        let err = get_automated_reasoning_policy_test_case(&s, &req(), "miss", "id")
             .err()
             .unwrap();
         assert_eq!(err.status(), StatusCode::NOT_FOUND);
@@ -773,7 +831,7 @@ mod tests {
     fn get_test_case_unknown_id_not_found() {
         let s = shared();
         let arn = create_policy(&s, "p");
-        let err = get_automated_reasoning_policy_test_case(&s, &arn, "missing")
+        let err = get_automated_reasoning_policy_test_case(&s, &req(), &arn, "missing")
             .err()
             .unwrap();
         assert_eq!(err.status(), StatusCode::NOT_FOUND);
@@ -786,6 +844,7 @@ mod tests {
         for i in 0..3 {
             create_automated_reasoning_policy_test_case(
                 &s,
+                &req(),
                 &arn,
                 &json!({"testCaseName": format!("tc-{i}")}),
             )
@@ -813,7 +872,7 @@ mod tests {
     #[test]
     fn update_test_case_unknown_policy_not_found() {
         let s = shared();
-        let err = update_automated_reasoning_policy_test_case(&s, "miss", "id", &json!({}))
+        let err = update_automated_reasoning_policy_test_case(&s, &req(), "miss", "id", &json!({}))
             .err()
             .unwrap();
         assert_eq!(err.status(), StatusCode::NOT_FOUND);
@@ -823,16 +882,17 @@ mod tests {
     fn update_test_case_unknown_id_not_found() {
         let s = shared();
         let arn = create_policy(&s, "p2");
-        let err = update_automated_reasoning_policy_test_case(&s, &arn, "missing", &json!({}))
-            .err()
-            .unwrap();
+        let err =
+            update_automated_reasoning_policy_test_case(&s, &req(), &arn, "missing", &json!({}))
+                .err()
+                .unwrap();
         assert_eq!(err.status(), StatusCode::NOT_FOUND);
     }
 
     #[test]
     fn delete_test_case_unknown_policy_not_found() {
         let s = shared();
-        let err = delete_automated_reasoning_policy_test_case(&s, "miss", "id")
+        let err = delete_automated_reasoning_policy_test_case(&s, &req(), "miss", "id")
             .err()
             .unwrap();
         assert_eq!(err.status(), StatusCode::NOT_FOUND);
@@ -842,7 +902,7 @@ mod tests {
     fn delete_test_case_unknown_id_not_found() {
         let s = shared();
         let arn = create_policy(&s, "p3");
-        let err = delete_automated_reasoning_policy_test_case(&s, &arn, "missing")
+        let err = delete_automated_reasoning_policy_test_case(&s, &req(), &arn, "missing")
             .err()
             .unwrap();
         assert_eq!(err.status(), StatusCode::NOT_FOUND);

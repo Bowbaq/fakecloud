@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 
 use crate::state::EmailTemplate;
+use crate::state::SesState;
 
 use super::SesV2Service;
 
@@ -27,7 +28,8 @@ impl SesV2Service {
             }
         };
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if state.templates.contains_key(&template_name) {
             return Ok(Self::json_error(
@@ -56,8 +58,13 @@ impl SesV2Service {
         Ok(AwsResponse::json(StatusCode::OK, "{}"))
     }
 
-    pub(super) fn list_email_templates(&self) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+    pub(super) fn list_email_templates(
+        &self,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let accounts = self.state.read();
+        let empty = SesState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let templates: Vec<Value> = state
             .templates
             .values()
@@ -76,8 +83,14 @@ impl SesV2Service {
         Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
     }
 
-    pub(super) fn get_email_template(&self, name: &str) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+    pub(super) fn get_email_template(
+        &self,
+        name: &str,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let accounts = self.state.read();
+        let empty = SesState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let template = match state.templates.get(name) {
             Some(t) => t,
             None => {
@@ -107,7 +120,8 @@ impl SesV2Service {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let body: Value = Self::parse_body(req)?;
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let template = match state.templates.get_mut(name) {
             Some(t) => t,
@@ -133,8 +147,13 @@ impl SesV2Service {
         Ok(AwsResponse::json(StatusCode::OK, "{}"))
     }
 
-    pub(super) fn delete_email_template(&self, name: &str) -> Result<AwsResponse, AwsServiceError> {
-        let mut state = self.state.write();
+    pub(super) fn delete_email_template(
+        &self,
+        name: &str,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if state.templates.remove(name).is_none() {
             return Ok(Self::json_error(
@@ -165,7 +184,9 @@ impl SesV2Service {
             }
         };
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SesState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let template = match state.templates.get(template_name) {
             Some(t) => t,
             None => {

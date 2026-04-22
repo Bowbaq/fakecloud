@@ -74,6 +74,7 @@ public final class FakeCloud {
     private final SnsClient sns;
     private final SqsClient sqs;
     private final EventsClient events;
+    private final SchedulerClient scheduler;
     private final S3Client s3;
     private final DynamoDbClient dynamodb;
     private final SecretsManagerClient secretsmanager;
@@ -95,6 +96,7 @@ public final class FakeCloud {
         this.sns = new SnsClient(http);
         this.sqs = new SqsClient(http);
         this.events = new EventsClient(http);
+        this.scheduler = new SchedulerClient(http);
         this.s3 = new S3Client(http);
         this.dynamodb = new DynamoDbClient(http);
         this.secretsmanager = new SecretsManagerClient(http);
@@ -148,6 +150,7 @@ public final class FakeCloud {
     public SnsClient sns() { return sns; }
     public SqsClient sqs() { return sqs; }
     public EventsClient events() { return events; }
+    public SchedulerClient scheduler() { return scheduler; }
     public S3Client s3() { return s3; }
     public DynamoDbClient dynamodb() { return dynamodb; }
     public SecretsManagerClient secretsmanager() { return secretsmanager; }
@@ -269,6 +272,23 @@ public final class FakeCloud {
 
         public FireRuleResponse fireRule(FireRuleRequest req) {
             return http.postJson("/_fakecloud/events/fire-rule", req, FireRuleResponse.class);
+        }
+    }
+
+    public static final class SchedulerClient {
+        private final HttpTransport http;
+        SchedulerClient(HttpTransport http) { this.http = http; }
+
+        public Types.SchedulerSchedulesResponse getSchedules() {
+            return http.get(
+                    "/_fakecloud/scheduler/schedules",
+                    Types.SchedulerSchedulesResponse.class);
+        }
+
+        public Types.FireScheduleResponse fireSchedule(String group, String name) {
+            return http.postEmpty(
+                    "/_fakecloud/scheduler/fire/" + group + "/" + name,
+                    Types.FireScheduleResponse.class);
         }
     }
 

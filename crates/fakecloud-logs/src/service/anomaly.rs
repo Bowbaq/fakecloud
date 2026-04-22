@@ -66,7 +66,8 @@ impl LogsService {
         let anomaly_visibility_time = body["anomalyVisibilityTime"].as_i64();
 
         let now = Utc::now().timestamp_millis();
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let detector_id = uuid::Uuid::new_v4().to_string();
         let arn = format!(
             "arn:aws:logs:{}:{}:anomaly-detector:{}",
@@ -106,7 +107,9 @@ impl LogsService {
             )
         })?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::LogsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let detector = state.anomaly_detectors.get(arn).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -152,7 +155,8 @@ impl LogsService {
             )
         })?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         if state.anomaly_detectors.remove(arn).is_none() {
             return Err(AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -180,7 +184,9 @@ impl LogsService {
         let filter_log_group_arn = body["filterLogGroupArn"].as_str();
         let _limit = body["limit"].as_i64().unwrap_or(50);
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::LogsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let detectors: Vec<Value> = state
             .anomaly_detectors
             .values()
@@ -241,7 +247,8 @@ impl LogsService {
         )?;
         let enabled = body["enabled"].as_bool().unwrap_or(true);
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let detector = state.anomaly_detectors.get_mut(arn).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,

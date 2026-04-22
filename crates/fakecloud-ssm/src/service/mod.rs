@@ -154,7 +154,8 @@ impl SsmService {
         let _guard = self.snapshot_lock.lock().await;
         let snapshot = SsmSnapshot {
             schema_version: SSM_SNAPSHOT_SCHEMA_VERSION,
-            state: self.state.read().clone(),
+            state: None,
+            accounts: Some(self.state.read().clone()),
         };
         let join = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
             let bytes = serde_json::to_vec(&snapshot)
@@ -568,10 +569,13 @@ mod tests {
     use std::sync::Arc;
 
     fn make_service() -> SsmService {
-        let state: SharedSsmState = Arc::new(RwLock::new(crate::state::SsmState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state: SharedSsmState = Arc::new(RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4566",
+            ),
+        ));
         SsmService::new(state)
     }
 
@@ -1351,7 +1355,8 @@ mod tests {
         // Manually insert an execution for testing
         {
             let now = chrono::Utc::now();
-            let mut state = svc.state.write();
+            let mut accounts = svc.state.write();
+            let state = accounts.get_or_create("123456789012");
             let exec = crate::state::MaintenanceWindowExecution {
                 window_execution_id: exec_id.to_string(),
                 window_id: window_id.clone(),
@@ -3978,5 +3983,465 @@ mod tests {
         let resp = svc.get_parameters_by_path(&req).unwrap();
         let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert_eq!(body["Parameters"].as_array().unwrap().len(), 1);
+    }
+
+    // ---- Instances / Activations ----
+
+    #[test]
+    fn create_activation_requires_iam_role() {
+        let svc = make_service();
+        let req = make_request("CreateActivation", json!({}));
+        assert!(svc.create_activation(&req).is_err());
+    }
+
+    #[test]
+    fn create_activation_stores_record() {
+        let svc = make_service();
+        let req = make_request(
+            "CreateActivation",
+            json!({"IamRole": "SSMRole", "Description": "d", "RegistrationLimit": 5}),
+        );
+        let resp = svc.create_activation(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(body["ActivationId"].is_string());
+        assert!(body["ActivationCode"].is_string());
+        assert_eq!(svc.state.read().default_ref().activations.len(), 1);
+    }
+
+    #[test]
+    fn delete_activation_missing_id_errors() {
+        let svc = make_service();
+        let req = make_request("DeleteActivation", json!({}));
+        assert!(svc.delete_activation(&req).is_err());
+    }
+
+    #[test]
+    fn delete_activation_unknown_errors() {
+        let svc = make_service();
+        let req = make_request("DeleteActivation", json!({"ActivationId": "missing"}));
+        assert!(svc.delete_activation(&req).is_err());
+    }
+
+    #[test]
+    fn delete_activation_removes_existing() {
+        let svc = make_service();
+        let create = make_request("CreateActivation", json!({"IamRole": "r"}));
+        let resp = svc.create_activation(&create).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        let id = body["ActivationId"].as_str().unwrap().to_string();
+        svc.delete_activation(&make_request(
+            "DeleteActivation",
+            json!({"ActivationId": id}),
+        ))
+        .unwrap();
+        assert!(svc.state.read().default_ref().activations.is_empty());
+    }
+
+    #[test]
+    fn describe_activations_returns_all() {
+        let svc = make_service();
+        for i in 0..3 {
+            svc.create_activation(&make_request(
+                "CreateActivation",
+                json!({"IamRole": format!("r{i}")}),
+            ))
+            .unwrap();
+        }
+        let resp = svc
+            .describe_activations(&make_request("DescribeActivations", json!({})))
+            .unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["ActivationList"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn deregister_managed_instance_missing_id_errors() {
+        let svc = make_service();
+        let req = make_request("DeregisterManagedInstance", json!({}));
+        assert!(svc.deregister_managed_instance(&req).is_err());
+    }
+
+    #[test]
+    fn describe_instance_information_returns_list() {
+        let svc = make_service();
+        let req = make_request("DescribeInstanceInformation", json!({}));
+        let resp = svc.describe_instance_information(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(body["InstanceInformationList"].is_array());
+    }
+
+    #[test]
+    fn describe_instance_properties_returns_list() {
+        let svc = make_service();
+        let req = make_request("DescribeInstanceProperties", json!({}));
+        let resp = svc.describe_instance_properties(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(body["InstanceProperties"].is_array());
+    }
+
+    #[test]
+    fn update_managed_instance_role_missing_id_errors() {
+        let svc = make_service();
+        let req = make_request("UpdateManagedInstanceRole", json!({"IamRole": "r"}));
+        assert!(svc.update_managed_instance_role(&req).is_err());
+    }
+
+    #[test]
+    fn list_nodes_returns_empty_list() {
+        let svc = make_service();
+        let req = make_request("ListNodes", json!({}));
+        let resp = svc.list_nodes(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(body["Nodes"].is_array());
+    }
+
+    #[test]
+    fn list_nodes_summary_missing_aggregators_errors() {
+        let svc = make_service();
+        let req = make_request("ListNodesSummary", json!({}));
+        assert!(svc.list_nodes_summary(&req).is_err());
+    }
+
+    // ── associations.rs extra coverage ────────────────────────────────
+
+    fn create_assoc_with_instance(svc: &SsmService, name: &str, instance_id: &str) -> String {
+        let req = make_request(
+            "CreateAssociation",
+            json!({
+                "Name": name,
+                "InstanceId": instance_id,
+                "Targets": [{"Key": "InstanceIds", "Values": [instance_id]}],
+            }),
+        );
+        let resp = svc.create_association(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        body["AssociationDescription"]["AssociationId"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    #[test]
+    fn describe_association_by_name_and_instance() {
+        let svc = make_service();
+        create_assoc_with_instance(&svc, "AWS-RunShellScript", "i-123");
+        let req = make_request(
+            "DescribeAssociation",
+            json!({"Name": "AWS-RunShellScript", "InstanceId": "i-123"}),
+        );
+        let resp = svc.describe_association(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(
+            body["AssociationDescription"]["Name"].as_str().unwrap(),
+            "AWS-RunShellScript"
+        );
+    }
+
+    #[test]
+    fn describe_association_missing_identifier_errors() {
+        let svc = make_service();
+        let req = make_request("DescribeAssociation", json!({}));
+        assert!(svc.describe_association(&req).is_err());
+    }
+
+    #[test]
+    fn delete_association_by_name_and_instance() {
+        let svc = make_service();
+        create_assoc_with_instance(&svc, "AWS-RunShellScript", "i-del");
+        let req = make_request(
+            "DeleteAssociation",
+            json!({"Name": "AWS-RunShellScript", "InstanceId": "i-del"}),
+        );
+        svc.delete_association(&req).unwrap();
+    }
+
+    #[test]
+    fn delete_association_missing_identifier_errors() {
+        let svc = make_service();
+        let req = make_request("DeleteAssociation", json!({}));
+        assert!(svc.delete_association(&req).is_err());
+    }
+
+    #[test]
+    fn update_association_changes_multiple_fields() {
+        let svc = make_service();
+        let assoc_id = create_assoc_with_instance(&svc, "AWS-RunShellScript", "i-upd");
+        let req = make_request(
+            "UpdateAssociation",
+            json!({
+                "AssociationId": assoc_id,
+                "Name": "AWS-RunPowerShell",
+                "Targets": [{"Key": "InstanceIds", "Values": ["i-upd2"]}],
+                "ScheduleExpression": "rate(30 minutes)",
+                "Parameters": {"p1": ["a", "b"]},
+                "AssociationName": "new-name",
+                "DocumentVersion": "2",
+                "MaxErrors": "5",
+                "MaxConcurrency": "10",
+                "ComplianceSeverity": "HIGH"
+            }),
+        );
+        let resp = svc.update_association(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["AssociationDescription"]["Name"], "AWS-RunPowerShell");
+        assert_eq!(
+            body["AssociationDescription"]["MaxErrors"]
+                .as_str()
+                .unwrap(),
+            "5"
+        );
+        assert_eq!(
+            body["AssociationDescription"]["ComplianceSeverity"]
+                .as_str()
+                .unwrap(),
+            "HIGH"
+        );
+    }
+
+    #[test]
+    fn update_association_status_updates_and_not_found() {
+        let svc = make_service();
+        create_assoc_with_instance(&svc, "AWS-RunShellScript", "i-aa");
+
+        // Success path
+        let req = make_request(
+            "UpdateAssociationStatus",
+            json!({
+                "Name": "AWS-RunShellScript",
+                "InstanceId": "i-aa",
+                "AssociationStatus": {
+                    "Name": "Success",
+                    "Date": "2026-01-01T00:00:00Z",
+                    "Message": "ok"
+                }
+            }),
+        );
+        let resp = svc.update_association_status(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["AssociationDescription"]["Status"]["Name"], "Success");
+
+        // Not found
+        let req = make_request(
+            "UpdateAssociationStatus",
+            json!({
+                "Name": "AWS-RunShellScript",
+                "InstanceId": "i-ghost",
+                "AssociationStatus": {"Name": "Success", "Date": "2026-01-01T00:00:00Z", "Message": "ok"}
+            }),
+        );
+        assert!(svc.update_association_status(&req).is_err());
+    }
+
+    #[test]
+    fn list_association_versions_not_found() {
+        let svc = make_service();
+        let req = make_request(
+            "ListAssociationVersions",
+            json!({"AssociationId": "missing"}),
+        );
+        assert!(svc.list_association_versions(&req).is_err());
+    }
+
+    #[test]
+    fn describe_effective_instance_associations_returns_matching() {
+        let svc = make_service();
+        create_assoc_with_instance(&svc, "AWS-RunShellScript", "i-xy");
+        let req = make_request(
+            "DescribeEffectiveInstanceAssociations",
+            json!({"InstanceId": "i-xy"}),
+        );
+        let resp = svc.describe_effective_instance_associations(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["Associations"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn describe_instance_associations_status_returns_matching() {
+        let svc = make_service();
+        create_assoc_with_instance(&svc, "AWS-RunShellScript", "i-ss");
+        let req = make_request(
+            "DescribeInstanceAssociationsStatus",
+            json!({"InstanceId": "i-ss"}),
+        );
+        let resp = svc.describe_instance_associations_status(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(
+            body["InstanceAssociationStatusInfos"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn describe_association_executions_empty() {
+        let svc = make_service();
+        let req = make_request(
+            "DescribeAssociationExecutions",
+            json!({"AssociationId": "any"}),
+        );
+        let resp = svc.describe_association_executions(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(body["AssociationExecutions"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn describe_association_execution_targets_empty() {
+        let svc = make_service();
+        let req = make_request(
+            "DescribeAssociationExecutionTargets",
+            json!({"AssociationId": "any", "ExecutionId": "ex"}),
+        );
+        let resp = svc.describe_association_execution_targets(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(body["AssociationExecutionTargets"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
+    // ── documents.rs extra coverage ───────────────────────────────────
+
+    fn create_doc_basic(svc: &SsmService, name: &str) {
+        let req = make_request(
+            "CreateDocument",
+            json!({
+                "Name": name,
+                "Content": "{\"schemaVersion\":\"2.2\",\"description\":\"d\",\"mainSteps\":[]}",
+                "DocumentFormat": "JSON",
+                "DocumentType": "Command"
+            }),
+        );
+        svc.create_document(&req).unwrap();
+    }
+
+    #[test]
+    fn list_document_metadata_history_returns_stub() {
+        let svc = make_service();
+        create_doc_basic(&svc, "DocA");
+        let req = make_request(
+            "ListDocumentMetadataHistory",
+            json!({"Name": "DocA", "Metadata": "DocumentReviews"}),
+        );
+        let resp = svc.list_document_metadata_history(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["Name"], "DocA");
+        assert!(body["Metadata"]["ReviewerResponse"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn list_document_metadata_history_invalid_metadata_enum() {
+        let svc = make_service();
+        let req = make_request(
+            "ListDocumentMetadataHistory",
+            json!({"Name": "x", "Metadata": "Bogus"}),
+        );
+        assert!(svc.list_document_metadata_history(&req).is_err());
+    }
+
+    #[test]
+    fn update_document_metadata_not_found() {
+        let svc = make_service();
+        let req = make_request("UpdateDocumentMetadata", json!({"Name": "missing"}));
+        assert!(svc.update_document_metadata(&req).is_err());
+    }
+
+    #[test]
+    fn update_document_metadata_existing() {
+        let svc = make_service();
+        create_doc_basic(&svc, "DocB");
+        let req = make_request("UpdateDocumentMetadata", json!({"Name": "DocB"}));
+        svc.update_document_metadata(&req).unwrap();
+    }
+
+    #[test]
+    fn ssm_resource_policy_crud_full() {
+        let svc = make_service();
+        let arn = "arn:aws:ssm:us-east-1:123:parameter/foo";
+
+        let req = make_request(
+            "PutResourcePolicy",
+            json!({"ResourceArn": arn, "Policy": "{\"Version\":\"2012-10-17\"}"}),
+        );
+        let resp = svc.put_resource_policy(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        let policy_id = body["PolicyId"].as_str().unwrap().to_string();
+        let policy_hash = body["PolicyHash"].as_str().unwrap().to_string();
+
+        let req = make_request("GetResourcePolicies", json!({"ResourceArn": arn}));
+        let resp = svc.get_resource_policies(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["Policies"].as_array().unwrap().len(), 1);
+
+        let req = make_request(
+            "PutResourcePolicy",
+            json!({
+                "ResourceArn": arn,
+                "Policy": "{\"Version\":\"2012-10-17\",\"Statement\":[]}",
+                "PolicyId": policy_id,
+                "PolicyHash": policy_hash
+            }),
+        );
+        let resp = svc.put_resource_policy(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        let new_hash = body["PolicyHash"].as_str().unwrap().to_string();
+        assert_ne!(new_hash, policy_hash);
+
+        let req = make_request(
+            "DeleteResourcePolicy",
+            json!({
+                "ResourceArn": arn,
+                "PolicyId": policy_id,
+                "PolicyHash": new_hash
+            }),
+        );
+        svc.delete_resource_policy(&req).unwrap();
+
+        let req = make_request("GetResourcePolicies", json!({"ResourceArn": arn}));
+        let resp = svc.get_resource_policies(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert!(body["Policies"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn put_resource_policy_hash_mismatch_errors() {
+        let svc = make_service();
+        let arn = "arn:aws:ssm:us-east-1:123:parameter/hashtest";
+        let req = make_request(
+            "PutResourcePolicy",
+            json!({"ResourceArn": arn, "Policy": "{}"}),
+        );
+        let resp = svc.put_resource_policy(&req).unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        let policy_id = body["PolicyId"].as_str().unwrap().to_string();
+
+        let req = make_request(
+            "PutResourcePolicy",
+            json!({
+                "ResourceArn": arn,
+                "Policy": "{\"v\":1}",
+                "PolicyId": policy_id,
+                "PolicyHash": "wrong-hash"
+            }),
+        );
+        assert!(svc.put_resource_policy(&req).is_err());
+    }
+
+    #[test]
+    fn ssm_delete_resource_policy_not_found() {
+        let svc = make_service();
+        let req = make_request(
+            "DeleteResourcePolicy",
+            json!({
+                "ResourceArn": "arn:aws:ssm:us-east-1:123:parameter/ghost",
+                "PolicyId": "no-such-policy",
+                "PolicyHash": "h"
+            }),
+        );
+        assert!(svc.delete_resource_policy(&req).is_err());
     }
 }

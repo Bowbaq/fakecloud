@@ -304,6 +304,32 @@ type FireRuleResponse struct {
 	Targets []FireRuleTarget `json:"targets"`
 }
 
+// ── Scheduler (EventBridge Scheduler) ───────────────────────────────
+
+// SchedulerSchedule describes one schedule managed by EventBridge
+// Scheduler. Returned by the /_fakecloud/scheduler/schedules endpoint.
+type SchedulerSchedule struct {
+	AccountID          string  `json:"accountId"`
+	GroupName          string  `json:"groupName"`
+	Name               string  `json:"name"`
+	Arn                string  `json:"arn"`
+	State              string  `json:"state"`
+	ScheduleExpression string  `json:"scheduleExpression"`
+	TargetArn          string  `json:"targetArn"`
+	LastFired          *string `json:"lastFired,omitempty"`
+}
+
+// SchedulerSchedulesResponse contains every schedule registered on the server.
+type SchedulerSchedulesResponse struct {
+	Schedules []SchedulerSchedule `json:"schedules"`
+}
+
+// FireScheduleResponse is returned after manually firing a schedule.
+type FireScheduleResponse struct {
+	ScheduleArn string `json:"scheduleArn"`
+	TargetArn   string `json:"targetArn"`
+}
+
 // ── S3 ─────────────────────────────────────────────────────────────
 
 // S3Notification represents an S3 event notification.

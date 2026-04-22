@@ -753,3 +753,207 @@ pub(crate) fn deliver_notifications(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn event_matches_exact() {
+        assert!(event_matches(
+            "s3:ObjectCreated:Put",
+            "s3:ObjectCreated:Put"
+        ));
+        assert!(!event_matches(
+            "s3:ObjectCreated:Put",
+            "s3:ObjectCreated:Post"
+        ));
+    }
+
+    #[test]
+    fn event_matches_suffix_wildcard() {
+        assert!(event_matches("s3:ObjectCreated:Put", "s3:ObjectCreated:*"));
+        assert!(event_matches("s3:ObjectCreated:Post", "s3:ObjectCreated:*"));
+        assert!(!event_matches(
+            "s3:ObjectRemoved:Delete",
+            "s3:ObjectCreated:*"
+        ));
+    }
+
+    #[test]
+    fn event_matches_global_wildcard() {
+        assert!(event_matches("s3:ObjectCreated:Put", "s3:*"));
+        assert!(event_matches("s3:ObjectRemoved:Delete", "s3:*"));
+    }
+
+    #[test]
+    fn key_matches_filters_prefix() {
+        let p = Some("logs/".to_string());
+        assert!(key_matches_filters("logs/x.txt", &p, &None));
+        assert!(!key_matches_filters("other/x.txt", &p, &None));
+    }
+
+    #[test]
+    fn key_matches_filters_suffix() {
+        let s = Some(".json".to_string());
+        assert!(key_matches_filters("data.json", &None, &s));
+        assert!(!key_matches_filters("data.txt", &None, &s));
+    }
+
+    #[test]
+    fn key_matches_filters_both() {
+        let p = Some("logs/".to_string());
+        let s = Some(".gz".to_string());
+        assert!(key_matches_filters("logs/2024.gz", &p, &s));
+        assert!(!key_matches_filters("logs/2024.txt", &p, &s));
+        assert!(!key_matches_filters("other/2024.gz", &p, &s));
+    }
+
+    #[test]
+    fn key_matches_filters_no_constraints() {
+        assert!(key_matches_filters("anything", &None, &None));
+    }
+
+    #[test]
+    fn parse_s3_key_filters_prefix_and_suffix() {
+        let xml = r#"<QueueConfiguration>
+            <Filter>
+                <S3Key>
+                    <FilterRule><Name>prefix</Name><Value>logs/</Value></FilterRule>
+                    <FilterRule><Name>suffix</Name><Value>.json</Value></FilterRule>
+                </S3Key>
+            </Filter>
+        </QueueConfiguration>"#;
+        let (p, s) = parse_s3_key_filters(xml);
+        assert_eq!(p.as_deref(), Some("logs/"));
+        assert_eq!(s.as_deref(), Some(".json"));
+    }
+
+    #[test]
+    fn parse_s3_key_filters_missing_filter_block() {
+        let xml = "<QueueConfiguration></QueueConfiguration>";
+        let (p, s) = parse_s3_key_filters(xml);
+        assert!(p.is_none());
+        assert!(s.is_none());
+    }
+
+    #[test]
+    fn parse_s3_key_filters_unknown_name_ignored() {
+        let xml = r#"<QueueConfiguration>
+            <Filter>
+                <S3Key>
+                    <FilterRule><Name>ContentType</Name><Value>ignored</Value></FilterRule>
+                </S3Key>
+            </Filter>
+        </QueueConfiguration>"#;
+        let (p, s) = parse_s3_key_filters(xml);
+        assert!(p.is_none());
+        assert!(s.is_none());
+    }
+
+    #[test]
+    fn parse_replication_rules_extracts_status_prefix_dest() {
+        let xml = r#"<ReplicationConfiguration>
+            <Rule>
+                <Status>Enabled</Status>
+                <Prefix>docs/</Prefix>
+                <Destination><Bucket>arn:aws:s3:::dest-bucket</Bucket></Destination>
+            </Rule>
+            <Rule>
+                <Status>Disabled</Status>
+                <Prefix>archive/</Prefix>
+                <Destination><Bucket>arn:aws:s3:::archive-dest</Bucket></Destination>
+            </Rule>
+        </ReplicationConfiguration>"#;
+        let rules = parse_replication_rules(xml);
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0].status, "Enabled");
+        assert_eq!(rules[0].prefix, "docs/");
+        assert_eq!(rules[0].dest_bucket, "dest-bucket");
+        assert_eq!(rules[1].status, "Disabled");
+        assert_eq!(rules[1].dest_bucket, "archive-dest");
+    }
+
+    #[test]
+    fn parse_replication_rules_empty_returns_empty() {
+        assert!(parse_replication_rules("").is_empty());
+    }
+
+    #[test]
+    fn normalize_notification_ids_inserts_id_when_missing() {
+        let xml = "<NotificationConfiguration>\
+            <QueueConfiguration><Queue>arn</Queue></QueueConfiguration>\
+        </NotificationConfiguration>";
+        let out = normalize_notification_ids(xml);
+        // Original XML had no <Id>, output must now contain one
+        assert!(out.contains("<Id>"));
+        assert!(out.contains("<Queue>arn</Queue>"));
+    }
+
+    #[test]
+    fn normalize_notification_ids_preserves_existing() {
+        let xml = "<NotificationConfiguration>\
+            <QueueConfiguration><Id>my-id</Id><Queue>arn</Queue></QueueConfiguration>\
+        </NotificationConfiguration>";
+        let out = normalize_notification_ids(xml);
+        assert!(out.contains("<Id>my-id</Id>"));
+    }
+
+    #[test]
+    fn extract_all_xml_values_multiple_matches() {
+        let xml = "<list><Event>one</Event><Event>two</Event><Event>three</Event></list>";
+        let vals = extract_all_xml_values(xml, "Event");
+        assert_eq!(vals, vec!["one", "two", "three"]);
+    }
+
+    #[test]
+    fn extract_all_xml_values_no_matches() {
+        let xml = "<list></list>";
+        let vals = extract_all_xml_values(xml, "Event");
+        assert!(vals.is_empty());
+    }
+
+    #[test]
+    fn parse_notification_config_queue_target() {
+        let xml = r#"<NotificationConfiguration>
+            <QueueConfiguration>
+                <Id>q1</Id>
+                <Queue>arn:aws:sqs:us-east-1:123:q</Queue>
+                <Event>s3:ObjectCreated:*</Event>
+                <Filter>
+                    <S3Key><FilterRule><Name>prefix</Name><Value>in/</Value></FilterRule></S3Key>
+                </Filter>
+            </QueueConfiguration>
+        </NotificationConfiguration>"#;
+        let targets = parse_notification_config(xml);
+        assert_eq!(targets.len(), 1);
+        assert!(matches!(
+            targets[0].target_type,
+            NotificationTargetType::Sqs
+        ));
+        assert_eq!(targets[0].arn, "arn:aws:sqs:us-east-1:123:q");
+        assert_eq!(targets[0].events, vec!["s3:ObjectCreated:*".to_string()]);
+        assert_eq!(targets[0].prefix_filter.as_deref(), Some("in/"));
+    }
+
+    #[test]
+    fn build_s3_event_notification_populates_envelope() {
+        let event_str = build_s3_event_notification(
+            "s3:ObjectCreated:Put",
+            "my-bucket",
+            "key.txt",
+            42,
+            "etag",
+            "us-east-1",
+        );
+        let event: serde_json::Value = serde_json::from_str(&event_str).unwrap();
+        let records = event["Records"].as_array().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["eventName"], "s3:ObjectCreated:Put");
+        assert_eq!(records[0]["s3"]["bucket"]["name"], "my-bucket");
+        assert_eq!(records[0]["s3"]["object"]["key"], "key.txt");
+        assert_eq!(records[0]["s3"]["object"]["size"], 42);
+        assert_eq!(records[0]["s3"]["object"]["eTag"], "etag");
+        assert_eq!(records[0]["awsRegion"], "us-east-1");
+    }
+}

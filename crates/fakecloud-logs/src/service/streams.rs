@@ -45,7 +45,8 @@ impl LogsService {
         validate_string_length("logGroupName", group_name, 1, 512)?;
         validate_string_length("logStreamName", &stream_name, 1, 512)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let region = state.region.clone();
         let account_id = state.account_id.clone();
 
@@ -110,7 +111,8 @@ impl LogsService {
         validate_string_length("logGroupName", group_name, 1, 512)?;
         validate_string_length("logStreamName", stream_name, 1, 512)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let group = state.log_groups.get_mut(group_name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -211,7 +213,9 @@ impl LogsService {
             ));
         }
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::LogsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let group = state.log_groups.get(group_name.as_str()).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -371,7 +375,8 @@ impl LogsService {
             has_rejected = true;
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let group = state.log_groups.get_mut(group_name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -489,7 +494,7 @@ impl LogsService {
             }
         }
 
-        drop(state);
+        drop(accounts);
 
         if !filters_to_deliver.is_empty() && !accepted_events.is_empty() {
             for (filter_name, filter_pattern, destination_arn) in &filters_to_deliver {
@@ -688,7 +693,9 @@ impl LogsService {
             }
         }
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::LogsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let group = state.log_groups.get(group_name.as_str()).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -870,7 +877,9 @@ impl LogsService {
             ));
         }
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::LogsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let group = state
             .log_groups
             .get(resolved_group_name.as_str())

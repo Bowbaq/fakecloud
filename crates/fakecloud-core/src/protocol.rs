@@ -23,7 +23,7 @@ pub enum AwsProtocol {
 const REST_XML_SERVICES: &[&str] = &["s3"];
 
 /// Services that use REST protocol with JSON responses (detected from SigV4 credential scope).
-const REST_JSON_SERVICES: &[&str] = &["lambda", "ses", "apigateway", "bedrock"];
+const REST_JSON_SERVICES: &[&str] = &["lambda", "ses", "apigateway", "bedrock", "scheduler"];
 
 /// Detected service name and action from an incoming HTTP request.
 #[derive(Debug)]
@@ -46,8 +46,9 @@ pub fn detect_service(
 
     // 2. Check for Query protocol (Action parameter in query string or form body)
     if let Some(action) = query_params.get("Action") {
-        let service =
-            extract_service_from_auth(headers).or_else(|| infer_service_from_action(action));
+        let service = extract_service_from_auth(headers)
+            .or_else(|| infer_service_from_action(action))
+            .or_else(|| parse_routing_host_from_headers(headers).map(|h| h.service));
         if let Some(service) = service {
             return Some(DetectedRequest {
                 service,
@@ -62,8 +63,9 @@ pub fn detect_service(
         let form_params = decode_form_urlencoded(body);
 
         if let Some(action) = form_params.get("Action") {
-            let service =
-                extract_service_from_auth(headers).or_else(|| infer_service_from_action(action));
+            let service = extract_service_from_auth(headers)
+                .or_else(|| infer_service_from_action(action))
+                .or_else(|| parse_routing_host_from_headers(headers).map(|h| h.service));
             if let Some(service) = service {
                 return Some(DetectedRequest {
                     service,
@@ -115,7 +117,169 @@ pub fn detect_service(
         });
     }
 
+    // 7. Fallback: unsigned REST-style request carrying a LocalStack-shaped
+    //    Host header. Lets fixtures and curl-style probes reach the right
+    //    service without SigV4; signed requests were already handled in step 4.
+    if let Some(host_info) = parse_routing_host_from_headers(headers) {
+        if let Some(protocol) = rest_protocol_for(&host_info.service) {
+            return Some(DetectedRequest {
+                service: host_info.service,
+                action: String::new(),
+                protocol,
+            });
+        }
+    }
+
     None
+}
+
+/// Service + region (and optional bucket) decoded from a `Host` header.
+/// Covers both the LocalStack hostname convention
+/// (`<service>.<region>.localhost.localstack.cloud[:port]`,
+/// `<bucket>.s3.<region>.localhost.localstack.cloud[:port]`) and real AWS
+/// service hostnames (`<service>.<region>.amazonaws.com`, S3 path-style
+/// and virtual-hosted-style including the legacy no-region
+/// `s3.amazonaws.com` / `<bucket>.s3.amazonaws.com` forms and the older
+/// dash-separated `s3-<region>.amazonaws.com` form).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoutingHost {
+    pub service: String,
+    pub region: String,
+    /// Set only for virtual-hosted-style S3 hostnames.
+    pub bucket: Option<String>,
+}
+
+const LOCALSTACK_SUFFIX: &str = ".localhost.localstack.cloud";
+const AWS_SUFFIX: &str = ".amazonaws.com";
+
+/// Parse a `Host` header value for a LocalStack- or AWS-shaped hostname.
+/// Returns `None` for anything that doesn't match — callers fall through
+/// to their existing detection path.
+pub fn parse_routing_host(host: &str) -> Option<RoutingHost> {
+    let hostname = host.split(':').next()?;
+    if hostname.is_empty() {
+        return None;
+    }
+    let hostname = hostname.to_ascii_lowercase();
+    if let Some(prefix) = hostname.strip_suffix(LOCALSTACK_SUFFIX) {
+        return parse_localstack_prefix(prefix);
+    }
+    if hostname == "amazonaws.com" {
+        return None;
+    }
+    if let Some(prefix) = hostname.strip_suffix(AWS_SUFFIX) {
+        return parse_aws_prefix(prefix);
+    }
+    None
+}
+
+/// Pull the `Host` header and parse it with [`parse_routing_host`].
+pub fn parse_routing_host_from_headers(headers: &HeaderMap) -> Option<RoutingHost> {
+    let host = headers.get("host")?.to_str().ok()?;
+    parse_routing_host(host)
+}
+
+fn parse_localstack_prefix(prefix: &str) -> Option<RoutingHost> {
+    if prefix.is_empty() {
+        return None;
+    }
+    let labels: Vec<&str> = prefix.split('.').collect();
+    if labels.iter().any(|l| l.is_empty()) {
+        return None;
+    }
+    match labels.len() {
+        2 => Some(RoutingHost {
+            service: labels[0].to_string(),
+            region: labels[1].to_string(),
+            bucket: None,
+        }),
+        n if n >= 3 && labels[n - 2] == "s3" => {
+            let bucket = labels[..n - 2].join(".");
+            Some(RoutingHost {
+                service: "s3".to_string(),
+                region: labels[n - 1].to_string(),
+                bucket: Some(bucket),
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Parse the prefix before `.amazonaws.com`.
+///
+/// Handles every variant AWS has shipped for the common REST/Query services:
+///
+/// - `<service>.<region>` — modern regional endpoint (most services).
+/// - `s3.<region>` — modern path-style S3.
+/// - `<bucket>.s3.<region>` — modern virtual-hosted S3 (bucket may contain dots).
+/// - `s3` — legacy S3 global endpoint (implicitly `us-east-1`).
+/// - `<bucket>.s3` — legacy virtual-hosted S3 (implicitly `us-east-1`).
+/// - `s3-<region>` — older dash-separated path-style S3.
+/// - `<bucket>.s3-<region>` — older dash-separated virtual-hosted S3.
+fn parse_aws_prefix(prefix: &str) -> Option<RoutingHost> {
+    if prefix.is_empty() {
+        return None;
+    }
+    let labels: Vec<&str> = prefix.split('.').collect();
+    if labels.iter().any(|l| l.is_empty()) {
+        return None;
+    }
+    let last = *labels.last()?;
+
+    // `s3-<region>` as the last label: dash-separated S3. Bucket, if any,
+    // is whatever precedes it.
+    if let Some(region) = last.strip_prefix("s3-") {
+        if !region.is_empty() {
+            let bucket = if labels.len() >= 2 {
+                Some(labels[..labels.len() - 1].join("."))
+            } else {
+                None
+            };
+            return Some(RoutingHost {
+                service: "s3".to_string(),
+                region: region.to_string(),
+                bucket,
+            });
+        }
+    }
+
+    // Legacy global S3: last label is `s3`, no region present. `s3` on its
+    // own is the path-style global endpoint; anything preceding it is the
+    // bucket (including dotted names like `a.b.s3.amazonaws.com`).
+    if last == "s3" {
+        if labels.len() == 1 {
+            return Some(RoutingHost {
+                service: "s3".to_string(),
+                region: "us-east-1".to_string(),
+                bucket: None,
+            });
+        }
+        return Some(RoutingHost {
+            service: "s3".to_string(),
+            region: "us-east-1".to_string(),
+            bucket: Some(labels[..labels.len() - 1].join(".")),
+        });
+    }
+
+    match labels.len() {
+        // `<service>.<region>` — the common case. Covers `s3.<region>`
+        // path-style S3 too, since the service label falls through here.
+        2 => Some(RoutingHost {
+            service: labels[0].to_string(),
+            region: labels[1].to_string(),
+            bucket: None,
+        }),
+        // `<bucket>.s3.<region>` — modern virtual-hosted S3.
+        n if n >= 3 && labels[n - 2] == "s3" => {
+            let bucket = labels[..n - 2].join(".");
+            Some(RoutingHost {
+                service: "s3".to_string(),
+                region: labels[n - 1].to_string(),
+                bucket: Some(bucket),
+            })
+        }
+        _ => None,
+    }
 }
 
 /// Parse `X-Amz-Target: AWSEvents.PutEvents` -> service=events, action=PutEvents
@@ -135,6 +299,7 @@ fn parse_amz_target(target: &str) -> Option<DetectedRequest> {
         s if s.starts_with("AWSCognitoIdentityProviderService") => "cognito-idp",
         s if s.starts_with("Kinesis_20131202") => "kinesis",
         s if s.starts_with("AWSStepFunctions") => "states",
+        s if s.starts_with("AWSOrganizationsV") => "organizations",
         _ => return None,
     };
 
@@ -395,6 +560,12 @@ mod tests {
                 .service,
             "states"
         );
+        assert_eq!(
+            parse_amz_target("AWSOrganizationsV20161128.CreateOrganization")
+                .unwrap()
+                .service,
+            "organizations"
+        );
         assert!(parse_amz_target("UnknownServicePrefix.Action").is_none());
     }
 
@@ -536,5 +707,237 @@ mod tests {
         let query = HashMap::new();
         let body = Bytes::new();
         assert!(detect_service(&headers, &query, &body).is_none());
+    }
+
+    #[test]
+    fn parse_routing_host_localstack_basic() {
+        let h = parse_routing_host("sqs.us-east-1.localhost.localstack.cloud").unwrap();
+        assert_eq!(h.service, "sqs");
+        assert_eq!(h.region, "us-east-1");
+        assert!(h.bucket.is_none());
+    }
+
+    #[test]
+    fn parse_routing_host_localstack_with_port() {
+        let h = parse_routing_host("lambda.eu-west-1.localhost.localstack.cloud:4566").unwrap();
+        assert_eq!(h.service, "lambda");
+        assert_eq!(h.region, "eu-west-1");
+        assert!(h.bucket.is_none());
+    }
+
+    #[test]
+    fn parse_routing_host_case_insensitive() {
+        let h = parse_routing_host("SQS.US-EAST-1.LOCALHOST.LOCALSTACK.CLOUD:4566").unwrap();
+        assert_eq!(h.service, "sqs");
+        assert_eq!(h.region, "us-east-1");
+
+        let h = parse_routing_host("LAMBDA.US-EAST-1.AMAZONAWS.COM").unwrap();
+        assert_eq!(h.service, "lambda");
+        assert_eq!(h.region, "us-east-1");
+    }
+
+    #[test]
+    fn parse_routing_host_localstack_s3_virtual_hosted() {
+        let h =
+            parse_routing_host("my-bucket.s3.us-east-1.localhost.localstack.cloud:4566").unwrap();
+        assert_eq!(h.service, "s3");
+        assert_eq!(h.region, "us-east-1");
+        assert_eq!(h.bucket.as_deref(), Some("my-bucket"));
+    }
+
+    #[test]
+    fn parse_routing_host_localstack_s3_vhost_bucket_with_dots() {
+        let h = parse_routing_host("a.b.c.s3.us-east-1.localhost.localstack.cloud").unwrap();
+        assert_eq!(h.service, "s3");
+        assert_eq!(h.region, "us-east-1");
+        assert_eq!(h.bucket.as_deref(), Some("a.b.c"));
+    }
+
+    #[test]
+    fn parse_routing_host_aws_service_region() {
+        let h = parse_routing_host("sqs.us-east-1.amazonaws.com").unwrap();
+        assert_eq!(h.service, "sqs");
+        assert_eq!(h.region, "us-east-1");
+        assert!(h.bucket.is_none());
+
+        let h = parse_routing_host("dynamodb.eu-west-2.amazonaws.com:443").unwrap();
+        assert_eq!(h.service, "dynamodb");
+        assert_eq!(h.region, "eu-west-2");
+    }
+
+    #[test]
+    fn parse_routing_host_aws_s3_path_style_modern() {
+        let h = parse_routing_host("s3.us-east-1.amazonaws.com").unwrap();
+        assert_eq!(h.service, "s3");
+        assert_eq!(h.region, "us-east-1");
+        assert!(h.bucket.is_none());
+    }
+
+    #[test]
+    fn parse_routing_host_aws_s3_virtual_hosted_modern() {
+        let h = parse_routing_host("my-bucket.s3.us-east-1.amazonaws.com").unwrap();
+        assert_eq!(h.service, "s3");
+        assert_eq!(h.region, "us-east-1");
+        assert_eq!(h.bucket.as_deref(), Some("my-bucket"));
+    }
+
+    #[test]
+    fn parse_routing_host_aws_s3_vhost_bucket_with_dots() {
+        let h = parse_routing_host("a.b.c.s3.us-east-1.amazonaws.com").unwrap();
+        assert_eq!(h.service, "s3");
+        assert_eq!(h.region, "us-east-1");
+        assert_eq!(h.bucket.as_deref(), Some("a.b.c"));
+    }
+
+    #[test]
+    fn parse_routing_host_aws_s3_legacy_global() {
+        // `s3.amazonaws.com` (no region) is the legacy S3 global endpoint —
+        // AWS treats it as us-east-1 for both path-style and virtual-hosted.
+        let h = parse_routing_host("s3.amazonaws.com").unwrap();
+        assert_eq!(h.service, "s3");
+        assert_eq!(h.region, "us-east-1");
+        assert!(h.bucket.is_none());
+
+        let h = parse_routing_host("my-bucket.s3.amazonaws.com").unwrap();
+        assert_eq!(h.service, "s3");
+        assert_eq!(h.region, "us-east-1");
+        assert_eq!(h.bucket.as_deref(), Some("my-bucket"));
+    }
+
+    #[test]
+    fn parse_routing_host_aws_s3_legacy_global_dotted_bucket() {
+        // AWS allows buckets with dots (e.g. `a.b.c`) and still serves them
+        // via the legacy `<bucket>.s3.amazonaws.com` global endpoint.
+        let h = parse_routing_host("a.b.c.s3.amazonaws.com").unwrap();
+        assert_eq!(h.service, "s3");
+        assert_eq!(h.region, "us-east-1");
+        assert_eq!(h.bucket.as_deref(), Some("a.b.c"));
+    }
+
+    #[test]
+    fn parse_routing_host_aws_s3_dash_separated() {
+        // Older dash-separated form still served by AWS.
+        let h = parse_routing_host("s3-us-west-2.amazonaws.com").unwrap();
+        assert_eq!(h.service, "s3");
+        assert_eq!(h.region, "us-west-2");
+        assert!(h.bucket.is_none());
+
+        let h = parse_routing_host("my-bucket.s3-us-west-2.amazonaws.com").unwrap();
+        assert_eq!(h.service, "s3");
+        assert_eq!(h.region, "us-west-2");
+        assert_eq!(h.bucket.as_deref(), Some("my-bucket"));
+    }
+
+    #[test]
+    fn parse_routing_host_rejects_plain_localhost() {
+        assert!(parse_routing_host("localhost:4566").is_none());
+        assert!(parse_routing_host("127.0.0.1:4566").is_none());
+    }
+
+    #[test]
+    fn parse_routing_host_rejects_unknown_suffix() {
+        assert!(parse_routing_host("sqs.us-east-1.example.com").is_none());
+        assert!(parse_routing_host("s3.us-east-1.aws").is_none());
+    }
+
+    #[test]
+    fn parse_routing_host_empty_and_malformed_rejected() {
+        assert!(parse_routing_host("").is_none());
+        assert!(parse_routing_host(".localhost.localstack.cloud").is_none());
+        assert!(parse_routing_host("..localhost.localstack.cloud").is_none());
+        assert!(parse_routing_host("sqs.localhost.localstack.cloud").is_none());
+        assert!(parse_routing_host("foo.bar.baz.localhost.localstack.cloud").is_none());
+        assert!(parse_routing_host(".amazonaws.com").is_none());
+        assert!(parse_routing_host("amazonaws.com").is_none());
+    }
+
+    #[test]
+    fn detect_service_via_host_for_rest_service() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "host",
+            "s3.us-east-1.localhost.localstack.cloud:4566"
+                .parse()
+                .unwrap(),
+        );
+        let query = HashMap::new();
+        let body = Bytes::new();
+        let detected = detect_service(&headers, &query, &body).unwrap();
+        assert_eq!(detected.service, "s3");
+        assert_eq!(detected.protocol, AwsProtocol::Rest);
+    }
+
+    #[test]
+    fn detect_service_via_host_for_rest_json_service() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "host",
+            "lambda.us-east-1.localhost.localstack.cloud:4566"
+                .parse()
+                .unwrap(),
+        );
+        let query = HashMap::new();
+        let body = Bytes::new();
+        let detected = detect_service(&headers, &query, &body).unwrap();
+        assert_eq!(detected.service, "lambda");
+        assert_eq!(detected.protocol, AwsProtocol::RestJson);
+    }
+
+    #[test]
+    fn detect_service_via_host_plus_query_action() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "host",
+            "sqs.us-east-1.localhost.localstack.cloud:4566"
+                .parse()
+                .unwrap(),
+        );
+        let mut query = HashMap::new();
+        query.insert("Action".to_string(), "ListQueues".to_string());
+        let body = Bytes::new();
+        let detected = detect_service(&headers, &query, &body).unwrap();
+        assert_eq!(detected.service, "sqs");
+        assert_eq!(detected.action, "ListQueues");
+        assert_eq!(detected.protocol, AwsProtocol::Query);
+    }
+
+    #[test]
+    fn detect_service_sigv4_wins_over_host() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            "AWS4-HMAC-SHA256 Credential=AKID/20240101/us-east-1/s3/aws4_request, \
+             SignedHeaders=host, Signature=abc"
+                .parse()
+                .unwrap(),
+        );
+        headers.insert(
+            "host",
+            "lambda.us-east-1.localhost.localstack.cloud:4566"
+                .parse()
+                .unwrap(),
+        );
+        let query = HashMap::new();
+        let body = Bytes::new();
+        let detected = detect_service(&headers, &query, &body).unwrap();
+        // SigV4 credential scope says s3; Host header says lambda. SigV4 wins.
+        assert_eq!(detected.service, "s3");
+        assert_eq!(detected.protocol, AwsProtocol::Rest);
+    }
+
+    #[test]
+    fn detect_service_host_for_virtual_hosted_s3() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "host",
+            "my-bucket.s3.us-east-1.localhost.localstack.cloud:4566"
+                .parse()
+                .unwrap(),
+        );
+        let query = HashMap::new();
+        let body = Bytes::new();
+        let detected = detect_service(&headers, &query, &body).unwrap();
+        assert_eq!(detected.service, "s3");
+        assert_eq!(detected.protocol, AwsProtocol::Rest);
     }
 }

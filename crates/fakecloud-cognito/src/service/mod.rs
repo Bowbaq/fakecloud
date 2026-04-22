@@ -72,7 +72,8 @@ impl CognitoService {
         let _guard = self.snapshot_lock.lock().await;
         let snapshot = CognitoSnapshot {
             schema_version: COGNITO_SNAPSHOT_SCHEMA_VERSION,
-            state: self.state.read().clone(),
+            accounts: Some(self.state.read().clone()),
+            state: None,
         };
         let join = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
             let bytes = serde_json::to_vec(&snapshot)
@@ -1481,10 +1482,13 @@ mod tests {
 
     #[test]
     fn create_user_pool_missing_name() {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         let svc = CognitoService::new(state);
         let req = AwsRequest {
             service: "cognito-idp".to_string(),
@@ -1543,10 +1547,13 @@ mod tests {
 
     #[test]
     fn client_secret_not_generated_by_default() {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         let svc = CognitoService::new(state.clone());
 
         // First create a pool
@@ -1605,10 +1612,13 @@ mod tests {
 
     #[test]
     fn client_secret_generated_when_requested() {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         let svc = CognitoService::new(state.clone());
 
         // Create a pool
@@ -1671,10 +1681,13 @@ mod tests {
 
     #[test]
     fn client_belongs_to_correct_pool() {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         let svc = CognitoService::new(state.clone());
 
         // Create two pools
@@ -1701,9 +1714,10 @@ mod tests {
             svc.create_user_pool(&req).unwrap();
         }
 
-        let s = state.read();
+        let _mas = state.read();
+        let s = _mas.default_ref();
         let pool_ids: Vec<String> = s.user_pools.keys().cloned().collect();
-        drop(s);
+        drop(_mas);
 
         // Create client in pool A
         let req = AwsRequest {
@@ -1900,10 +1914,13 @@ mod tests {
     #[test]
     fn user_default_status_is_force_change_password() {
         // When a user is admin-created, the status should be FORCE_CHANGE_PASSWORD
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         let svc = CognitoService::new(state.clone());
 
         // Create a pool
@@ -2166,12 +2183,16 @@ mod tests {
 
     #[test]
     fn access_token_lookup() {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         {
-            let mut s = state.write();
+            let mut _mas_w = state.write();
+            let s: &mut crate::state::CognitoState = _mas_w.default_mut();
             s.access_tokens.insert(
                 "test-access-token".to_string(),
                 AccessTokenData {
@@ -2183,7 +2204,8 @@ mod tests {
             );
         }
 
-        let s = state.read();
+        let _mas = state.read();
+        let s = _mas.default_ref();
         let token_data = s.access_tokens.get("test-access-token");
         assert!(token_data.is_some());
         let data = token_data.unwrap();
@@ -2197,10 +2219,13 @@ mod tests {
 
     #[test]
     fn group_name_uniqueness() {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         let svc = CognitoService::new(state.clone());
 
         // Create a pool first
@@ -2271,10 +2296,13 @@ mod tests {
 
     #[test]
     fn user_group_association() {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         let svc = CognitoService::new(state.clone());
 
         // Create a pool
@@ -2383,7 +2411,8 @@ mod tests {
 
         // Verify membership via state
         {
-            let s = state.read();
+            let _mas = state.read();
+            let s = _mas.default_ref();
             let groups = s.user_groups.get(&pool_id).unwrap();
             let user_groups = groups.get("testuser").unwrap();
             assert!(user_groups.contains(&"admins".to_string()));
@@ -2418,7 +2447,8 @@ mod tests {
 
         // Verify no longer in group
         {
-            let s = state.read();
+            let _mas = state.read();
+            let s = _mas.default_ref();
             let groups = s.user_groups.get(&pool_id).unwrap();
             let user_groups = groups.get("testuser").unwrap();
             assert!(!user_groups.contains(&"admins".to_string()));
@@ -2427,10 +2457,13 @@ mod tests {
 
     #[test]
     fn self_service_get_user_via_access_token() {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         let svc = CognitoService::new(state.clone());
 
         // Create pool
@@ -2488,7 +2521,8 @@ mod tests {
 
         // Manually insert an access token
         {
-            let mut s = state.write();
+            let mut _mas_w = state.write();
+            let s = _mas_w.default_mut();
             s.access_tokens.insert(
                 "test-access-token".to_string(),
                 crate::state::AccessTokenData {
@@ -2553,10 +2587,13 @@ mod tests {
 
     #[test]
     fn self_service_delete_user_cleans_up_tokens() {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         let svc = CognitoService::new(state.clone());
 
         // Create pool
@@ -2611,7 +2648,8 @@ mod tests {
 
         // Insert access token and refresh token
         {
-            let mut s = state.write();
+            let mut _mas_w = state.write();
+            let s = _mas_w.default_mut();
             s.access_tokens.insert(
                 "del-token".to_string(),
                 crate::state::AccessTokenData {
@@ -2655,7 +2693,8 @@ mod tests {
         svc.delete_user(&req).unwrap();
 
         // Verify cleanup
-        let s = state.read();
+        let _mas = state.read();
+        let s = _mas.default_ref();
         assert!(s.access_tokens.is_empty());
         assert!(s.refresh_tokens.is_empty());
         assert!(s
@@ -2667,10 +2706,13 @@ mod tests {
 
     #[test]
     fn verify_user_attribute_with_correct_code() {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         let svc = CognitoService::new(state.clone());
 
         // Create pool
@@ -2726,7 +2768,8 @@ mod tests {
 
         // Insert access token
         {
-            let mut s = state.write();
+            let mut _mas_w = state.write();
+            let s = _mas_w.default_mut();
             s.access_tokens.insert(
                 "verify-token".to_string(),
                 crate::state::AccessTokenData {
@@ -2770,7 +2813,8 @@ mod tests {
 
         // Read the code from state
         let code = {
-            let s = state.read();
+            let _mas = state.read();
+            let s = _mas.default_ref();
             let user = s.users.get(&pool_id).unwrap().get("verifyuser").unwrap();
             user.attribute_verification_codes
                 .get("email")
@@ -2806,7 +2850,8 @@ mod tests {
         svc.verify_user_attribute(&req).unwrap();
 
         // Verify email_verified is set
-        let s = state.read();
+        let _mas = state.read();
+        let s = _mas.default_ref();
         let user = s.users.get(&pool_id).unwrap().get("verifyuser").unwrap();
         let email_verified = user
             .attributes
@@ -2816,7 +2861,7 @@ mod tests {
         assert_eq!(email_verified.value, "true");
 
         // Verify with wrong code should fail
-        drop(s);
+        drop(_mas);
         // First get a new code
         let req = AwsRequest {
             service: "cognito-idp".to_string(),
@@ -2894,13 +2939,15 @@ mod tests {
 
     #[test]
     fn mfa_preference_storage() {
-        use crate::state::CognitoState;
         use std::sync::Arc;
 
-        let state = Arc::new(parking_lot::RwLock::new(CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         let svc = CognitoService::new(state.clone());
 
         // Create a pool and user first
@@ -2987,7 +3034,8 @@ mod tests {
         svc.admin_set_user_mfa_preference(&set_pref_req).unwrap();
 
         // Verify preferences were stored
-        let st = state.read();
+        let _mas = state.read();
+        let st = _mas.default_ref();
         let user = st.users.get(&pool_id).unwrap().get("mfauser").unwrap();
         let prefs = user.mfa_preferences.as_ref().unwrap();
         assert!(prefs.software_token_enabled);
@@ -3017,10 +3065,13 @@ mod tests {
     }
 
     fn setup_svc_with_pool() -> (CognitoService, String) {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         let svc = CognitoService::new(state);
         let req = make_req("CreateUserPool", r#"{"PoolName":"test"}"#);
         let resp = svc.create_user_pool(&req).unwrap();
@@ -3250,7 +3301,8 @@ mod tests {
 
         // Directly insert a device into the user's devices map
         {
-            let mut state = svc.state.write();
+            let mut mas = svc.state.write();
+            let state = mas.default_mut();
             let user = state
                 .users
                 .get_mut(&pool_id)
@@ -3297,9 +3349,15 @@ mod tests {
     #[test]
     fn tag_management() {
         let (svc, pool_id) = setup_svc_with_pool();
-        let state = svc.state.read();
-        let arn = state.user_pools.get(&pool_id).unwrap().arn.clone();
-        drop(state);
+        let arn = {
+            let mas = svc.state.read();
+            mas.default_ref()
+                .user_pools
+                .get(&pool_id)
+                .unwrap()
+                .arn
+                .clone()
+        };
 
         // Tag
         let body = serde_json::to_string(&json!({
@@ -3381,10 +3439,13 @@ mod tests {
 
     #[test]
     fn auth_events_recorded_on_sign_up() {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         let svc = CognitoService::new(state.clone());
 
         // Create pool and client
@@ -3419,7 +3480,8 @@ mod tests {
         block_on(svc.sign_up(&req)).unwrap();
 
         // Check auth events
-        let st = state.read();
+        let _mas = state.read();
+        let st = _mas.default_ref();
         assert_eq!(st.auth_events.len(), 1);
         assert_eq!(st.auth_events[0].event_type, "SIGN_UP");
         assert_eq!(st.auth_events[0].username, "testevuser");
@@ -3428,10 +3490,13 @@ mod tests {
 
     #[test]
     fn auth_events_recorded_on_sign_in_and_failure() {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         let svc = CognitoService::new(state.clone());
 
         // Create pool, client, user
@@ -3497,7 +3562,8 @@ mod tests {
         let _ = block_on(svc.admin_initiate_auth(&req));
 
         // Check events
-        let st = state.read();
+        let _mas = state.read();
+        let st = _mas.default_ref();
         assert_eq!(st.auth_events.len(), 2);
         assert_eq!(st.auth_events[0].event_type, "SIGN_IN");
         assert!(st.auth_events[0].success);
@@ -3507,11 +3573,14 @@ mod tests {
 
     #[test]
     fn auth_events_cleared_on_reset() {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
-        state.write().auth_events.push(AuthEvent {
+        let state: crate::state::SharedCognitoState = std::sync::Arc::new(
+            parking_lot::RwLock::new(fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            )),
+        );
+        state.write().default_mut().auth_events.push(AuthEvent {
             event_id: Uuid::new_v4().to_string(),
             event_type: "SIGN_UP".to_string(),
             username: "test".to_string(),
@@ -3521,17 +3590,20 @@ mod tests {
             success: true,
             feedback_value: None,
         });
-        assert_eq!(state.read().auth_events.len(), 1);
-        state.write().reset();
-        assert!(state.read().auth_events.is_empty());
+        assert_eq!(state.read().default_ref().auth_events.len(), 1);
+        state.write().default_mut().reset();
+        assert!(state.read().default_ref().auth_events.is_empty());
     }
 
     #[test]
     fn custom_auth_rejected_when_not_in_explicit_auth_flows() {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         let svc = CognitoService::new(state.clone());
 
         // Create pool
@@ -3574,10 +3646,13 @@ mod tests {
 
     #[test]
     fn custom_auth_fails_without_delivery_context() {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         // No delivery context — no Lambda support
         let svc = CognitoService::new(state.clone());
 
@@ -3642,10 +3717,13 @@ mod tests {
 
     #[test]
     fn custom_auth_fails_without_define_trigger_configured() {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         let delivery_bus = std::sync::Arc::new(fakecloud_core::delivery::DeliveryBus::new());
         let ctx = triggers::CognitoDeliveryContext {
             delivery_bus: delivery_bus.clone(),
@@ -3712,10 +3790,13 @@ mod tests {
 
     #[test]
     fn custom_challenge_response_fails_without_delivery_context() {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         let svc = CognitoService::new(state.clone());
 
         // Create pool, client, and user so we get past user lookup
@@ -3760,7 +3841,8 @@ mod tests {
         // Manually insert a CUSTOM_CHALLENGE session
         let session_token = "test-session-123".to_string();
         {
-            let mut st = state.write();
+            let mut _mas_w = state.write();
+            let st = _mas_w.default_mut();
             st.sessions.insert(
                 session_token.clone(),
                 SessionData {
@@ -3795,10 +3877,13 @@ mod tests {
 
     #[test]
     fn custom_challenge_response_requires_answer() {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         let svc = CognitoService::new(state.clone());
 
         // Create pool and client so we have valid IDs
@@ -3823,7 +3908,8 @@ mod tests {
 
         let session_token = "test-session-456".to_string();
         {
-            let mut st = state.write();
+            let mut _mas_w = state.write();
+            let st = _mas_w.default_mut();
             st.sessions.insert(
                 session_token.clone(),
                 SessionData {
@@ -3879,10 +3965,13 @@ mod tests {
     // ── Helpers for auth/user tests ──
 
     fn make_svc() -> (CognitoService, crate::state::SharedCognitoState) {
-        let state = std::sync::Arc::new(parking_lot::RwLock::new(crate::state::CognitoState::new(
-            "123456789012",
-            "us-east-1",
-        )));
+        let state = std::sync::Arc::new(parking_lot::RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ));
         let svc = CognitoService::new(state.clone());
         (svc, state)
     }
@@ -5093,7 +5182,8 @@ mod tests {
 
         // Describe
         let terms_id = {
-            let s = svc.state.read();
+            let _mas = svc.state.read();
+            let s = _mas.default_ref();
             s.terms.keys().next().unwrap().clone()
         };
         let body = json!({"UserPoolId": pool_id, "TermsId": terms_id});
@@ -5326,7 +5416,8 @@ mod tests {
 
         // Get confirmation code from state
         let code = {
-            let s = state.read();
+            let _mas = state.read();
+            let s = _mas.default_ref();
             let users = s.users.get(&pool_id).unwrap();
             users
                 .get("forgot-user")
@@ -6395,5 +6486,1392 @@ mod tests {
         });
         let req = make_req("DeleteUserAttributes", &body.to_string());
         assert!(svc.delete_user_attributes(&req).is_err());
+    }
+
+    // ── UI / Log / Risk configuration (config.rs) ──
+
+    #[test]
+    fn ui_customization_client_specific_falls_back_to_pool_level() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+
+        // Set pool-level customization (empty ClientId).
+        let body = json!({
+            "UserPoolId": pool_id,
+            "CSS": ".banner { color: blue; }",
+            "ImageFile": "base64imagedata==",
+        });
+        let req = make_req("SetUICustomization", &body.to_string());
+        let resp = svc.set_ui_customization(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["UICustomization"]["ClientId"], "ALL");
+        assert!(b["UICustomization"]["ImageUrl"]
+            .as_str()
+            .unwrap()
+            .ends_with("/logo.png"));
+
+        // Get client-specific -> falls back to pool-level CSS.
+        let body = json!({"UserPoolId": pool_id, "ClientId": "client-123"});
+        let req = make_req("GetUICustomization", &body.to_string());
+        let resp = svc.get_ui_customization(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["UICustomization"]["CSS"], ".banner { color: blue; }");
+    }
+
+    #[test]
+    fn ui_customization_default_when_not_set() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id});
+        let req = make_req("GetUICustomization", &body.to_string());
+        let resp = svc.get_ui_customization(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["UICustomization"]["UserPoolId"], pool_id);
+        assert_eq!(b["UICustomization"]["ClientId"], "ALL");
+        assert!(b["UICustomization"]["CSS"].is_null());
+    }
+
+    #[test]
+    fn ui_customization_rejects_unknown_pool() {
+        let (svc, _) = make_svc();
+        let body = json!({"UserPoolId": "us-east-1_nosuch"});
+        let req = make_req("GetUICustomization", &body.to_string());
+        assert!(svc.get_ui_customization(&req).is_err());
+    }
+
+    #[test]
+    fn log_delivery_configuration_set_and_get() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+
+        let body = json!({
+            "UserPoolId": pool_id,
+            "LogConfigurations": [
+                {"LogLevel": "INFO", "EventSource": "userNotification",
+                 "CloudWatchLogsConfiguration": {"LogGroupArn": "arn:aws:logs:us-east-1:123:log-group:g"}}
+            ]
+        });
+        let req = make_req("SetLogDeliveryConfiguration", &body.to_string());
+        svc.set_log_delivery_configuration(&req).unwrap();
+
+        let body = json!({"UserPoolId": pool_id});
+        let req = make_req("GetLogDeliveryConfiguration", &body.to_string());
+        let resp = svc.get_log_delivery_configuration(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(
+            b["LogDeliveryConfiguration"]["LogConfigurations"][0]["LogLevel"],
+            "INFO"
+        );
+    }
+
+    #[test]
+    fn log_delivery_configuration_default_when_absent() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id});
+        let req = make_req("GetLogDeliveryConfiguration", &body.to_string());
+        let resp = svc.get_log_delivery_configuration(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(
+            b["LogDeliveryConfiguration"]["LogConfigurations"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+    }
+
+    #[test]
+    fn risk_configuration_set_and_describe_pool_level() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+
+        let body = json!({
+            "UserPoolId": pool_id,
+            "CompromisedCredentialsRiskConfiguration": {"EventFilter": ["SIGN_IN"], "Actions": {"EventAction": "BLOCK"}},
+            "AccountTakeoverRiskConfiguration": {"NotifyConfiguration": {"From": "no-reply@x"}},
+            "RiskExceptionConfiguration": {"BlockedIPRangeList": ["10.0.0.0/24"]}
+        });
+        let req = make_req("SetRiskConfiguration", &body.to_string());
+        svc.set_risk_configuration(&req).unwrap();
+
+        let body = json!({"UserPoolId": pool_id});
+        let req = make_req("DescribeRiskConfiguration", &body.to_string());
+        let resp = svc.describe_risk_configuration(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(
+            b["RiskConfiguration"]["CompromisedCredentialsRiskConfiguration"]["Actions"]
+                ["EventAction"],
+            "BLOCK"
+        );
+    }
+
+    #[test]
+    fn risk_configuration_client_specific_falls_back_to_pool_level() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+
+        // Pool-level config
+        let body = json!({
+            "UserPoolId": pool_id,
+            "RiskExceptionConfiguration": {"BlockedIPRangeList": ["10.0.0.0/24"]}
+        });
+        let req = make_req("SetRiskConfiguration", &body.to_string());
+        svc.set_risk_configuration(&req).unwrap();
+
+        // Describe for specific client -> falls back to pool level
+        let body = json!({"UserPoolId": pool_id, "ClientId": "abc"});
+        let req = make_req("DescribeRiskConfiguration", &body.to_string());
+        let resp = svc.describe_risk_configuration(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(
+            b["RiskConfiguration"]["RiskExceptionConfiguration"]["BlockedIPRangeList"][0],
+            "10.0.0.0/24"
+        );
+    }
+
+    #[test]
+    fn risk_configuration_default_when_absent() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id, "ClientId": "c1"});
+        let req = make_req("DescribeRiskConfiguration", &body.to_string());
+        let resp = svc.describe_risk_configuration(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["RiskConfiguration"]["UserPoolId"], pool_id);
+        assert_eq!(b["RiskConfiguration"]["ClientId"], "c1");
+    }
+
+    // ── MFA (mfa.rs) coverage ─────────────────────────────────────────
+
+    fn issue_access_token(
+        state: &crate::state::SharedCognitoState,
+        pool_id: &str,
+        username: &str,
+        client_id: &str,
+    ) -> String {
+        let token = format!("access-{}", uuid::Uuid::new_v4());
+        let mut st = state.write();
+        let acct = st.get_or_create("123456789012");
+        acct.access_tokens.insert(
+            token.clone(),
+            AccessTokenData {
+                user_pool_id: pool_id.to_string(),
+                username: username.to_string(),
+                client_id: client_id.to_string(),
+                issued_at: chrono::Utc::now(),
+            },
+        );
+        token
+    }
+
+    #[test]
+    fn set_user_pool_mfa_config_full_shape() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({
+            "UserPoolId": pool_id,
+            "MfaConfiguration": "ON",
+            "SoftwareTokenMfaConfiguration": {"Enabled": true},
+            "SmsMfaConfiguration": {
+                "Enabled": true,
+                "SmsConfiguration": {
+                    "SnsCallerArn": "arn:aws:iam::123:role/sms",
+                    "ExternalId": "eid",
+                    "SnsRegion": "us-east-1"
+                }
+            }
+        });
+        let req = make_req("SetUserPoolMfaConfig", &body.to_string());
+        let resp = svc.set_user_pool_mfa_config(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["MfaConfiguration"], "ON");
+        assert_eq!(b["SoftwareTokenMfaConfiguration"]["Enabled"], true);
+        assert_eq!(b["SmsMfaConfiguration"]["Enabled"], true);
+        assert_eq!(
+            b["SmsMfaConfiguration"]["SmsConfiguration"]["SnsCallerArn"],
+            "arn:aws:iam::123:role/sms"
+        );
+    }
+
+    #[test]
+    fn set_user_pool_mfa_config_unknown_pool() {
+        let (svc, _) = make_svc();
+        let body = json!({"UserPoolId": "us-east-1_no", "MfaConfiguration": "ON"});
+        let req = make_req("SetUserPoolMfaConfig", &body.to_string());
+        assert!(svc.set_user_pool_mfa_config(&req).is_err());
+    }
+
+    #[test]
+    fn get_user_pool_mfa_config_unknown_pool() {
+        let (svc, _) = make_svc();
+        let body = json!({"UserPoolId": "us-east-1_no"});
+        let req = make_req("GetUserPoolMfaConfig", &body.to_string());
+        assert!(svc.get_user_pool_mfa_config(&req).is_err());
+    }
+
+    #[test]
+    fn get_user_pool_mfa_config_returns_stored_shape() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({
+            "UserPoolId": pool_id,
+            "MfaConfiguration": "OPTIONAL",
+            "SoftwareTokenMfaConfiguration": {"Enabled": true},
+            "SmsMfaConfiguration": {"Enabled": true}
+        });
+        let req = make_req("SetUserPoolMfaConfig", &body.to_string());
+        svc.set_user_pool_mfa_config(&req).unwrap();
+
+        let req = make_req(
+            "GetUserPoolMfaConfig",
+            &json!({"UserPoolId": pool_id}).to_string(),
+        );
+        let resp = svc.get_user_pool_mfa_config(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["MfaConfiguration"], "OPTIONAL");
+        assert_eq!(b["SoftwareTokenMfaConfiguration"]["Enabled"], true);
+    }
+
+    #[test]
+    fn admin_set_user_mfa_preference_unknown_user() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Username": "ghost",
+            "SMSMfaSettings": {"Enabled": true, "PreferredMfa": true}
+        });
+        let req = make_req("AdminSetUserMFAPreference", &body.to_string());
+        assert!(svc.admin_set_user_mfa_preference(&req).is_err());
+    }
+
+    #[test]
+    fn admin_set_user_mfa_preference_updates_prefs() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "alice");
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Username": "alice",
+            "SMSMfaSettings": {"Enabled": true, "PreferredMfa": false},
+            "SoftwareTokenMfaSettings": {"Enabled": true, "PreferredMfa": true},
+        });
+        let req = make_req("AdminSetUserMFAPreference", &body.to_string());
+        svc.admin_set_user_mfa_preference(&req).unwrap();
+    }
+
+    #[test]
+    fn set_user_mfa_preference_invalid_token() {
+        let (svc, _) = make_svc();
+        let body = json!({
+            "AccessToken": "bad",
+            "SMSMfaSettings": {"Enabled": true}
+        });
+        let req = make_req("SetUserMFAPreference", &body.to_string());
+        assert!(svc.set_user_mfa_preference(&req).is_err());
+    }
+
+    #[test]
+    fn set_user_mfa_preference_valid_token() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "alice");
+        let token = issue_access_token(&state, &pool_id, "alice", "client-id");
+        let body = json!({
+            "AccessToken": token,
+            "SMSMfaSettings": {"Enabled": true, "PreferredMfa": true},
+            "SoftwareTokenMfaSettings": {"Enabled": true, "PreferredMfa": false},
+        });
+        let req = make_req("SetUserMFAPreference", &body.to_string());
+        svc.set_user_mfa_preference(&req).unwrap();
+    }
+
+    #[test]
+    fn associate_software_token_requires_token_or_session() {
+        let (svc, _) = make_svc();
+        let req = make_req("AssociateSoftwareToken", "{}");
+        assert!(svc.associate_software_token(&req).is_err());
+    }
+
+    #[test]
+    fn associate_software_token_invalid_token() {
+        let (svc, _) = make_svc();
+        let body = json!({"AccessToken": "nope"});
+        let req = make_req("AssociateSoftwareToken", &body.to_string());
+        assert!(svc.associate_software_token(&req).is_err());
+    }
+
+    #[test]
+    fn associate_software_token_returns_secret() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "bob");
+        let token = issue_access_token(&state, &pool_id, "bob", "client-id");
+        let body = json!({"AccessToken": token});
+        let req = make_req("AssociateSoftwareToken", &body.to_string());
+        let resp = svc.associate_software_token(&req).unwrap();
+        let b = resp_json(&resp);
+        assert!(!b["SecretCode"].as_str().unwrap().is_empty());
+        assert!(!b["Session"].as_str().unwrap().is_empty());
+    }
+
+    #[test]
+    fn verify_software_token_invalid_code_format() {
+        let (svc, _) = make_svc();
+        let body = json!({"UserCode": "abcdef", "AccessToken": "t"});
+        let req = make_req("VerifySoftwareToken", &body.to_string());
+        assert!(svc.verify_software_token(&req).is_err());
+    }
+
+    #[test]
+    fn verify_software_token_requires_token_or_session() {
+        let (svc, _) = make_svc();
+        let body = json!({"UserCode": "123456"});
+        let req = make_req("VerifySoftwareToken", &body.to_string());
+        assert!(svc.verify_software_token(&req).is_err());
+    }
+
+    #[test]
+    fn verify_software_token_without_associated_secret() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "carl");
+        let token = issue_access_token(&state, &pool_id, "carl", "client-id");
+        let body = json!({"UserCode": "123456", "AccessToken": token});
+        let req = make_req("VerifySoftwareToken", &body.to_string());
+        assert!(svc.verify_software_token(&req).is_err());
+    }
+
+    #[test]
+    fn verify_software_token_after_associate_succeeds() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "dave");
+        let token = issue_access_token(&state, &pool_id, "dave", "client-id");
+        let body = json!({"AccessToken": token});
+        let req = make_req("AssociateSoftwareToken", &body.to_string());
+        svc.associate_software_token(&req).unwrap();
+        let body = json!({"UserCode": "123456", "AccessToken": token});
+        let req = make_req("VerifySoftwareToken", &body.to_string());
+        let resp = svc.verify_software_token(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["Status"], "SUCCESS");
+    }
+
+    #[test]
+    fn get_user_auth_factors_invalid_token() {
+        let (svc, _) = make_svc();
+        let body = json!({"AccessToken": "none"});
+        let req = make_req("GetUserAuthFactors", &body.to_string());
+        assert!(svc.get_user_auth_factors(&req).is_err());
+    }
+
+    #[test]
+    fn get_user_auth_factors_returns_factors() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "eve");
+        let token = issue_access_token(&state, &pool_id, "eve", "client-id");
+        let body = json!({"AccessToken": token});
+        let req = make_req("GetUserAuthFactors", &body.to_string());
+        let resp = svc.get_user_auth_factors(&req).unwrap();
+        let b = resp_json(&resp);
+        assert!(b["ConfiguredUserAuthFactors"].is_array());
+    }
+
+    // ── Legacy operations (legacy.rs) coverage ─────────────────────────
+
+    fn issue_access_token_for(
+        state: &crate::state::SharedCognitoState,
+        pool_id: &str,
+        username: &str,
+        client_id: &str,
+    ) -> String {
+        let token = format!("access-{}", uuid::Uuid::new_v4());
+        let mut st = state.write();
+        let acct = st.get_or_create("123456789012");
+        acct.access_tokens.insert(
+            token.clone(),
+            AccessTokenData {
+                user_pool_id: pool_id.to_string(),
+                username: username.to_string(),
+                client_id: client_id.to_string(),
+                issued_at: chrono::Utc::now(),
+            },
+        );
+        token
+    }
+
+    #[test]
+    fn set_user_settings_invalid_token() {
+        let (svc, _) = make_svc();
+        let body = json!({"AccessToken": "nope", "MFAOptions": []});
+        let req = make_req("SetUserSettings", &body.to_string());
+        assert!(svc.set_user_settings(&req).is_err());
+    }
+
+    #[test]
+    fn set_user_settings_valid_token() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "alice");
+        let token = issue_access_token_for(&state, &pool_id, "alice", "c1");
+        let body = json!({
+            "AccessToken": token,
+            "MFAOptions": [{"DeliveryMedium": "SMS", "AttributeName": "phone_number"}]
+        });
+        let req = make_req("SetUserSettings", &body.to_string());
+        svc.set_user_settings(&req).unwrap();
+    }
+
+    #[test]
+    fn admin_link_and_disable_provider_for_user() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "eve");
+        let body = json!({
+            "UserPoolId": pool_id,
+            "DestinationUser": {"ProviderName": "Cognito", "ProviderAttributeValue": "eve"},
+            "SourceUser": {
+                "ProviderName": "Google",
+                "ProviderAttributeName": "Cognito_Subject",
+                "ProviderAttributeValue": "google-sub-123"
+            }
+        });
+        let req = make_req("AdminLinkProviderForUser", &body.to_string());
+        svc.admin_link_provider_for_user(&req).unwrap();
+
+        let body = json!({
+            "UserPoolId": pool_id,
+            "User": {"ProviderName": "Google", "ProviderAttributeValue": "google-sub-123"}
+        });
+        let req = make_req("AdminDisableProviderForUser", &body.to_string());
+        svc.admin_disable_provider_for_user(&req).unwrap();
+    }
+
+    #[test]
+    fn admin_link_provider_pool_not_found() {
+        let (svc, _) = make_svc();
+        let body = json!({
+            "UserPoolId": "us-east-1_no",
+            "DestinationUser": {"ProviderName": "Cognito", "ProviderAttributeValue": "x"},
+            "SourceUser": {"ProviderName": "Google", "ProviderAttributeValue": "v"}
+        });
+        let req = make_req("AdminLinkProviderForUser", &body.to_string());
+        assert!(svc.admin_link_provider_for_user(&req).is_err());
+    }
+
+    #[test]
+    fn admin_link_provider_destination_not_found() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({
+            "UserPoolId": pool_id,
+            "DestinationUser": {"ProviderName": "Cognito", "ProviderAttributeValue": "ghost"},
+            "SourceUser": {"ProviderName": "Google", "ProviderAttributeValue": "v"}
+        });
+        let req = make_req("AdminLinkProviderForUser", &body.to_string());
+        assert!(svc.admin_link_provider_for_user(&req).is_err());
+    }
+
+    #[test]
+    fn admin_disable_provider_user_not_found() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({
+            "UserPoolId": pool_id,
+            "User": {"ProviderName": "Google", "ProviderAttributeValue": "missing"}
+        });
+        let req = make_req("AdminDisableProviderForUser", &body.to_string());
+        assert!(svc.admin_disable_provider_for_user(&req).is_err());
+    }
+
+    #[test]
+    fn admin_list_user_auth_events_empty() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "alice");
+        let body = json!({"UserPoolId": pool_id, "Username": "alice"});
+        let req = make_req("AdminListUserAuthEvents", &body.to_string());
+        let resp = svc.admin_list_user_auth_events(&req).unwrap();
+        let b = resp_json(&resp);
+        assert!(b["AuthEvents"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn admin_list_user_auth_events_returns_stored() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "alice");
+        {
+            let mut st = state.write();
+            let acct = st.get_or_create("123456789012");
+            acct.auth_events.push(AuthEvent {
+                event_id: "ev-1".to_string(),
+                event_type: "SignIn".to_string(),
+                username: "alice".to_string(),
+                user_pool_id: pool_id.clone(),
+                client_id: None,
+                timestamp: chrono::Utc::now(),
+                success: true,
+                feedback_value: Some("Valid".to_string()),
+            });
+        }
+        let body = json!({"UserPoolId": pool_id, "Username": "alice"});
+        let req = make_req("AdminListUserAuthEvents", &body.to_string());
+        let resp = svc.admin_list_user_auth_events(&req).unwrap();
+        let b = resp_json(&resp);
+        let events = b["AuthEvents"].as_array().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["EventResponse"], "Pass");
+        assert_eq!(events[0]["EventFeedback"]["FeedbackValue"], "Valid");
+    }
+
+    #[test]
+    fn admin_list_user_auth_events_user_not_found() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id, "Username": "ghost"});
+        let req = make_req("AdminListUserAuthEvents", &body.to_string());
+        assert!(svc.admin_list_user_auth_events(&req).is_err());
+    }
+
+    #[test]
+    fn admin_update_auth_event_feedback_updates_event() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "alice");
+        {
+            let mut st = state.write();
+            let acct = st.get_or_create("123456789012");
+            acct.auth_events.push(AuthEvent {
+                event_id: "ev-7".to_string(),
+                event_type: "SignIn".to_string(),
+                username: "alice".to_string(),
+                user_pool_id: pool_id.clone(),
+                client_id: None,
+                timestamp: chrono::Utc::now(),
+                success: false,
+                feedback_value: None,
+            });
+        }
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Username": "alice",
+            "EventId": "ev-7",
+            "FeedbackValue": "Invalid"
+        });
+        let req = make_req("AdminUpdateAuthEventFeedback", &body.to_string());
+        svc.admin_update_auth_event_feedback(&req).unwrap();
+        let st = state.read();
+        assert_eq!(
+            st.default_ref().auth_events[0].feedback_value.as_deref(),
+            Some("Invalid")
+        );
+    }
+
+    #[test]
+    fn admin_update_auth_event_feedback_missing_event_id() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "alice2");
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Username": "alice2",
+            "EventId": "missing",
+            "FeedbackValue": "Invalid"
+        });
+        let req = make_req("AdminUpdateAuthEventFeedback", &body.to_string());
+        assert!(svc.admin_update_auth_event_feedback(&req).is_err());
+    }
+
+    #[test]
+    fn update_auth_event_feedback_updates_event() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "alice");
+        {
+            let mut st = state.write();
+            let acct = st.get_or_create("123456789012");
+            acct.auth_events.push(AuthEvent {
+                event_id: "ev-9".to_string(),
+                event_type: "SignIn".to_string(),
+                username: "alice".to_string(),
+                user_pool_id: pool_id.clone(),
+                client_id: None,
+                timestamp: chrono::Utc::now(),
+                success: true,
+                feedback_value: None,
+            });
+        }
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Username": "alice",
+            "EventId": "ev-9",
+            "FeedbackToken": "ft",
+            "FeedbackValue": "Valid"
+        });
+        let req = make_req("UpdateAuthEventFeedback", &body.to_string());
+        svc.update_auth_event_feedback(&req).unwrap();
+    }
+
+    #[test]
+    fn update_auth_event_feedback_user_not_found() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({
+            "UserPoolId": pool_id,
+            "Username": "ghost",
+            "EventId": "ev",
+            "FeedbackToken": "t",
+            "FeedbackValue": "Valid"
+        });
+        let req = make_req("UpdateAuthEventFeedback", &body.to_string());
+        assert!(svc.update_auth_event_feedback(&req).is_err());
+    }
+
+    // ── RespondToAuthChallenge coverage (auth.rs) ─────────────────────
+
+    #[test]
+    fn respond_to_auth_challenge_new_password_flow_completes_user() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        admin_create_user_helper(&svc, &pool_id, "alex");
+
+        let body = json!({
+            "ClientId": client_id,
+            "AuthFlow": "USER_PASSWORD_AUTH",
+            "AuthParameters": {"USERNAME": "alex", "PASSWORD": "TempPass1!"}
+        });
+        let req = make_req("InitiateAuth", &body.to_string());
+        let resp = block_on(svc.initiate_auth(&req)).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["ChallengeName"], "NEW_PASSWORD_REQUIRED");
+        let session = b["Session"].as_str().unwrap().to_string();
+
+        let body = json!({
+            "ClientId": client_id,
+            "ChallengeName": "NEW_PASSWORD_REQUIRED",
+            "Session": session,
+            "ChallengeResponses": {
+                "USERNAME": "alex",
+                "NEW_PASSWORD": "Permanent1!"
+            }
+        });
+        let req = make_req("RespondToAuthChallenge", &body.to_string());
+        let resp = block_on(svc.respond_to_auth_challenge(&req)).unwrap();
+        let b = resp_json(&resp);
+        assert!(b["AuthenticationResult"]["AccessToken"].as_str().is_some());
+    }
+
+    #[test]
+    fn respond_to_auth_challenge_unsupported_challenge() {
+        let (svc, _) = make_svc();
+        let _pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &_pool_id);
+        let body = json!({
+            "ClientId": client_id,
+            "ChallengeName": "UNKNOWN_CHALLENGE",
+            "Session": "some-session",
+            "ChallengeResponses": {}
+        });
+        let req = make_req("RespondToAuthChallenge", &body.to_string());
+        assert!(block_on(svc.respond_to_auth_challenge(&req)).is_err());
+    }
+
+    #[test]
+    fn respond_to_auth_challenge_invalid_session() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        let body = json!({
+            "ClientId": client_id,
+            "ChallengeName": "NEW_PASSWORD_REQUIRED",
+            "Session": "bogus",
+            "ChallengeResponses": {"USERNAME": "u", "NEW_PASSWORD": "Permanent1!"}
+        });
+        let req = make_req("RespondToAuthChallenge", &body.to_string());
+        assert!(block_on(svc.respond_to_auth_challenge(&req)).is_err());
+    }
+
+    #[test]
+    fn respond_new_password_missing_new_password_errors() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        admin_create_user_helper(&svc, &pool_id, "joy");
+
+        let body = json!({
+            "ClientId": client_id,
+            "AuthFlow": "USER_PASSWORD_AUTH",
+            "AuthParameters": {"USERNAME": "joy", "PASSWORD": "TempPass1!"}
+        });
+        let req = make_req("InitiateAuth", &body.to_string());
+        let resp = block_on(svc.initiate_auth(&req)).unwrap();
+        let b = resp_json(&resp);
+        let session = b["Session"].as_str().unwrap().to_string();
+
+        let body = json!({
+            "ClientId": client_id,
+            "ChallengeName": "NEW_PASSWORD_REQUIRED",
+            "Session": session,
+            "ChallengeResponses": {"USERNAME": "joy"}
+        });
+        let req = make_req("RespondToAuthChallenge", &body.to_string());
+        assert!(block_on(svc.respond_to_auth_challenge(&req)).is_err());
+    }
+
+    #[test]
+    fn admin_respond_to_auth_challenge_missing_challenge_responses() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        let body = json!({
+            "UserPoolId": pool_id,
+            "ClientId": client_id,
+            "ChallengeName": "NEW_PASSWORD_REQUIRED",
+            "Session": "s",
+        });
+        let req = make_req("AdminRespondToAuthChallenge", &body.to_string());
+        assert!(block_on(svc.admin_respond_to_auth_challenge(&req)).is_err());
+    }
+
+    // ── Identity provider extra coverage ──────────────────────────────
+
+    fn make_idp_request(pool_id: &str, name: &str, ptype: &str) -> AwsRequest {
+        let body = json!({
+            "UserPoolId": pool_id,
+            "ProviderName": name,
+            "ProviderType": ptype,
+            "ProviderDetails": {"client_id": "cid", "client_secret": "sec"},
+            "AttributeMapping": {"email": "email"},
+            "IdpIdentifiers": ["id-a", "id-b"]
+        });
+        make_req("CreateIdentityProvider", &body.to_string())
+    }
+
+    #[test]
+    fn describe_identity_provider_unknown_provider_errors() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id, "ProviderName": "ghost"});
+        let req = make_req("DescribeIdentityProvider", &body.to_string());
+        assert!(svc.describe_identity_provider(&req).is_err());
+    }
+
+    #[test]
+    fn update_identity_provider_updates_and_not_found() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let req = make_idp_request(&pool_id, "Google", "Google");
+        svc.create_identity_provider(&req).unwrap();
+
+        let update_body = json!({
+            "UserPoolId": pool_id,
+            "ProviderName": "Google",
+            "ProviderDetails": {"client_id": "new-cid"},
+            "AttributeMapping": {"sub": "sub"},
+            "IdpIdentifiers": ["new-id"]
+        });
+        let req = make_req("UpdateIdentityProvider", &update_body.to_string());
+        svc.update_identity_provider(&req).unwrap();
+
+        let miss_body = json!({"UserPoolId": pool_id, "ProviderName": "missing"});
+        let req = make_req("UpdateIdentityProvider", &miss_body.to_string());
+        assert!(svc.update_identity_provider(&req).is_err());
+    }
+
+    #[test]
+    fn delete_identity_provider_unknown_errors() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id, "ProviderName": "ghost"});
+        let req = make_req("DeleteIdentityProvider", &body.to_string());
+        assert!(svc.delete_identity_provider(&req).is_err());
+    }
+
+    #[test]
+    fn list_identity_providers_paginates() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        for (idx, ptype) in ["Google", "Facebook", "SAML"].iter().enumerate() {
+            let req = make_idp_request(&pool_id, &format!("p{idx}"), ptype);
+            svc.create_identity_provider(&req).unwrap();
+        }
+        let body = json!({"UserPoolId": pool_id, "MaxResults": 2});
+        let req = make_req("ListIdentityProviders", &body.to_string());
+        let resp = svc.list_identity_providers(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["Providers"].as_array().unwrap().len(), 2);
+        assert!(b["NextToken"].is_string());
+    }
+
+    #[test]
+    fn get_identity_provider_by_identifier_hits_and_misses() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let req = make_idp_request(&pool_id, "Google", "Google");
+        svc.create_identity_provider(&req).unwrap();
+
+        let body = json!({"UserPoolId": pool_id, "IdpIdentifier": "id-a"});
+        let req = make_req("GetIdentityProviderByIdentifier", &body.to_string());
+        let resp = svc.get_identity_provider_by_identifier(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["IdentityProvider"]["ProviderName"], "Google");
+
+        let body = json!({"UserPoolId": pool_id, "IdpIdentifier": "missing"});
+        let req = make_req("GetIdentityProviderByIdentifier", &body.to_string());
+        assert!(svc.get_identity_provider_by_identifier(&req).is_err());
+    }
+
+    // ── users.rs extra coverage ──────────────────────────────────────
+
+    fn issue_at_for_users(
+        state: &crate::state::SharedCognitoState,
+        pool_id: &str,
+        username: &str,
+        client_id: &str,
+    ) -> String {
+        let token = format!("access-{}", uuid::Uuid::new_v4());
+        let mut st = state.write();
+        let acct = st.get_or_create("123456789012");
+        acct.access_tokens.insert(
+            token.clone(),
+            AccessTokenData {
+                user_pool_id: pool_id.to_string(),
+                username: username.to_string(),
+                client_id: client_id.to_string(),
+                issued_at: chrono::Utc::now(),
+            },
+        );
+        token
+    }
+
+    #[test]
+    fn resend_confirmation_code_unknown_client_errors() {
+        let (svc, _) = make_svc();
+        let body = json!({"ClientId": "ghost", "Username": "u"});
+        let req = make_req("ResendConfirmationCode", &body.to_string());
+        assert!(svc.resend_confirmation_code(&req).is_err());
+    }
+
+    #[test]
+    fn resend_confirmation_code_unknown_user_errors() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        let body = json!({"ClientId": client_id, "Username": "ghost"});
+        let req = make_req("ResendConfirmationCode", &body.to_string());
+        assert!(svc.resend_confirmation_code(&req).is_err());
+    }
+
+    #[test]
+    fn resend_confirmation_code_returns_masked_email() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        admin_create_user_helper(&svc, &pool_id, "steve");
+        let body = json!({"ClientId": client_id, "Username": "steve"});
+        let req = make_req("ResendConfirmationCode", &body.to_string());
+        let resp = svc.resend_confirmation_code(&req).unwrap();
+        let b = resp_json(&resp);
+        let dest = b["CodeDeliveryDetails"]["Destination"].as_str().unwrap();
+        assert!(dest.contains("***"));
+        assert!(dest.contains("@example.com"));
+    }
+
+    #[test]
+    fn get_user_attribute_verification_code_invalid_token() {
+        let (svc, _) = make_svc();
+        let body = json!({"AccessToken": "bad", "AttributeName": "email"});
+        let req = make_req("GetUserAttributeVerificationCode", &body.to_string());
+        assert!(svc.get_user_attribute_verification_code(&req).is_err());
+    }
+
+    #[test]
+    fn get_user_attribute_verification_code_email_path() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "kim");
+        let token = issue_at_for_users(&state, &pool_id, "kim", "c");
+
+        let body = json!({"AccessToken": token, "AttributeName": "email"});
+        let req = make_req("GetUserAttributeVerificationCode", &body.to_string());
+        let resp = svc.get_user_attribute_verification_code(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["CodeDeliveryDetails"]["DeliveryMedium"], "EMAIL");
+    }
+
+    #[test]
+    fn get_user_attribute_verification_code_phone_path() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "lee");
+
+        {
+            let mut st = state.write();
+            let acct = st.get_or_create("123456789012");
+            let user = acct
+                .users
+                .get_mut(&pool_id)
+                .unwrap()
+                .get_mut("lee")
+                .unwrap();
+            user.attributes.push(crate::state::UserAttribute {
+                name: "phone_number".to_string(),
+                value: "+15551234567".to_string(),
+            });
+        }
+
+        let token = issue_at_for_users(&state, &pool_id, "lee", "c");
+        let body = json!({"AccessToken": token, "AttributeName": "phone_number"});
+        let req = make_req("GetUserAttributeVerificationCode", &body.to_string());
+        let resp = svc.get_user_attribute_verification_code(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["CodeDeliveryDetails"]["DeliveryMedium"], "SMS");
+        let dest = b["CodeDeliveryDetails"]["Destination"].as_str().unwrap();
+        assert!(dest.contains("***"));
+    }
+
+    #[test]
+    fn verify_user_attribute_no_code_set() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "meg");
+        let token = issue_at_for_users(&state, &pool_id, "meg", "c");
+
+        let body = json!({"AccessToken": token, "AttributeName": "email", "Code": "123456"});
+        let req = make_req("VerifyUserAttribute", &body.to_string());
+        assert!(svc.verify_user_attribute(&req).is_err());
+    }
+
+    #[test]
+    fn verify_user_attribute_wrong_code() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "nin");
+        let token = issue_at_for_users(&state, &pool_id, "nin", "c");
+
+        let body = json!({"AccessToken": token, "AttributeName": "email"});
+        let req = make_req("GetUserAttributeVerificationCode", &body.to_string());
+        svc.get_user_attribute_verification_code(&req).unwrap();
+
+        let body = json!({"AccessToken": token, "AttributeName": "email", "Code": "000000"});
+        let req = make_req("VerifyUserAttribute", &body.to_string());
+        assert!(svc.verify_user_attribute(&req).is_err());
+    }
+
+    // ── User pool custom attributes + client secrets ───────────────────
+
+    #[test]
+    fn add_custom_attributes_adds_with_prefix() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({
+            "UserPoolId": pool_id,
+            "CustomAttributes": [
+                {"Name": "tier", "AttributeDataType": "String"},
+                {"Name": "custom:ready", "AttributeDataType": "Boolean"}
+            ]
+        });
+        let req = make_req("AddCustomAttributes", &body.to_string());
+        svc.add_custom_attributes(&req).unwrap();
+
+        let req = make_req(
+            "DescribeUserPool",
+            &json!({"UserPoolId": pool_id}).to_string(),
+        );
+        let resp = svc.describe_user_pool(&req).unwrap();
+        let b = resp_json(&resp);
+        let schema = b["UserPool"]["SchemaAttributes"].as_array().unwrap();
+        assert!(schema.iter().any(|s| s["Name"] == "custom:tier"));
+        assert!(schema.iter().any(|s| s["Name"] == "custom:ready"));
+    }
+
+    #[test]
+    fn add_custom_attributes_missing_array_errors() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id});
+        let req = make_req("AddCustomAttributes", &body.to_string());
+        assert!(svc.add_custom_attributes(&req).is_err());
+    }
+
+    #[test]
+    fn add_custom_attributes_unknown_pool_errors() {
+        let (svc, _) = make_svc();
+        let body = json!({"UserPoolId": "us-east-1_no", "CustomAttributes": []});
+        let req = make_req("AddCustomAttributes", &body.to_string());
+        assert!(svc.add_custom_attributes(&req).is_err());
+    }
+
+    #[test]
+    fn user_pool_client_secret_crud() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+
+        let body = json!({
+            "UserPoolId": pool_id,
+            "ClientId": client_id,
+            "ClientSecret": "super-secret"
+        });
+        let req = make_req("AddUserPoolClientSecret", &body.to_string());
+        let resp = svc.add_user_pool_client_secret(&req).unwrap();
+        let b = resp_json(&resp);
+        let secret_id = b["ClientSecretDescriptor"]["ClientSecretId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            b["ClientSecretDescriptor"]["ClientSecretValue"],
+            "super-secret"
+        );
+
+        let body = json!({"UserPoolId": pool_id, "ClientId": client_id});
+        let req = make_req("ListUserPoolClientSecrets", &body.to_string());
+        let resp = svc.list_user_pool_client_secrets(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["ClientSecrets"].as_array().unwrap().len(), 1);
+
+        let body = json!({
+            "UserPoolId": pool_id,
+            "ClientId": client_id,
+            "ClientSecretId": secret_id
+        });
+        let req = make_req("DeleteUserPoolClientSecret", &body.to_string());
+        svc.delete_user_pool_client_secret(&req).unwrap();
+
+        let body = json!({"UserPoolId": pool_id, "ClientId": client_id});
+        let req = make_req("ListUserPoolClientSecrets", &body.to_string());
+        let resp = svc.list_user_pool_client_secrets(&req).unwrap();
+        let b = resp_json(&resp);
+        assert_eq!(b["ClientSecrets"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn add_user_pool_client_secret_generates_secret_when_missing() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        let body = json!({"UserPoolId": pool_id, "ClientId": client_id});
+        let req = make_req("AddUserPoolClientSecret", &body.to_string());
+        let resp = svc.add_user_pool_client_secret(&req).unwrap();
+        let b = resp_json(&resp);
+        assert!(!b["ClientSecretDescriptor"]["ClientSecretValue"]
+            .as_str()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn add_user_pool_client_secret_unknown_client_errors() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({
+            "UserPoolId": pool_id,
+            "ClientId": "missing-client"
+        });
+        let req = make_req("AddUserPoolClientSecret", &body.to_string());
+        assert!(svc.add_user_pool_client_secret(&req).is_err());
+    }
+
+    #[test]
+    fn delete_user_pool_client_secret_unknown_secret_errors() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        let body = json!({
+            "UserPoolId": pool_id,
+            "ClientId": client_id,
+            "ClientSecretId": "nope"
+        });
+        let req = make_req("DeleteUserPoolClientSecret", &body.to_string());
+        assert!(svc.delete_user_pool_client_secret(&req).is_err());
+    }
+
+    #[test]
+    fn list_user_pool_client_secrets_unknown_client_errors() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id, "ClientId": "nope"});
+        let req = make_req("ListUserPoolClientSecrets", &body.to_string());
+        assert!(svc.list_user_pool_client_secrets(&req).is_err());
+    }
+
+    // ── misc.rs additional coverage (refresh tokens, revoke) ─────────
+
+    #[test]
+    fn revoke_token_unknown_client_errors() {
+        let (svc, _) = make_svc();
+        let body = json!({"Token": "t", "ClientId": "nope"});
+        let req = make_req("RevokeToken", &body.to_string());
+        assert!(svc.revoke_token(&req).is_err());
+    }
+
+    #[test]
+    fn revoke_token_removes_refresh_token() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        let token = "rt-abc".to_string();
+        {
+            let mut st = state.write();
+            let acct = st.get_or_create("123456789012");
+            acct.refresh_tokens.insert(
+                token.clone(),
+                crate::state::RefreshTokenData {
+                    user_pool_id: pool_id.clone(),
+                    username: "alice".to_string(),
+                    client_id: client_id.clone(),
+                    issued_at: chrono::Utc::now(),
+                },
+            );
+        }
+        let body = json!({"Token": token, "ClientId": client_id});
+        let req = make_req("RevokeToken", &body.to_string());
+        svc.revoke_token(&req).unwrap();
+        assert!(!state
+            .read()
+            .default_ref()
+            .refresh_tokens
+            .contains_key(&token));
+    }
+
+    #[test]
+    fn get_tokens_from_refresh_token_unknown_client_errors() {
+        let (svc, _) = make_svc();
+        let body = json!({"RefreshToken": "rt", "ClientId": "nope"});
+        let req = make_req("GetTokensFromRefreshToken", &body.to_string());
+        assert!(svc.get_tokens_from_refresh_token(&req).is_err());
+    }
+
+    #[test]
+    fn get_tokens_from_refresh_token_invalid_refresh_token() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        let body = json!({"RefreshToken": "bogus", "ClientId": client_id});
+        let req = make_req("GetTokensFromRefreshToken", &body.to_string());
+        assert!(svc.get_tokens_from_refresh_token(&req).is_err());
+    }
+
+    #[test]
+    fn get_tokens_from_refresh_token_client_mismatch_errors() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_a = create_client(&svc, &pool_id);
+        let client_b = create_client(&svc, &pool_id);
+        admin_create_user_helper(&svc, &pool_id, "may");
+        let rt = "rt-x".to_string();
+        {
+            let mut st = state.write();
+            let acct = st.get_or_create("123456789012");
+            acct.refresh_tokens.insert(
+                rt.clone(),
+                crate::state::RefreshTokenData {
+                    user_pool_id: pool_id.clone(),
+                    username: "may".to_string(),
+                    client_id: client_a,
+                    issued_at: chrono::Utc::now(),
+                },
+            );
+        }
+        let body = json!({"RefreshToken": rt, "ClientId": client_b});
+        let req = make_req("GetTokensFromRefreshToken", &body.to_string());
+        assert!(svc.get_tokens_from_refresh_token(&req).is_err());
+    }
+
+    #[test]
+    fn get_tokens_from_refresh_token_returns_new_tokens() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        let client_id = create_client(&svc, &pool_id);
+        admin_create_user_helper(&svc, &pool_id, "oli");
+        let rt = "rt-ok".to_string();
+        {
+            let mut st = state.write();
+            let acct = st.get_or_create("123456789012");
+            acct.refresh_tokens.insert(
+                rt.clone(),
+                crate::state::RefreshTokenData {
+                    user_pool_id: pool_id.clone(),
+                    username: "oli".to_string(),
+                    client_id: client_id.clone(),
+                    issued_at: chrono::Utc::now(),
+                },
+            );
+        }
+        let body = json!({"RefreshToken": rt, "ClientId": client_id});
+        let req = make_req("GetTokensFromRefreshToken", &body.to_string());
+        let resp = svc.get_tokens_from_refresh_token(&req).unwrap();
+        let b = resp_json(&resp);
+        assert!(b["AuthenticationResult"]["AccessToken"].as_str().is_some());
+        assert!(b["AuthenticationResult"]["IdToken"].as_str().is_some());
+    }
+
+    // ── Branding + WebAuthn extra coverage (branding.rs) ──────────────
+
+    fn issue_at(
+        state: &crate::state::SharedCognitoState,
+        pool_id: &str,
+        username: &str,
+        client_id: &str,
+    ) -> String {
+        let token = format!("access-{}", uuid::Uuid::new_v4());
+        let mut st = state.write();
+        let acct = st.get_or_create("123456789012");
+        acct.access_tokens.insert(
+            token.clone(),
+            AccessTokenData {
+                user_pool_id: pool_id.to_string(),
+                username: username.to_string(),
+                client_id: client_id.to_string(),
+                issued_at: chrono::Utc::now(),
+            },
+        );
+        token
+    }
+
+    #[test]
+    fn describe_managed_login_branding_unknown_errors() {
+        let (svc, _) = make_svc();
+        let body = json!({"ManagedLoginBrandingId": "nope"});
+        let req = make_req("DescribeManagedLoginBranding", &body.to_string());
+        assert!(svc.describe_managed_login_branding(&req).is_err());
+    }
+
+    #[test]
+    fn describe_managed_login_branding_by_client_unknown_client() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id, "ClientId": "ghost"});
+        let req = make_req("DescribeManagedLoginBrandingByClient", &body.to_string());
+        assert!(svc.describe_managed_login_branding_by_client(&req).is_err());
+    }
+
+    #[test]
+    fn delete_managed_login_branding_unknown_errors() {
+        let (svc, _) = make_svc();
+        let body = json!({"UserPoolId": "us-east-1_x", "ManagedLoginBrandingId": "bid"});
+        let req = make_req("DeleteManagedLoginBranding", &body.to_string());
+        assert!(svc.delete_managed_login_branding(&req).is_err());
+    }
+
+    #[test]
+    fn update_managed_login_branding_unknown_errors() {
+        let (svc, _) = make_svc();
+        let body = json!({"UserPoolId": "us-east-1_x", "ManagedLoginBrandingId": "bid"});
+        let req = make_req("UpdateManagedLoginBranding", &body.to_string());
+        assert!(svc.update_managed_login_branding(&req).is_err());
+    }
+
+    #[test]
+    fn describe_terms_unknown_errors() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id, "TermsId": "no-such"});
+        let req = make_req("DescribeTerms", &body.to_string());
+        assert!(svc.describe_terms(&req).is_err());
+    }
+
+    #[test]
+    fn delete_terms_unknown_errors() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id, "TermsId": "no-such"});
+        let req = make_req("DeleteTerms", &body.to_string());
+        assert!(svc.delete_terms(&req).is_err());
+    }
+
+    #[test]
+    fn update_terms_unknown_errors() {
+        let (svc, _) = make_svc();
+        let pool_id = create_pool(&svc);
+        let body = json!({"UserPoolId": pool_id, "TermsId": "no-such", "Links": []});
+        let req = make_req("UpdateTerms", &body.to_string());
+        assert!(svc.update_terms(&req).is_err());
+    }
+
+    #[test]
+    fn start_web_authn_registration_invalid_token() {
+        let (svc, _) = make_svc();
+        let body = json!({"AccessToken": "nope"});
+        let req = make_req("StartWebAuthnRegistration", &body.to_string());
+        assert!(svc.start_web_authn_registration(&req).is_err());
+    }
+
+    #[test]
+    fn start_web_authn_registration_returns_options() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "bill");
+        let token = issue_at(&state, &pool_id, "bill", "c");
+        let body = json!({"AccessToken": token});
+        let req = make_req("StartWebAuthnRegistration", &body.to_string());
+        let resp = svc.start_web_authn_registration(&req).unwrap();
+        let b = resp_json(&resp);
+        assert!(b["CredentialCreationOptions"]["challenge"].is_string());
+    }
+
+    #[test]
+    fn complete_web_authn_registration_missing_credential() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "ally");
+        let token = issue_at(&state, &pool_id, "ally", "c");
+        let body = json!({"AccessToken": token});
+        let req = make_req("CompleteWebAuthnRegistration", &body.to_string());
+        assert!(svc.complete_web_authn_registration(&req).is_err());
+    }
+
+    #[test]
+    fn complete_web_authn_registration_invalid_token() {
+        let (svc, _) = make_svc();
+        let body = json!({"AccessToken": "bad", "Credential": {"id": "abc"}});
+        let req = make_req("CompleteWebAuthnRegistration", &body.to_string());
+        assert!(svc.complete_web_authn_registration(&req).is_err());
+    }
+
+    #[test]
+    fn delete_web_authn_credential_invalid_token() {
+        let (svc, _) = make_svc();
+        let body = json!({"AccessToken": "bad", "CredentialId": "c"});
+        let req = make_req("DeleteWebAuthnCredential", &body.to_string());
+        assert!(svc.delete_web_authn_credential(&req).is_err());
+    }
+
+    #[test]
+    fn delete_web_authn_credential_no_credentials_registered() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "zed");
+        let token = issue_at(&state, &pool_id, "zed", "c");
+        let body = json!({"AccessToken": token, "CredentialId": "c"});
+        let req = make_req("DeleteWebAuthnCredential", &body.to_string());
+        assert!(svc.delete_web_authn_credential(&req).is_err());
+    }
+
+    #[test]
+    fn list_web_authn_credentials_invalid_token() {
+        let (svc, _) = make_svc();
+        let body = json!({"AccessToken": "bad"});
+        let req = make_req("ListWebAuthnCredentials", &body.to_string());
+        assert!(svc.list_web_authn_credentials(&req).is_err());
+    }
+
+    #[test]
+    fn list_web_authn_credentials_empty_when_none() {
+        let (svc, state) = make_svc();
+        let pool_id = create_pool(&svc);
+        admin_create_user_helper(&svc, &pool_id, "fred");
+        let token = issue_at(&state, &pool_id, "fred", "c");
+        let body = json!({"AccessToken": token});
+        let req = make_req("ListWebAuthnCredentials", &body.to_string());
+        let resp = svc.list_web_authn_credentials(&req).unwrap();
+        let b = resp_json(&resp);
+        assert!(b["Credentials"].as_array().unwrap().is_empty());
     }
 }

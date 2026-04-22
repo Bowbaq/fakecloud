@@ -13,7 +13,7 @@ use fakecloud_persistence::SnapshotStore;
 
 use crate::runtime::ContainerRuntime;
 use crate::state::{
-    EventSourceMapping, LambdaFunction, LambdaSnapshot, SharedLambdaState,
+    EventSourceMapping, LambdaFunction, LambdaSnapshot, LambdaState, SharedLambdaState,
     LAMBDA_SNAPSHOT_SCHEMA_VERSION,
 };
 
@@ -148,7 +148,8 @@ impl LambdaService {
         let _guard = self.snapshot_lock.lock().await;
         let snapshot = LambdaSnapshot {
             schema_version: LAMBDA_SNAPSHOT_SCHEMA_VERSION,
-            state: self.state.read().clone(),
+            accounts: Some(self.state.read().clone()),
+            state: None,
         };
         let join = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
             let bytes = serde_json::to_vec(&snapshot)
@@ -225,7 +226,8 @@ impl LambdaService {
         let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
         let input = CreateFunctionInput::from_body(&body)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if state.functions.contains_key(&input.function_name) {
             return Err(AwsServiceError::aws_error(
@@ -278,8 +280,15 @@ impl LambdaService {
         Ok(AwsResponse::json(StatusCode::CREATED, response.to_string()))
     }
 
-    fn get_function(&self, function_name: &str) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+    fn get_function(
+        &self,
+        function_name: &str,
+        account_id: &str,
+        region: &str,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let accounts = self.state.read();
+        let empty = LambdaState::new(account_id, region);
+        let state = accounts.get(account_id).unwrap_or(&empty);
         let func = state.functions.get(function_name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
@@ -306,8 +315,13 @@ impl LambdaService {
         Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
     }
 
-    fn delete_function(&self, function_name: &str) -> Result<AwsResponse, AwsServiceError> {
-        let mut state = self.state.write();
+    fn delete_function(
+        &self,
+        function_name: &str,
+        account_id: &str,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(account_id);
         let region = state.region.clone();
         let account_id = state.account_id.clone();
         if state.functions.remove(function_name).is_none() {
@@ -331,8 +345,10 @@ impl LambdaService {
         Ok(AwsResponse::json(StatusCode::NO_CONTENT, ""))
     }
 
-    fn list_functions(&self) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+    fn list_functions(&self, account_id: &str) -> Result<AwsResponse, AwsServiceError> {
+        let accounts = self.state.read();
+        let empty = LambdaState::new(account_id, "");
+        let state = accounts.get(account_id).unwrap_or(&empty);
         let functions: Vec<Value> = state
             .functions
             .values()
@@ -350,9 +366,12 @@ impl LambdaService {
         &self,
         function_name: &str,
         payload: &[u8],
+        account_id: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
         let func = {
-            let state = self.state.read();
+            let accounts = self.state.read();
+            let empty = LambdaState::new(account_id, "");
+            let state = accounts.get(account_id).unwrap_or(&empty);
             state.functions.get(function_name).cloned().ok_or_else(|| {
                 AwsServiceError::aws_error(
                     StatusCode::NOT_FOUND,
@@ -401,8 +420,14 @@ impl LambdaService {
         }
     }
 
-    fn publish_version(&self, function_name: &str) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+    fn publish_version(
+        &self,
+        function_name: &str,
+        account_id: &str,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let accounts = self.state.read();
+        let empty = LambdaState::new(account_id, "");
+        let state = accounts.get(account_id).unwrap_or(&empty);
         let func = state.functions.get(function_name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
@@ -449,7 +474,8 @@ impl LambdaService {
             })?
             .to_string();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Resolve function name to ARN
         let function_arn = if function_name.starts_with("arn:") {
@@ -496,8 +522,10 @@ impl LambdaService {
         ))
     }
 
-    fn list_event_source_mappings(&self) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+    fn list_event_source_mappings(&self, account_id: &str) -> Result<AwsResponse, AwsServiceError> {
+        let accounts = self.state.read();
+        let empty = LambdaState::new(account_id, "");
+        let state = accounts.get(account_id).unwrap_or(&empty);
         let mappings: Vec<Value> = state
             .event_source_mappings
             .values()
@@ -511,8 +539,14 @@ impl LambdaService {
         Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
     }
 
-    fn get_event_source_mapping(&self, uuid: &str) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+    fn get_event_source_mapping(
+        &self,
+        uuid: &str,
+        account_id: &str,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let accounts = self.state.read();
+        let empty = LambdaState::new(account_id, "");
+        let state = accounts.get(account_id).unwrap_or(&empty);
         let mapping = state.event_source_mappings.get(uuid).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
@@ -525,8 +559,13 @@ impl LambdaService {
         Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
     }
 
-    fn delete_event_source_mapping(&self, uuid: &str) -> Result<AwsResponse, AwsServiceError> {
-        let mut state = self.state.write();
+    fn delete_event_source_mapping(
+        &self,
+        uuid: &str,
+        account_id: &str,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(account_id);
         let mapping = state.event_source_mappings.remove(uuid).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
@@ -643,7 +682,8 @@ impl LambdaService {
             .and_then(|v| v.as_str())
             .map(str::to_string);
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let func = state.functions.get_mut(function_name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
@@ -736,8 +776,10 @@ impl LambdaService {
         &self,
         function_name: &str,
         statement_id: &str,
+        account_id: &str,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(account_id);
         let func = state.functions.get_mut(function_name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
@@ -785,8 +827,14 @@ impl LambdaService {
         Ok(AwsResponse::json(StatusCode::NO_CONTENT, String::new()))
     }
 
-    fn get_policy(&self, function_name: &str) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+    fn get_policy(
+        &self,
+        function_name: &str,
+        account_id: &str,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let accounts = self.state.read();
+        let empty = LambdaState::new(account_id, "");
+        let state = accounts.get(account_id).unwrap_or(&empty);
         let func = state.functions.get(function_name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
@@ -838,30 +886,35 @@ impl AwsService for LambdaService {
                 | "DeleteEventSourceMapping"
         );
 
+        let aid = &req.account_id;
         let result = match action {
             "CreateFunction" => self.create_function(&req),
-            "ListFunctions" => self.list_functions(),
-            "GetFunction" => self.get_function(resource_name.as_deref().unwrap_or("")),
-            "DeleteFunction" => self.delete_function(resource_name.as_deref().unwrap_or("")),
+            "ListFunctions" => self.list_functions(aid),
+            "GetFunction" => self.get_function(
+                resource_name.as_deref().unwrap_or(""),
+                aid,
+                req.region.as_str(),
+            ),
+            "DeleteFunction" => self.delete_function(resource_name.as_deref().unwrap_or(""), aid),
             "Invoke" => {
-                self.invoke(resource_name.as_deref().unwrap_or(""), &req.body)
+                self.invoke(resource_name.as_deref().unwrap_or(""), &req.body, aid)
                     .await
             }
-            "PublishVersion" => self.publish_version(resource_name.as_deref().unwrap_or("")),
+            "PublishVersion" => self.publish_version(resource_name.as_deref().unwrap_or(""), aid),
             "AddPermission" => self.add_permission(resource_name.as_deref().unwrap_or(""), &req),
-            "GetPolicy" => self.get_policy(resource_name.as_deref().unwrap_or("")),
+            "GetPolicy" => self.get_policy(resource_name.as_deref().unwrap_or(""), aid),
             "RemovePermission" => {
                 // Path: /2015-03-31/functions/{name}/policy/{sid}
                 let sid = req.path_segments.get(4).cloned().unwrap_or_default();
-                self.remove_permission(resource_name.as_deref().unwrap_or(""), &sid)
+                self.remove_permission(resource_name.as_deref().unwrap_or(""), &sid, aid)
             }
             "CreateEventSourceMapping" => self.create_event_source_mapping(&req),
-            "ListEventSourceMappings" => self.list_event_source_mappings(),
+            "ListEventSourceMappings" => self.list_event_source_mappings(aid),
             "GetEventSourceMapping" => {
-                self.get_event_source_mapping(resource_name.as_deref().unwrap_or(""))
+                self.get_event_source_mapping(resource_name.as_deref().unwrap_or(""), aid)
             }
             "DeleteEventSourceMapping" => {
-                self.delete_event_source_mapping(resource_name.as_deref().unwrap_or(""))
+                self.delete_event_source_mapping(resource_name.as_deref().unwrap_or(""), aid)
             }
             _ => Err(AwsServiceError::action_not_implemented("lambda", action)),
         };
@@ -918,7 +971,9 @@ impl AwsService for LambdaService {
             "DeleteEventSourceMapping" => "DeleteEventSourceMapping",
             _ => return None,
         };
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = LambdaState::new(&request.account_id, &request.region);
+        let state = accounts.get(&request.account_id).unwrap_or(&empty);
         let resource = match action {
             "GetFunction" | "DeleteFunction" | "InvokeFunction" | "PublishVersion"
             | "AddPermission" | "RemovePermission" | "GetPolicy" => {
@@ -984,7 +1039,6 @@ impl AwsService for LambdaService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::LambdaState;
     use bytes::Bytes;
     use http::{HeaderMap, Method};
     use parking_lot::RwLock;
@@ -992,7 +1046,9 @@ mod tests {
     use std::sync::Arc;
 
     fn make_state() -> SharedLambdaState {
-        Arc::new(RwLock::new(LambdaState::new("123456789012", "us-east-1")))
+        Arc::new(RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ))
     }
 
     fn make_request(method: Method, path: &str, body: &str) -> AwsRequest {
@@ -1636,44 +1692,50 @@ mod tests {
     #[tokio::test]
     async fn publish_version_unknown_function_errors() {
         let svc = LambdaService::new(make_state());
-        assert!(svc.publish_version("ghost").is_err());
+        assert!(svc.publish_version("ghost", "123456789012").is_err());
     }
 
     #[tokio::test]
     async fn get_function_unknown_errors() {
         let svc = LambdaService::new(make_state());
-        assert!(svc.get_function("ghost").is_err());
+        assert!(svc
+            .get_function("ghost", "123456789012", "us-east-1")
+            .is_err());
     }
 
     #[tokio::test]
     async fn delete_function_unknown_errors() {
         let svc = LambdaService::new(make_state());
-        assert!(svc.delete_function("ghost").is_err());
+        assert!(svc.delete_function("ghost", "123456789012").is_err());
     }
 
     #[tokio::test]
     async fn get_event_source_mapping_unknown_errors() {
         let svc = LambdaService::new(make_state());
-        assert!(svc.get_event_source_mapping("ghost").is_err());
+        assert!(svc
+            .get_event_source_mapping("ghost", "123456789012")
+            .is_err());
     }
 
     #[tokio::test]
     async fn delete_event_source_mapping_unknown_errors() {
         let svc = LambdaService::new(make_state());
-        assert!(svc.delete_event_source_mapping("ghost").is_err());
+        assert!(svc
+            .delete_event_source_mapping("ghost", "123456789012")
+            .is_err());
     }
 
     #[tokio::test]
     async fn list_functions_empty_ok() {
         let svc = LambdaService::new(make_state());
-        let resp = svc.list_functions().unwrap();
+        let resp = svc.list_functions("123456789012").unwrap();
         assert_eq!(resp.status, http::StatusCode::OK);
     }
 
     #[tokio::test]
     async fn list_event_source_mappings_empty_ok() {
         let svc = LambdaService::new(make_state());
-        let resp = svc.list_event_source_mappings().unwrap();
+        let resp = svc.list_event_source_mappings("123456789012").unwrap();
         assert_eq!(resp.status, http::StatusCode::OK);
     }
 }

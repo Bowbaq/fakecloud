@@ -7,6 +7,7 @@ export {
   SnsClient,
   SqsClient,
   EventsClient,
+  SchedulerClient,
   S3Client,
   DynamoDbClient,
   SecretsManagerClient,

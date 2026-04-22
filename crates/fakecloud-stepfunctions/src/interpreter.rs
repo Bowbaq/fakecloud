@@ -54,21 +54,54 @@ pub async fn execute_state_machine(
         }),
     );
 
-    match run_states(
-        &def,
-        raw_input,
-        &delivery,
-        &dynamodb_state,
-        &state,
-        &execution_arn,
-    )
-    .await
-    {
-        Ok(output) => {
+    // Run the state machine inside an inner tokio::spawn so that any panic
+    // bubbles up as a JoinError instead of tearing down the caller. Without
+    // this the panic propagates through the outer spawn in `start_execution`
+    // which leaves the execution stuck in Running and leaks the panic to
+    // tokio's default hook.
+    let def_owned = def;
+    let state_clone = state.clone();
+    let execution_arn_clone = execution_arn.clone();
+    let delivery_clone = delivery.clone();
+    let dynamodb_state_clone = dynamodb_state.clone();
+    let handle = tokio::spawn(async move {
+        run_states(
+            &def_owned,
+            raw_input,
+            &delivery_clone,
+            &dynamodb_state_clone,
+            &state_clone,
+            &execution_arn_clone,
+        )
+        .await
+    });
+
+    match handle.await {
+        Ok(Ok(output)) => {
             succeed_execution(&state, &execution_arn, &output);
         }
-        Err((error, cause)) => {
+        Ok(Err((error, cause))) => {
             fail_execution(&state, &execution_arn, &error, &cause);
+        }
+        Err(join_err) => {
+            let msg = if join_err.is_panic() {
+                let payload = join_err.into_panic();
+                if let Some(s) = payload.downcast_ref::<String>() {
+                    s.clone()
+                } else if let Some(s) = payload.downcast_ref::<&'static str>() {
+                    (*s).to_string()
+                } else {
+                    "execution task panicked".to_string()
+                }
+            } else {
+                format!("execution task cancelled: {join_err}")
+            };
+            tracing::error!(
+                execution_arn = %execution_arn,
+                panic = %msg,
+                "Step Functions execution panicked"
+            );
+            fail_execution(&state, &execution_arn, "States.Runtime", &msg);
         }
     }
 }
@@ -1588,6 +1621,11 @@ fn apply_state_catcher(
     Some((next, new_input))
 }
 
+/// Extract account ID from an execution ARN (`arn:aws:states:region:account_id:...`).
+fn account_id_from_arn(arn: &str) -> &str {
+    arn.split(':').nth(4).unwrap_or("000000000000")
+}
+
 fn add_event(
     state: &SharedStepFunctionsState,
     execution_arn: &str,
@@ -1595,7 +1633,9 @@ fn add_event(
     previous_event_id: i64,
     details: Value,
 ) -> i64 {
-    let mut s = state.write();
+    let account_id = account_id_from_arn(execution_arn).to_string();
+    let mut accounts = state.write();
+    let s = accounts.get_or_create(&account_id);
     if let Some(exec) = s.executions.get_mut(execution_arn) {
         let id = exec.history_events.len() as i64 + 1;
         exec.history_events.push(HistoryEvent {
@@ -1612,12 +1652,15 @@ fn add_event(
 }
 
 fn succeed_execution(state: &SharedStepFunctionsState, execution_arn: &str, output: &Value) {
+    let account_id = account_id_from_arn(execution_arn).to_string();
     // Check terminal status before recording events to avoid inconsistent history
     {
-        let s = state.read();
-        if let Some(exec) = s.executions.get(execution_arn) {
-            if exec.status != ExecutionStatus::Running {
-                return;
+        let accounts = state.read();
+        if let Some(s) = accounts.get(&account_id) {
+            if let Some(exec) = s.executions.get(execution_arn) {
+                if exec.status != ExecutionStatus::Running {
+                    return;
+                }
             }
         }
     }
@@ -1632,7 +1675,8 @@ fn succeed_execution(state: &SharedStepFunctionsState, execution_arn: &str, outp
         json!({ "output": output_str }),
     );
 
-    let mut s = state.write();
+    let mut accounts = state.write();
+    let s = accounts.get_or_create(&account_id);
     if let Some(exec) = s.executions.get_mut(execution_arn) {
         exec.status = ExecutionStatus::Succeeded;
         exec.output = Some(output_str);
@@ -1641,12 +1685,15 @@ fn succeed_execution(state: &SharedStepFunctionsState, execution_arn: &str, outp
 }
 
 fn fail_execution(state: &SharedStepFunctionsState, execution_arn: &str, error: &str, cause: &str) {
+    let account_id = account_id_from_arn(execution_arn).to_string();
     // Check terminal status before recording events to avoid inconsistent history
     {
-        let s = state.read();
-        if let Some(exec) = s.executions.get(execution_arn) {
-            if exec.status != ExecutionStatus::Running {
-                return;
+        let accounts = state.read();
+        if let Some(s) = accounts.get(&account_id) {
+            if let Some(exec) = s.executions.get(execution_arn) {
+                if exec.status != ExecutionStatus::Running {
+                    return;
+                }
             }
         }
     }
@@ -1659,7 +1706,8 @@ fn fail_execution(state: &SharedStepFunctionsState, execution_arn: &str, error: 
         json!({ "error": error, "cause": cause }),
     );
 
-    let mut s = state.write();
+    let mut accounts = state.write();
+    let s = accounts.get_or_create(&account_id);
     if let Some(exec) = s.executions.get_mut(execution_arn) {
         exec.status = ExecutionStatus::Failed;
         exec.error = Some(error.to_string());
@@ -1671,19 +1719,19 @@ fn fail_execution(state: &SharedStepFunctionsState, execution_arn: &str, error: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{Execution, StepFunctionsState};
+    use crate::state::Execution;
     use parking_lot::RwLock;
     use std::sync::Arc;
 
     fn make_state() -> SharedStepFunctionsState {
-        Arc::new(RwLock::new(StepFunctionsState::new(
-            "123456789012",
-            "us-east-1",
-        )))
+        Arc::new(RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", ""),
+        ))
     }
 
     fn create_execution(state: &SharedStepFunctionsState, arn: &str, input: Option<String>) {
-        let mut s = state.write();
+        let mut accounts = state.write();
+        let s = accounts.get_or_create("123456789012");
         s.executions.insert(
             arn.to_string(),
             Execution {
@@ -1732,7 +1780,8 @@ mod tests {
         )
         .await;
 
-        let s = state.read();
+        let __a = state.read();
+        let s = __a.default_ref();
         let exec = s.executions.get(arn).unwrap();
         assert_eq!(exec.status, ExecutionStatus::Succeeded);
         assert!(exec.output.is_some());
@@ -1775,7 +1824,8 @@ mod tests {
         )
         .await;
 
-        let s = state.read();
+        let __a = state.read();
+        let s = __a.default_ref();
         let exec = s.executions.get(arn).unwrap();
         assert_eq!(exec.status, ExecutionStatus::Succeeded);
         let output: Value = serde_json::from_str(exec.output.as_ref().unwrap()).unwrap();
@@ -1809,7 +1859,8 @@ mod tests {
         )
         .await;
 
-        let s = state.read();
+        let __a = state.read();
+        let s = __a.default_ref();
         let exec = s.executions.get(arn).unwrap();
         assert_eq!(exec.status, ExecutionStatus::Succeeded);
     }
@@ -1834,7 +1885,8 @@ mod tests {
 
         execute_state_machine(state.clone(), arn.to_string(), definition, None, None, None).await;
 
-        let s = state.read();
+        let __a = state.read();
+        let s = __a.default_ref();
         let exec = s.executions.get(arn).unwrap();
         assert_eq!(exec.status, ExecutionStatus::Failed);
         assert_eq!(exec.error.as_deref(), Some("CustomError"));
@@ -1868,7 +1920,8 @@ mod tests {
         )
         .await;
 
-        let s = state.read();
+        let __a = state.read();
+        let s = __a.default_ref();
         let exec = s.executions.get(arn).unwrap();
         let event_types: Vec<&str> = exec
             .history_events
@@ -1908,7 +1961,8 @@ mod tests {
         arn: &str,
         f: impl FnOnce(&Execution) -> R,
     ) -> R {
-        let s = state.read();
+        let __a = state.read();
+        let s = __a.default_ref();
         f(s.executions.get(arn).expect("execution missing"))
     }
 
@@ -2503,11 +2557,13 @@ mod tests {
         let arn = "arn:aws:states:us-east-1:123456789012:execution:test:already";
         create_execution(&state, arn, None);
         {
-            let mut s = state.write();
+            let mut __a = state.write();
+            let s = __a.default_mut();
             s.executions.get_mut(arn).unwrap().status = ExecutionStatus::Failed;
         }
         succeed_execution(&state, arn, &json!({"x":1}));
-        let s = state.read();
+        let __a = state.read();
+        let s = __a.default_ref();
         let exec = s.executions.get(arn).unwrap();
         assert_eq!(exec.status, ExecutionStatus::Failed);
         assert!(exec.output.is_none());
@@ -2519,11 +2575,13 @@ mod tests {
         let arn = "arn:aws:states:us-east-1:123456789012:execution:test:already2";
         create_execution(&state, arn, None);
         {
-            let mut s = state.write();
+            let mut __a = state.write();
+            let s = __a.default_mut();
             s.executions.get_mut(arn).unwrap().status = ExecutionStatus::Succeeded;
         }
         fail_execution(&state, arn, "Oops", "nope");
-        let s = state.read();
+        let __a = state.read();
+        let s = __a.default_ref();
         let exec = s.executions.get(arn).unwrap();
         assert_eq!(exec.status, ExecutionStatus::Succeeded);
         assert!(exec.error.is_none());

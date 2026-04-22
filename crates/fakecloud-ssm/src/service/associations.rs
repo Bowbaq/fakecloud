@@ -8,12 +8,16 @@ use fakecloud_core::pagination::paginate;
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 use fakecloud_core::validation::*;
 
-use crate::state::{SsmAssociation, SsmAssociationVersion};
+use crate::state::{SsmAssociation, SsmAssociationVersion, SsmState};
 
 use super::{missing, SsmService};
 
 impl SsmService {
-    pub(super) fn create_association_inner(&self, body: &Value) -> Result<Value, AwsServiceError> {
+    pub(super) fn create_association_inner(
+        &self,
+        body: &Value,
+        account_id: &str,
+    ) -> Result<Value, AwsServiceError> {
         let input = CreateAssociationInput::from_body(body)?;
 
         let now = Utc::now();
@@ -65,7 +69,8 @@ impl SsmService {
 
         let resp = association_to_json(&assoc);
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(account_id);
         state.associations.insert(association_id, assoc);
 
         Ok(resp)
@@ -76,7 +81,7 @@ impl SsmService {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let body = req.json_body();
-        let resp = self.create_association_inner(&body)?;
+        let resp = self.create_association_inner(&body, &req.account_id)?;
         Ok(AwsResponse::ok_json(
             json!({ "AssociationDescription": resp }),
         ))
@@ -91,7 +96,9 @@ impl SsmService {
         let name = body["Name"].as_str();
         let instance_id = body["InstanceId"].as_str();
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         let assoc = if let Some(id) = association_id {
             state.associations.get(id)
@@ -124,7 +131,8 @@ impl SsmService {
         let name = body["Name"].as_str();
         let instance_id = body["InstanceId"].as_str();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let key = if let Some(id) = association_id {
             if state.associations.contains_key(id) {
@@ -166,7 +174,9 @@ impl SsmService {
         validate_optional_range_i64("MaxResults", body["MaxResults"].as_i64(), 1, 50)?;
         let max_results = body["MaxResults"].as_i64().unwrap_or(50) as usize;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let all: Vec<Value> = state
             .associations
             .values()
@@ -212,7 +222,8 @@ impl SsmService {
             .as_str()
             .ok_or_else(|| missing("AssociationId"))?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let assoc = state.associations.get_mut(association_id).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -297,7 +308,9 @@ impl SsmService {
             .ok_or_else(|| missing("AssociationId"))?;
         let max_results = body["MaxResults"].as_i64().unwrap_or(50) as usize;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let assoc = state.associations.get(association_id).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -365,7 +378,8 @@ impl SsmService {
             .unwrap_or("Pending")
             .to_string();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let assoc = state
             .associations
             .values_mut()
@@ -418,7 +432,7 @@ impl SsmService {
         let mut failed = Vec::new();
 
         for entry in entries {
-            match self.create_association_inner(entry) {
+            match self.create_association_inner(entry, &req.account_id) {
                 Ok(desc) => successful.push(desc),
                 Err(e) => {
                     let entry_name = entry["Name"].as_str().unwrap_or("");
@@ -478,7 +492,9 @@ impl SsmService {
             .as_str()
             .ok_or_else(|| missing("InstanceId"))?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let associations: Vec<Value> = state
             .associations
             .values()
@@ -517,7 +533,9 @@ impl SsmService {
             .as_str()
             .ok_or_else(|| missing("InstanceId"))?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SsmState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let statuses: Vec<Value> = state
             .associations
             .values()

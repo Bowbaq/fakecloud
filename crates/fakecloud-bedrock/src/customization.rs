@@ -63,7 +63,8 @@ pub fn create_model_customization_job(
         last_modified_at: now,
     };
 
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     s.customization_jobs.insert(job_arn.clone(), job);
 
     Ok(AwsResponse::json(
@@ -77,7 +78,9 @@ pub fn get_model_customization_job(
     req: &AwsRequest,
     job_identifier: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
 
     // Job identifier can be an ARN or a job name
     let job = s
@@ -129,7 +132,9 @@ pub fn list_model_customization_jobs(
         .max(1);
     let next_token = req.query_params.get("nextToken");
 
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let mut items: Vec<&crate::state::CustomizationJob> = s.customization_jobs.values().collect();
     items.sort_by(|a, b| a.job_arn.cmp(&b.job_arn));
 
@@ -172,9 +177,11 @@ pub fn list_model_customization_jobs(
 
 pub fn stop_model_customization_job(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     job_identifier: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
 
     // Find the key first to avoid double mutable borrow
     let key = s
@@ -204,4 +211,172 @@ pub fn stop_model_customization_job(
     job.last_modified_at = Utc::now();
 
     Ok(AwsResponse::json(StatusCode::OK, "{}".to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::BedrockState;
+    use bytes::Bytes;
+    use fakecloud_core::multi_account::MultiAccountState;
+    use http::{HeaderMap, Method};
+    use parking_lot::RwLock;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    fn shared() -> SharedBedrockState {
+        let multi: MultiAccountState<BedrockState> =
+            MultiAccountState::new("123456789012", "us-east-1", "http://localhost");
+        Arc::new(RwLock::new(multi))
+    }
+
+    fn req() -> AwsRequest {
+        AwsRequest {
+            service: "bedrock".to_string(),
+            action: "a".to_string(),
+            method: Method::POST,
+            raw_path: "/".to_string(),
+            raw_query: String::new(),
+            path_segments: vec![],
+            query_params: HashMap::new(),
+            headers: HeaderMap::new(),
+            body: Bytes::new(),
+            account_id: "123456789012".to_string(),
+            region: "us-east-1".to_string(),
+            request_id: "r".to_string(),
+            is_query_protocol: false,
+            access_key_id: None,
+            principal: None,
+        }
+    }
+
+    #[test]
+    fn create_job_requires_name() {
+        let s = shared();
+        let err = create_model_customization_job(&s, &req(), &json!({}))
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn create_job_stores_record_with_defaults() {
+        let s = shared();
+        create_model_customization_job(
+            &s,
+            &req(),
+            &json!({"jobName": "j", "roleArn": "role", "hyperParameters": {"lr": "0.01", "epochs": 3}}),
+        )
+        .unwrap();
+        let accts = s.read();
+        let state = accts.default_ref();
+        assert_eq!(state.customization_jobs.len(), 1);
+        let job = state.customization_jobs.values().next().unwrap();
+        assert_eq!(job.job_name, "j");
+        assert_eq!(job.custom_model_name, "j");
+        assert_eq!(job.status, "InProgress");
+        assert_eq!(
+            job.hyper_parameters.get("lr").map(String::as_str),
+            Some("0.01")
+        );
+        assert_eq!(
+            job.hyper_parameters.get("epochs").map(String::as_str),
+            Some("3")
+        );
+    }
+
+    #[test]
+    fn get_job_by_arn_and_by_name() {
+        let s = shared();
+        create_model_customization_job(&s, &req(), &json!({"jobName": "my-job"})).unwrap();
+        let arn = s
+            .read()
+            .default_ref()
+            .customization_jobs
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
+        assert!(get_model_customization_job(&s, &req(), &arn).is_ok());
+        assert!(get_model_customization_job(&s, &req(), "my-job").is_ok());
+    }
+
+    #[test]
+    fn get_job_unknown_not_found() {
+        let s = shared();
+        let err = get_model_customization_job(&s, &req(), "missing")
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn list_jobs_paginates() {
+        let s = shared();
+        for i in 0..3 {
+            create_model_customization_job(&s, &req(), &json!({"jobName": format!("j{i}")}))
+                .unwrap();
+        }
+        let mut r = req();
+        r.query_params
+            .insert("maxResults".to_string(), "2".to_string());
+        let resp = list_model_customization_jobs(&s, &r).unwrap();
+        let v: Value =
+            serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
+        assert_eq!(
+            v["modelCustomizationJobSummaries"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(v["nextToken"].is_string());
+    }
+
+    #[test]
+    fn stop_job_transitions_status() {
+        let s = shared();
+        create_model_customization_job(&s, &req(), &json!({"jobName": "j"})).unwrap();
+        let arn = s
+            .read()
+            .default_ref()
+            .customization_jobs
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
+        stop_model_customization_job(&s, &req(), &arn).unwrap();
+        assert_eq!(
+            s.read().default_ref().customization_jobs[&arn].status,
+            "Stopped"
+        );
+    }
+
+    #[test]
+    fn stop_job_not_in_progress_conflicts() {
+        let s = shared();
+        create_model_customization_job(&s, &req(), &json!({"jobName": "j"})).unwrap();
+        let arn = s
+            .read()
+            .default_ref()
+            .customization_jobs
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
+        stop_model_customization_job(&s, &req(), &arn).unwrap();
+        let err = stop_model_customization_job(&s, &req(), &arn)
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn stop_job_unknown_not_found() {
+        let s = shared();
+        let err = stop_model_customization_job(&s, &req(), "missing")
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
 }

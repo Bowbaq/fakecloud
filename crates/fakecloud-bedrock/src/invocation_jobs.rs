@@ -36,7 +36,8 @@ pub fn create_model_invocation_job(
         end_time: None,
     };
 
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     s.model_invocation_jobs.insert(job_arn.clone(), job);
 
     Ok(AwsResponse::json(
@@ -47,9 +48,12 @@ pub fn create_model_invocation_job(
 
 pub fn get_model_invocation_job(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     job_identifier: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let job = find_job(&s.model_invocation_jobs, job_identifier)?;
 
     let mut resp = json!({
@@ -82,7 +86,9 @@ pub fn list_model_invocation_jobs(
         .max(1);
     let next_token = req.query_params.get("nextToken");
 
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let mut items: Vec<&ModelInvocationJob> = s.model_invocation_jobs.values().collect();
     items.sort_by(|a, b| a.job_arn.cmp(&b.job_arn));
 
@@ -124,9 +130,11 @@ pub fn list_model_invocation_jobs(
 
 pub fn stop_model_invocation_job(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     job_identifier: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     let key = find_job_key(&s.model_invocation_jobs, job_identifier)?;
     let job = s
         .model_invocation_jobs
@@ -185,4 +193,130 @@ fn find_job_key(
                 format!("Model invocation job {id_or_arn} not found"),
             )
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::BedrockState;
+    use bytes::Bytes;
+    use fakecloud_core::multi_account::MultiAccountState;
+    use http::{HeaderMap, Method};
+    use parking_lot::RwLock;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    fn shared() -> SharedBedrockState {
+        let multi: MultiAccountState<BedrockState> =
+            MultiAccountState::new("123456789012", "us-east-1", "http://x");
+        Arc::new(RwLock::new(multi))
+    }
+
+    fn req() -> AwsRequest {
+        AwsRequest {
+            service: "bedrock".to_string(),
+            action: "a".to_string(),
+            method: Method::POST,
+            raw_path: "/".to_string(),
+            raw_query: String::new(),
+            path_segments: vec![],
+            query_params: HashMap::new(),
+            headers: HeaderMap::new(),
+            body: Bytes::new(),
+            account_id: "123456789012".to_string(),
+            region: "us-east-1".to_string(),
+            request_id: "r".to_string(),
+            is_query_protocol: false,
+            access_key_id: None,
+            principal: None,
+        }
+    }
+
+    fn create(state: &SharedBedrockState, name: &str) -> String {
+        let body = json!({
+            "jobName": name,
+            "modelId": "anthropic.claude",
+            "roleArn": "arn:aws:iam::123:role/r",
+            "inputDataConfig": {"s3InputDataConfig": {"s3Uri": "s3://b/in"}},
+            "outputDataConfig": {"s3OutputDataConfig": {"s3Uri": "s3://b/out"}}
+        });
+        let resp = create_model_invocation_job(state, &req(), &body).unwrap();
+        let v: Value =
+            serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
+        v["jobArn"].as_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn create_stores_job() {
+        let s = shared();
+        let arn = create(&s, "j1");
+        let st = s.read();
+        let job = st.default_ref().model_invocation_jobs.get(&arn).unwrap();
+        assert_eq!(job.job_name, "j1");
+        assert_eq!(job.status, "InProgress");
+    }
+
+    #[test]
+    fn get_by_arn_name_or_id() {
+        let s = shared();
+        let arn = create(&s, "my-job");
+        let id = arn.rsplit('/').next().unwrap().to_string();
+        assert!(get_model_invocation_job(&s, &req(), &arn).is_ok());
+        assert!(get_model_invocation_job(&s, &req(), &id).is_ok());
+        assert!(get_model_invocation_job(&s, &req(), "my-job").is_ok());
+    }
+
+    #[test]
+    fn get_unknown_returns_not_found() {
+        let s = shared();
+        let err = get_model_invocation_job(&s, &req(), "missing")
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn list_paginates() {
+        let s = shared();
+        for i in 0..3 {
+            create(&s, &format!("j{i}"));
+        }
+        let mut r = req();
+        r.query_params
+            .insert("maxResults".to_string(), "2".to_string());
+        let resp = list_model_invocation_jobs(&s, &r).unwrap();
+        let v: Value =
+            serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
+        assert_eq!(v["invocationJobSummaries"].as_array().unwrap().len(), 2);
+        assert!(v["nextToken"].is_string());
+    }
+
+    #[test]
+    fn stop_sets_status_and_end_time() {
+        let s = shared();
+        let arn = create(&s, "j");
+        stop_model_invocation_job(&s, &req(), &arn).unwrap();
+        let st = s.read();
+        let job = st.default_ref().model_invocation_jobs.get(&arn).unwrap();
+        assert_eq!(job.status, "Stopped");
+        assert!(job.end_time.is_some());
+    }
+
+    #[test]
+    fn stop_rejects_non_in_progress() {
+        let s = shared();
+        let arn = create(&s, "j");
+        stop_model_invocation_job(&s, &req(), &arn).unwrap();
+        let err = stop_model_invocation_job(&s, &req(), &arn).err().unwrap();
+        assert_eq!(err.status(), StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn stop_unknown_returns_not_found() {
+        let s = shared();
+        let err = stop_model_invocation_job(&s, &req(), "missing")
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
 }

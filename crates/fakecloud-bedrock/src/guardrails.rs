@@ -54,7 +54,8 @@ pub fn create_guardrail(
         updated_at: now,
     };
 
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     s.guardrails.insert(guardrail_id.clone(), guardrail);
 
     Ok(AwsResponse::json(
@@ -77,7 +78,9 @@ pub fn get_guardrail(
     // Check if a specific version is requested
     let version = req.query_params.get("guardrailVersion");
 
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
 
     // If a numbered version was requested, look it up in versions
     if let Some(ver) = version {
@@ -117,7 +120,9 @@ pub fn list_guardrails(
         .max(1);
     let next_token = req.query_params.get("nextToken");
 
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let mut items: Vec<&Guardrail> = s.guardrails.values().collect();
     items.sort_by(|a, b| a.guardrail_id.cmp(&b.guardrail_id));
 
@@ -161,10 +166,12 @@ pub fn list_guardrails(
 
 pub fn update_guardrail(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     guardrail_id: &str,
     body: &Value,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     let guardrail = s.guardrails.get_mut(guardrail_id).ok_or_else(|| {
         AwsServiceError::aws_error(
             StatusCode::NOT_FOUND,
@@ -212,9 +219,11 @@ pub fn update_guardrail(
 
 pub fn delete_guardrail(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     guardrail_id: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     s.guardrails.remove(guardrail_id).ok_or_else(|| {
         AwsServiceError::aws_error(
             StatusCode::NOT_FOUND,
@@ -231,10 +240,12 @@ pub fn delete_guardrail(
 
 pub fn create_guardrail_version(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     guardrail_id: &str,
     body: &Value,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     let guardrail = s.guardrails.get_mut(guardrail_id).ok_or_else(|| {
         AwsServiceError::aws_error(
             StatusCode::NOT_FOUND,
@@ -285,13 +296,16 @@ pub fn create_guardrail_version(
 /// Handle the ApplyGuardrail API — evaluate content against a guardrail.
 pub fn apply_guardrail(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     guardrail_id: &str,
     guardrail_version: &str,
     body: &[u8],
 ) -> Result<AwsResponse, AwsServiceError> {
     let input: Value = serde_json::from_slice(body).unwrap_or_default();
 
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
 
     // Borrow a GuardrailView over DRAFT or a numbered version, avoiding
     // the 13-field clone needed to synthesize a temporary Guardrail.
@@ -643,7 +657,6 @@ fn word_boundary_match(text: &str, word: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::BedrockState;
     use parking_lot::RwLock;
     use std::sync::Arc;
 
@@ -668,7 +681,13 @@ mod tests {
     }
 
     fn shared_state() -> SharedBedrockState {
-        Arc::new(RwLock::new(BedrockState::new("123456789012", "us-east-1")))
+        Arc::new(RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4566",
+            ),
+        ))
     }
 
     #[test]
@@ -836,7 +855,9 @@ mod tests {
         });
         let resp = create_guardrail(&state, &req, &body).unwrap();
         assert_eq!(resp.status, StatusCode::CREATED);
-        let s = state.read();
+        let accts = state.read();
+        let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+        let s = accts.get(&req.account_id).unwrap_or(&empty);
         assert_eq!(s.guardrails.len(), 1);
         let g = s.guardrails.values().next().unwrap();
         assert_eq!(g.name, "my-guard");
@@ -854,19 +875,22 @@ mod tests {
     #[test]
     fn delete_guardrail_removes_entry() {
         let state = shared_state();
+        let req = make_req();
         let gid = "gid-1";
         state
             .write()
+            .default_mut()
             .guardrails
             .insert(gid.to_string(), empty_guardrail(gid));
-        delete_guardrail(&state, gid).unwrap();
-        assert!(state.read().guardrails.is_empty());
+        delete_guardrail(&state, &req, gid).unwrap();
+        assert!(state.read().default_ref().guardrails.is_empty());
     }
 
     #[test]
     fn delete_guardrail_not_found() {
         let state = shared_state();
-        let err = delete_guardrail(&state, "missing").err().unwrap();
+        let req = make_req();
+        let err = delete_guardrail(&state, &req, "missing").err().unwrap();
         assert_eq!(err.status(), StatusCode::NOT_FOUND);
     }
 
@@ -875,10 +899,12 @@ mod tests {
         let state = shared_state();
         state
             .write()
+            .default_mut()
             .guardrails
             .insert("a".to_string(), empty_guardrail("a"));
         state
             .write()
+            .default_mut()
             .guardrails
             .insert("b".to_string(), empty_guardrail("b"));
         let req = make_req();
@@ -889,23 +915,30 @@ mod tests {
     #[test]
     fn apply_guardrail_noop_with_no_policies() {
         let state = shared_state();
+        let req = make_req();
         state
             .write()
+            .default_mut()
             .guardrails
             .insert("g".to_string(), empty_guardrail("g"));
         let body = br#"{"content":[{"text":{"text":"hello"}}],"source":"INPUT"}"#;
-        let resp = apply_guardrail(&state, "g", "DRAFT", body).unwrap();
+        let resp = apply_guardrail(&state, &req, "g", "DRAFT", body).unwrap();
         assert_eq!(resp.status, StatusCode::OK);
     }
 
     #[test]
     fn apply_guardrail_intervenes_on_blocked_word() {
         let state = shared_state();
+        let req = make_req();
         let mut g = empty_guardrail("g");
         g.word_policy = Some(json!({"wordsConfig": [{"text": "forbidden"}]}));
-        state.write().guardrails.insert("g".to_string(), g);
+        state
+            .write()
+            .default_mut()
+            .guardrails
+            .insert("g".to_string(), g);
         let body = br#"{"content":[{"text":{"text":"this is forbidden"}}],"source":"INPUT"}"#;
-        let resp = apply_guardrail(&state, "g", "DRAFT", body).unwrap();
+        let resp = apply_guardrail(&state, &req, "g", "DRAFT", body).unwrap();
         let body_str = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
         assert!(body_str.contains("GUARDRAIL_INTERVENED"));
         assert!(body_str.contains("blocked input"));
@@ -914,11 +947,16 @@ mod tests {
     #[test]
     fn apply_guardrail_output_source_uses_output_message() {
         let state = shared_state();
+        let req = make_req();
         let mut g = empty_guardrail("g");
         g.word_policy = Some(json!({"wordsConfig": [{"text": "x"}]}));
-        state.write().guardrails.insert("g".to_string(), g);
+        state
+            .write()
+            .default_mut()
+            .guardrails
+            .insert("g".to_string(), g);
         let body = br#"{"content":[{"text":{"text":"contains x value"}}],"source":"OUTPUT"}"#;
-        let resp = apply_guardrail(&state, "g", "DRAFT", body).unwrap();
+        let resp = apply_guardrail(&state, &req, "g", "DRAFT", body).unwrap();
         let body_str = std::str::from_utf8(resp.body.expect_bytes()).unwrap();
         assert!(body_str.contains("blocked output"));
     }
@@ -926,8 +964,9 @@ mod tests {
     #[test]
     fn apply_guardrail_missing_returns_not_found() {
         let state = shared_state();
+        let req = make_req();
         let body = br#"{"content":[],"source":"INPUT"}"#;
-        let err = apply_guardrail(&state, "missing", "DRAFT", body)
+        let err = apply_guardrail(&state, &req, "missing", "DRAFT", body)
             .err()
             .unwrap();
         assert_eq!(err.status(), StatusCode::NOT_FOUND);
@@ -936,12 +975,222 @@ mod tests {
     #[test]
     fn apply_guardrail_missing_version_returns_not_found() {
         let state = shared_state();
+        let req = make_req();
         state
             .write()
+            .default_mut()
             .guardrails
             .insert("g".to_string(), empty_guardrail("g"));
         let body = br#"{"content":[],"source":"INPUT"}"#;
-        let err = apply_guardrail(&state, "g", "99", body).err().unwrap();
+        let err = apply_guardrail(&state, &req, "g", "99", body)
+            .err()
+            .unwrap();
         assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ── additional coverage ────────────────────────────────────────────
+
+    #[test]
+    fn update_guardrail_changes_fields() {
+        let state = shared_state();
+        let req = make_req();
+        state
+            .write()
+            .default_mut()
+            .guardrails
+            .insert("g1".to_string(), empty_guardrail("g1"));
+
+        let body = json!({
+            "name": "renamed",
+            "description": "new desc",
+            "blockedInputMessaging": "new-in",
+            "blockedOutputsMessaging": "new-out",
+            "wordPolicyConfig": {"wordsConfig": [{"text": "block-me"}]},
+            "topicPolicyConfig": {"topicsConfig": []},
+            "contentPolicyConfig": {"filtersConfig": []},
+            "sensitiveInformationPolicyConfig": {"piiEntitiesConfig": []},
+        });
+        update_guardrail(&state, &req, "g1", &body).unwrap();
+
+        let st = state.read();
+        let g = st.default_ref().guardrails.get("g1").unwrap();
+        assert_eq!(g.name, "renamed");
+        assert_eq!(g.description, "new desc");
+        assert_eq!(g.blocked_input_messaging, "new-in");
+        assert_eq!(g.blocked_outputs_messaging, "new-out");
+        assert!(g.word_policy.is_some());
+        assert!(g.topic_policy.is_some());
+        assert!(g.content_policy.is_some());
+        assert!(g.sensitive_information_policy.is_some());
+    }
+
+    #[test]
+    fn update_guardrail_not_found() {
+        let state = shared_state();
+        let req = make_req();
+        let err = update_guardrail(&state, &req, "missing", &json!({}))
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn create_guardrail_version_increments_and_stores() {
+        let state = shared_state();
+        let req = make_req();
+        state
+            .write()
+            .default_mut()
+            .guardrails
+            .insert("g1".to_string(), empty_guardrail("g1"));
+
+        let resp = create_guardrail_version(&state, &req, "g1", &json!({"description": "v1-desc"}))
+            .unwrap();
+        assert_eq!(resp.status, StatusCode::CREATED);
+        let body: Value =
+            serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
+        assert_eq!(body["version"], "1");
+
+        create_guardrail_version(&state, &req, "g1", &json!({})).unwrap();
+        let st = state.read();
+        assert_eq!(
+            st.default_ref()
+                .guardrail_versions
+                .keys()
+                .filter(|(id, _)| id == "g1")
+                .count(),
+            2
+        );
+        assert_eq!(
+            st.default_ref()
+                .guardrails
+                .get("g1")
+                .unwrap()
+                .next_version_number,
+            3
+        );
+    }
+
+    #[test]
+    fn create_guardrail_version_not_found() {
+        let state = shared_state();
+        let req = make_req();
+        let err = create_guardrail_version(&state, &req, "missing", &json!({}))
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn get_guardrail_by_version_returns_version_json() {
+        let state = shared_state();
+        state
+            .write()
+            .default_mut()
+            .guardrails
+            .insert("g1".to_string(), empty_guardrail("g1"));
+        let mut req = make_req();
+        create_guardrail_version(&state, &req, "g1", &json!({})).unwrap();
+
+        req.query_params
+            .insert("guardrailVersion".to_string(), "1".to_string());
+        let resp = get_guardrail(&state, &req, "g1").unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+    }
+
+    #[test]
+    fn get_guardrail_unknown_version_not_found() {
+        let state = shared_state();
+        state
+            .write()
+            .default_mut()
+            .guardrails
+            .insert("g1".to_string(), empty_guardrail("g1"));
+        let mut req = make_req();
+        req.query_params
+            .insert("guardrailVersion".to_string(), "99".to_string());
+        let err = get_guardrail(&state, &req, "g1").err().unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn delete_guardrail_removes_versions_too() {
+        let state = shared_state();
+        let req = make_req();
+        state
+            .write()
+            .default_mut()
+            .guardrails
+            .insert("g1".to_string(), empty_guardrail("g1"));
+        create_guardrail_version(&state, &req, "g1", &json!({})).unwrap();
+
+        delete_guardrail(&state, &req, "g1").unwrap();
+        let st = state.read();
+        assert!(st.default_ref().guardrails.is_empty());
+        assert!(st.default_ref().guardrail_versions.is_empty());
+    }
+
+    #[test]
+    fn list_guardrails_paginates_by_id() {
+        let state = shared_state();
+        for i in 0..3 {
+            let id = format!("g{i}");
+            state
+                .write()
+                .default_mut()
+                .guardrails
+                .insert(id.clone(), empty_guardrail(&id));
+        }
+        let mut req = make_req();
+        req.query_params
+            .insert("maxResults".to_string(), "2".to_string());
+        let resp = list_guardrails(&state, &req).unwrap();
+        let body: Value =
+            serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
+        assert_eq!(body["guardrails"].as_array().unwrap().len(), 2);
+        let token = body["nextToken"].as_str().unwrap().to_string();
+
+        req.query_params.insert("nextToken".to_string(), token);
+        let resp = list_guardrails(&state, &req).unwrap();
+        let body: Value =
+            serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
+        assert_eq!(body["guardrails"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn apply_guardrail_passes_through_text_when_allowed() {
+        let state = shared_state();
+        let req = make_req();
+        state
+            .write()
+            .default_mut()
+            .guardrails
+            .insert("g".to_string(), empty_guardrail("g"));
+        let body = br#"{"content":[{"text":"hello"}, {"text":{"text":"world"}}],"source":"INPUT"}"#;
+        let resp = apply_guardrail(&state, &req, "g", "DRAFT", body).unwrap();
+        let body: Value =
+            serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
+        assert_eq!(body["action"], "NONE");
+        assert_eq!(body["outputs"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn apply_guardrail_uses_version_when_numeric() {
+        let state = shared_state();
+        let req = make_req();
+        let mut g = empty_guardrail("g");
+        g.word_policy = Some(json!({"wordsConfig": [{"text": "nope"}]}));
+        state
+            .write()
+            .default_mut()
+            .guardrails
+            .insert("g".to_string(), g);
+        create_guardrail_version(&state, &req, "g", &json!({})).unwrap();
+
+        let body = br#"{"content":[{"text":"say nope here"}],"source":"INPUT"}"#;
+        let resp = apply_guardrail(&state, &req, "g", "1", body).unwrap();
+        let body: Value =
+            serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
+        assert_eq!(body["action"], "GUARDRAIL_INTERVENED");
     }
 }

@@ -242,6 +242,24 @@ public final class Types {
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record FireRuleResponse(List<FireRuleTarget> targets) {}
 
+    // ── Scheduler (EventBridge Scheduler) ──────────────────────────
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record SchedulerSchedule(
+            String accountId,
+            String groupName,
+            String name,
+            String arn,
+            String state,
+            String scheduleExpression,
+            String targetArn,
+            String lastFired) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record SchedulerSchedulesResponse(List<SchedulerSchedule> schedules) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record FireScheduleResponse(String scheduleArn, String targetArn) {}
+
     // ── S3 ─────────────────────────────────────────────────────────
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record S3Notification(

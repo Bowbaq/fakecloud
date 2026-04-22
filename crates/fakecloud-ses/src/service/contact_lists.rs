@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 
-use crate::state::{Contact, ContactList};
+use crate::state::{Contact, ContactList, SesState};
 
 use super::{parse_topic_preferences, parse_topics, SesV2Service};
 
@@ -27,7 +27,8 @@ impl SesV2Service {
             }
         };
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if state.contact_lists.contains_key(&name) {
             return Ok(Self::json_error(
@@ -56,8 +57,14 @@ impl SesV2Service {
         Ok(AwsResponse::json(StatusCode::OK, "{}"))
     }
 
-    pub(super) fn get_contact_list(&self, name: &str) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+    pub(super) fn get_contact_list(
+        &self,
+        name: &str,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let accounts = self.state.read();
+        let empty = SesState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let list = match state.contact_lists.get(name) {
             Some(l) => l,
             None => {
@@ -94,8 +101,13 @@ impl SesV2Service {
         Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
     }
 
-    pub(super) fn list_contact_lists(&self) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+    pub(super) fn list_contact_lists(
+        &self,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let accounts = self.state.read();
+        let empty = SesState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let lists: Vec<Value> = state
             .contact_lists
             .values()
@@ -120,7 +132,8 @@ impl SesV2Service {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let body: Value = Self::parse_body(req)?;
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         let list = match state.contact_lists.get_mut(name) {
             Some(l) => l,
@@ -149,7 +162,8 @@ impl SesV2Service {
         name: &str,
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if state.contact_lists.remove(name).is_none() {
             return Ok(Self::json_error(
@@ -191,7 +205,8 @@ impl SesV2Service {
             }
         };
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if !state.contact_lists.contains_key(list_name) {
             return Ok(Self::json_error(
@@ -235,8 +250,11 @@ impl SesV2Service {
         &self,
         list_name: &str,
         email: &str,
+        req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SesState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         if !state.contact_lists.contains_key(list_name) {
             return Ok(Self::json_error(
@@ -300,8 +318,14 @@ impl SesV2Service {
         Ok(AwsResponse::json(StatusCode::OK, response.to_string()))
     }
 
-    pub(super) fn list_contacts(&self, list_name: &str) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+    pub(super) fn list_contacts(
+        &self,
+        list_name: &str,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let accounts = self.state.read();
+        let empty = SesState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         if !state.contact_lists.contains_key(list_name) {
             return Ok(Self::json_error(
@@ -367,7 +391,8 @@ impl SesV2Service {
         req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
         let body: Value = Self::parse_body(req)?;
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if !state.contact_lists.contains_key(list_name) {
             return Ok(Self::json_error(
@@ -411,8 +436,10 @@ impl SesV2Service {
         &self,
         list_name: &str,
         email: &str,
+        req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         if !state.contact_lists.contains_key(list_name) {
             return Ok(Self::json_error(

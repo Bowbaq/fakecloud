@@ -29,7 +29,8 @@ impl LogsService {
             )
         })?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let group = state.log_groups.get_mut(name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -67,7 +68,8 @@ impl LogsService {
             )
         })?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let group = state.log_groups.get_mut(name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -100,7 +102,9 @@ impl LogsService {
 
         validate_string_length("logGroupName", name, 1, 512)?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::LogsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let group = state.log_groups.get(name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -142,7 +146,8 @@ impl LogsService {
             .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string()))
             .collect();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Try log group
         if let Some(group) = state
@@ -196,7 +201,8 @@ impl LogsService {
             .filter_map(|v| v.as_str().map(|s| s.to_string()))
             .collect();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Try log group
         if let Some(group) = state
@@ -240,7 +246,9 @@ impl LogsService {
 
         validate_string_length("resourceArn", arn, 1, 1011)?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::LogsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         // Try log group
         if let Some(group) = state

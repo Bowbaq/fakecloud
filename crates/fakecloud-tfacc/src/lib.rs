@@ -16,7 +16,7 @@ use std::process::{Command, Output, Stdio};
 
 pub mod allowlist;
 
-pub use allowlist::{Service, SERVICES};
+pub use allowlist::{shard_deny_list, Service, Shard, SERVICES, SHARDS};
 
 /// Pinned upstream provider tag. Bumping is a deliberate edit; newer tags
 /// may add acc tests that assume fields fakecloud does not yet return.
@@ -143,12 +143,23 @@ pub struct GoTestRunner<'a> {
 
 impl<'a> GoTestRunner<'a> {
     pub fn run_service(&self, service: &Service) -> GoTestResult {
-        let service_path = format!("./internal/service/{}/", service.name);
-        let run_re = service.run_regex;
-        let skip_re = if service.deny.is_empty() {
+        self.run_go_tests(service.name, service.run_regex, service.deny)
+    }
+
+    /// Run the `go test` slice for a single matrix shard. Merges the
+    /// shard's `extra_deny` with its owning service's deny-list so
+    /// sibling shards of the same service don't race on the same test.
+    pub fn run_shard(&self, shard: &Shard) -> GoTestResult {
+        let deny = shard_deny_list(shard);
+        self.run_go_tests(shard.service, shard.run_regex, &deny)
+    }
+
+    fn run_go_tests(&self, service: &str, run_regex: &str, deny: &[&str]) -> GoTestResult {
+        let service_path = format!("./internal/service/{service}/");
+        let skip_re = if deny.is_empty() {
             String::new()
         } else {
-            format!("^({})$", service.deny.join("|"))
+            format!("^({})$", deny.join("|"))
         };
 
         // `-parallel 4` lets Go's test runner execute up to 4 `t.Parallel()`
@@ -163,7 +174,7 @@ impl<'a> GoTestRunner<'a> {
             "test".into(),
             service_path,
             "-run".into(),
-            run_re.into(),
+            run_regex.to_string(),
             "-v".into(),
             "-timeout".into(),
             "90m".into(),

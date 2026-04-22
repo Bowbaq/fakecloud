@@ -210,11 +210,27 @@ Key semantics:
 - Services that don't implement ABAC yet (Lambda, Step Functions, etc.) gracefully skip tag evaluation with a `fakecloud::iam::audit` debug log. No fake tag values are ever returned.
 - Adding ABAC support to a new service requires implementing two trait methods: `resource_tags_for()` and `request_tags_from()`.
 
-**Will not ship.**
+## Phase 6 — Service Control Policies (SCPs)
 
-- **Service control policies (SCPs).** An AWS Organizations construct that gates permissions across accounts in an org. fakecloud is a single-account model, so there is no org boundary for an SCP to attach to.
+fakecloud enforces SCPs as the top-of-chain allow-list ceiling above permission boundaries, session policies, and identity policies. SCPs only apply when an AWS Organizations organization exists in the process (see the [Organizations reference](/docs/reference/organizations)) — without one, nothing changes.
 
-If you need any of these for your test scenarios, **use real AWS**. fakecloud is a test tool, not a full IAM simulator.
+The evaluation chain, outermost to innermost:
+
+```
+SCP ceiling  ->  permission boundary  ->  session policy  ->  identity policy  (union resource policy)
+```
+
+Each layer is an intersection gate with AWS's standard semantics: if the layer is present it must evaluate to `Allow` for the request to survive. An explicit `Deny` in any layer wins immediately.
+
+SCP-specific rules:
+
+- **Inherited intersection.** When a member account lives under `root -> OU_A -> OU_B -> account`, every SCP attached along that path must allow the action. AWS intersects across ancestors; fakecloud mirrors it.
+- **Management-account exemption.** The account that called `CreateOrganization` is never constrained by SCPs, matching AWS.
+- **Service-linked role exemption.** Assumed roles whose name begins with `AWSServiceRoleFor` bypass SCP evaluation, same as permission boundaries.
+- **Empty chain denies.** If `FullAWSAccess` is detached from the root and no other SCP grants the action up the path, the principal is denied. This matches AWS's allow-list ceiling semantics — SCPs are not deny lists.
+- **Resource-policy branch untouched.** SCPs gate the identity side only. A resource policy in the resource's account has its own authority; the caller's SCPs have no reach there.
+
+Audit logs emit on `fakecloud::iam::audit` when an SCP layer produces an `ExplicitDeny` or caps the intersection to `ImplicitDeny`, so tests can inspect the decision path.
 
 ## Practical example
 

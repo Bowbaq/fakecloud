@@ -35,6 +35,40 @@ pub struct Service {
     pub deny: &'static [&'static str],
 }
 
+/// A CI matrix entry. Normally a shard is 1:1 with a `Service` (same
+/// regex and deny-list) and the shard name equals the service name. For
+/// the handful of services whose full test set exceeds a single runner's
+/// wall-clock budget, we define multiple shards over the same service
+/// with narrower run_regex + extended deny so the union of all shards
+/// equals the service's original selection.
+///
+/// The shards are what `tfacc.yml` fans out over — one GitHub Actions
+/// job per entry.
+pub struct Shard {
+    /// Matrix job name. For unsharded services this is just the service
+    /// name; for sharded services it is `<service>-<suffix>`.
+    pub name: &'static str,
+    /// Upstream directory — passed to `go test ./internal/service/<svc>/`.
+    pub service: &'static str,
+    /// Narrower `-run` regex than the owning `Service` uses.
+    pub run_regex: &'static str,
+    /// Extra tests to `-skip` on top of the owning `Service`'s deny-list.
+    /// Lets a sibling shard claim those tests without double-running them.
+    pub extra_deny: &'static [&'static str],
+}
+
+/// Combine a shard's `extra_deny` with its owning service's `deny` list
+/// and return the full set CI should skip.
+pub fn shard_deny_list(shard: &Shard) -> Vec<&'static str> {
+    let service = SERVICES
+        .iter()
+        .find(|s| s.name == shard.service)
+        .expect("shard references unknown service");
+    let mut out: Vec<&'static str> = service.deny.to_vec();
+    out.extend(shard.extra_deny.iter().copied());
+    out
+}
+
 pub const SERVICES: &[Service] = &[
     Service {
         name: "cognitoidp",
@@ -216,5 +250,130 @@ pub const SERVICES: &[Service] = &[
             "TestAccDynamoDBTable_gsiUpdateOtherAttributes",
             "TestAccDynamoDBTable_TTL_updateDisable",
         ],
+    },
+];
+
+/// CI matrix shards. One GitHub Actions job per entry.
+///
+/// Kept as a flat list (rather than generated from `SERVICES`) so a reader
+/// can see exactly which services are split and why. Services with one
+/// shard here use the default service regex + deny. Services with
+/// multiple shards partition the run_regex; `shard_deny_list` merges the
+/// service's deny with each shard's extra_deny to keep sibling shards
+/// from double-running the same tests.
+pub const SHARDS: &[Shard] = &[
+    // ─── unsharded services (1 shard each) ─────────────────────────
+    Shard {
+        name: "cognitoidp",
+        service: "cognitoidp",
+        run_regex: "^TestAccCognitoIDPUserPool_basic$",
+        extra_deny: &[],
+    },
+    Shard {
+        name: "bedrock",
+        service: "bedrock",
+        run_regex: "^TestAccBedrockFoundationModelsDataSource_basic$",
+        extra_deny: &[],
+    },
+    Shard {
+        name: "apigatewayv2",
+        service: "apigatewayv2",
+        run_regex: "^TestAccAPIGatewayV2API_basicHTTP$",
+        extra_deny: &[],
+    },
+    Shard {
+        name: "kinesis",
+        service: "kinesis",
+        run_regex: "^TestAccKinesisStream_basic$",
+        extra_deny: &[],
+    },
+    Shard {
+        name: "sns",
+        service: "sns",
+        run_regex: "^TestAccSNSTopic_basic$",
+        extra_deny: &[],
+    },
+    Shard {
+        name: "events",
+        service: "events",
+        run_regex: "^TestAccEvents(Bus|Rule)_basic$",
+        extra_deny: &[],
+    },
+    Shard {
+        name: "kms",
+        service: "kms",
+        run_regex: "^TestAccKMSKey_basic$",
+        extra_deny: &[],
+    },
+    Shard {
+        name: "logs",
+        service: "logs",
+        run_regex: "^TestAccLogsGroup_basic$",
+        extra_deny: &[],
+    },
+    Shard {
+        name: "iam",
+        service: "iam",
+        run_regex: "^TestAccIAM(Role|User|Policy|Group)_basic$",
+        extra_deny: &[],
+    },
+    Shard {
+        name: "ssm",
+        service: "ssm",
+        run_regex: "^TestAccSSMParameter_basic$",
+        extra_deny: &[],
+    },
+    Shard {
+        name: "secretsmanager",
+        service: "secretsmanager",
+        run_regex: "^TestAccSecretsManagerSecret_basic$",
+        extra_deny: &[],
+    },
+    // ─── sqs split into core + encryption ──────────────────────────
+    // The full sqs regex is a union of ~12 TestAcc names; split so the
+    // core queue/policy/redrive suite runs in parallel with the
+    // encryption-attribute round-trip suite. Wall-clock for sqs drops
+    // from ~7m to ~the slower half of that.
+    Shard {
+        name: "sqs-core",
+        service: "sqs",
+        run_regex: concat!(
+            "^TestAccSQS(",
+            "Queue_(basic|redrivePolicy|redriveAllowPolicy|Policy_basic)",
+            "|QueuePolicy_basic",
+            "|QueueRedrivePolicy_basic",
+            "|QueueRedriveAllowPolicy_basic)$",
+        ),
+        extra_deny: &[],
+    },
+    Shard {
+        name: "sqs-encryption",
+        service: "sqs",
+        run_regex: concat!(
+            "^TestAccSQSQueue_(",
+            "encryption|managedEncryption",
+            "|defaultKMSDataKeyReusePeriodSeconds",
+            "|ManagedEncryption_kmsDataKeyReusePeriodSeconds",
+            "|noEncryptionKMSDataKeyReusePeriodSeconds)$",
+        ),
+        extra_deny: &[],
+    },
+    // ─── dynamodb split into a-g vs h-z ────────────────────────────
+    // dynamodb's `^TestAccDynamoDBTable_` regex selects ~50 tests after
+    // deny-listing. Splitting into two halves keyed on the first letter
+    // after the underscore roughly halves the wall-clock of the longest
+    // shard. Go test's -skip takes a regex, so we can cover the union
+    // without enumerating every upstream test name.
+    Shard {
+        name: "dynamodb-a-g",
+        service: "dynamodb",
+        run_regex: "^TestAccDynamoDBTable_[a-gA-G]",
+        extra_deny: &[],
+    },
+    Shard {
+        name: "dynamodb-h-z",
+        service: "dynamodb",
+        run_regex: "^TestAccDynamoDBTable_[^a-gA-G]",
+        extra_deny: &[],
     },
 ];

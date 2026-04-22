@@ -9,8 +9,26 @@
 //! Per-service AWS SDK client factories are available behind the optional
 //! `sdk-clients` feature. Lifecycle-only consumers (e.g. `fakecloud-tfacc`)
 //! can keep the feature off and avoid compiling the `aws-sdk-*` crates.
+//!
+//! # No shared-server pool (yet)
+//!
+//! Each `TestServer::start()` spawns a fresh fakecloud process. A pool
+//! that reuses one server across many tests would cut wall-clock further
+//! but is deferred for three reasons rooted in current test shape:
+//! 1. Several tests pass `FAKECLOUD_IAM=soft|strict` / `FAKECLOUD_VERIFY_SIGV4=true`
+//!    via `start_with_env`. These flags are parsed once at boot and
+//!    cannot be toggled per-request, so every config variant needs its
+//!    own process.
+//! 2. `TestServer::restart()` is called inside tests that exercise
+//!    persistence reload; pool members would need an on-demand reset
+//!    endpoint rather than `restart()`'s process-recycle semantics.
+//! 3. Persistent-mode tests use `start_persistent(&temp_dir)` and
+//!    cannot share a data dir with siblings.
+//!
+//! A proper shared pool therefore requires a per-request config
+//! override API and a reset endpoint — worth doing later but not the
+//! right shape for a single PR.
 
-use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::Duration;
@@ -86,12 +104,13 @@ impl TestServer {
         let extra_args_owned: Vec<String> = extra_args.iter().map(|s| (*s).to_string()).collect();
 
         for _ in 0..3 {
-            let port = find_available_port();
-            let endpoint = format!("http://127.0.0.1:{port}");
-
             let mut cmd = Command::new(&bin);
+            // Use port 0 so the OS assigns a free port atomically, eliminating
+            // the race window between `find_available_port()` releasing the
+            // port and fakecloud binding to it. The actual port is printed to
+            // stdout by fakecloud on startup.
             cmd.arg("--addr")
-                .arg(format!("0.0.0.0:{port}"))
+                .arg("0.0.0.0:0")
                 .arg("--log-level")
                 .arg(&log_level)
                 .args(&extra_args_owned)
@@ -104,16 +123,19 @@ impl TestServer {
 
             let mut child = cmd.spawn().expect("failed to start fakecloud");
 
-            if wait_for_port(&mut child, port).await {
-                return Self {
-                    child: Some(child),
-                    port,
-                    endpoint,
-                    container_cli,
-                    extra_args: extra_args_owned,
-                    env_vars,
-                    log_level,
-                };
+            if let Some(port) = read_bound_port(&mut child).await {
+                let endpoint = format!("http://127.0.0.1:{port}");
+                if wait_for_http(&mut child, port).await {
+                    return Self {
+                        child: Some(child),
+                        port,
+                        endpoint,
+                        container_cli,
+                        extra_args: extra_args_owned,
+                        env_vars,
+                        log_level,
+                    };
+                }
             }
 
             graceful_kill(&mut child);
@@ -124,7 +146,7 @@ impl TestServer {
     }
 
     /// Kill the current child and respawn with the same extra args/env.
-    /// Allocates a new port because the previous one may still be in TIME_WAIT.
+    /// Uses port 0 so the OS assigns a free port, avoiding TIME_WAIT conflicts.
     pub async fn restart(&mut self) {
         if let Some(mut child) = self.child.take() {
             let pid = child.id();
@@ -133,11 +155,9 @@ impl TestServer {
         }
         let bin = find_binary();
         for _ in 0..5 {
-            let port = find_available_port();
-            let endpoint = format!("http://127.0.0.1:{port}");
             let mut cmd = Command::new(&bin);
             cmd.arg("--addr")
-                .arg(format!("0.0.0.0:{port}"))
+                .arg("0.0.0.0:0")
                 .arg("--log-level")
                 .arg(&self.log_level)
                 .args(&self.extra_args)
@@ -147,11 +167,14 @@ impl TestServer {
                 cmd.env(key, value);
             }
             let mut child = cmd.spawn().expect("failed to respawn fakecloud");
-            if wait_for_port(&mut child, port).await {
-                self.child = Some(child);
-                self.port = port;
-                self.endpoint = endpoint;
-                return;
+            if let Some(port) = read_bound_port(&mut child).await {
+                let endpoint = format!("http://127.0.0.1:{port}");
+                if wait_for_http(&mut child, port).await {
+                    self.child = Some(child);
+                    self.port = port;
+                    self.endpoint = endpoint;
+                    return;
+                }
             }
             let pid = child.id();
             graceful_kill(&mut child);
@@ -278,7 +301,15 @@ fn graceful_kill(child: &mut Child) {
 /// Belt-and-braces: after the server process exits, sweep any containers
 /// still tagged with its instance label. Runs regardless of graceful vs.
 /// forced shutdown so a hung stop_all() or a SIGKILL fallback can't leak.
+///
+/// Skips the `docker ps` subprocess when the caller disabled container
+/// support entirely (`FAKECLOUD_CONTAINER_CLI=false`). Most e2e tests
+/// never touch the lambda/rds/elasticache runtimes, so the sweep is
+/// pure overhead on the drop path for those.
 fn sweep_instance_containers(cli: &str, pid: u32) {
+    if cli.is_empty() || cli == "false" {
+        return;
+    }
     let label = format!("fakecloud-instance=fakecloud-{pid}");
     let Ok(output) = Command::new(cli)
         .args(["ps", "-aq", "--filter", &format!("label={label}")])
@@ -308,10 +339,9 @@ pub fn run_until_exit(
     timeout: Duration,
 ) -> (std::process::ExitStatus, String) {
     let bin = find_binary();
-    let port = find_available_port();
     let mut cmd = Command::new(&bin);
     cmd.arg("--addr")
-        .arg(format!("127.0.0.1:{port}"))
+        .arg("127.0.0.1:0")
         .arg("--log-level")
         .arg("warn")
         .args(extra_args)
@@ -379,11 +409,6 @@ impl CliOutput {
     }
 }
 
-fn find_available_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind to random port");
-    listener.local_addr().unwrap().port()
-}
-
 fn find_binary() -> String {
     // testkit lives at crates/fakecloud-testkit, and every consumer crate
     // also lives at crates/<name>, so ../../target is the workspace target.
@@ -426,31 +451,81 @@ fn cli_available(cli: &str) -> bool {
         .unwrap_or(false)
 }
 
-async fn wait_for_port(child: &mut Child, port: u16) -> bool {
-    // Two-stage readiness: (1) TCP connect succeeds, (2) an HTTP request
-    // actually reaches an axum handler. A bare TCP connect only proves
-    // the kernel accepted SYNs into fakecloud's listen queue -- it does
-    // not prove axum has reached `serve().await` and installed request
-    // handlers. Tests that hit the server immediately after a bare TCP
-    // connect occasionally saw ConnectionRefused / EOF mid-flight.
-    let loopback = format!("127.0.0.1:{port}");
-    let wildcard = format!("0.0.0.0:{port}");
+/// Prefix that `fakecloud-server` prints before the bound port on stdout.
+/// Must stay in sync with `PORT_HANDSHAKE_PREFIX` in
+/// `crates/fakecloud-server/src/main.rs`.
+const PORT_HANDSHAKE_PREFIX: &str = "FAKECLOUD_PORT=";
+
+/// Scan a reader for the `FAKECLOUD_PORT=<n>` handshake line, skipping any
+/// non-handshake lines. Returns `None` on EOF or I/O error before a valid
+/// line is seen. Extracted from `read_bound_port` so it can be unit tested
+/// without spawning a real fakecloud process.
+fn scan_for_handshake<R: std::io::BufRead>(reader: &mut R) -> Option<u16> {
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) | Err(_) => return None,
+            Ok(_) => {
+                if let Some(rest) = line.trim().strip_prefix(PORT_HANDSHAKE_PREFIX) {
+                    if let Ok(port) = rest.parse::<u16>() {
+                        return Some(port);
+                    }
+                }
+                // Non-handshake line — ignore and keep reading.
+            }
+        }
+    }
+}
+
+/// Read the port that fakecloud printed to stdout after binding.
+///
+/// fakecloud prints a tagged handshake line — `FAKECLOUD_PORT=<n>` —
+/// immediately after `TcpListener::bind` succeeds. Scanning for the
+/// prefix (rather than parsing the first line blindly) means a future
+/// startup log line on stdout won't break this handshake.
+///
+/// Once the port is found, the remaining stdout is drained on a
+/// background thread. Without that, a later `println!` in the server
+/// would eventually fill the OS pipe buffer and block the server.
+async fn read_bound_port(child: &mut Child) -> Option<u16> {
+    let stdout = child.stdout.take()?;
+    let result = tokio::task::spawn_blocking(move || {
+        let mut reader = std::io::BufReader::new(stdout);
+        let port = scan_for_handshake(&mut reader)?;
+        std::thread::spawn(move || {
+            let mut sink = std::io::sink();
+            let _ = std::io::copy(&mut reader, &mut sink);
+        });
+        Some(port)
+    });
+    match tokio::time::timeout(Duration::from_secs(30), result).await {
+        Ok(Ok(Some(port))) => Some(port),
+        _ => None,
+    }
+}
+
+/// Wait until fakecloud's HTTP handler is accepting requests.
+///
+/// By the time `read_bound_port` returns the port is already bound; this
+/// function just waits for axum to start serving so the very first test
+/// request does not race the server's call to `axum::serve`.
+async fn wait_for_http(child: &mut Child, port: u16) -> bool {
     let health_url = format!("http://127.0.0.1:{port}/");
     let client = reqwest::Client::builder()
         .timeout(Duration::from_millis(500))
         .build()
         .expect("build reqwest client");
 
-    for _ in 0..300 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while std::time::Instant::now() < deadline {
         if child.try_wait().ok().flatten().is_some() {
             return false;
         }
-        let tcp_ok = std::net::TcpStream::connect(&loopback).is_ok()
-            || std::net::TcpStream::connect(&wildcard).is_ok();
-        if tcp_ok && client.get(&health_url).send().await.is_ok() {
+        if client.get(&health_url).send().await.is_ok() {
             return true;
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
     false
 }
@@ -545,6 +620,10 @@ impl TestServer {
         aws_sdk_bedrockruntime::Client::new(&self.aws_config().await)
     }
 
+    pub async fn scheduler_client(&self) -> aws_sdk_scheduler::Client {
+        aws_sdk_scheduler::Client::new(&self.aws_config().await)
+    }
+
     /// S3 always uses path-style addressing against fakecloud so bucket
     /// names don't have to be DNS-legal subdomains of `localhost`.
     pub async fn s3_client(&self) -> aws_sdk_s3::Client {
@@ -553,5 +632,60 @@ impl TestServer {
             .force_path_style(true)
             .build();
         aws_sdk_s3::Client::from_conf(s3_config)
+    }
+}
+
+#[cfg(test)]
+mod handshake_tests {
+    use super::*;
+    use std::io::BufReader;
+
+    #[test]
+    fn handshake_on_first_line() {
+        let input = b"FAKECLOUD_PORT=4566\n";
+        let mut reader = BufReader::new(&input[..]);
+        assert_eq!(scan_for_handshake(&mut reader), Some(4566));
+    }
+
+    #[test]
+    fn handshake_after_unrelated_lines() {
+        // Simulate a future scenario where something prints to stdout
+        // before the handshake — scanner must skip and keep reading.
+        let input = b"startup banner\n\
+                     some other log\n\
+                     FAKECLOUD_PORT=38291\n";
+        let mut reader = BufReader::new(&input[..]);
+        assert_eq!(scan_for_handshake(&mut reader), Some(38291));
+    }
+
+    #[test]
+    fn returns_none_on_eof_without_handshake() {
+        let input = b"no port here\nnope\n";
+        let mut reader = BufReader::new(&input[..]);
+        assert_eq!(scan_for_handshake(&mut reader), None);
+    }
+
+    #[test]
+    fn returns_none_on_empty_stream() {
+        let input: &[u8] = b"";
+        let mut reader = BufReader::new(input);
+        assert_eq!(scan_for_handshake(&mut reader), None);
+    }
+
+    #[test]
+    fn ignores_malformed_port_value() {
+        // A line with the prefix but an invalid port is skipped rather
+        // than accepted — prefix is necessary but not sufficient.
+        let input = b"FAKECLOUD_PORT=not-a-number\n\
+                     FAKECLOUD_PORT=70000\n\
+                     FAKECLOUD_PORT=5000\n";
+        let mut reader = BufReader::new(&input[..]);
+        assert_eq!(scan_for_handshake(&mut reader), Some(5000));
+    }
+
+    #[test]
+    fn prefix_matches_server_contract() {
+        // Guards against accidental drift from the server-side constant.
+        assert_eq!(PORT_HANDSHAKE_PREFIX, "FAKECLOUD_PORT=");
     }
 }

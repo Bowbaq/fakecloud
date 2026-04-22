@@ -31,7 +31,8 @@ pub fn create_custom_model(
         creation_time: Utc::now(),
     };
 
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
     s.custom_models.insert(model_arn.clone(), model);
 
     Ok(AwsResponse::json(
@@ -42,9 +43,12 @@ pub fn create_custom_model(
 
 pub fn get_custom_model(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     model_identifier: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let model = s
         .custom_models
         .get(model_identifier)
@@ -82,7 +86,9 @@ pub fn list_custom_models(
         .max(1);
     let next_token = req.query_params.get("nextToken");
 
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let mut items: Vec<&CustomModel> = s.custom_models.values().collect();
     items.sort_by(|a, b| a.model_arn.cmp(&b.model_arn));
 
@@ -122,9 +128,11 @@ pub fn list_custom_models(
 
 pub fn delete_custom_model(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     model_identifier: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
 
     let key = s
         .custom_models
@@ -146,5 +154,112 @@ pub fn delete_custom_model(
             "ResourceNotFoundException",
             format!("Custom model {model_identifier} not found"),
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::BedrockState;
+    use bytes::Bytes;
+    use fakecloud_core::multi_account::MultiAccountState;
+    use http::{HeaderMap, Method};
+    use parking_lot::RwLock;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    fn shared() -> SharedBedrockState {
+        let multi: MultiAccountState<BedrockState> =
+            MultiAccountState::new("123456789012", "us-east-1", "http://x");
+        Arc::new(RwLock::new(multi))
+    }
+
+    fn req() -> AwsRequest {
+        AwsRequest {
+            service: "bedrock".to_string(),
+            action: "a".to_string(),
+            method: Method::POST,
+            raw_path: "/".to_string(),
+            raw_query: String::new(),
+            path_segments: vec![],
+            query_params: HashMap::new(),
+            headers: HeaderMap::new(),
+            body: Bytes::new(),
+            account_id: "123456789012".to_string(),
+            region: "us-east-1".to_string(),
+            request_id: "r".to_string(),
+            is_query_protocol: false,
+            access_key_id: None,
+            principal: None,
+        }
+    }
+
+    fn create(state: &SharedBedrockState, name: &str) -> String {
+        let body = json!({
+            "modelName": name,
+            "modelSourceConfig": {"s3DataSource": {"s3Uri": "s3://b/m"}},
+            "modelKmsKeyArn": "arn:aws:kms:us-east-1:123:key/k",
+            "roleArn": "arn:aws:iam::123:role/r"
+        });
+        let resp = create_custom_model(state, &req(), &body).unwrap();
+        let v: Value =
+            serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
+        v["modelArn"].as_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn create_with_default_name_when_omitted() {
+        let s = shared();
+        create_custom_model(&s, &req(), &json!({})).unwrap();
+        let st = s.read();
+        assert_eq!(st.default_ref().custom_models.len(), 1);
+    }
+
+    #[test]
+    fn get_by_arn_or_name_or_id() {
+        let s = shared();
+        let arn = create(&s, "my-model");
+        let id = arn.rsplit('/').next().unwrap().to_string();
+        assert!(get_custom_model(&s, &req(), &arn).is_ok());
+        assert!(get_custom_model(&s, &req(), &id).is_ok());
+        assert!(get_custom_model(&s, &req(), "my-model").is_ok());
+    }
+
+    #[test]
+    fn get_unknown_returns_not_found() {
+        let s = shared();
+        let err = get_custom_model(&s, &req(), "missing").err().unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn list_paginates() {
+        let s = shared();
+        for i in 0..3 {
+            create(&s, &format!("m{i}"));
+        }
+        let mut r = req();
+        r.query_params
+            .insert("maxResults".to_string(), "2".to_string());
+        let resp = list_custom_models(&s, &r).unwrap();
+        let v: Value =
+            serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
+        assert_eq!(v["modelSummaries"].as_array().unwrap().len(), 2);
+        assert!(v["nextToken"].is_string());
+    }
+
+    #[test]
+    fn delete_removes_entry() {
+        let s = shared();
+        let arn = create(&s, "del");
+        delete_custom_model(&s, &req(), &arn).unwrap();
+        assert!(s.read().default_ref().custom_models.is_empty());
+    }
+
+    #[test]
+    fn delete_unknown_returns_not_found() {
+        let s = shared();
+        let err = delete_custom_model(&s, &req(), "missing").err().unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
     }
 }

@@ -27,7 +27,14 @@ impl KinesisDelivery for KinesisDeliveryImpl {
             stream_arn
         };
 
-        let mut state = self.state.write();
+        let default_id = self.state.read().default_account_id().to_string();
+        let target_account = stream_arn
+            .split(':')
+            .nth(4)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&default_id);
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(target_account);
         if let Some(stream) = state.streams.get_mut(stream_name) {
             // Find the shard to write to based on partition key
             // For simplicity, hash the partition key and mod by shard count
@@ -115,9 +122,12 @@ mod tests {
     }
 
     fn make_state(stream: KinesisStream) -> SharedKinesisState {
-        let mut s = KinesisState::new("123456789012", "us-east-1");
-        s.streams.insert(stream.stream_name.clone(), stream);
-        Arc::new(RwLock::new(s))
+        let mut mas: fakecloud_core::multi_account::MultiAccountState<KinesisState> =
+            fakecloud_core::multi_account::MultiAccountState::new("123456789012", "us-east-1", "");
+        mas.get_or_create("123456789012")
+            .streams
+            .insert(stream.stream_name.clone(), stream);
+        Arc::new(RwLock::new(mas))
     }
 
     #[test]
@@ -131,7 +141,8 @@ mod tests {
             &encoded,
             "pk-1",
         );
-        let guard = state.read();
+        let mas = state.read();
+        let guard = mas.default_ref();
         let stream = guard.streams.get("my-stream").unwrap();
         assert_eq!(stream.shards[0].records.len(), 1);
         let rec = &stream.shards[0].records[0];
@@ -149,7 +160,8 @@ mod tests {
             "not-base64!",
             "p",
         );
-        let guard = state.read();
+        let mas = state.read();
+        let guard = mas.default_ref();
         let rec = &guard.streams.get("s").unwrap().shards[0].records[0];
         assert_eq!(rec.data, b"not-base64!");
     }
@@ -169,7 +181,8 @@ mod tests {
             &base64::engine::general_purpose::STANDARD.encode(b"b"),
             "B",
         );
-        let guard = state.read();
+        let mas = state.read();
+        let guard = mas.default_ref();
         let stream = guard.streams.get("s").unwrap();
         let total: usize = stream.shards.iter().map(|s| s.records.len()).sum();
         assert_eq!(total, 2);
@@ -185,7 +198,8 @@ mod tests {
             "AAA=",
             "p",
         );
-        let guard = state.read();
+        let mas = state.read();
+        let guard = mas.default_ref();
         assert!(guard.streams.get("s").unwrap().shards[0].records.is_empty());
     }
 
@@ -195,7 +209,8 @@ mod tests {
         let state = make_state(stream);
         let delivery = KinesisDeliveryImpl::new(state.clone());
         delivery.put_record("plain", "AAA=", "p");
-        let guard = state.read();
+        let mas = state.read();
+        let guard = mas.default_ref();
         assert_eq!(
             guard.streams.get("plain").unwrap().shards[0].records.len(),
             1

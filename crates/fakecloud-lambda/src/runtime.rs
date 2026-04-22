@@ -392,14 +392,13 @@ impl ContainerRuntime {
         lambda_state: &crate::state::SharedLambdaState,
     ) -> Vec<serde_json::Value> {
         let containers = self.containers.read();
-        let state = lambda_state.read();
+        let accounts = lambda_state.read();
         containers
             .iter()
             .map(|(name, container)| {
-                let runtime = state
-                    .functions
-                    .get(name)
-                    .map(|f| f.runtime.clone())
+                let runtime = accounts
+                    .iter()
+                    .find_map(|(_, state)| state.functions.get(name).map(|f| f.runtime.clone()))
                     .unwrap_or_default();
                 let last_used = container.last_used.read();
                 let idle_secs = last_used.elapsed().as_secs();

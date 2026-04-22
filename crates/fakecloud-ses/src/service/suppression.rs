@@ -4,6 +4,7 @@ use serde_json::{json, Value};
 
 use fakecloud_core::service::{AwsRequest, AwsResponse, AwsServiceError};
 
+use crate::state::SesState;
 use crate::state::SuppressedDestination;
 
 use super::SesV2Service;
@@ -42,7 +43,8 @@ impl SesV2Service {
             }
         };
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         state.suppressed_destinations.insert(
             email.clone(),
             SuppressedDestination {
@@ -58,8 +60,11 @@ impl SesV2Service {
     pub(super) fn get_suppressed_destination(
         &self,
         email: &str,
+        req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = SesState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let dest = match state.suppressed_destinations.get(email) {
             Some(d) => d,
             None => {
@@ -85,8 +90,10 @@ impl SesV2Service {
     pub(super) fn delete_suppressed_destination(
         &self,
         email: &str,
+        req: &AwsRequest,
     ) -> Result<AwsResponse, AwsServiceError> {
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         if state.suppressed_destinations.remove(email).is_none() {
             return Ok(Self::json_error(
                 StatusCode::NOT_FOUND,
@@ -97,8 +104,13 @@ impl SesV2Service {
         Ok(AwsResponse::json(StatusCode::OK, "{}"))
     }
 
-    pub(super) fn list_suppressed_destinations(&self) -> Result<AwsResponse, AwsServiceError> {
-        let state = self.state.read();
+    pub(super) fn list_suppressed_destinations(
+        &self,
+        req: &AwsRequest,
+    ) -> Result<AwsResponse, AwsServiceError> {
+        let accounts = self.state.read();
+        let empty = SesState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let summaries: Vec<Value> = state
             .suppressed_destinations
             .values()

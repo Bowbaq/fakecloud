@@ -44,8 +44,11 @@ use fakecloud_kinesis::service::KinesisService;
 use fakecloud_kms::service::KmsService;
 use fakecloud_lambda::service::LambdaService;
 use fakecloud_logs::service::LogsService;
+use fakecloud_organizations::service::OrganizationsService;
+use fakecloud_organizations::state::SharedOrganizationsState;
 use fakecloud_rds::service::RdsService;
 use fakecloud_s3::service::S3Service;
+use fakecloud_scheduler::service::SchedulerService;
 use fakecloud_secretsmanager::service::SecretsManagerService;
 use fakecloud_ses::service::SesV2Service;
 use fakecloud_sns::service::SnsService;
@@ -64,6 +67,8 @@ async fn main() {
         )
         .with_writer(std::io::stderr)
         .init();
+
+    install_panic_hook();
 
     let persistence_config = match cli.persistence_config() {
         Ok(cfg) => cfg,
@@ -90,7 +95,27 @@ async fn main() {
         }
     }
 
-    let endpoint_url = cli.endpoint_url();
+    // Bind early so we know the actual port before initialising service state.
+    // When the caller passes `--addr 0.0.0.0:0` the OS assigns a free port
+    // atomically, eliminating the race between find-a-free-port and bind that
+    // previously caused sporadic "Connection refused" in parallel tests.
+    let (listener, bound_addr) = bind_listener(&cli.addr)
+        .await
+        .unwrap_or_else(|e| fatal_exit(format_args!("failed to bind {}: {e}", cli.addr)));
+
+    // Announce the bound port to stdout so test harnesses (fakecloud-testkit)
+    // can discover the OS-assigned port when `--addr :0` is used. The prefix
+    // makes the line self-identifying: if anything ever prints to stdout
+    // before this line, the parser on the other side still finds the port.
+    if let Err(e) = announce_bound_port(bound_addr.port(), &mut std::io::stdout().lock()) {
+        fatal_exit(format_args!("failed to announce bound port: {e}"));
+    }
+    tracing::info!(addr = %bound_addr, "fakecloud is ready");
+
+    // Build the endpoint URL from the *actual* bound address so that port 0
+    // resolves to the real OS-assigned port in all internal resource URLs
+    // (SQS queue URLs, SNS ARNs, etc.).
+    let endpoint_url = endpoint_url_from_addr(bound_addr);
 
     // Shared state
     let iam_state = Arc::new(parking_lot::RwLock::new(
@@ -119,10 +144,18 @@ async fn main() {
         mas
     }));
     let eb_state = Arc::new(parking_lot::RwLock::new(
-        fakecloud_eventbridge::state::EventBridgeState::new(&cli.account_id, &cli.region),
+        fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        ),
     ));
     let ssm_state = Arc::new(parking_lot::RwLock::new(
-        fakecloud_ssm::state::SsmState::new(&cli.account_id, &cli.region),
+        fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        ),
     ));
     let dynamodb_state = Arc::new(parking_lot::RwLock::new(
         fakecloud_core::multi_account::MultiAccountState::new(
@@ -132,7 +165,11 @@ async fn main() {
         ),
     ));
     let lambda_state = Arc::new(parking_lot::RwLock::new(
-        fakecloud_lambda::state::LambdaState::new(&cli.account_id, &cli.region),
+        fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        ),
     ));
 
     // Reap any backing containers left behind by a previous fakecloud process
@@ -151,7 +188,11 @@ async fn main() {
     }
 
     let secretsmanager_state = Arc::new(parking_lot::RwLock::new(
-        fakecloud_secretsmanager::state::SecretsManagerState::new(&cli.account_id, &cli.region),
+        fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        ),
     ));
     let s3_state = Arc::new(parking_lot::RwLock::new(
         fakecloud_core::multi_account::MultiAccountState::new(
@@ -161,41 +202,98 @@ async fn main() {
         ),
     ));
     let logs_state = Arc::new(parking_lot::RwLock::new(
-        fakecloud_logs::state::LogsState::new(&cli.account_id, &cli.region),
+        fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        ),
     ));
     let kms_state = Arc::new(parking_lot::RwLock::new(
-        fakecloud_kms::state::KmsState::new(&cli.account_id, &cli.region),
+        fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        ),
     ));
     let cloudformation_state = Arc::new(parking_lot::RwLock::new(
-        fakecloud_cloudformation::state::CloudFormationState::new(&cli.account_id, &cli.region),
+        fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        ),
     ));
     let ses_state = Arc::new(parking_lot::RwLock::new(
-        fakecloud_ses::state::SesState::new(&cli.account_id, &cli.region),
+        fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        ),
     ));
     let cognito_state = Arc::new(parking_lot::RwLock::new(
-        fakecloud_cognito::state::CognitoState::new(&cli.account_id, &cli.region),
+        fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        ),
     ));
     let kinesis_state = Arc::new(parking_lot::RwLock::new(
-        fakecloud_kinesis::state::KinesisState::new(&cli.account_id, &cli.region),
+        fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        ),
     ));
     let rds_state = Arc::new(parking_lot::RwLock::new(
-        fakecloud_rds::state::RdsState::new(&cli.account_id, &cli.region),
+        fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        ),
     ));
     let elasticache_state = Arc::new(parking_lot::RwLock::new(
-        fakecloud_elasticache::state::ElastiCacheState::new(&cli.account_id, &cli.region),
+        fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        ),
     ));
 
     let stepfunctions_state = Arc::new(parking_lot::RwLock::new(
-        fakecloud_stepfunctions::state::StepFunctionsState::new(&cli.account_id, &cli.region),
+        fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        ),
     ));
 
     let apigatewayv2_state = Arc::new(parking_lot::RwLock::new(
-        fakecloud_apigatewayv2::state::ApiGatewayV2State::new(&cli.account_id, &cli.region),
+        fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        ),
     ));
 
     let bedrock_state = Arc::new(parking_lot::RwLock::new(
-        fakecloud_bedrock::state::BedrockState::new(&cli.account_id, &cli.region),
+        fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        ),
     ));
+
+    // Organizations state is a global singleton (one org per fakecloud
+    // process) — not wrapped in MultiAccountState because an AWS org is
+    // a cross-account construct. `None` until CreateOrganization runs.
+    let organizations_state: SharedOrganizationsState = Arc::new(parking_lot::RwLock::new(None));
+
+    let scheduler_state: fakecloud_scheduler::state::SharedSchedulerState = Arc::new(
+        parking_lot::RwLock::new(fakecloud_core::multi_account::MultiAccountState::new(
+            &cli.account_id,
+            &cli.region,
+            &endpoint_url,
+        )),
+    );
 
     let rds_runtime = fakecloud_rds::runtime::RdsRuntime::new().map(Arc::new);
     if let Some(ref rt) = rds_runtime {
@@ -294,6 +392,9 @@ async fn main() {
     // Step 3: S3 delivery (S3 notifications can push to SQS, SNS, Lambda, and EventBridge)
     let sns_delivery_for_ses = sns_delivery.clone();
     let sns_delivery_for_cf = sns_delivery.clone();
+    let sns_delivery_for_scheduler = sns_delivery.clone();
+    let sns_delivery_for_scheduler_eb = sns_delivery.clone();
+    let sns_delivery_for_scheduler_sfn_eb = sns_delivery.clone();
     let eb_delivery_for_s3 = Arc::new(
         fakecloud_eventbridge::delivery::EventBridgeDeliveryImpl::new(
             eb_state.clone(),
@@ -384,8 +485,10 @@ async fn main() {
         rds: rds_state.clone(),
         elasticache: elasticache_state.clone(),
         stepfunctions: stepfunctions_state.clone(),
+        scheduler: scheduler_state.clone(),
         apigatewayv2: apigatewayv2_state.clone(),
         bedrock: bedrock_state.clone(),
+        organizations: organizations_state.clone(),
         container_runtime: container_runtime.clone(),
         rds_runtime: rds_runtime.clone(),
         elasticache_runtime: elasticache_runtime.clone(),
@@ -419,7 +522,7 @@ async fn main() {
                     {
                         Ok(snapshot) => {
                             if snapshot.schema_version
-                                != fakecloud_cloudformation::state::CLOUDFORMATION_SNAPSHOT_SCHEMA_VERSION
+                                > fakecloud_cloudformation::state::CLOUDFORMATION_SNAPSHOT_SCHEMA_VERSION
                             {
                                 fatal_exit(format_args!(
                                     "cloudformation persistence schema mismatch: on-disk={}, expected={}",
@@ -427,12 +530,23 @@ async fn main() {
                                     fakecloud_cloudformation::state::CLOUDFORMATION_SNAPSHOT_SCHEMA_VERSION,
                                 ));
                             }
-                            let stack_count = snapshot.state.stacks.len();
-                            *cloudformation_state.write() = snapshot.state;
-                            tracing::info!(
-                                stacks = stack_count,
-                                "loaded cloudformation persistence snapshot",
-                            );
+                            if let Some(accounts) = snapshot.accounts {
+                                let account_count = accounts.account_count();
+                                *cloudformation_state.write() = accounts;
+                                tracing::info!(
+                                    accounts = account_count,
+                                    "loaded cloudformation persistence snapshot (multi-account)"
+                                );
+                            } else if let Some(single_state) = snapshot.state {
+                                let stack_count = single_state.stacks.len();
+                                let account_id = single_state.account_id.clone();
+                                let mut mas = cloudformation_state.write();
+                                *mas.get_or_create(&account_id) = single_state;
+                                tracing::info!(
+                                    stacks = stack_count,
+                                    "loaded cloudformation persistence snapshot (migrated from v1)"
+                                );
+                            }
                         }
                         Err(err) => fatal_exit(format_args!(
                             "failed to parse cloudformation persistence snapshot: {err}"
@@ -608,22 +722,31 @@ async fn main() {
                     ) {
                         Ok(snapshot) => {
                             if snapshot.schema_version
-                                != fakecloud_eventbridge::state::EVENTBRIDGE_SNAPSHOT_SCHEMA_VERSION
+                                > fakecloud_eventbridge::state::EVENTBRIDGE_SNAPSHOT_SCHEMA_VERSION
                             {
                                 fatal_exit(format_args!(
-                                    "eventbridge persistence schema mismatch: on-disk={}, expected={}",
+                                    "eventbridge persistence schema too new: on-disk={}, max supported={}",
                                     snapshot.schema_version,
                                     fakecloud_eventbridge::state::EVENTBRIDGE_SNAPSHOT_SCHEMA_VERSION,
                                 ));
                             }
-                            let bus_count = snapshot.state.buses.len();
-                            let rule_count = snapshot.state.rules.len();
-                            *eb_state.write() = snapshot.state;
-                            tracing::info!(
-                                buses = bus_count,
-                                rules = rule_count,
-                                "loaded eventbridge persistence snapshot",
-                            );
+                            if let Some(accounts) = snapshot.accounts {
+                                let account_count = accounts.account_count();
+                                *eb_state.write() = accounts;
+                                tracing::info!(
+                                    accounts = account_count,
+                                    "loaded eventbridge persistence snapshot (multi-account)"
+                                );
+                            } else if let Some(single_state) = snapshot.state {
+                                let bus_count = single_state.buses.len();
+                                let account_id = single_state.account_id.clone();
+                                let mut mas = eb_state.write();
+                                *mas.get_or_create(&account_id) = single_state;
+                                tracing::info!(
+                                    buses = bus_count,
+                                    "loaded eventbridge persistence snapshot (migrated from v1)"
+                                );
+                            }
                         }
                         Err(err) => fatal_exit(format_args!(
                             "failed to parse eventbridge persistence snapshot: {err}"
@@ -655,6 +778,7 @@ async fn main() {
     // Spawn the EventBridge scheduler as a background task
     let eb_state_for_ses = eb_state.clone();
     let eb_state_for_sfn = eb_state.clone();
+    let eb_state_for_scheduler = eb_state.clone();
     let mut scheduler = fakecloud_eventbridge::scheduler::Scheduler::new(eb_state, delivery_for_eb)
         .with_lambda(lambda_state.clone())
         .with_logs(logs_state.clone());
@@ -753,7 +877,7 @@ async fn main() {
                     match serde_json::from_slice::<fakecloud_ssm::state::SsmSnapshot>(&bytes) {
                         Ok(snapshot) => {
                             if snapshot.schema_version
-                                != fakecloud_ssm::state::SSM_SNAPSHOT_SCHEMA_VERSION
+                                > fakecloud_ssm::state::SSM_SNAPSHOT_SCHEMA_VERSION
                             {
                                 fatal_exit(format_args!(
                                     "ssm persistence schema mismatch: on-disk={}, expected={}",
@@ -761,12 +885,23 @@ async fn main() {
                                     fakecloud_ssm::state::SSM_SNAPSHOT_SCHEMA_VERSION,
                                 ));
                             }
-                            let param_count = snapshot.state.parameters.len();
-                            *ssm_state.write() = snapshot.state;
-                            tracing::info!(
-                                parameters = param_count,
-                                "loaded ssm persistence snapshot",
-                            );
+                            if let Some(accounts) = snapshot.accounts {
+                                let account_count = accounts.account_count();
+                                *ssm_state.write() = accounts;
+                                tracing::info!(
+                                    accounts = account_count,
+                                    "loaded ssm persistence snapshot (multi-account)"
+                                );
+                            } else if let Some(single_state) = snapshot.state {
+                                let param_count = single_state.parameters.len();
+                                let account_id = single_state.account_id.clone();
+                                let mut mas = ssm_state.write();
+                                *mas.get_or_create(&account_id) = single_state;
+                                tracing::info!(
+                                    parameters = param_count,
+                                    "loaded ssm persistence snapshot (migrated from v1)"
+                                );
+                            }
                         }
                         Err(err) => fatal_exit(format_args!(
                             "failed to parse ssm persistence snapshot: {err}"
@@ -813,20 +948,33 @@ async fn main() {
                     {
                         Ok(snapshot) => {
                             if snapshot.schema_version
-                                != fakecloud_lambda::state::LAMBDA_SNAPSHOT_SCHEMA_VERSION
+                                > fakecloud_lambda::state::LAMBDA_SNAPSHOT_SCHEMA_VERSION
                             {
                                 fatal_exit(format_args!(
-                                    "lambda persistence schema mismatch: on-disk={}, expected={}",
+                                    "lambda persistence schema too new: on-disk={}, max supported={}",
                                     snapshot.schema_version,
                                     fakecloud_lambda::state::LAMBDA_SNAPSHOT_SCHEMA_VERSION,
                                 ));
                             }
-                            let fn_count = snapshot.state.functions.len();
-                            *lambda_state.write() = snapshot.state;
-                            tracing::info!(
-                                functions = fn_count,
-                                "loaded lambda persistence snapshot",
-                            );
+                            if let Some(accounts) = snapshot.accounts {
+                                let account_count = accounts.account_count();
+                                *lambda_state.write() = accounts;
+                                tracing::info!(
+                                    accounts = account_count,
+                                    "loaded lambda persistence snapshot (multi-account)"
+                                );
+                            } else if let Some(single_state) = snapshot.state {
+                                let fn_count = single_state.functions.len();
+                                let account_id = single_state.account_id.clone();
+                                let mut mas = lambda_state.write();
+                                *mas.get_or_create(&account_id) = single_state;
+                                tracing::info!(
+                                    functions = fn_count,
+                                    "loaded lambda persistence snapshot (migrated from v1)"
+                                );
+                            } else {
+                                tracing::warn!("lambda persistence snapshot has neither accounts nor state; starting empty");
+                            }
                         }
                         Err(err) => fatal_exit(format_args!(
                             "failed to parse lambda persistence snapshot: {err}"
@@ -874,20 +1022,31 @@ async fn main() {
                     {
                         Ok(snapshot) => {
                             if snapshot.schema_version
-                                != fakecloud_secretsmanager::state::SECRETSMANAGER_SNAPSHOT_SCHEMA_VERSION
+                                > fakecloud_secretsmanager::state::SECRETSMANAGER_SNAPSHOT_SCHEMA_VERSION
                             {
                                 fatal_exit(format_args!(
-                                    "secretsmanager persistence schema mismatch: on-disk={}, expected={}",
+                                    "secretsmanager persistence schema too new: on-disk={}, max supported={}",
                                     snapshot.schema_version,
                                     fakecloud_secretsmanager::state::SECRETSMANAGER_SNAPSHOT_SCHEMA_VERSION,
                                 ));
                             }
-                            let secret_count = snapshot.state.secrets.len();
-                            *secretsmanager_state.write() = snapshot.state;
-                            tracing::info!(
-                                secrets = secret_count,
-                                "loaded secretsmanager persistence snapshot",
-                            );
+                            if let Some(accounts) = snapshot.accounts {
+                                let account_count = accounts.account_count();
+                                *secretsmanager_state.write() = accounts;
+                                tracing::info!(
+                                    accounts = account_count,
+                                    "loaded secretsmanager persistence snapshot (multi-account)"
+                                );
+                            } else if let Some(single_state) = snapshot.state {
+                                let secret_count = single_state.secrets.len();
+                                let account_id = single_state.account_id.clone();
+                                let mut mas = secretsmanager_state.write();
+                                *mas.get_or_create(&account_id) = single_state;
+                                tracing::info!(
+                                    secrets = secret_count,
+                                    "loaded secretsmanager persistence snapshot (migrated from v1)"
+                                );
+                            }
                         }
                         Err(err) => fatal_exit(format_args!(
                             "failed to parse secretsmanager persistence snapshot: {err}"
@@ -925,20 +1084,33 @@ async fn main() {
                     match serde_json::from_slice::<fakecloud_logs::state::LogsSnapshot>(&bytes) {
                         Ok(snapshot) => {
                             if snapshot.schema_version
-                                != fakecloud_logs::state::LOGS_SNAPSHOT_SCHEMA_VERSION
+                                > fakecloud_logs::state::LOGS_SNAPSHOT_SCHEMA_VERSION
                             {
                                 fatal_exit(format_args!(
-                                    "logs persistence schema mismatch: on-disk={}, expected={}",
+                                    "logs persistence schema too new: on-disk={}, max supported={}",
                                     snapshot.schema_version,
                                     fakecloud_logs::state::LOGS_SNAPSHOT_SCHEMA_VERSION,
                                 ));
                             }
-                            let group_count = snapshot.state.log_groups.len();
-                            *logs_state.write() = snapshot.state;
-                            tracing::info!(
-                                log_groups = group_count,
-                                "loaded logs persistence snapshot",
-                            );
+                            if let Some(accounts) = snapshot.accounts {
+                                let account_count = accounts.account_count();
+                                *logs_state.write() = accounts;
+                                tracing::info!(
+                                    accounts = account_count,
+                                    "loaded logs persistence snapshot (multi-account)"
+                                );
+                            } else if let Some(single_state) = snapshot.state {
+                                let group_count = single_state.log_groups.len();
+                                let account_id = single_state.account_id.clone();
+                                let mut mas = logs_state.write();
+                                *mas.get_or_create(&account_id) = single_state;
+                                tracing::info!(
+                                    log_groups = group_count,
+                                    "loaded logs persistence snapshot (migrated from v1)"
+                                );
+                            } else {
+                                tracing::warn!("logs persistence snapshot has neither accounts nor state; starting empty");
+                            }
                         }
                         Err(err) => fatal_exit(format_args!(
                             "failed to parse logs persistence snapshot: {err}"
@@ -975,17 +1147,31 @@ async fn main() {
                     match serde_json::from_slice::<fakecloud_kms::state::KmsSnapshot>(&bytes) {
                         Ok(snapshot) => {
                             if snapshot.schema_version
-                                != fakecloud_kms::state::KMS_SNAPSHOT_SCHEMA_VERSION
+                                > fakecloud_kms::state::KMS_SNAPSHOT_SCHEMA_VERSION
                             {
                                 fatal_exit(format_args!(
-                                    "kms persistence schema mismatch: on-disk={}, expected={}",
+                                    "kms persistence schema too new: on-disk={}, max supported={}",
                                     snapshot.schema_version,
                                     fakecloud_kms::state::KMS_SNAPSHOT_SCHEMA_VERSION,
                                 ));
                             }
-                            let key_count = snapshot.state.keys.len();
-                            *kms_state.write() = snapshot.state;
-                            tracing::info!(keys = key_count, "loaded kms persistence snapshot",);
+                            if let Some(accounts) = snapshot.accounts {
+                                let account_count = accounts.account_count();
+                                *kms_state.write() = accounts;
+                                tracing::info!(
+                                    accounts = account_count,
+                                    "loaded kms persistence snapshot (multi-account)"
+                                );
+                            } else if let Some(single_state) = snapshot.state {
+                                let key_count = single_state.keys.len();
+                                let account_id = single_state.account_id.clone();
+                                let mut mas = kms_state.write();
+                                *mas.get_or_create(&account_id) = single_state;
+                                tracing::info!(
+                                    keys = key_count,
+                                    "loaded kms persistence snapshot (migrated from v1)"
+                                );
+                            }
                         }
                         Err(err) => fatal_exit(format_args!(
                             "failed to parse kms persistence snapshot: {err}"
@@ -1008,6 +1194,10 @@ async fn main() {
         kms_service = kms_service.with_snapshot_store(store);
     }
     registry.register(Arc::new(kms_service));
+
+    registry.register(Arc::new(OrganizationsService::new(
+        organizations_state.clone(),
+    )));
     let mut shared_body_cache: Option<Arc<fakecloud_persistence::cache::BodyCache>> = None;
     let s3_store: Arc<dyn fakecloud_persistence::S3Store> = match persistence_config.mode {
         fakecloud_persistence::StorageMode::Persistent => {
@@ -1175,22 +1365,31 @@ async fn main() {
                     match serde_json::from_slice::<fakecloud_ses::state::SesSnapshot>(&bytes) {
                         Ok(snapshot) => {
                             if snapshot.schema_version
-                                != fakecloud_ses::state::SES_SNAPSHOT_SCHEMA_VERSION
+                                > fakecloud_ses::state::SES_SNAPSHOT_SCHEMA_VERSION
                             {
                                 fatal_exit(format_args!(
-                                    "ses persistence schema mismatch: on-disk={}, expected={}",
+                                    "ses persistence schema too new: on-disk={}, max supported={}",
                                     snapshot.schema_version,
                                     fakecloud_ses::state::SES_SNAPSHOT_SCHEMA_VERSION,
                                 ));
                             }
-                            let identity_count = snapshot.state.identities.len();
-                            let template_count = snapshot.state.templates.len();
-                            *ses_state.write() = snapshot.state;
-                            tracing::info!(
-                                identities = identity_count,
-                                templates = template_count,
-                                "loaded ses persistence snapshot",
-                            );
+                            if let Some(accounts) = snapshot.accounts {
+                                let account_count = accounts.account_count();
+                                *ses_state.write() = accounts;
+                                tracing::info!(
+                                    accounts = account_count,
+                                    "loaded ses persistence snapshot (multi-account)",
+                                );
+                            } else if let Some(single_state) = snapshot.state {
+                                let identity_count = single_state.identities.len();
+                                let account_id = single_state.account_id.clone();
+                                let mut mas = ses_state.write();
+                                *mas.get_or_create(&account_id) = single_state;
+                                tracing::info!(
+                                    identities = identity_count,
+                                    "loaded ses persistence snapshot (migrated from v1)",
+                                );
+                            }
                         }
                         Err(err) => fatal_exit(format_args!(
                             "failed to parse ses persistence snapshot: {err}"
@@ -1239,23 +1438,31 @@ async fn main() {
                     ) {
                         Ok(snapshot) => {
                             if snapshot.schema_version
-                                != fakecloud_cognito::state::COGNITO_SNAPSHOT_SCHEMA_VERSION
+                                > fakecloud_cognito::state::COGNITO_SNAPSHOT_SCHEMA_VERSION
                             {
                                 fatal_exit(format_args!(
-                                    "cognito persistence schema mismatch: on-disk={}, expected={}",
+                                    "cognito persistence schema too new: on-disk={}, max supported={}",
                                     snapshot.schema_version,
                                     fakecloud_cognito::state::COGNITO_SNAPSHOT_SCHEMA_VERSION,
                                 ));
                             }
-                            let pool_count = snapshot.state.user_pools.len();
-                            let user_count: usize =
-                                snapshot.state.users.values().map(|u| u.len()).sum();
-                            *cognito_state.write() = snapshot.state;
-                            tracing::info!(
-                                user_pools = pool_count,
-                                users = user_count,
-                                "loaded cognito persistence snapshot",
-                            );
+                            if let Some(accounts) = snapshot.accounts {
+                                let account_count = accounts.account_count();
+                                *cognito_state.write() = accounts;
+                                tracing::info!(
+                                    accounts = account_count,
+                                    "loaded cognito persistence snapshot (multi-account)",
+                                );
+                            } else if let Some(single_state) = snapshot.state {
+                                let pool_count = single_state.user_pools.len();
+                                let account_id = single_state.account_id.clone();
+                                let mut mas = cognito_state.write();
+                                *mas.get_or_create(&account_id) = single_state;
+                                tracing::info!(
+                                    user_pools = pool_count,
+                                    "loaded cognito persistence snapshot (migrated from v1)",
+                                );
+                            }
                         }
                         Err(err) => fatal_exit(format_args!(
                             "failed to parse cognito persistence snapshot: {err}"
@@ -1295,20 +1502,31 @@ async fn main() {
                     ) {
                         Ok(snapshot) => {
                             if snapshot.schema_version
-                                != fakecloud_kinesis::state::KINESIS_SNAPSHOT_SCHEMA_VERSION
+                                > fakecloud_kinesis::state::KINESIS_SNAPSHOT_SCHEMA_VERSION
                             {
                                 fatal_exit(format_args!(
-                                    "kinesis persistence schema mismatch: on-disk={}, expected={}",
+                                    "kinesis persistence schema too new: on-disk={}, max supported={}",
                                     snapshot.schema_version,
                                     fakecloud_kinesis::state::KINESIS_SNAPSHOT_SCHEMA_VERSION,
                                 ));
                             }
-                            let stream_count = snapshot.state.streams.len();
-                            *kinesis_state.write() = snapshot.state;
-                            tracing::info!(
-                                streams = stream_count,
-                                "loaded kinesis persistence snapshot",
-                            );
+                            if let Some(accounts) = snapshot.accounts {
+                                let account_count = accounts.account_count();
+                                *kinesis_state.write() = accounts;
+                                tracing::info!(
+                                    accounts = account_count,
+                                    "loaded kinesis persistence snapshot (multi-account)"
+                                );
+                            } else if let Some(single_state) = snapshot.state {
+                                let stream_count = single_state.streams.len();
+                                let account_id = single_state.account_id.clone();
+                                let mut mas = kinesis_state.write();
+                                *mas.get_or_create(&account_id) = single_state;
+                                tracing::info!(
+                                    streams = stream_count,
+                                    "loaded kinesis persistence snapshot (migrated from v1)"
+                                );
+                            }
                         }
                         Err(err) => fatal_exit(format_args!(
                             "failed to parse kinesis persistence snapshot: {err}"
@@ -1345,20 +1563,31 @@ async fn main() {
                     match serde_json::from_slice::<fakecloud_rds::state::RdsSnapshot>(&bytes) {
                         Ok(snapshot) => {
                             if snapshot.schema_version
-                                != fakecloud_rds::state::RDS_SNAPSHOT_SCHEMA_VERSION
+                                > fakecloud_rds::state::RDS_SNAPSHOT_SCHEMA_VERSION
                             {
                                 fatal_exit(format_args!(
-                                    "rds persistence schema mismatch: on-disk={}, expected={}",
+                                    "rds persistence schema too new: on-disk={}, max supported={}",
                                     snapshot.schema_version,
                                     fakecloud_rds::state::RDS_SNAPSHOT_SCHEMA_VERSION,
                                 ));
                             }
-                            let instance_count = snapshot.state.instances.len();
-                            *rds_state.write() = snapshot.state;
-                            tracing::info!(
-                                instances = instance_count,
-                                "loaded rds persistence snapshot",
-                            );
+                            if let Some(accounts) = snapshot.accounts {
+                                let account_count = accounts.account_count();
+                                *rds_state.write() = accounts;
+                                tracing::info!(
+                                    accounts = account_count,
+                                    "loaded rds persistence snapshot (multi-account)",
+                                );
+                            } else if let Some(single_state) = snapshot.state {
+                                let instance_count = single_state.instances.len();
+                                let account_id = single_state.account_id.clone();
+                                let mut mas = rds_state.write();
+                                *mas.get_or_create(&account_id) = single_state;
+                                tracing::info!(
+                                    instances = instance_count,
+                                    "loaded rds persistence snapshot (migrated from v1)",
+                                );
+                            }
                         }
                         Err(err) => fatal_exit(format_args!(
                             "failed to parse rds persistence snapshot: {err}"
@@ -1400,20 +1629,31 @@ async fn main() {
                     ) {
                         Ok(snapshot) => {
                             if snapshot.schema_version
-                                != fakecloud_elasticache::state::ELASTICACHE_SNAPSHOT_SCHEMA_VERSION
+                                > fakecloud_elasticache::state::ELASTICACHE_SNAPSHOT_SCHEMA_VERSION
                             {
                                 fatal_exit(format_args!(
-                                    "elasticache persistence schema mismatch: on-disk={}, expected={}",
+                                    "elasticache persistence schema too new: on-disk={}, max supported={}",
                                     snapshot.schema_version,
                                     fakecloud_elasticache::state::ELASTICACHE_SNAPSHOT_SCHEMA_VERSION,
                                 ));
                             }
-                            let cluster_count = snapshot.state.cache_clusters.len();
-                            *elasticache_state.write() = snapshot.state;
-                            tracing::info!(
-                                clusters = cluster_count,
-                                "loaded elasticache persistence snapshot",
-                            );
+                            if let Some(accounts) = snapshot.accounts {
+                                let account_count = accounts.account_count();
+                                *elasticache_state.write() = accounts;
+                                tracing::info!(
+                                    accounts = account_count,
+                                    "loaded elasticache persistence snapshot (multi-account)",
+                                );
+                            } else if let Some(single_state) = snapshot.state {
+                                let cluster_count = single_state.cache_clusters.len();
+                                let account_id = single_state.account_id.clone();
+                                let mut mas = elasticache_state.write();
+                                *mas.get_or_create(&account_id) = single_state;
+                                tracing::info!(
+                                    clusters = cluster_count,
+                                    "loaded elasticache persistence snapshot (migrated from v1)",
+                                );
+                            }
                         }
                         Err(err) => fatal_exit(format_args!(
                             "failed to parse elasticache persistence snapshot: {err}"
@@ -1494,22 +1734,31 @@ async fn main() {
                     {
                         Ok(snapshot) => {
                             if snapshot.schema_version
-                                != fakecloud_stepfunctions::state::STEPFUNCTIONS_SNAPSHOT_SCHEMA_VERSION
+                                > fakecloud_stepfunctions::state::STEPFUNCTIONS_SNAPSHOT_SCHEMA_VERSION
                             {
                                 fatal_exit(format_args!(
-                                    "stepfunctions persistence schema mismatch: on-disk={}, expected={}",
+                                    "stepfunctions persistence schema too new: on-disk={}, max supported={}",
                                     snapshot.schema_version,
                                     fakecloud_stepfunctions::state::STEPFUNCTIONS_SNAPSHOT_SCHEMA_VERSION,
                                 ));
                             }
-                            let sm_count = snapshot.state.state_machines.len();
-                            let exec_count = snapshot.state.executions.len();
-                            *stepfunctions_state.write() = snapshot.state;
-                            tracing::info!(
-                                state_machines = sm_count,
-                                executions = exec_count,
-                                "loaded stepfunctions persistence snapshot",
-                            );
+                            if let Some(accounts) = snapshot.accounts {
+                                let account_count = accounts.account_count();
+                                *stepfunctions_state.write() = accounts;
+                                tracing::info!(
+                                    accounts = account_count,
+                                    "loaded stepfunctions persistence snapshot (multi-account)",
+                                );
+                            } else if let Some(single_state) = snapshot.state {
+                                let sm_count = single_state.state_machines.len();
+                                let account_id = single_state.account_id.clone();
+                                let mut mas = stepfunctions_state.write();
+                                *mas.get_or_create(&account_id) = single_state;
+                                tracing::info!(
+                                    state_machines = sm_count,
+                                    "loaded stepfunctions persistence snapshot (migrated from v1)",
+                                );
+                            }
                         }
                         Err(err) => fatal_exit(format_args!(
                             "failed to parse stepfunctions persistence snapshot: {err}"
@@ -1549,20 +1798,31 @@ async fn main() {
                     {
                         Ok(snapshot) => {
                             if snapshot.schema_version
-                                != fakecloud_apigatewayv2::state::APIGATEWAYV2_SNAPSHOT_SCHEMA_VERSION
+                                > fakecloud_apigatewayv2::state::APIGATEWAYV2_SNAPSHOT_SCHEMA_VERSION
                             {
                                 fatal_exit(format_args!(
-                                    "apigatewayv2 persistence schema mismatch: on-disk={}, expected={}",
+                                    "apigatewayv2 persistence schema too new: on-disk={}, max supported={}",
                                     snapshot.schema_version,
                                     fakecloud_apigatewayv2::state::APIGATEWAYV2_SNAPSHOT_SCHEMA_VERSION,
                                 ));
                             }
-                            let api_count = snapshot.state.apis.len();
-                            *apigatewayv2_state.write() = snapshot.state;
-                            tracing::info!(
-                                apis = api_count,
-                                "loaded apigatewayv2 persistence snapshot",
-                            );
+                            if let Some(accounts) = snapshot.accounts {
+                                let account_count = accounts.account_count();
+                                *apigatewayv2_state.write() = accounts;
+                                tracing::info!(
+                                    accounts = account_count,
+                                    "loaded apigatewayv2 persistence snapshot (multi-account)",
+                                );
+                            } else if let Some(single_state) = snapshot.state {
+                                let api_count = single_state.apis.len();
+                                let account_id = single_state.account_id.clone();
+                                let mut mas = apigatewayv2_state.write();
+                                *mas.get_or_create(&account_id) = single_state;
+                                tracing::info!(
+                                    apis = api_count,
+                                    "loaded apigatewayv2 persistence snapshot (migrated from v1)",
+                                );
+                            }
                         }
                         Err(err) => fatal_exit(format_args!(
                             "failed to parse apigatewayv2 persistence snapshot: {err}"
@@ -1605,20 +1865,31 @@ async fn main() {
                     ) {
                         Ok(snapshot) => {
                             if snapshot.schema_version
-                                != fakecloud_bedrock::state::BEDROCK_SNAPSHOT_SCHEMA_VERSION
+                                > fakecloud_bedrock::state::BEDROCK_SNAPSHOT_SCHEMA_VERSION
                             {
                                 fatal_exit(format_args!(
-                                    "bedrock persistence schema mismatch: on-disk={}, expected={}",
+                                    "bedrock persistence schema too new: on-disk={}, max supported={}",
                                     snapshot.schema_version,
                                     fakecloud_bedrock::state::BEDROCK_SNAPSHOT_SCHEMA_VERSION,
                                 ));
                             }
-                            let guardrail_count = snapshot.state.guardrails.len();
-                            *bedrock_state.write() = snapshot.state;
-                            tracing::info!(
-                                guardrails = guardrail_count,
-                                "loaded bedrock persistence snapshot",
-                            );
+                            if let Some(accounts) = snapshot.accounts {
+                                let account_count = accounts.account_count();
+                                *bedrock_state.write() = accounts;
+                                tracing::info!(
+                                    accounts = account_count,
+                                    "loaded bedrock persistence snapshot (multi-account)"
+                                );
+                            } else if let Some(single_state) = snapshot.state {
+                                let guardrail_count = single_state.guardrails.len();
+                                let account_id = single_state.account_id.clone();
+                                let mut mas = bedrock_state.write();
+                                *mas.get_or_create(&account_id) = single_state;
+                                tracing::info!(
+                                    guardrails = guardrail_count,
+                                    "loaded bedrock persistence snapshot (migrated from v1)"
+                                );
+                            }
                         }
                         Err(err) => fatal_exit(format_args!(
                             "failed to parse bedrock persistence snapshot: {err}"
@@ -1641,6 +1912,110 @@ async fn main() {
         bedrock_service = bedrock_service.with_snapshot_store(store);
     }
     registry.register(Arc::new(bedrock_service));
+
+    let scheduler_snapshot_store: Option<Arc<dyn fakecloud_persistence::SnapshotStore>> =
+        if persistence_config.mode == fakecloud_persistence::StorageMode::Persistent {
+            let data_path = persistence_config
+                .data_path
+                .as_ref()
+                .expect("validated above")
+                .clone();
+            let path = data_path.join("scheduler").join("snapshot.json");
+            let store = fakecloud_persistence::DiskSnapshotStore::new(path);
+            match fakecloud_scheduler::persistence::load_into(&store, &scheduler_state) {
+                Ok(fakecloud_scheduler::persistence::LoadOutcome::Loaded(accounts)) => {
+                    tracing::info!(accounts, "loaded scheduler persistence snapshot");
+                }
+                Ok(fakecloud_scheduler::persistence::LoadOutcome::Empty) => {
+                    tracing::info!("no scheduler persistence snapshot found; starting empty");
+                }
+                Err(err) => fatal_exit(format_args!("{err}")),
+            }
+            Some(Arc::new(store) as Arc<dyn fakecloud_persistence::SnapshotStore>)
+        } else {
+            None
+        };
+    let mut scheduler_service = SchedulerService::new(scheduler_state.clone());
+    if let Some(store) = scheduler_snapshot_store {
+        scheduler_service = scheduler_service.with_snapshot_store(store);
+    }
+    registry.register(Arc::new(scheduler_service));
+
+    // Spawn the Scheduler firing loop as a background task. Mirrors
+    // EventBridge's delivery bus so every target type Scheduler
+    // routes (`:sqs:`, `:sns:`, `:lambda:`, `:states:`, `:events:`)
+    // resolves to a live sender.
+    let sfn_delivery_for_scheduler: Arc<dyn fakecloud_core::delivery::StepFunctionsDelivery> = {
+        let mut sns_fanout_for_sfn = DeliveryBus::new().with_sqs(sqs_delivery.clone());
+        if let Some(ref ld) = lambda_delivery {
+            sns_fanout_for_sfn = sns_fanout_for_sfn.with_lambda(ld.clone());
+        }
+        let sns_for_sfn = Arc::new(fakecloud_sns::delivery::SnsDeliveryImpl::new(
+            sns_state.clone(),
+            Arc::new(sns_fanout_for_sfn),
+        ));
+        // Inner bus for EB rule delivery: matches other call-sites'
+        // surface (SQS + SNS + Lambda) so Scheduler-triggered SFN
+        // executions that hit EB rules fanning to SNS don't get
+        // silently dropped.
+        let mut inner_eb_bus = DeliveryBus::new()
+            .with_sqs(sqs_delivery.clone())
+            .with_sns(sns_delivery_for_scheduler_sfn_eb);
+        if let Some(ref ld) = lambda_delivery {
+            inner_eb_bus = inner_eb_bus.with_lambda(ld.clone());
+        }
+        let eb_for_sfn = Arc::new(
+            fakecloud_eventbridge::delivery::EventBridgeDeliveryImpl::new(
+                eb_state_for_scheduler.clone(),
+                Arc::new(inner_eb_bus),
+            ),
+        );
+        let mut sfn_interpreter_bus = DeliveryBus::new()
+            .with_sqs(sqs_delivery.clone())
+            .with_sns(sns_for_sfn)
+            .with_eventbridge(eb_for_sfn);
+        if let Some(ref ld) = lambda_delivery {
+            sfn_interpreter_bus = sfn_interpreter_bus.with_lambda(ld.clone());
+        }
+        Arc::new(stepfunctions_delivery::StepFunctionsDeliveryImpl::new(
+            stepfunctions_state.clone(),
+            Some(Arc::new(sfn_interpreter_bus)),
+            Some(dynamodb_state.clone()),
+        ))
+    };
+    let eb_delivery_for_scheduler = {
+        let mut inner = DeliveryBus::new()
+            .with_sqs(sqs_delivery.clone())
+            .with_sns(sns_delivery_for_scheduler_eb);
+        if let Some(ref ld) = lambda_delivery {
+            inner = inner.with_lambda(ld.clone());
+        }
+        Arc::new(
+            fakecloud_eventbridge::delivery::EventBridgeDeliveryImpl::new(
+                eb_state_for_scheduler,
+                Arc::new(inner),
+            ),
+        )
+    };
+    let delivery_for_scheduler = {
+        let mut bus = DeliveryBus::new()
+            .with_sqs(sqs_delivery.clone())
+            .with_sns(sns_delivery_for_scheduler)
+            .with_eventbridge(eb_delivery_for_scheduler)
+            .with_stepfunctions(sfn_delivery_for_scheduler);
+        if let Some(ref ld) = lambda_delivery {
+            bus = bus.with_lambda(ld.clone());
+        }
+        Arc::new(bus)
+    };
+    let scheduler_state_for_list = scheduler_state.clone();
+    let scheduler_state_for_fire = scheduler_state.clone();
+    let delivery_for_scheduler_fire = delivery_for_scheduler.clone();
+    let default_account_for_scheduler_fire = cli.account_id.clone();
+    let default_region_for_scheduler_fire = cli.region.clone();
+    let scheduler_ticker =
+        fakecloud_scheduler::ticker::Ticker::new(scheduler_state.clone(), delivery_for_scheduler);
+    tokio::spawn(scheduler_ticker.run());
 
     // Spawn background tasks
     let lifecycle_processor = fakecloud_s3::lifecycle::LifecycleProcessor::new(s3_state.clone());
@@ -1723,6 +2098,11 @@ async fn main() {
                 ),
             ],
         )),
+        scp_resolver: Some(
+            fakecloud_organizations::resolver::OrganizationsScpResolver::shared(
+                organizations_state.clone(),
+            ),
+        ),
     };
 
     let service_names: Vec<String> = registry
@@ -1757,10 +2137,10 @@ async fn main() {
             axum::routing::get({
                 let ls = lambda_invocations_state.clone();
                 move || async move {
-                    let state = ls.read();
-                    let invocations = state
-                        .invocations
+                    let accounts = ls.read();
+                    let invocations = accounts
                         .iter()
+                        .flat_map(|(_, state)| state.invocations.iter())
                         .map(|inv| types::LambdaInvocation {
                             function_arn: inv.function_arn.clone(),
                             payload: inv.payload.clone(),
@@ -1777,7 +2157,8 @@ async fn main() {
             axum::routing::get({
                 let ss = ses_emails_state.clone();
                 move || async move {
-                    let state = ss.read();
+                    let mas = ss.read();
+                    let state = mas.default_ref();
                     let emails = state
                         .sent_emails
                         .iter()
@@ -2017,10 +2398,9 @@ async fn main() {
                 let ss = sns_introspection_state;
                 move || async move {
                     let mas = ss.read();
-                    let state = mas.default_ref();
-                    let messages = state
-                        .published
+                    let messages = mas
                         .iter()
+                        .flat_map(|(_, state)| state.published.iter())
                         .map(|msg| types::SnsMessage {
                             message_id: msg.message_id.clone(),
                             topic_arn: msg.topic_arn.clone(),
@@ -2039,10 +2419,9 @@ async fn main() {
                 let ss = sqs_introspection_state;
                 move || async move {
                     let mas = ss.read();
-                    let state = mas.default_ref();
-                    let queues = state
-                        .queues
-                        .values()
+                    let queues = mas
+                        .iter()
+                        .flat_map(|(_, state)| state.queues.values())
                         .map(|queue| {
                             let mut messages: Vec<types::SqsMessageInfo> = queue
                                 .messages
@@ -2083,10 +2462,10 @@ async fn main() {
             axum::routing::get({
                 let es = eb_introspection_state;
                 move || async move {
-                    let state = es.read();
-                    let events = state
-                        .events
+                    let accounts = es.read();
+                    let events = accounts
                         .iter()
+                        .flat_map(|(_, state)| state.events.iter())
                         .map(|evt| types::EventBridgeEvent {
                             event_id: evt.event_id.clone(),
                             source: evt.source.clone(),
@@ -2096,18 +2475,18 @@ async fn main() {
                             timestamp: evt.time.to_rfc3339(),
                         })
                         .collect();
-                    let lambda = state
-                        .lambda_invocations
+                    let lambda = accounts
                         .iter()
+                        .flat_map(|(_, state)| state.lambda_invocations.iter())
                         .map(|inv| types::EventBridgeLambdaDelivery {
                             function_arn: inv.function_arn.clone(),
                             payload: inv.payload.clone(),
                             timestamp: inv.timestamp.to_rfc3339(),
                         })
                         .collect();
-                    let logs = state
-                        .log_deliveries
+                    let logs = accounts
                         .iter()
+                        .flat_map(|(_, state)| state.log_deliveries.iter())
                         .map(|ld| types::EventBridgeLogDelivery {
                             log_group_arn: ld.log_group_arn.clone(),
                             payload: ld.payload.clone(),
@@ -2197,10 +2576,9 @@ async fn main() {
                 let ss = s3_introspection_state;
                 move || async move {
                     let mas = ss.read();
-                    let state = mas.default_ref();
-                    let notifications = state
-                        .notification_events
+                    let notifications = mas
                         .iter()
+                        .flat_map(|(_, state)| state.notification_events.iter())
                         .map(|evt| types::S3Notification {
                             bucket: evt.bucket.clone(),
                             key: evt.key.clone(),
@@ -2209,6 +2587,63 @@ async fn main() {
                         })
                         .collect();
                     axum::Json(types::S3NotificationsResponse { notifications })
+                }
+            }),
+        )
+        .route(
+            "/_fakecloud/scheduler/schedules",
+            axum::routing::get({
+                let state = scheduler_state_for_list;
+                move || async move {
+                    let rows = fakecloud_scheduler::simulation::list_all_schedules(&state);
+                    let schedules = rows
+                        .into_iter()
+                        .map(|r| types::SchedulerSchedule {
+                            account_id: r.account_id,
+                            group_name: r.group_name,
+                            name: r.name,
+                            arn: r.arn,
+                            state: r.state,
+                            schedule_expression: r.schedule_expression,
+                            target_arn: r.target_arn,
+                            last_fired: r.last_fired.map(|t| t.to_rfc3339()),
+                        })
+                        .collect();
+                    axum::Json(types::SchedulerSchedulesResponse { schedules })
+                }
+            }),
+        )
+        .route(
+            "/_fakecloud/scheduler/fire/{group}/{name}",
+            axum::routing::post({
+                let state = scheduler_state_for_fire;
+                let delivery = delivery_for_scheduler_fire;
+                let default_account = default_account_for_scheduler_fire;
+                let default_region = default_region_for_scheduler_fire;
+                move |axum::extract::Path((group, name)): axum::extract::Path<(String, String)>| {
+                    let state = state.clone();
+                    let delivery = delivery.clone();
+                    let default_account = default_account.clone();
+                    let default_region = default_region.clone();
+                    async move {
+                        match fakecloud_scheduler::simulation::fire_schedule_response(
+                            &state,
+                            &delivery,
+                            &default_region,
+                            &default_account,
+                            &group,
+                            &name,
+                        ) {
+                            Ok(body) => (
+                                axum::http::StatusCode::OK,
+                                axum::Json(serde_json::json!(body)),
+                            ),
+                            Err(msg) => (
+                                axum::http::StatusCode::NOT_FOUND,
+                                axum::Json(serde_json::json!({ "error": msg })),
+                            ),
+                        }
+                    }
                 }
             }),
         )
@@ -2248,7 +2683,8 @@ async fn main() {
                 )>| {
                     let cs = cs.clone();
                     async move {
-                        let state = cs.read();
+                        let mas = cs.read();
+                        let state = mas.default_ref();
                         let user = state
                             .users
                             .get(&pool_id)
@@ -2272,7 +2708,8 @@ async fn main() {
                 move || {
                     let cs = cs.clone();
                     async move {
-                        let state = cs.read();
+                        let mas = cs.read();
+                        let state = mas.default_ref();
                         let mut codes = Vec::new();
                         for (pool_id, users) in &state.users {
                             for (username, user) in users {
@@ -2308,7 +2745,8 @@ async fn main() {
                 move |axum::Json(body): axum::Json<types::ConfirmUserRequest>| {
                     let cs = cs.clone();
                     async move {
-                        let mut state = cs.write();
+                        let mut mas = cs.write();
+                        let state = mas.default_mut();
                         let user = state
                             .users
                             .get_mut(&body.user_pool_id)
@@ -2345,7 +2783,8 @@ async fn main() {
                 move || {
                     let cs = cs.clone();
                     async move {
-                        let state = cs.read();
+                        let mas = cs.read();
+                        let state = mas.default_ref();
                         let mut tokens = Vec::new();
                         for data in state.access_tokens.values() {
                             tokens.push(types::TokenInfo {
@@ -2377,7 +2816,8 @@ async fn main() {
                 move |axum::Json(body): axum::Json<types::ExpireTokensRequest>| {
                     let cs = cs.clone();
                     async move {
-                        let mut state = cs.write();
+                        let mut mas = cs.write();
+                        let state = mas.default_mut();
                         let mut expired = 0usize;
 
                         let matches = |p: &str, u: &str| -> bool {
@@ -2417,7 +2857,8 @@ async fn main() {
                 move || {
                     let cs = cs.clone();
                     async move {
-                        let state = cs.read();
+                        let mas = cs.read();
+                        let state = mas.default_ref();
                         let events = state
                             .auth_events
                             .iter()
@@ -2477,7 +2918,8 @@ async fn main() {
                 move || {
                     let rs = rs.clone();
                     async move {
-                        let state = rs.read();
+                        let accounts = rs.read();
+                        let state = accounts.default_ref();
                         let mut instances: Vec<types::RdsInstance> = state
                             .instances
                             .values()
@@ -2498,7 +2940,8 @@ async fn main() {
                 move || {
                     let ec = ec.clone();
                     async move {
-                        let state = ec.read();
+                        let accounts = ec.read();
+                        let state = accounts.default_ref();
                         let mut clusters: Vec<types::ElastiCacheCluster> = state
                             .cache_clusters
                             .values()
@@ -2517,7 +2960,8 @@ async fn main() {
                 move || {
                     let ec = ec.clone();
                     async move {
-                        let state = ec.read();
+                        let accounts = ec.read();
+                        let state = accounts.default_ref();
                         let mut replication_groups: Vec<
                             types::ElastiCacheReplicationGroupIntrospection,
                         > = state
@@ -2541,7 +2985,8 @@ async fn main() {
                 move || {
                     let ec = ec.clone();
                     async move {
-                        let state = ec.read();
+                        let accounts = ec.read();
+                        let state = accounts.default_ref();
                         let mut serverless_caches: Vec<
                             types::ElastiCacheServerlessCacheIntrospection,
                         > = state
@@ -2563,7 +3008,8 @@ async fn main() {
                 move || {
                     let ss = ss.clone();
                     async move {
-                        let state = ss.read();
+                        let accounts = ss.read();
+                        let state = accounts.default_ref();
                         let mut executions: Vec<types::StepFunctionsExecution> = state
                             .executions
                             .values()
@@ -2591,7 +3037,8 @@ async fn main() {
                 move || {
                     let apigw_state = apigw_state.clone();
                     async move {
-                        let state = apigw_state.read();
+                        let accounts = apigw_state.read();
+                        let state = accounts.default_ref();
                         axum::Json(serde_json::json!({
                             "requests": state.request_history
                         }))
@@ -2668,13 +3115,33 @@ async fn main() {
                 }
             }),
         )
+        .route(
+            "/_fakecloud/reset/{service}/{account_id}",
+            axum::routing::post({
+                let s = reset_state.clone();
+                move |axum::extract::Path((service, account_id)): axum::extract::Path<(String, String)>| async move {
+                    match s.reset_service_for_account(&service, &account_id) {
+                        Ok(()) => (
+                            axum::http::StatusCode::OK,
+                            axum::Json(serde_json::json!(types::ResetServiceResponse {
+                                reset: format!("{service}/{account_id}")
+                            })),
+                        ),
+                        Err(msg) => (
+                            axum::http::StatusCode::NOT_FOUND,
+                            axum::Json(serde_json::json!({ "error": msg })),
+                        ),
+                    }
+                }
+            }),
+        )
         // Bedrock introspection: list all model invocations
         .route(
             "/_fakecloud/bedrock/invocations",
             axum::routing::get({
                 let bs = bedrock_state.clone();
                 move || async move {
-                    let state = bs.read();
+                    let accounts = bs.read(); let state = accounts.default_ref();
                     let invocations: Vec<serde_json::Value> = state
                         .invocations
                         .iter()
@@ -2699,7 +3166,7 @@ async fn main() {
                 let bs = bedrock_state.clone();
                 move |axum::extract::Path(model_id): axum::extract::Path<String>,
                       body: String| async move {
-                    let mut state = bs.write();
+                    let mut accounts = bs.write(); let state = accounts.default_mut();
                     state.custom_responses.insert(model_id.clone(), body);
                     axum::Json(
                         serde_json::json!({ "status": "ok", "modelId": model_id }),
@@ -2754,7 +3221,7 @@ async fn main() {
                             response,
                         });
                     }
-                    let mut state = bs.write();
+                    let mut accounts = bs.write(); let state = accounts.default_mut();
                     state.response_rules.insert(model_id.clone(), parsed);
                     (
                         axum::http::StatusCode::OK,
@@ -2768,7 +3235,7 @@ async fn main() {
             .delete({
                 let bs = bedrock_state.clone();
                 move |axum::extract::Path(model_id): axum::extract::Path<String>| async move {
-                    let mut state = bs.write();
+                    let mut accounts = bs.write(); let state = accounts.default_mut();
                     state.response_rules.remove(&model_id);
                     axum::Json(serde_json::json!({ "status": "ok", "modelId": model_id }))
                 }
@@ -2825,7 +3292,7 @@ async fn main() {
                             })),
                         );
                     }
-                    let mut state = bs.write();
+                    let mut accounts = bs.write(); let state = accounts.default_mut();
                     state
                         .fault_rules
                         .push(fakecloud_bedrock::state::FaultRule {
@@ -2845,7 +3312,7 @@ async fn main() {
             .get({
                 let bs = bedrock_state.clone();
                 move || async move {
-                    let state = bs.read();
+                    let accounts = bs.read(); let state = accounts.default_ref();
                     let faults: Vec<serde_json::Value> = state
                         .fault_rules
                         .iter()
@@ -2866,7 +3333,7 @@ async fn main() {
             .delete({
                 let bs = bedrock_state.clone();
                 move || async move {
-                    let mut state = bs.write();
+                    let mut accounts = bs.write(); let state = accounts.default_mut();
                     state.fault_rules.clear();
                     axum::Json(serde_json::json!({ "status": "ok" }))
                 }
@@ -2876,11 +3343,14 @@ async fn main() {
             "/_fakecloud/iam/create-admin",
             axum::routing::post({
                 let iam = iam_state.clone();
+                let orgs = organizations_state.clone();
                 move |axum::Json(body): axum::Json<types::CreateAdminRequest>| {
                     let iam = iam.clone();
+                    let orgs = orgs.clone();
                     async move {
                         axum::Json(reset::create_admin_in_account(
                             &iam,
+                            &orgs,
                             &body.account_id,
                             &body.user_name,
                         ))
@@ -2892,9 +3362,6 @@ async fn main() {
         .layer(Extension(Arc::new(registry)))
         .layer(Extension(Arc::new(config)))
         .layer(TraceLayer::new_for_http());
-
-    let listener = TcpListener::bind(&cli.addr).await.unwrap();
-    tracing::info!(addr = %cli.addr, "fakecloud is ready");
 
     axum::serve(
         listener,
@@ -2949,4 +3416,138 @@ fn fatal_exit(args: std::fmt::Arguments<'_>) -> ! {
     tracing::error!("{args}");
     let _ = std::io::stderr().flush();
     std::process::exit(1);
+}
+
+/// Route panics through `tracing::error!` so they show up in CI logs with
+/// the same formatting as regular errors. Runs the default hook afterwards
+/// so the process keeps its usual backtrace behaviour for developers
+/// running locally with `RUST_BACKTRACE=1`.
+fn install_panic_hook() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "<unknown>".to_string());
+        let payload = info
+            .payload()
+            .downcast_ref::<&'static str>()
+            .copied()
+            .map(|s| s.to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "<non-string panic>".to_string());
+        tracing::error!(location = %location, payload = %payload, "panic");
+        default(info);
+    }));
+}
+
+/// Prefix used to announce the bound port on stdout. `fakecloud-testkit`
+/// scans stdout for the first line starting with this prefix to discover
+/// the OS-assigned port when the server was launched with `--addr :0`.
+const PORT_HANDSHAKE_PREFIX: &str = "FAKECLOUD_PORT=";
+
+/// Bind a `TcpListener` and return the listener together with the address
+/// the OS actually chose. Separated from `main` so the happy/error paths
+/// are reachable from unit tests.
+async fn bind_listener(addr: &str) -> std::io::Result<(TcpListener, std::net::SocketAddr)> {
+    let listener = TcpListener::bind(addr).await?;
+    let bound = listener.local_addr()?;
+    Ok((listener, bound))
+}
+
+/// Emit the port-handshake line used by test harnesses. Taking a generic
+/// writer keeps this testable without capturing process stdout.
+fn announce_bound_port<W: std::io::Write>(port: u16, writer: &mut W) -> std::io::Result<()> {
+    writeln!(writer, "{PORT_HANDSHAKE_PREFIX}{port}")
+}
+
+/// Build a public-facing endpoint URL from the address the server actually
+/// bound to. Wildcard hosts (``0.0.0.0`` / ``[::]``) are rewritten to
+/// ``localhost`` so the URL is useful when embedded in resource identifiers
+/// such as SQS queue URLs or SNS ARNs.
+fn endpoint_url_from_addr(addr: std::net::SocketAddr) -> String {
+    let port = addr.port();
+    let host_str = if addr.ip().is_unspecified() {
+        "localhost".to_string()
+    } else {
+        match addr.ip() {
+            std::net::IpAddr::V4(ip) => ip.to_string(),
+            std::net::IpAddr::V6(ip) => format!("[{ip}]"),
+        }
+    };
+    format!("http://{host_str}:{port}")
+}
+
+#[cfg(test)]
+mod endpoint_url_tests {
+    use super::*;
+
+    #[test]
+    fn wildcard_v4_resolves_to_localhost() {
+        let addr: std::net::SocketAddr = "0.0.0.0:4566".parse().unwrap();
+        assert_eq!(endpoint_url_from_addr(addr), "http://localhost:4566");
+    }
+
+    #[test]
+    fn wildcard_v6_resolves_to_localhost() {
+        let addr: std::net::SocketAddr = "[::]:4566".parse().unwrap();
+        assert_eq!(endpoint_url_from_addr(addr), "http://localhost:4566");
+    }
+
+    #[test]
+    fn explicit_loopback_is_preserved() {
+        let addr: std::net::SocketAddr = "127.0.0.1:9000".parse().unwrap();
+        assert_eq!(endpoint_url_from_addr(addr), "http://127.0.0.1:9000");
+    }
+
+    #[test]
+    fn explicit_ipv6_loopback_is_bracketed() {
+        let addr: std::net::SocketAddr = "[::1]:9000".parse().unwrap();
+        assert_eq!(endpoint_url_from_addr(addr), "http://[::1]:9000");
+    }
+
+    #[test]
+    fn os_assigned_port_is_reflected() {
+        // Simulate the common test-harness case: bind on :0 and check that
+        // the returned URL contains the OS-assigned port, not zero.
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let bound = listener.local_addr().unwrap();
+        let url = endpoint_url_from_addr(bound);
+        assert!(url.starts_with("http://127.0.0.1:"));
+        let port_str = url.trim_start_matches("http://127.0.0.1:");
+        let port: u16 = port_str.parse().unwrap();
+        assert!(port > 0);
+    }
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use super::*;
+
+    #[test]
+    fn announce_bound_port_uses_tagged_prefix() {
+        let mut buf: Vec<u8> = Vec::new();
+        announce_bound_port(4566, &mut buf).unwrap();
+        assert_eq!(String::from_utf8(buf).unwrap(), "FAKECLOUD_PORT=4566\n",);
+    }
+
+    #[test]
+    fn announce_bound_port_prefix_matches_constant() {
+        // Guard against accidental drift between the constant and the
+        // literal parser in fakecloud-testkit.
+        assert_eq!(PORT_HANDSHAKE_PREFIX, "FAKECLOUD_PORT=");
+    }
+
+    #[tokio::test]
+    async fn bind_listener_reports_os_assigned_port() {
+        let (_listener, bound) = bind_listener("127.0.0.1:0").await.unwrap();
+        assert!(bound.port() > 0);
+        assert_eq!(bound.ip().to_string(), "127.0.0.1");
+    }
+
+    #[tokio::test]
+    async fn bind_listener_errors_on_invalid_addr() {
+        assert!(bind_listener("not-a-socket-addr").await.is_err());
+    }
 }

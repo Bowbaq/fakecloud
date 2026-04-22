@@ -60,7 +60,8 @@ impl SesV2Service {
         let _guard = self.snapshot_lock.lock().await;
         let snapshot = SesSnapshot {
             schema_version: SES_SNAPSHOT_SCHEMA_VERSION,
-            state: self.state.read().clone(),
+            accounts: Some(self.state.read().clone()),
+            state: None,
         };
         let join = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
             let bytes = serde_json::to_vec(&snapshot)
@@ -730,55 +731,55 @@ impl fakecloud_core::service::AwsService for SesV2Service {
         let mutates = is_mutating_action(action);
 
         let result = match action {
-            "GetAccount" => self.get_account(),
+            "GetAccount" => self.get_account(&req),
             "CreateEmailIdentity" => self.create_email_identity(&req),
-            "ListEmailIdentities" => self.list_email_identities(),
-            "GetEmailIdentity" => self.get_email_identity(res),
+            "ListEmailIdentities" => self.list_email_identities(&req),
+            "GetEmailIdentity" => self.get_email_identity(res, &req),
             "DeleteEmailIdentity" => self.delete_email_identity(res, &req),
             "CreateConfigurationSet" => self.create_configuration_set(&req),
-            "ListConfigurationSets" => self.list_configuration_sets(),
-            "GetConfigurationSet" => self.get_configuration_set(res),
+            "ListConfigurationSets" => self.list_configuration_sets(&req),
+            "GetConfigurationSet" => self.get_configuration_set(res, &req),
             "DeleteConfigurationSet" => self.delete_configuration_set(res, &req),
             "CreateEmailTemplate" => self.create_email_template(&req),
-            "ListEmailTemplates" => self.list_email_templates(),
-            "GetEmailTemplate" => self.get_email_template(res),
+            "ListEmailTemplates" => self.list_email_templates(&req),
+            "GetEmailTemplate" => self.get_email_template(res, &req),
             "UpdateEmailTemplate" => self.update_email_template(res, &req),
-            "DeleteEmailTemplate" => self.delete_email_template(res),
+            "DeleteEmailTemplate" => self.delete_email_template(res, &req),
             "SendEmail" => self.send_email(&req),
             "SendBulkEmail" => self.send_bulk_email(&req),
             "TagResource" => self.tag_resource(&req),
             "UntagResource" => self.untag_resource(&req),
             "ListTagsForResource" => self.list_tags_for_resource(&req),
             "CreateContactList" => self.create_contact_list(&req),
-            "GetContactList" => self.get_contact_list(res),
-            "ListContactLists" => self.list_contact_lists(),
+            "GetContactList" => self.get_contact_list(res, &req),
+            "ListContactLists" => self.list_contact_lists(&req),
             "UpdateContactList" => self.update_contact_list(res, &req),
             "DeleteContactList" => self.delete_contact_list(res, &req),
             "CreateContact" => self.create_contact(res, &req),
-            "GetContact" => self.get_contact(res, sub),
-            "ListContacts" => self.list_contacts(res),
+            "GetContact" => self.get_contact(res, sub, &req),
+            "ListContacts" => self.list_contacts(res, &req),
             "UpdateContact" => self.update_contact(res, sub, &req),
-            "DeleteContact" => self.delete_contact(res, sub),
+            "DeleteContact" => self.delete_contact(res, sub, &req),
             "PutSuppressedDestination" => self.put_suppressed_destination(&req),
-            "GetSuppressedDestination" => self.get_suppressed_destination(res),
-            "DeleteSuppressedDestination" => self.delete_suppressed_destination(res),
-            "ListSuppressedDestinations" => self.list_suppressed_destinations(),
+            "GetSuppressedDestination" => self.get_suppressed_destination(res, &req),
+            "DeleteSuppressedDestination" => self.delete_suppressed_destination(res, &req),
+            "ListSuppressedDestinations" => self.list_suppressed_destinations(&req),
             "CreateConfigurationSetEventDestination" => {
                 self.create_configuration_set_event_destination(res, &req)
             }
             "GetConfigurationSetEventDestinations" => {
-                self.get_configuration_set_event_destinations(res)
+                self.get_configuration_set_event_destinations(res, &req)
             }
             "UpdateConfigurationSetEventDestination" => {
                 self.update_configuration_set_event_destination(res, sub, &req)
             }
             "DeleteConfigurationSetEventDestination" => {
-                self.delete_configuration_set_event_destination(res, sub)
+                self.delete_configuration_set_event_destination(res, sub, &req)
             }
             "CreateEmailIdentityPolicy" => self.create_email_identity_policy(res, sub, &req),
-            "GetEmailIdentityPolicies" => self.get_email_identity_policies(res),
+            "GetEmailIdentityPolicies" => self.get_email_identity_policies(res, &req),
             "UpdateEmailIdentityPolicy" => self.update_email_identity_policy(res, sub, &req),
-            "DeleteEmailIdentityPolicy" => self.delete_email_identity_policy(res, sub),
+            "DeleteEmailIdentityPolicy" => self.delete_email_identity_policy(res, sub, &req),
             "PutEmailIdentityDkimAttributes" => self.put_email_identity_dkim_attributes(res, &req),
             "PutEmailIdentityDkimSigningAttributes" => {
                 self.put_email_identity_dkim_signing_attributes(res, &req)
@@ -815,7 +816,7 @@ impl fakecloud_core::service::AwsService for SesV2Service {
                 self.create_custom_verification_email_template(&req)
             }
             "GetCustomVerificationEmailTemplate" => {
-                self.get_custom_verification_email_template(res)
+                self.get_custom_verification_email_template(res, &req)
             }
             "ListCustomVerificationEmailTemplates" => {
                 self.list_custom_verification_email_templates(&req)
@@ -824,14 +825,14 @@ impl fakecloud_core::service::AwsService for SesV2Service {
                 self.update_custom_verification_email_template(res, &req)
             }
             "DeleteCustomVerificationEmailTemplate" => {
-                self.delete_custom_verification_email_template(res)
+                self.delete_custom_verification_email_template(res, &req)
             }
             "SendCustomVerificationEmail" => self.send_custom_verification_email(&req),
             "TestRenderEmailTemplate" => self.test_render_email_template(res, &req),
             "CreateDedicatedIpPool" => self.create_dedicated_ip_pool(&req),
-            "ListDedicatedIpPools" => self.list_dedicated_ip_pools(),
-            "DeleteDedicatedIpPool" => self.delete_dedicated_ip_pool(res),
-            "GetDedicatedIp" => self.get_dedicated_ip(res),
+            "ListDedicatedIpPools" => self.list_dedicated_ip_pools(&req),
+            "DeleteDedicatedIpPool" => self.delete_dedicated_ip_pool(res, &req),
+            "GetDedicatedIp" => self.get_dedicated_ip(res, &req),
             "GetDedicatedIps" => self.get_dedicated_ips(&req),
             "PutDedicatedIpInPool" => self.put_dedicated_ip_in_pool(res, &req),
             "PutDedicatedIpPoolScalingAttributes" => {
@@ -842,20 +843,20 @@ impl fakecloud_core::service::AwsService for SesV2Service {
                 self.put_account_dedicated_ip_warmup_attributes(&req)
             }
             "CreateMultiRegionEndpoint" => self.create_multi_region_endpoint(&req),
-            "GetMultiRegionEndpoint" => self.get_multi_region_endpoint(res),
-            "ListMultiRegionEndpoints" => self.list_multi_region_endpoints(),
-            "DeleteMultiRegionEndpoint" => self.delete_multi_region_endpoint(res),
+            "GetMultiRegionEndpoint" => self.get_multi_region_endpoint(res, &req),
+            "ListMultiRegionEndpoints" => self.list_multi_region_endpoints(&req),
+            "DeleteMultiRegionEndpoint" => self.delete_multi_region_endpoint(res, &req),
             "PutAccountDetails" => self.put_account_details(&req),
             "PutAccountSendingAttributes" => self.put_account_sending_attributes(&req),
             "PutAccountSuppressionAttributes" => self.put_account_suppression_attributes(&req),
             "PutAccountVdmAttributes" => self.put_account_vdm_attributes(&req),
             "CreateImportJob" => self.create_import_job(&req),
-            "GetImportJob" => self.get_import_job(res),
+            "GetImportJob" => self.get_import_job(res, &req),
             "ListImportJobs" => self.list_import_jobs(&req),
             "CreateExportJob" => self.create_export_job(&req),
-            "GetExportJob" => self.get_export_job(res),
+            "GetExportJob" => self.get_export_job(res, &req),
             "ListExportJobs" => self.list_export_jobs(&req),
-            "CancelExportJob" => self.cancel_export_job(res),
+            "CancelExportJob" => self.cancel_export_job(res, &req),
             "CreateTenant" => self.create_tenant(&req),
             "GetTenant" => self.get_tenant(&req),
             "ListTenants" => self.list_tenants(&req),
@@ -864,7 +865,7 @@ impl fakecloud_core::service::AwsService for SesV2Service {
             "DeleteTenantResourceAssociation" => self.delete_tenant_resource_association(&req),
             "ListTenantResources" => self.list_tenant_resources(&req),
             "ListResourceTenants" => self.list_resource_tenants(&req),
-            "GetReputationEntity" => self.get_reputation_entity(res, sub),
+            "GetReputationEntity" => self.get_reputation_entity(res, sub, &req),
             "ListReputationEntities" => self.list_reputation_entities(&req),
             "UpdateReputationEntityCustomerManagedStatus" => {
                 self.update_reputation_entity_customer_managed_status(res, sub, &req)
@@ -988,7 +989,6 @@ impl fakecloud_core::service::AwsService for SesV2Service {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::SesState;
     use bytes::Bytes;
     use fakecloud_core::service::AwsService;
     use http::{HeaderMap, Method};
@@ -997,7 +997,13 @@ mod tests {
     use std::sync::Arc;
 
     fn make_state() -> SharedSesState {
-        Arc::new(RwLock::new(SesState::new("123456789012", "us-east-1")))
+        Arc::new(RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4569",
+            ),
+        ))
     }
 
     fn make_request(method: Method, path: &str, body: &str) -> AwsRequest {
@@ -1200,7 +1206,8 @@ mod tests {
         assert!(body["MessageId"].as_str().is_some());
 
         // Verify stored
-        let s = state.read();
+        let _mas_r = state.read();
+        let s = _mas_r.default_ref();
         assert_eq!(s.sent_emails.len(), 1);
         assert_eq!(s.sent_emails[0].from, "sender@example.com");
         assert_eq!(s.sent_emails[0].to, vec!["recipient@example.com"]);
@@ -1283,7 +1290,8 @@ mod tests {
         let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
         assert!(body["MessageId"].as_str().is_some());
 
-        let s = state.read();
+        let _mas_r = state.read();
+        let s = _mas_r.default_ref();
         assert_eq!(s.sent_emails.len(), 1);
         assert!(s.sent_emails[0].raw_data.is_some());
         assert!(
@@ -1316,7 +1324,8 @@ mod tests {
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
 
-        let s = state.read();
+        let _mas_r = state.read();
+        let s = _mas_r.default_ref();
         assert_eq!(s.sent_emails.len(), 1);
         assert_eq!(s.sent_emails[0].template_name.as_deref(), Some("welcome"));
         assert_eq!(
@@ -1365,7 +1374,8 @@ mod tests {
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::OK);
 
-        let s = state.read();
+        let _mas_r = state.read();
+        let s = _mas_r.default_ref();
         assert_eq!(s.sent_emails[0].cc, vec!["cc@example.com"]);
         assert_eq!(s.sent_emails[0].bcc, vec!["bcc@example.com"]);
     }
@@ -1400,7 +1410,8 @@ mod tests {
         assert_eq!(results[0]["Status"], "SUCCESS");
         assert_eq!(results[1]["Status"], "SUCCESS");
 
-        let s = state.read();
+        let _mas_r = state.read();
+        let s = _mas_r.default_ref();
         assert_eq!(s.sent_emails.len(), 2);
         assert_eq!(s.sent_emails[0].to, vec!["a@example.com"]);
         assert_eq!(s.sent_emails[1].to, vec!["b@example.com"]);
@@ -1863,7 +1874,8 @@ mod tests {
         svc.handle(req).await.unwrap();
 
         // Verify contacts map is cleaned up
-        let s = state.read();
+        let _mas_r = state.read();
+        let s = _mas_r.default_ref();
         assert!(!s.contacts.contains_key("my-list"));
     }
 
@@ -1944,7 +1956,8 @@ mod tests {
         assert_eq!(resp.status, StatusCode::OK);
 
         // Verify only "team" remains
-        let s = state.read();
+        let _mas_r = state.read();
+        let s = _mas_r.default_ref();
         let tags = s.tags.get(arn).unwrap();
         assert_eq!(tags.len(), 1);
         assert_eq!(tags.get("team").unwrap(), "backend");
@@ -1993,7 +2006,8 @@ mod tests {
         svc.handle(req).await.unwrap();
 
         // Tags should be gone
-        let s = state.read();
+        let _mas_r = state.read();
+        let s = _mas_r.default_ref();
         assert!(!s.tags.contains_key(arn));
     }
 
@@ -2021,7 +2035,8 @@ mod tests {
         let req = make_request(Method::DELETE, "/v2/email/configuration-sets/my-config", "");
         svc.handle(req).await.unwrap();
 
-        let s = state.read();
+        let _mas_r = state.read();
+        let s = _mas_r.default_ref();
         assert!(!s.tags.contains_key(arn));
     }
 
@@ -2049,7 +2064,8 @@ mod tests {
         let req = make_request(Method::DELETE, "/v2/email/contact-lists/my-list", "");
         svc.handle(req).await.unwrap();
 
-        let s = state.read();
+        let _mas_r = state.read();
+        let s = _mas_r.default_ref();
         assert!(!s.tags.contains_key(arn));
     }
 
@@ -2418,7 +2434,8 @@ mod tests {
         let req = make_request(Method::DELETE, "/v2/email/configuration-sets/my-config", "");
         svc.handle(req).await.unwrap();
 
-        let s = state.read();
+        let _mas_r = state.read();
+        let s = _mas_r.default_ref();
         assert!(!s.event_destinations.contains_key("my-config"));
     }
 
@@ -2615,7 +2632,8 @@ mod tests {
         );
         svc.handle(req).await.unwrap();
 
-        let s = state.read();
+        let _mas_r = state.read();
+        let s = _mas_r.default_ref();
         assert!(!s.identity_policies.contains_key("test@example.com"));
     }
 
@@ -3152,7 +3170,8 @@ mod tests {
         assert!(body["MessageId"].as_str().is_some());
 
         // Verify stored in sent_emails
-        let s = state.read();
+        let _mas_r = state.read();
+        let s = _mas_r.default_ref();
         assert_eq!(s.sent_emails.len(), 1);
         assert_eq!(s.sent_emails[0].to, vec!["user@example.com"]);
     }
@@ -4138,5 +4157,167 @@ mod tests {
         );
         let resp = svc.handle(req).await.unwrap();
         assert_eq!(resp.status, StatusCode::NOT_FOUND);
+    }
+
+    // ── misc.rs extra coverage (import/export jobs, tenant resources) ─
+
+    #[tokio::test]
+    async fn test_import_job_not_found() {
+        let state = make_state();
+        let svc = SesV2Service::new(state);
+        let req = make_request(Method::GET, "/v2/email/import-jobs/nope", "");
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_export_job_not_found() {
+        let state = make_state();
+        let svc = SesV2Service::new(state);
+        let req = make_request(Method::GET, "/v2/email/export-jobs/nope", "");
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_create_import_job_missing_destination() {
+        let state = make_state();
+        let svc = SesV2Service::new(state);
+        let req = make_request(
+            Method::POST,
+            "/v2/email/import-jobs",
+            r#"{"ImportDataSource": {"S3Url": "s3://b/k", "DataFormat": "CSV"}}"#,
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_create_import_job_missing_data_source() {
+        let state = make_state();
+        let svc = SesV2Service::new(state);
+        let req = make_request(
+            Method::POST,
+            "/v2/email/import-jobs",
+            r#"{"ImportDestination": {"SuppressionListDestination": {"SuppressionListImportAction": "PUT"}}}"#,
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_list_import_jobs_filter_by_suppression_list() {
+        let state = make_state();
+        let svc = SesV2Service::new(state);
+
+        let req = make_request(
+            Method::POST,
+            "/v2/email/import-jobs",
+            r#"{
+                "ImportDestination": {"SuppressionListDestination": {"SuppressionListImportAction": "PUT"}},
+                "ImportDataSource": {"S3Url": "s3://b/k", "DataFormat": "CSV"}
+            }"#,
+        );
+        svc.handle(req).await.unwrap();
+
+        let req = make_request(
+            Method::POST,
+            "/v2/email/import-jobs",
+            r#"{
+                "ImportDestination": {"ContactListDestination": {"ContactListName": "x", "ContactListImportAction": "PUT"}},
+                "ImportDataSource": {"S3Url": "s3://b/k", "DataFormat": "CSV"}
+            }"#,
+        );
+        svc.handle(req).await.unwrap();
+
+        let req = make_request(
+            Method::POST,
+            "/v2/email/import-jobs/list",
+            r#"{"ImportDestinationType": "SUPPRESSION_LIST"}"#,
+        );
+        let resp = svc.handle(req).await.unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        assert_eq!(body["ImportJobs"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_cancel_export_job_conflict() {
+        let state = make_state();
+        let svc = SesV2Service::new(state);
+        let req = make_request(
+            Method::POST,
+            "/v2/email/export-jobs",
+            r#"{
+                "ExportDataSource": {"MessageInsightsDataSource": {"StartDate": 0, "EndDate": 0}},
+                "ExportDestination": {"DataFormat": "CSV"}
+            }"#,
+        );
+        let resp = svc.handle(req).await.unwrap();
+        let body: Value = serde_json::from_slice(resp.body.expect_bytes()).unwrap();
+        let job_id = body["JobId"].as_str().unwrap().to_string();
+
+        let path = format!("/v2/email/export-jobs/{}/cancel", job_id);
+        let req = make_request(Method::PUT, &path, "{}");
+        let resp = svc.handle(req).await.unwrap();
+        // First cancel: COMPLETED -> Conflict, since jobs finish immediately
+        assert_eq!(resp.status, StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn test_cancel_export_job_not_found() {
+        let state = make_state();
+        let svc = SesV2Service::new(state);
+        let req = make_request(Method::PUT, "/v2/email/export-jobs/ghost/cancel", "{}");
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_tenant_resource_association_crud() {
+        let state = make_state();
+        let svc = SesV2Service::new(state);
+
+        // Create tenant
+        let req = make_request(
+            Method::POST,
+            "/v2/email/tenants",
+            r#"{"TenantName": "tenant-a"}"#,
+        );
+        svc.handle(req).await.unwrap();
+
+        // Create identity so resource exists
+        let req = make_request(
+            Method::POST,
+            "/v2/email/identities",
+            r#"{"EmailIdentity": "tres@example.com"}"#,
+        );
+        svc.handle(req).await.unwrap();
+
+        // Associate
+        let req = make_request(
+            Method::POST,
+            "/v2/email/tenants/resources",
+            r#"{"TenantName": "tenant-a", "ResourceArn": "arn:aws:ses:us-east-1:123456789012:identity/tres@example.com"}"#,
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+
+        // List tenant resources
+        let req = make_request(
+            Method::POST,
+            "/v2/email/tenants/resources/list",
+            r#"{"TenantName": "tenant-a"}"#,
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+
+        // Delete association
+        let req = make_request(
+            Method::POST,
+            "/v2/email/tenants/resources/delete",
+            r#"{"TenantName": "tenant-a", "ResourceArn": "arn:aws:ses:us-east-1:123456789012:identity/tres@example.com"}"#,
+        );
+        let resp = svc.handle(req).await.unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
     }
 }

@@ -123,7 +123,7 @@ pub fn pid_alive(_pid: u32) -> bool {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use super::pid_alive;
+    use super::{cli_works, pid_alive};
 
     #[test]
     fn self_is_alive() {
@@ -139,5 +139,10 @@ mod tests {
     fn huge_pid_is_dead() {
         // Max u32 is far outside any reasonable PID range on any OS.
         assert!(!pid_alive(u32::MAX - 1));
+    }
+
+    #[test]
+    fn cli_works_false_for_unknown_binary() {
+        assert!(!cli_works("definitely-not-a-real-cli-name-xyz123"));
     }
 }

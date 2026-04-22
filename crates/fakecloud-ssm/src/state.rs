@@ -735,17 +735,26 @@ pub struct ResourceDataSync {
     pub sync_last_modified_time: DateTime<Utc>,
 }
 
-pub type SharedSsmState = Arc<RwLock<SsmState>>;
+pub type SharedSsmState = Arc<RwLock<fakecloud_core::multi_account::MultiAccountState<SsmState>>>;
+
+impl fakecloud_core::multi_account::AccountState for SsmState {
+    fn new_for_account(account_id: &str, region: &str, _endpoint: &str) -> Self {
+        Self::new(account_id, region)
+    }
+}
 
 /// On-disk snapshot envelope for SSM state. Versioned so format
 /// changes fail loudly on upgrade.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SsmSnapshot {
     pub schema_version: u32,
-    pub state: SsmState,
+    #[serde(default)]
+    pub accounts: Option<fakecloud_core::multi_account::MultiAccountState<SsmState>>,
+    #[serde(default)]
+    pub state: Option<SsmState>,
 }
 
-pub const SSM_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+pub const SSM_SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 
 #[cfg(test)]
 mod tests {
@@ -756,5 +765,50 @@ mod tests {
         let state = SsmState::new("123456789012", "us-east-1");
         assert_eq!(state.account_id, "123456789012");
         assert_eq!(state.region, "us-east-1");
+    }
+
+    #[test]
+    fn new_seeds_default_region_parameters() {
+        let state = SsmState::new("123456789012", "us-east-1");
+        let region_key = "/aws/service/global-infrastructure/regions/us-east-1";
+        assert!(state.parameters.contains_key(region_key));
+        let long_key = format!("{region_key}/longName");
+        assert!(state.parameters.contains_key(&long_key));
+    }
+
+    #[test]
+    fn new_seeds_default_service_parameters() {
+        let state = SsmState::new("123456789012", "us-east-1");
+        let key = "/aws/service/global-infrastructure/services/lambda";
+        assert!(state.parameters.contains_key(key));
+    }
+
+    #[test]
+    fn reset_reseeds_defaults() {
+        let mut state = SsmState::new("123456789012", "us-east-1");
+        state.parameters.clear();
+        state.documents.clear();
+        state.ops_item_counter = 42;
+        state.reset();
+        // Defaults re-seeded
+        let key = "/aws/service/global-infrastructure/services/s3";
+        assert!(state.parameters.contains_key(key));
+        assert_eq!(state.ops_item_counter, 0);
+    }
+
+    #[test]
+    fn reset_clears_ephemeral_counters() {
+        let mut state = SsmState::new("123456789012", "us-east-1");
+        state.mw_execution_counter = 7;
+        state.automation_execution_counter = 3;
+        state.session_counter = 9;
+        state.activation_counter = 2;
+        state.execution_preview_counter = 5;
+        state.reset();
+        assert_eq!(state.mw_execution_counter, 0);
+        assert_eq!(state.automation_execution_counter, 0);
+        assert_eq!(state.session_counter, 0);
+        assert_eq!(state.activation_counter, 0);
+        assert_eq!(state.execution_preview_counter, 0);
     }
 }

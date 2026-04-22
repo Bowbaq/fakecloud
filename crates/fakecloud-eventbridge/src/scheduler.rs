@@ -155,76 +155,81 @@ impl Scheduler {
         let now = Utc::now();
 
         // Collect rules that need to fire (to avoid holding lock during delivery)
-        let mut to_fire: Vec<(String, Vec<crate::state::EventTarget>)> = Vec::new();
+        // Each entry includes the account_id that owns the rule
+        let mut to_fire: Vec<(String, String, String, Vec<crate::state::EventTarget>)> = Vec::new();
 
         {
-            let mut state = self.state.write();
-            let rule_keys: Vec<crate::state::RuleKey> = state.rules.keys().cloned().collect();
+            let mut accounts = self.state.write();
+            for (account_id, state) in accounts.iter_mut() {
+                let account_id = account_id.to_string();
+                let region = state.region.clone();
+                let rule_keys: Vec<crate::state::RuleKey> = state.rules.keys().cloned().collect();
 
-            for key in rule_keys {
-                let rule = match state.rules.get(&key) {
-                    Some(r) => r,
-                    None => continue,
-                };
-                let name = rule.name.clone();
+                for key in rule_keys {
+                    let rule = match state.rules.get(&key) {
+                        Some(r) => r,
+                        None => continue,
+                    };
+                    let name = rule.name.clone();
 
-                if rule.state != "ENABLED" {
-                    continue;
-                }
+                    if rule.state != "ENABLED" {
+                        continue;
+                    }
 
-                let schedule_expr = match &rule.schedule_expression {
-                    Some(s) => s.clone(),
-                    None => continue,
-                };
+                    let schedule_expr = match &rule.schedule_expression {
+                        Some(s) => s.clone(),
+                        None => continue,
+                    };
 
-                if rule.targets.is_empty() {
-                    continue;
-                }
+                    if rule.targets.is_empty() {
+                        continue;
+                    }
 
-                let schedule = match parse_schedule(&schedule_expr) {
-                    Some(s) => s,
-                    None => continue,
-                };
+                    let schedule = match parse_schedule(&schedule_expr) {
+                        Some(s) => s,
+                        None => continue,
+                    };
 
-                let should_fire = match &schedule {
-                    Schedule::Rate(duration) => match rule.last_fired {
-                        Some(last) => {
-                            let elapsed = now.signed_duration_since(last);
-                            elapsed.to_std().unwrap_or(Duration::ZERO) >= *duration
-                        }
-                        None => true, // Never fired, fire immediately
-                    },
-                    Schedule::Cron(cron) => {
-                        if !cron_matches_now(cron) {
-                            false
-                        } else {
-                            // Avoid firing multiple times in the same minute
-                            let current = (now.hour(), now.minute());
-                            let last = cron_last_minute.get(&key);
-                            if last == Some(&current) {
+                    let should_fire = match &schedule {
+                        Schedule::Rate(duration) => match rule.last_fired {
+                            Some(last) => {
+                                let elapsed = now.signed_duration_since(last);
+                                elapsed.to_std().unwrap_or(Duration::ZERO) >= *duration
+                            }
+                            None => true, // Never fired, fire immediately
+                        },
+                        Schedule::Cron(cron) => {
+                            if !cron_matches_now(cron) {
                                 false
                             } else {
-                                cron_last_minute.insert(key.clone(), current);
-                                true
+                                // Avoid firing multiple times in the same minute
+                                let current = (now.hour(), now.minute());
+                                let last = cron_last_minute.get(&key);
+                                if last == Some(&current) {
+                                    false
+                                } else {
+                                    cron_last_minute.insert(key.clone(), current);
+                                    true
+                                }
                             }
                         }
-                    }
-                };
+                    };
 
-                if should_fire {
-                    let targets = rule.targets.clone();
-                    // Update last_fired while we hold the write lock
-                    if let Some(r) = state.rules.get_mut(&key) {
-                        r.last_fired = Some(now);
+                    if should_fire {
+                        let targets = rule.targets.clone();
+                        // Update last_fired while we hold the write lock
+                        if let Some(r) = state.rules.get_mut(&key) {
+                            r.last_fired = Some(now);
+                        }
+                        to_fire.push((account_id.clone(), region.clone(), name, targets));
                     }
-                    to_fire.push((name, targets));
                 }
             }
         }
         // Lock is dropped here
 
         // Deliver events
-        for (rule_name, targets) in to_fire {
+        for (account_id, region, rule_name, targets) in to_fire {
             let event_id = uuid::Uuid::new_v4().to_string();
             let event_json = json!({
                 "version": "0",
@@ -233,7 +238,7 @@ impl Scheduler {
                 "detail-type": "Scheduled Event",
                 "detail": {},
                 "time": now.to_rfc3339(),
-                "region": "us-east-1",
+                "region": region,
             });
             let event_str = event_json.to_string();
 
@@ -252,22 +257,26 @@ impl Scheduler {
                         payload = %event_str,
                         "Scheduler delivering to Lambda function"
                     );
-                    let mut state = self.state.write();
-                    state
+                    let mut eb_accounts = self.state.write();
+                    let eb_state = eb_accounts.get_or_create(&account_id);
+                    eb_state
                         .lambda_invocations
                         .push(crate::state::LambdaInvocation {
                             function_arn: arn.clone(),
                             payload: event_str.clone(),
                             timestamp: now,
                         });
-                    drop(state);
+                    drop(eb_accounts);
                     if let Some(ref ls) = self.lambda_state {
-                        ls.write().invocations.push(LambdaInvocation {
-                            function_arn: arn.clone(),
-                            payload: event_str.clone(),
-                            timestamp: now,
-                            source: "aws:events".to_string(),
-                        });
+                        ls.write()
+                            .get_or_create(&account_id)
+                            .invocations
+                            .push(LambdaInvocation {
+                                function_arn: arn.clone(),
+                                payload: event_str.clone(),
+                                timestamp: now,
+                                source: "aws:events".to_string(),
+                            });
                     }
                     crate::service::invoke_lambda_async(
                         &self.container_runtime,
@@ -281,13 +290,14 @@ impl Scheduler {
                         payload = %event_str,
                         "Scheduler delivering to CloudWatch Logs"
                     );
-                    let mut state = self.state.write();
-                    state.log_deliveries.push(crate::state::LogDelivery {
+                    let mut eb_accounts = self.state.write();
+                    let eb_state = eb_accounts.get_or_create(&account_id);
+                    eb_state.log_deliveries.push(crate::state::LogDelivery {
                         log_group_arn: arn.clone(),
                         payload: event_str.clone(),
                         timestamp: now,
                     });
-                    drop(state);
+                    drop(eb_accounts);
                     if let Some(ref log_state) = self.logs_state {
                         crate::service::deliver_to_logs(log_state, arn, &event_str, now);
                     }
@@ -297,8 +307,9 @@ impl Scheduler {
                         "Scheduler delivering to Step Functions"
                     );
                     self.delivery.start_stepfunctions_execution(arn, &event_str);
-                    let mut state = self.state.write();
-                    state
+                    let mut eb_accounts = self.state.write();
+                    let eb_state = eb_accounts.get_or_create(&account_id);
+                    eb_state
                         .step_function_executions
                         .push(crate::state::StepFunctionExecution {
                             state_machine_arn: arn.clone(),
@@ -506,7 +517,13 @@ mod tests {
 
         fn make_state() -> (SharedEventBridgeState, EventBridgeState) {
             let state = EventBridgeState::new("123456789012", "us-east-1");
-            let shared = Arc::new(RwLock::new(state.clone()));
+            let shared = Arc::new(RwLock::new(
+                fakecloud_core::multi_account::MultiAccountState::new(
+                    "123456789012",
+                    "us-east-1",
+                    "",
+                ),
+            ));
             (shared, state)
         }
 
@@ -549,7 +566,8 @@ mod tests {
         fn tick_disabled_rule_is_skipped() {
             let (shared, _) = make_state();
             {
-                let mut s = shared.write();
+                let mut s_accounts = shared.write();
+                let s = s_accounts.default_mut();
                 let mut rule = make_rule("r", "rate(1 second)", "arn:aws:sqs:us-east-1:123:q");
                 rule.state = "DISABLED".to_string();
                 s.rules
@@ -566,7 +584,8 @@ mod tests {
         fn tick_rule_without_targets_is_skipped() {
             let (shared, _) = make_state();
             {
-                let mut s = shared.write();
+                let mut s_accounts = shared.write();
+                let s = s_accounts.default_mut();
                 let mut rule = make_rule("r", "rate(1 second)", "arn:aws:sqs:us-east-1:123:q");
                 rule.targets.clear();
                 s.rules
@@ -583,7 +602,8 @@ mod tests {
         fn tick_invalid_schedule_is_skipped() {
             let (shared, _) = make_state();
             {
-                let mut s = shared.write();
+                let mut s_accounts = shared.write();
+                let s = s_accounts.default_mut();
                 let rule = make_rule("r", "bogus", "arn:aws:sqs:us-east-1:123:q");
                 s.rules
                     .insert(("default".to_string(), "r".to_string()), rule);
@@ -600,7 +620,8 @@ mod tests {
             let (shared, _) = make_state();
             let q_arn = "arn:aws:sqs:us-east-1:123456789012:q1".to_string();
             {
-                let mut s = shared.write();
+                let mut s_accounts = shared.write();
+                let s = s_accounts.default_mut();
                 let rule = make_rule("r", "rate(1 second)", &q_arn);
                 s.rules
                     .insert(("default".to_string(), "r".to_string()), rule);
@@ -622,7 +643,8 @@ mod tests {
             let (shared, _) = make_state();
             let topic_arn = "arn:aws:sns:us-east-1:123456789012:t1".to_string();
             {
-                let mut s = shared.write();
+                let mut s_accounts = shared.write();
+                let s = s_accounts.default_mut();
                 let rule = make_rule("r", "rate(1 second)", &topic_arn);
                 s.rules
                     .insert(("default".to_string(), "r".to_string()), rule);
@@ -641,7 +663,8 @@ mod tests {
             let (shared, _) = make_state();
             let sm_arn = "arn:aws:states:us-east-1:123456789012:stateMachine:m1".to_string();
             {
-                let mut s = shared.write();
+                let mut s_accounts = shared.write();
+                let s = s_accounts.default_mut();
                 let rule = make_rule("r", "rate(1 second)", &sm_arn);
                 s.rules
                     .insert(("default".to_string(), "r".to_string()), rule);
@@ -653,7 +676,9 @@ mod tests {
             let calls = recorder.stepfunctions.lock().unwrap();
             assert_eq!(calls.len(), 1);
             assert_eq!(calls[0].0, sm_arn);
-            let guard = shared.read();
+            let _mas = shared.read();
+            let guard = _mas.default_ref();
+
             assert_eq!(guard.step_function_executions.len(), 1);
         }
 
@@ -662,7 +687,8 @@ mod tests {
             let (shared, _) = make_state();
             let fn_arn = "arn:aws:lambda:us-east-1:123456789012:function:F".to_string();
             {
-                let mut s = shared.write();
+                let mut s_accounts = shared.write();
+                let s = s_accounts.default_mut();
                 let rule = make_rule("r", "rate(1 second)", &fn_arn);
                 s.rules
                     .insert(("default".to_string(), "r".to_string()), rule);
@@ -671,7 +697,9 @@ mod tests {
             let scheduler = build_scheduler(shared.clone(), recorder.clone());
             let mut last = HashMap::<RuleKey, (u32, u32)>::new();
             scheduler.tick(&mut last);
-            let guard = shared.read();
+            let _mas = shared.read();
+            let guard = _mas.default_ref();
+
             assert_eq!(guard.lambda_invocations.len(), 1);
             assert_eq!(guard.lambda_invocations[0].function_arn, fn_arn);
         }
@@ -681,7 +709,8 @@ mod tests {
             let (shared, _) = make_state();
             let lg_arn = "arn:aws:logs:us-east-1:123456789012:log-group:lg".to_string();
             {
-                let mut s = shared.write();
+                let mut s_accounts = shared.write();
+                let s = s_accounts.default_mut();
                 let rule = make_rule("r", "rate(1 second)", &lg_arn);
                 s.rules
                     .insert(("default".to_string(), "r".to_string()), rule);
@@ -690,7 +719,9 @@ mod tests {
             let scheduler = build_scheduler(shared.clone(), recorder.clone());
             let mut last = HashMap::<RuleKey, (u32, u32)>::new();
             scheduler.tick(&mut last);
-            let guard = shared.read();
+            let _mas = shared.read();
+            let guard = _mas.default_ref();
+
             assert_eq!(guard.log_deliveries.len(), 1);
             assert_eq!(guard.log_deliveries[0].log_group_arn, lg_arn);
         }
@@ -699,7 +730,8 @@ mod tests {
         fn tick_updates_last_fired() {
             let (shared, _) = make_state();
             {
-                let mut s = shared.write();
+                let mut s_accounts = shared.write();
+                let s = s_accounts.default_mut();
                 let rule = make_rule("r", "rate(1 second)", "arn:aws:sqs:us-east-1:123:q");
                 s.rules
                     .insert(("default".to_string(), "r".to_string()), rule);
@@ -708,7 +740,9 @@ mod tests {
             let scheduler = build_scheduler(shared.clone(), recorder.clone());
             let mut last = HashMap::<RuleKey, (u32, u32)>::new();
             scheduler.tick(&mut last);
-            let guard = shared.read();
+            let _mas = shared.read();
+            let guard = _mas.default_ref();
+
             let rule = guard
                 .rules
                 .get(&("default".to_string(), "r".to_string()))

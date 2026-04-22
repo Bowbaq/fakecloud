@@ -111,8 +111,17 @@ pub async fn dispatch(
     };
     let sigv4_info = header_info.or(presigned_info);
     let access_key_id = sigv4_info.as_ref().map(|info| info.access_key.clone());
+
+    // Host-header routing hint: LocalStack-shaped
+    // `<svc>.<region>.localhost.localstack.cloud[:port]`, real-AWS
+    // `<svc>.<region>.amazonaws.com`, and every S3 virtual-hosted variant
+    // of both. Secondary region source and carries the bucket for
+    // virtual-hosted S3 path rewrite.
+    let host_info = protocol::parse_routing_host_from_headers(&parts.headers);
+
     let region = sigv4_info
         .map(|info| info.region)
+        .or_else(|| host_info.as_ref().map(|h| h.region.clone()))
         .or_else(|| extract_region_from_user_agent(&parts.headers))
         .unwrap_or_else(|| config.region.clone());
 
@@ -226,8 +235,28 @@ pub async fn dispatch(
         }
     }
 
-    // Build path segments
-    let path = parts.uri.path().to_string();
+    // Build path segments. For S3 virtual-hosted-style requests the bucket
+    // lives in the Host header, not the path — prepend it so the S3 handler
+    // sees a uniform path-style request. SigV4 verification above already
+    // ran against the wire path, so this rewrite is signature-safe.
+    let wire_path = parts.uri.path();
+    let path = if detected.service == "s3" {
+        if let Some(bucket) = host_info.as_ref().and_then(|h| h.bucket.as_deref()) {
+            let prefix_with_slash = format!("/{bucket}/");
+            let is_bucket_root = wire_path.trim_end_matches('/') == format!("/{bucket}");
+            if wire_path.starts_with(&prefix_with_slash) || is_bucket_root {
+                wire_path.to_string()
+            } else if wire_path == "/" || wire_path.is_empty() {
+                format!("/{bucket}")
+            } else {
+                format!("/{bucket}{wire_path}")
+            }
+        } else {
+            wire_path.to_string()
+        }
+    } else {
+        wire_path.to_string()
+    };
     let raw_query = parts.uri.query().unwrap_or("").to_string();
     let path_segments: Vec<String> = path
         .split('/')
@@ -352,6 +381,16 @@ pub async fn dispatch(
                         // same-account by using the caller's account.
                         let resource_account_id = parse_account_from_arn(&iam_action.resource)
                             .unwrap_or_else(|| principal.account_id.clone());
+                        // SCP ceiling: resolve the inherited SCP chain
+                        // for this principal (management accounts and
+                        // service-linked roles come back as `None`, in
+                        // which case the evaluator treats the layer as
+                        // absent). Audit breadcrumbs emitted by the
+                        // resolver itself, not here.
+                        let scps = config
+                            .scp_resolver
+                            .as_ref()
+                            .and_then(|r| r.scps_for(principal));
                         let decision = evaluator.evaluate_with_resource_policy(
                             principal,
                             &iam_action,
@@ -359,6 +398,7 @@ pub async fn dispatch(
                             resource_policy_json.as_deref(),
                             &resource_account_id,
                             &caller_session_policies,
+                            scps.as_deref(),
                         );
                         if !decision.is_allow() {
                             tracing::warn!(
@@ -497,6 +537,13 @@ pub struct DispatchConfig {
     /// dispatch then behaves as if no resource policy is attached to
     /// any resource, identical to the Phase 1 behavior.
     pub resource_policy_provider: Option<Arc<dyn ResourcePolicyProvider>>,
+    /// Resolves the ordered SCP chain that applies to a principal's
+    /// account (root-OU first, account-direct last). `None` means no
+    /// organizations resolver has been registered — SCPs never gate
+    /// any request in that case. Off-by-default matches the Batch 4
+    /// contract: zero behavior change until a user calls
+    /// `CreateOrganization` and the resolver is wired.
+    pub scp_resolver: Option<Arc<dyn crate::auth::ScpResolver>>,
 }
 
 impl std::fmt::Debug for DispatchConfig {
@@ -527,6 +574,10 @@ impl std::fmt::Debug for DispatchConfig {
                     .as_ref()
                     .map(|_| "<ResourcePolicyProvider>"),
             )
+            .field(
+                "scp_resolver",
+                &self.scp_resolver.as_ref().map(|_| "<ScpResolver>"),
+            )
             .finish()
     }
 }
@@ -543,6 +594,7 @@ impl DispatchConfig {
             credential_resolver: None,
             policy_evaluator: None,
             resource_policy_provider: None,
+            scp_resolver: None,
         }
     }
 }
@@ -1013,9 +1065,11 @@ mod tests {
             credential_resolver: None,
             policy_evaluator: None,
             resource_policy_provider: None,
+            scp_resolver: None,
         };
         assert!(cfg.verify_sigv4);
         assert!(cfg.iam_mode.is_strict());
         assert!(cfg.resource_policy_provider.is_none());
+        assert!(cfg.scp_resolver.is_none());
     }
 }

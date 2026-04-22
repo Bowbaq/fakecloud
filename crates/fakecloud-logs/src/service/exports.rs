@@ -52,7 +52,9 @@ impl LogsService {
         )?;
         validate_string_length("destination", &destination, 1, 512)?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::LogsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         if !state.log_groups.contains_key(&log_group_name) {
             return Err(AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -60,7 +62,7 @@ impl LogsService {
                 "The specified log group does not exist.",
             ));
         }
-        drop(state);
+        drop(accounts);
 
         let task_name = body["taskName"].as_str().map(|s| s.to_string());
         let log_stream_name_prefix = body["logStreamNamePrefix"].as_str().map(|s| s.to_string());
@@ -76,7 +78,8 @@ impl LogsService {
         };
 
         // Collect matching events and write to export storage
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         if from_time < to_time {
             if let Some(group) = state.log_groups.get(&log_group_name) {
                 let mut exported_lines: Vec<String> = Vec::new();
@@ -146,7 +149,9 @@ impl LogsService {
             ],
         )?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::LogsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
 
         if let Some(task_id) = task_id_filter {
             let task = state.export_tasks.iter().find(|t| t.task_id == task_id);
@@ -213,7 +218,8 @@ impl LogsService {
 
         validate_string_length("taskId", task_id, 1, 512)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let task = state
             .export_tasks
             .iter_mut()
@@ -241,7 +247,9 @@ impl LogsService {
         let body = req.json_body();
         let key_prefix = body["keyPrefix"].as_str().unwrap_or("");
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::LogsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let entries: Vec<Value> = state
             .export_storage
             .iter()

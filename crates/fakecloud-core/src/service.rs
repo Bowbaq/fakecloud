@@ -468,4 +468,125 @@ mod tests {
         let keys = svc.iam_condition_keys_for(&sample_request(), &sample_action());
         assert_eq!(keys.get("s3:prefix"), Some(&vec!["logs/".to_string()]));
     }
+
+    #[test]
+    fn response_body_len_and_is_empty_for_bytes() {
+        let body: ResponseBody = Bytes::from_static(b"hello").into();
+        assert_eq!(body.len(), 5);
+        assert!(!body.is_empty());
+        let empty: ResponseBody = ResponseBody::default();
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn response_body_from_vec_and_string_and_str() {
+        let from_vec: ResponseBody = vec![1u8, 2, 3].into();
+        assert_eq!(from_vec.expect_bytes(), &[1, 2, 3][..]);
+        let from_string: ResponseBody = String::from("hi").into();
+        assert_eq!(from_string.expect_bytes(), b"hi");
+        let from_str: ResponseBody = "hey".into();
+        assert_eq!(from_str.expect_bytes(), b"hey");
+        let from_static: ResponseBody = (b"123" as &'static [u8]).into();
+        assert_eq!(from_static.expect_bytes(), b"123");
+    }
+
+    #[test]
+    fn response_body_partial_eq_bytes() {
+        let body: ResponseBody = Bytes::from_static(b"x").into();
+        assert!(body == Bytes::from_static(b"x"));
+        assert!(!(body == Bytes::from_static(b"y")));
+    }
+
+    #[test]
+    fn aws_request_json_body_empty_returns_null() {
+        let req = sample_request();
+        assert_eq!(req.json_body(), serde_json::Value::Null);
+    }
+
+    #[test]
+    fn aws_request_json_body_parses_valid() {
+        let mut req = sample_request();
+        req.body = Bytes::from_static(br#"{"a":1}"#);
+        assert_eq!(req.json_body(), serde_json::json!({"a": 1}));
+    }
+
+    #[test]
+    fn aws_response_xml_constructor() {
+        let resp = AwsResponse::xml(StatusCode::OK, Bytes::from_static(b"<ok/>"));
+        assert_eq!(resp.status, StatusCode::OK);
+        assert_eq!(resp.content_type, "text/xml");
+    }
+
+    #[test]
+    fn aws_response_json_constructor() {
+        let resp = AwsResponse::json(StatusCode::CREATED, "{}");
+        assert_eq!(resp.status, StatusCode::CREATED);
+        assert_eq!(resp.content_type, "application/x-amz-json-1.1");
+    }
+
+    #[test]
+    fn aws_response_ok_json_helper() {
+        let resp = AwsResponse::ok_json(serde_json::json!({"ok": true}));
+        assert_eq!(resp.status, StatusCode::OK);
+        assert!(resp.body.expect_bytes().starts_with(b"{"));
+    }
+
+    #[test]
+    fn aws_error_service_not_found_fields() {
+        let err = AwsServiceError::ServiceNotFound {
+            service: "sqs".to_string(),
+        };
+        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(err.code(), "UnknownService");
+        assert!(err.message().contains("sqs"));
+        assert!(err.extra_fields().is_empty());
+        assert!(err.response_headers().is_empty());
+    }
+
+    #[test]
+    fn aws_error_action_not_implemented_fields() {
+        let err = AwsServiceError::action_not_implemented("sns", "FutureAction");
+        assert_eq!(err.status(), StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(err.code(), "InvalidAction");
+        assert!(err.message().contains("FutureAction"));
+        assert!(err.message().contains("sns"));
+    }
+
+    #[test]
+    fn aws_error_aws_error_helpers() {
+        let e = AwsServiceError::aws_error(StatusCode::FORBIDDEN, "Denied", "no");
+        assert_eq!(e.status(), StatusCode::FORBIDDEN);
+        assert_eq!(e.code(), "Denied");
+        assert_eq!(e.message(), "no");
+
+        let fields = vec![("Bucket".to_string(), "b".to_string())];
+        let ef = AwsServiceError::aws_error_with_fields(
+            StatusCode::NOT_FOUND,
+            "Missing",
+            "gone",
+            fields.clone(),
+        );
+        assert_eq!(ef.extra_fields(), fields.as_slice());
+
+        let hdrs = vec![("X-Retry".to_string(), "1".to_string())];
+        let eh = AwsServiceError::aws_error_with_headers(
+            StatusCode::TOO_MANY_REQUESTS,
+            "Throttled",
+            "slow",
+            hdrs.clone(),
+        );
+        assert_eq!(eh.response_headers(), hdrs.as_slice());
+    }
+
+    #[test]
+    #[should_panic(expected = "expect_bytes called on ResponseBody::File")]
+    fn response_body_expect_bytes_panics_on_file() {
+        let f = std::fs::File::create(std::env::temp_dir().join("fc-test-expect-file")).unwrap();
+        let async_f = tokio::fs::File::from_std(f);
+        let body = ResponseBody::File {
+            file: async_f,
+            size: 0,
+        };
+        let _ = body.expect_bytes();
+    }
 }

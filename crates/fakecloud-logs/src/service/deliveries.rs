@@ -68,7 +68,8 @@ impl LogsService {
             })
             .unwrap_or_default();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Check if updating - cannot change output format
         if let Some(existing) = state.delivery_destinations.get(&name) {
@@ -151,7 +152,9 @@ impl LogsService {
 
         validate_string_length("name", name, 1, 60)?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::LogsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let dd = state.delivery_destinations.get(name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -183,7 +186,9 @@ impl LogsService {
         validate_optional_range_i64("limit", body["limit"].as_i64(), 1, 50)?;
         validate_optional_string_length("nextToken", body["nextToken"].as_str(), 1, 2048)?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::LogsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let dds: Vec<Value> = state
             .delivery_destinations
             .values()
@@ -221,7 +226,8 @@ impl LogsService {
 
         validate_string_length("name", name, 1, 60)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         if state.delivery_destinations.remove(name).is_none() {
             return Err(AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -259,7 +265,8 @@ impl LogsService {
         validate_string_length("deliveryDestinationName", name, 1, 60)?;
         validate_string_length("deliveryDestinationPolicy", &policy, 1, 51200)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let dd = state.delivery_destinations.get_mut(name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -296,7 +303,9 @@ impl LogsService {
 
         validate_string_length("deliveryDestinationName", name, 1, 60)?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::LogsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let dd = state.delivery_destinations.get(name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -337,7 +346,8 @@ impl LogsService {
 
         validate_string_length("deliveryDestinationName", name, 1, 60)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         let dd = state.delivery_destinations.get_mut(name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -439,7 +449,8 @@ impl LogsService {
             ));
         }
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Cannot update with different resourceArn
         if let Some(existing) = state.delivery_sources.get(&name) {
@@ -501,7 +512,9 @@ impl LogsService {
 
         validate_string_length("name", name, 1, 60)?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::LogsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let ds = state.delivery_sources.get(name).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -534,7 +547,9 @@ impl LogsService {
         validate_optional_range_i64("limit", body["limit"].as_i64(), 1, 50)?;
         validate_optional_string_length("nextToken", body["nextToken"].as_str(), 1, 2048)?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::LogsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let sources: Vec<Value> = state
             .delivery_sources
             .values()
@@ -571,7 +586,8 @@ impl LogsService {
 
         validate_string_length("name", name, 1, 60)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         if state.delivery_sources.remove(name).is_none() {
             return Err(AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -631,7 +647,8 @@ impl LogsService {
         let field_delimiter = body["fieldDelimiter"].as_str().map(|s| s.to_string());
         let s3_delivery_config = body["s3DeliveryConfiguration"].clone();
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
 
         // Verify source exists
         if !state.delivery_sources.contains_key(&delivery_source_name) {
@@ -747,7 +764,9 @@ impl LogsService {
 
         validate_string_length("id", delivery_id, 1, 64)?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::LogsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let d = state.deliveries.get(delivery_id).ok_or_else(|| {
             AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -780,7 +799,9 @@ impl LogsService {
         validate_optional_range_i64("limit", body["limit"].as_i64(), 1, 50)?;
         validate_optional_string_length("nextToken", body["nextToken"].as_str(), 1, 2048)?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::LogsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         let deliveries: Vec<Value> = state
             .deliveries
             .values()
@@ -814,7 +835,8 @@ impl LogsService {
 
         validate_string_length("id", delivery_id, 1, 64)?;
 
-        let mut state = self.state.write();
+        let mut accounts = self.state.write();
+        let state = accounts.get_or_create(&req.account_id);
         if state.deliveries.remove(delivery_id).is_none() {
             return Err(AwsServiceError::aws_error(
                 StatusCode::BAD_REQUEST,
@@ -833,7 +855,9 @@ impl LogsService {
         let body = req.json_body();
         let id = require_str(&body, "id")?;
 
-        let state = self.state.read();
+        let accounts = self.state.read();
+        let empty = crate::state::LogsState::new(&req.account_id, &req.region);
+        let state = accounts.get(&req.account_id).unwrap_or(&empty);
         if !state.deliveries.contains_key(id) {
             return Err(AwsServiceError::aws_error(
                 StatusCode::NOT_FOUND,
@@ -841,7 +865,7 @@ impl LogsService {
                 format!("Delivery not found: {id}"),
             ));
         }
-        drop(state);
+        drop(accounts);
 
         // No-op: delivery configuration update is accepted but not stored
         Ok(AwsResponse::json(StatusCode::OK, "{}"))

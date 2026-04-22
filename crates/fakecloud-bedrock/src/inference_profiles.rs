@@ -35,7 +35,8 @@ pub fn create_inference_profile(
         updated_at: now,
     };
 
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
 
     if let Some(tags) = body["tags"].as_array() {
         let tag_map: std::collections::HashMap<String, String> = tags
@@ -62,9 +63,12 @@ pub fn create_inference_profile(
 
 pub fn get_inference_profile(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     identifier: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let profile = s
         .inference_profiles
         .get(identifier)
@@ -106,7 +110,9 @@ pub fn list_inference_profiles(
         .max(1);
     let next_token = req.query_params.get("nextToken");
 
-    let s = state.read();
+    let accts = state.read();
+    let empty = crate::state::BedrockState::new(&req.account_id, &req.region);
+    let s = accts.get(&req.account_id).unwrap_or(&empty);
     let mut items: Vec<&InferenceProfile> = s.inference_profiles.values().collect();
     items.sort_by(|a, b| a.inference_profile_arn.cmp(&b.inference_profile_arn));
 
@@ -149,9 +155,11 @@ pub fn list_inference_profiles(
 
 pub fn delete_inference_profile(
     state: &SharedBedrockState,
+    req: &AwsRequest,
     identifier: &str,
 ) -> Result<AwsResponse, AwsServiceError> {
-    let mut s = state.write();
+    let mut accts = state.write();
+    let s = accts.get_or_create(&req.account_id);
 
     let key = s
         .inference_profiles
@@ -173,5 +181,126 @@ pub fn delete_inference_profile(
             "ResourceNotFoundException",
             format!("Inference profile {identifier} not found"),
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::BedrockState;
+    use bytes::Bytes;
+    use fakecloud_core::multi_account::MultiAccountState;
+    use http::{HeaderMap, Method};
+    use parking_lot::RwLock;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    fn shared() -> SharedBedrockState {
+        let multi: MultiAccountState<BedrockState> =
+            MultiAccountState::new("123456789012", "us-east-1", "http://x");
+        Arc::new(RwLock::new(multi))
+    }
+
+    fn req() -> AwsRequest {
+        AwsRequest {
+            service: "bedrock".to_string(),
+            action: "a".to_string(),
+            method: Method::POST,
+            raw_path: "/".to_string(),
+            raw_query: String::new(),
+            path_segments: vec![],
+            query_params: HashMap::new(),
+            headers: HeaderMap::new(),
+            body: Bytes::new(),
+            account_id: "123456789012".to_string(),
+            region: "us-east-1".to_string(),
+            request_id: "r".to_string(),
+            is_query_protocol: false,
+            access_key_id: None,
+            principal: None,
+        }
+    }
+
+    fn create(state: &SharedBedrockState, name: &str, with_tags: bool) -> String {
+        let body = if with_tags {
+            json!({
+                "inferenceProfileName": name,
+                "tags": [{"key": "env", "value": "prod"}]
+            })
+        } else {
+            json!({"inferenceProfileName": name})
+        };
+        let resp = create_inference_profile(state, &req(), &body).unwrap();
+        let v: Value =
+            serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
+        v["inferenceProfileArn"].as_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn create_with_tags_records_tag_map() {
+        let s = shared();
+        let arn = create(&s, "p1", true);
+        let state = s.read();
+        let accts = state.default_ref();
+        assert!(accts.tags.contains_key(&arn));
+    }
+
+    #[test]
+    fn create_without_tags_skips_tag_map() {
+        let s = shared();
+        let arn = create(&s, "p2", false);
+        let state = s.read();
+        let accts = state.default_ref();
+        assert!(!accts.tags.contains_key(&arn));
+    }
+
+    #[test]
+    fn get_by_arn_name_and_id() {
+        let s = shared();
+        let arn = create(&s, "p-look", false);
+        let id = arn.rsplit('/').next().unwrap().to_string();
+        assert!(get_inference_profile(&s, &req(), &arn).is_ok());
+        assert!(get_inference_profile(&s, &req(), &id).is_ok());
+        assert!(get_inference_profile(&s, &req(), "p-look").is_ok());
+    }
+
+    #[test]
+    fn get_unknown_returns_not_found() {
+        let s = shared();
+        let err = get_inference_profile(&s, &req(), "missing").err().unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn list_paginates() {
+        let s = shared();
+        for i in 0..3 {
+            create(&s, &format!("p{i}"), false);
+        }
+        let mut r = req();
+        r.query_params
+            .insert("maxResults".to_string(), "2".to_string());
+        let resp = list_inference_profiles(&s, &r).unwrap();
+        let v: Value =
+            serde_json::from_str(std::str::from_utf8(resp.body.expect_bytes()).unwrap()).unwrap();
+        assert_eq!(v["inferenceProfileSummaries"].as_array().unwrap().len(), 2);
+        assert!(v["nextToken"].is_string());
+    }
+
+    #[test]
+    fn delete_removes_entry() {
+        let s = shared();
+        let arn = create(&s, "del", false);
+        delete_inference_profile(&s, &req(), &arn).unwrap();
+        assert!(s.read().default_ref().inference_profiles.is_empty());
+    }
+
+    #[test]
+    fn delete_unknown_returns_not_found() {
+        let s = shared();
+        let err = delete_inference_profile(&s, &req(), "missing")
+            .err()
+            .unwrap();
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
     }
 }

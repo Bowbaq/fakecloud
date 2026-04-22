@@ -233,3 +233,62 @@ pub static FOUNDATION_MODELS: &[FoundationModel] = &[
 pub fn find_model(model_id: &str) -> Option<&'static FoundationModel> {
     FOUNDATION_MODELS.iter().find(|m| m.model_id == model_id)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn find_model_locates_known_id() {
+        let m = find_model("anthropic.claude-3-5-sonnet-20241022-v2:0").unwrap();
+        assert_eq!(m.provider_name, "Anthropic");
+        assert!(m.response_streaming_supported);
+    }
+
+    #[test]
+    fn find_model_returns_none_for_unknown() {
+        assert!(find_model("bogus").is_none());
+    }
+
+    #[test]
+    fn catalog_has_providers_covered() {
+        let providers: std::collections::HashSet<_> =
+            FOUNDATION_MODELS.iter().map(|m| m.provider_name).collect();
+        for name in ["Anthropic", "Amazon", "Meta", "Cohere", "Mistral AI"] {
+            assert!(providers.contains(name), "missing provider {name}");
+        }
+    }
+
+    #[test]
+    fn catalog_ids_unique() {
+        let mut ids: Vec<_> = FOUNDATION_MODELS.iter().map(|m| m.model_id).collect();
+        let original_len = ids.len();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), original_len);
+    }
+
+    #[test]
+    fn summary_json_shape() {
+        let m = find_model("amazon.titan-embed-text-v1").unwrap();
+        let v = m.to_summary_json();
+        assert_eq!(v["modelId"], "amazon.titan-embed-text-v1");
+        assert_eq!(v["providerName"], "Amazon");
+        assert_eq!(v["outputModalities"][0], "EMBEDDING");
+        assert_eq!(v["responseStreamingSupported"], false);
+        assert_eq!(v["modelLifecycle"]["status"], "ACTIVE");
+    }
+
+    #[test]
+    fn detail_json_contains_arn_without_account_id() {
+        let m = find_model("meta.llama3-1-70b-instruct-v1:0").unwrap();
+        let v = m.to_detail_json("us-east-1", "123456789012");
+        let arn = v["modelDetails"]["modelArn"].as_str().unwrap();
+        assert_eq!(
+            arn,
+            "arn:aws:bedrock:us-east-1::foundation-model/meta.llama3-1-70b-instruct-v1:0"
+        );
+        assert!(!arn.contains("123456789012"));
+        assert_eq!(v["modelDetails"]["providerName"], "Meta");
+    }
+}

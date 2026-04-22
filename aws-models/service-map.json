@@ -82,5 +82,9 @@
   "bedrock-runtime": {
     "repo_dir": "bedrock-runtime",
     "service_name": "bedrock-runtime"
+  },
+  "scheduler": {
+    "repo_dir": "scheduler",
+    "service_name": "scheduler"
   }
 }

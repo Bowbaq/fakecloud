@@ -7,7 +7,13 @@ use fakecloud_aws::arn::Arn;
 use parking_lot::RwLock;
 use uuid::Uuid;
 
-pub type SharedRdsState = Arc<RwLock<RdsState>>;
+pub type SharedRdsState = Arc<RwLock<fakecloud_core::multi_account::MultiAccountState<RdsState>>>;
+
+impl fakecloud_core::multi_account::AccountState for RdsState {
+    fn new_for_account(account_id: &str, region: &str, _endpoint: &str) -> Self {
+        Self::new(account_id, region)
+    }
+}
 
 /// Supported DB instance classes — single source of truth.
 pub const SUPPORTED_INSTANCE_CLASSES: &[&str] = &[
@@ -464,12 +470,15 @@ pub fn default_parameter_groups(
     groups
 }
 
-pub const RDS_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+pub const RDS_SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RdsSnapshot {
     pub schema_version: u32,
-    pub state: RdsState,
+    #[serde(default)]
+    pub accounts: Option<fakecloud_core::multi_account::MultiAccountState<RdsState>>,
+    #[serde(default)]
+    pub state: Option<RdsState>,
 }
 
 #[cfg(test)]
@@ -605,5 +614,93 @@ mod tests {
     fn default_parameter_groups_returned_per_family() {
         let groups = default_parameter_groups("123456789012", "us-east-1");
         assert!(!groups.is_empty());
+    }
+
+    fn make_instance(id: &str) -> DbInstance {
+        let created_at = Utc::now();
+        DbInstance {
+            db_instance_identifier: id.to_string(),
+            db_instance_arn: format!("arn:aws:rds:us-east-1:123:db:{id}"),
+            db_instance_class: "db.t3.micro".to_string(),
+            engine: "postgres".to_string(),
+            engine_version: "16.3".to_string(),
+            db_instance_status: "available".to_string(),
+            master_username: "admin".to_string(),
+            db_name: None,
+            endpoint_address: "x".to_string(),
+            port: 5432,
+            allocated_storage: 20,
+            publicly_accessible: false,
+            deletion_protection: false,
+            created_at,
+            dbi_resource_id: "d".to_string(),
+            master_user_password: "p".to_string(),
+            container_id: "c".to_string(),
+            host_port: 0,
+            tags: Vec::new(),
+            read_replica_source_db_instance_identifier: None,
+            read_replica_db_instance_identifiers: Vec::new(),
+            vpc_security_group_ids: Vec::new(),
+            db_parameter_group_name: None,
+            backup_retention_period: 0,
+            preferred_backup_window: String::new(),
+            latest_restorable_time: None,
+            option_group_name: None,
+            multi_az: false,
+            pending_modified_values: None,
+        }
+    }
+
+    #[test]
+    fn finish_instance_creation_moves_from_pending_to_instances() {
+        let mut state = RdsState::new("123456789012", "us-east-1");
+        assert!(state.begin_instance_creation("db-x"));
+        assert!(state.in_progress_instance_ids.contains("db-x"));
+        state.finish_instance_creation(make_instance("db-x"));
+        assert!(!state.in_progress_instance_ids.contains("db-x"));
+        assert!(state.instances.contains_key("db-x"));
+    }
+
+    #[test]
+    fn cancel_instance_creation_drops_pending() {
+        let mut state = RdsState::new("123456789012", "us-east-1");
+        state.begin_instance_creation("db-y");
+        state.cancel_instance_creation("db-y");
+        assert!(!state.in_progress_instance_ids.contains("db-y"));
+    }
+
+    #[test]
+    fn begin_instance_creation_rejects_when_already_created() {
+        let mut state = RdsState::new("123456789012", "us-east-1");
+        state
+            .instances
+            .insert("db-z".to_string(), make_instance("db-z"));
+        assert!(!state.begin_instance_creation("db-z"));
+    }
+
+    #[test]
+    fn reset_restores_default_parameter_groups() {
+        let mut state = RdsState::new("123456789012", "us-east-1");
+        state.parameter_groups.clear();
+        state.reset();
+        assert!(!state.parameter_groups.is_empty());
+    }
+
+    #[test]
+    fn arn_helpers_include_region_and_account() {
+        let state = RdsState::new("111122223333", "ap-southeast-2");
+        let arn = state.db_instance_arn("my-db");
+        assert!(arn.contains("111122223333"));
+        assert!(arn.contains("ap-southeast-2"));
+        let snap = state.db_snapshot_arn("snap");
+        assert!(snap.contains("snapshot:snap"));
+    }
+
+    #[test]
+    fn next_dbi_resource_id_unique_across_calls() {
+        let state = RdsState::new("123", "us-east-1");
+        let a = state.next_dbi_resource_id();
+        let b = state.next_dbi_resource_id();
+        assert_ne!(a, b);
     }
 }

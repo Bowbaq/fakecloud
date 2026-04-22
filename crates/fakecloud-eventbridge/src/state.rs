@@ -303,7 +303,14 @@ impl EventBridgeState {
     }
 }
 
-pub type SharedEventBridgeState = Arc<RwLock<EventBridgeState>>;
+pub type SharedEventBridgeState =
+    Arc<RwLock<fakecloud_core::multi_account::MultiAccountState<EventBridgeState>>>;
+
+impl fakecloud_core::multi_account::AccountState for EventBridgeState {
+    fn new_for_account(account_id: &str, region: &str, _endpoint: &str) -> Self {
+        Self::new(account_id, region)
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -357,7 +364,10 @@ mod tests {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventBridgeSnapshot {
     pub schema_version: u32,
-    pub state: EventBridgeState,
+    #[serde(default)]
+    pub accounts: Option<fakecloud_core::multi_account::MultiAccountState<EventBridgeState>>,
+    #[serde(default)]
+    pub state: Option<EventBridgeState>,
 }
 
-pub const EVENTBRIDGE_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+pub const EVENTBRIDGE_SNAPSHOT_SCHEMA_VERSION: u32 = 2;

@@ -129,6 +129,20 @@ impl S3Service {
             .unwrap_or("private");
 
         let mut accts = self.state.write();
+        // Check global uniqueness across all accounts before creating
+        for (other_account_id, acct_state) in accts.iter() {
+            if acct_state.buckets.contains_key(bucket) {
+                if other_account_id == account_id {
+                    // Same account owns it — fall through to idempotency / BucketAlreadyOwnedByYou logic below
+                    break;
+                }
+                return Err(AwsServiceError::aws_error(
+                    StatusCode::CONFLICT,
+                    "BucketAlreadyExists",
+                    "The requested bucket name is not available. The bucket namespace is shared by all users of the system. Please select a different name and try again.",
+                ));
+            }
+        }
         let state = accts.get_or_create(account_id);
         if let Some(existing) = state.buckets.get(bucket) {
             // In us-east-1, re-creating same bucket in same region is idempotent (returns 200)

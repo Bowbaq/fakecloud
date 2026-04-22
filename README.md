@@ -43,10 +43,11 @@ Other install options (Cargo, Docker, Docker Compose, source) are documented at 
 - **Single binary.** ~19 MB, ~10 MiB idle memory, ~500ms startup. No Docker required to run fakecloud itself (only to exercise the services that need real containers).
 - **First-party test SDKs** for TypeScript, Python, Go, PHP, Java, and Rust. Assert on what your code called without writing raw HTTP.
 - **Opt-in SigV4 verification and IAM enforcement.** Off by default so tests just work; turn on `--verify-sigv4` for real cryptographic signature checking and `--iam soft|strict` for identity-policy evaluation (Allow/Deny with Deny precedence, Action/Resource wildcards, user/group/role policies, `Condition` blocks with all 28 AWS operators against global keys like `aws:username` / `aws:SourceIp` / `aws:CurrentTime`, plus resource-based policies for S3 bucket, SNS topic, and Lambda function policies with AWS's cross-account combining semantics) across IAM, STS, SQS, SNS, and S3. See [the security docs](https://fakecloud.dev/docs/reference/security/).
+- **LocalStack and real-AWS URL compatibility.** Both `*.localhost.localstack.cloud` and `*.amazonaws.com` Host headers decode to service + region for routing, including every S3 virtual-hosted variant (`<bucket>.s3.<region>.…`, legacy `<bucket>.s3.amazonaws.com` with implicit `us-east-1`, and the older dash-separated `<bucket>.s3-<region>.amazonaws.com`). Persisted queue URLs, presigned URLs, webhook targets, and dev scripts from either system replay against fakecloud unchanged.
 
 ## Supported services
 
-22 services, 1,668 operations, 100% conformance per implemented service.
+23 services, 1,680 operations, 100% conformance per implemented service.
 
 | Service                | Ops | Notes                                                                  |
 | ---------------------- | --- | ---------------------------------------------------------------------- |
@@ -54,6 +55,7 @@ Other install options (Cargo, Docker, Docker Compose, source) are documented at 
 | SQS                    |  23 | FIFO, DLQs, long polling, batch                                        |
 | SNS                    |  42 | Fan-out to SQS/Lambda/HTTP, filter policies                            |
 | EventBridge            |  57 | Pattern matching, schedules, archives, replay, API destinations        |
+| EventBridge Scheduler  |  12 | at/rate/cron, SQS targets, DLQ routing, one-shot self-delete           |
 | Lambda                 |  85 | Real code execution in Docker, 13 runtimes, event source mappings      |
 | DynamoDB               |  57 | Transactions, PartiQL, backups, global tables, streams                 |
 | IAM                    | 176 | Users, roles, policies, groups, instance profiles, OIDC/SAML           |

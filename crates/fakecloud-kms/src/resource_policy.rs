@@ -33,7 +33,9 @@ impl ResourcePolicyProvider for KmsResourcePolicyProvider {
             return None;
         }
         let key_id = parse_key_id_from_arn(resource_arn)?;
-        let state = self.state.read();
+        let account_id = resource_arn.split(':').nth(4)?;
+        let accounts = self.state.read();
+        let state = accounts.get(account_id)?;
         let key = state.keys.get(&key_id)?;
         Some(key.policy.clone())
     }
@@ -92,5 +94,66 @@ mod tests {
             parse_key_id_from_arn("arn:aws:kms:us-east-1:123456789012:key/mrk-abc123"),
             Some("mrk-abc123".to_string())
         );
+    }
+
+    #[test]
+    fn parse_key_id_missing_key_segment() {
+        assert_eq!(
+            parse_key_id_from_arn("arn:aws:kms:us-east-1:123456789012:alias/my-alias"),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_key_id_wrong_partition() {
+        assert_eq!(
+            parse_key_id_from_arn("arn:aws-cn:kms:cn-north-1:123:key/abc"),
+            None
+        );
+    }
+
+    fn make_state() -> SharedKmsState {
+        use crate::state::KmsState;
+        use fakecloud_core::multi_account::MultiAccountState;
+        use parking_lot::RwLock;
+        let multi: MultiAccountState<KmsState> =
+            MultiAccountState::new("123456789012", "us-east-1", "http://localhost");
+        Arc::new(RwLock::new(multi))
+    }
+
+    #[test]
+    fn resource_policy_non_kms_service_returns_none() {
+        let state = make_state();
+        let provider = KmsResourcePolicyProvider::new(state);
+        assert!(provider
+            .resource_policy("s3", "arn:aws:kms:us-east-1:123:key/abc")
+            .is_none());
+    }
+
+    #[test]
+    fn resource_policy_unknown_key_returns_none() {
+        let state = make_state();
+        let provider = KmsResourcePolicyProvider::new(state);
+        assert!(provider
+            .resource_policy("kms", "arn:aws:kms:us-east-1:123:key/missing")
+            .is_none());
+    }
+
+    #[test]
+    fn resource_policy_case_insensitive_service_name() {
+        let state = make_state();
+        let provider = KmsResourcePolicyProvider::new(state);
+        assert!(provider
+            .resource_policy("KMS", "arn:aws:kms:us-east-1:123:key/missing")
+            .is_none());
+    }
+
+    #[test]
+    fn shared_helper_returns_arc_provider() {
+        let state = make_state();
+        let arc: Arc<dyn ResourcePolicyProvider> = KmsResourcePolicyProvider::shared(state);
+        assert!(arc
+            .resource_policy("kms", "arn:aws:kms:us-east-1:123:key/missing")
+            .is_none());
     }
 }

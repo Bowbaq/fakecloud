@@ -23,10 +23,10 @@ pub async fn check_and_rotate(
 
     // Collect secrets that need rotation while holding the lock briefly.
     let due_secrets: Vec<DueSecret> = {
-        let state = state.read();
-        state
-            .secrets
-            .values()
+        let accounts = state.read();
+        accounts
+            .iter()
+            .flat_map(|(_, acct)| acct.secrets.values())
             .filter_map(|secret| {
                 if secret.deleted {
                     return None;
@@ -56,8 +56,14 @@ pub async fn check_and_rotate(
 
         // Mutate state: create pending version, update timestamps
         let (invocation, version_created) = {
-            let mut state = state.write();
-            let secret = match state.secrets.get_mut(&due.name) {
+            let mut accounts = state.write();
+            // Find the account that owns this secret by ARN prefix
+            let account_id = due.arn.split(':').nth(4).unwrap_or("").to_string();
+            let acct = match accounts.get_mut(&account_id) {
+                Some(a) => a,
+                None => continue,
+            };
+            let secret = match acct.secrets.get_mut(&due.name) {
                 Some(s) => s,
                 None => continue,
             };
@@ -183,10 +189,13 @@ mod tests {
     use std::sync::Arc;
 
     fn make_state() -> SharedSecretsManagerState {
-        Arc::new(RwLock::new(SecretsManagerState::new(
-            "123456789012",
-            "us-east-1",
-        )))
+        Arc::new(RwLock::new(
+            fakecloud_core::multi_account::MultiAccountState::new(
+                "123456789012",
+                "us-east-1",
+                "http://localhost:4566",
+            ),
+        ))
     }
 
     fn make_secret(
@@ -245,6 +254,7 @@ mod tests {
         let secret = make_secret("due-secret", true, Some(1), Some(2));
         state
             .write()
+            .default_mut()
             .secrets
             .insert("due-secret".to_string(), secret);
 
@@ -252,7 +262,8 @@ mod tests {
         assert_eq!(rotated, vec!["due-secret"]);
 
         // Verify a new version was created (simple rotation without Lambda)
-        let s = state.read();
+        let _accts = state.read();
+        let s = _accts.default_ref();
         let secret = &s.secrets["due-secret"];
         assert!(secret.versions.len() > 1, "new version should be created");
     }
@@ -262,7 +273,11 @@ mod tests {
         let state = make_state();
         // Rotation enabled, 30 day interval, last rotated 1 day ago → not due
         let secret = make_secret("not-due", true, Some(30), Some(1));
-        state.write().secrets.insert("not-due".to_string(), secret);
+        state
+            .write()
+            .default_mut()
+            .secrets
+            .insert("not-due".to_string(), secret);
 
         let rotated = check_and_rotate(&state, None).await;
         assert!(rotated.is_empty());
@@ -272,7 +287,11 @@ mod tests {
     async fn rotation_disabled_skipped() {
         let state = make_state();
         let secret = make_secret("disabled", false, Some(1), Some(2));
-        state.write().secrets.insert("disabled".to_string(), secret);
+        state
+            .write()
+            .default_mut()
+            .secrets
+            .insert("disabled".to_string(), secret);
 
         let rotated = check_and_rotate(&state, None).await;
         assert!(rotated.is_empty());
@@ -282,7 +301,11 @@ mod tests {
     async fn rotation_without_rules_skipped() {
         let state = make_state();
         let secret = make_secret("no-rules", true, None, Some(2));
-        state.write().secrets.insert("no-rules".to_string(), secret);
+        state
+            .write()
+            .default_mut()
+            .secrets
+            .insert("no-rules".to_string(), secret);
 
         let rotated = check_and_rotate(&state, None).await;
         assert!(rotated.is_empty());
@@ -292,7 +315,11 @@ mod tests {
     async fn rotation_without_last_rotated_skipped() {
         let state = make_state();
         let secret = make_secret("no-last", true, Some(1), None);
-        state.write().secrets.insert("no-last".to_string(), secret);
+        state
+            .write()
+            .default_mut()
+            .secrets
+            .insert("no-last".to_string(), secret);
 
         let rotated = check_and_rotate(&state, None).await;
         assert!(rotated.is_empty());
@@ -303,7 +330,11 @@ mod tests {
         let state = make_state();
         let mut secret = make_secret("deleted", true, Some(1), Some(2));
         secret.deleted = true;
-        state.write().secrets.insert("deleted".to_string(), secret);
+        state
+            .write()
+            .default_mut()
+            .secrets
+            .insert("deleted".to_string(), secret);
 
         let rotated = check_and_rotate(&state, None).await;
         assert!(rotated.is_empty());

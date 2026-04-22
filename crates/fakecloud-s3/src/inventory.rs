@@ -37,14 +37,24 @@ fn bucket_name_from_arn(arn: &str) -> Option<&str> {
 ///
 /// The report is a CSV with columns: Bucket, Key, Size, LastModifiedDate, ETag, StorageClass.
 pub fn generate_inventory_report(state: &SharedS3State, source_bucket: &str, config_id: &str) {
-    // Read the inventory config
-    let config_xml = {
+    // Read the inventory config (search all accounts)
+    let (config_xml, source_account_id) = {
         let mas = state.read();
-        let _empty_s3 = crate::state::S3State::new("", "");
-        let st = mas.default_ref();
-        st.buckets
-            .get(source_bucket)
-            .and_then(|b| b.inventory_configs.get(config_id).cloned())
+        let mut found = None;
+        for (acct_id, st) in mas.iter() {
+            if let Some(cfg) = st
+                .buckets
+                .get(source_bucket)
+                .and_then(|b| b.inventory_configs.get(config_id).cloned())
+            {
+                found = Some((cfg, acct_id.to_string()));
+                break;
+            }
+        }
+        match found {
+            Some((cfg, acct)) => (Some(cfg), acct),
+            None => (None, String::new()),
+        }
     };
 
     let config_xml = match config_xml {
@@ -65,8 +75,10 @@ pub fn generate_inventory_report(state: &SharedS3State, source_bucket: &str, con
     // Collect object data from source bucket
     let rows: Vec<String> = {
         let mas = state.read();
-        let _empty_s3 = crate::state::S3State::new("", "");
-        let st = mas.default_ref();
+        let st = match mas.get(&source_account_id) {
+            Some(s) => s,
+            None => return,
+        };
         let bucket = match st.buckets.get(source_bucket) {
             Some(b) => b,
             None => return,
@@ -125,9 +137,16 @@ pub fn generate_inventory_report(state: &SharedS3State, source_bucket: &str, con
     };
 
     let mut mas = state.write();
-    let st = mas.default_mut();
-    if let Some(target) = st.buckets.get_mut(&dest_bucket_name) {
-        target.objects.insert(report_key, report_object);
+    // Find the account that owns the destination bucket
+    let dest_acct = mas
+        .find_account(|s| s.buckets.contains_key(&dest_bucket_name))
+        .map(|a| a.to_string());
+    if let Some(acct) = dest_acct {
+        if let Some(st) = mas.get_mut(&acct) {
+            if let Some(target) = st.buckets.get_mut(&dest_bucket_name) {
+                target.objects.insert(report_key, report_object);
+            }
+        }
     }
 }
 
