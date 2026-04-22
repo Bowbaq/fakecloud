@@ -386,42 +386,80 @@ pub fn evaluate(policies: &[PolicyDocument], request: &EvalRequest<'_>) -> Decis
 }
 
 /// Evaluate `request` against a principal's identity policies plus
-/// optional permission-boundary and session-policy layers.
+/// optional permission-boundary, session-policy, and SCP layers.
 ///
-/// Phase 3 intersection semantics:
+/// Intersection semantics (applies identically to every gate):
 ///
-/// - `boundary = None` / `session = None` → the layer is absent and does
-///   not gate the decision (pass-through).
-/// - `boundary = Some(&[])` / `session = Some(&[])` → the layer is
-///   present but empty, which evaluates to `ImplicitDeny` and therefore
-///   denies the request. This is how dangling boundary ARNs and empty
-///   session policies are represented.
+/// - `boundary = None` / `session = None` / `scps = None` → the layer
+///   is absent and does not gate the decision (pass-through).
+/// - `Some(&[])` → the layer is present but empty, which evaluates to
+///   `ImplicitDeny` and therefore denies the request. This is how
+///   dangling boundary ARNs, empty session policies, and empty SCP
+///   sets (e.g. every policy detached from a target) are represented.
 /// - Any layer returning `ExplicitDeny` wins immediately (Deny
 ///   precedence applies across layers, not just within one).
 /// - Otherwise the request is allowed iff **every present layer**
 ///   evaluates to `Allow`. A layer with `ImplicitDeny` caps the
 ///   intersection to `ImplicitDeny`.
+///
+/// When `scps` is `Some`, each document in the slice is treated as a
+/// separate gate that must allow — the caller already assembled the
+/// ordered list (root OU first, account-direct last) via
+/// [`crate::scp_resolver`] or equivalent.
 pub fn evaluate_with_gates(
     identity: &[PolicyDocument],
     boundary: Option<&[PolicyDocument]>,
     session: Option<&[PolicyDocument]>,
     request: &EvalRequest<'_>,
 ) -> Decision {
+    evaluate_with_gates_and_scps(identity, boundary, session, None, request)
+}
+
+/// Full-chain variant of [`evaluate_with_gates`] that also applies an
+/// SCP ceiling. See the top-of-module docs for the intersection
+/// semantics. Batch 4 added this alongside the 4-arg form so existing
+/// callers (and tests) don't have to thread an extra `None` through
+/// every evaluation site.
+pub fn evaluate_with_gates_and_scps(
+    identity: &[PolicyDocument],
+    boundary: Option<&[PolicyDocument]>,
+    session: Option<&[PolicyDocument]>,
+    scps: Option<&[PolicyDocument]>,
+    request: &EvalRequest<'_>,
+) -> Decision {
     let identity_decision = evaluate_inner(identity, request, false);
-    intersect_layers(identity_decision, boundary, session, request)
+    intersect_layers(identity_decision, boundary, session, scps, request)
 }
 
 /// Combine an already-computed identity-side decision with the optional
-/// boundary and session-policy layers. Factored out so the
+/// boundary, session-policy, and SCP layers. Factored out so the
 /// resource-policy variant can apply the same intersection to the
 /// identity side before OR/ANDing with the resource-policy side.
 fn intersect_layers(
     identity_decision: Decision,
     boundary: Option<&[PolicyDocument]>,
     session: Option<&[PolicyDocument]>,
+    scps: Option<&[PolicyDocument]>,
     request: &EvalRequest<'_>,
 ) -> Decision {
     if matches!(identity_decision, Decision::ExplicitDeny) {
+        return Decision::ExplicitDeny;
+    }
+    // SCP gate sits at the top of the ceiling stack. Each SCP
+    // document is a separate layer that must allow (AWS intersects
+    // SCPs across the OU path). A single explicit Deny in any SCP
+    // short-circuits the evaluation.
+    let scp_decision = scps.map(|docs| evaluate_scp_chain(docs, request));
+    if matches!(scp_decision, Some(Decision::ExplicitDeny)) {
+        if let Some(scps_slice) = scps {
+            tracing::debug!(
+                target: "fakecloud::iam::audit",
+                action = %request.action,
+                principal_arn = %request.principal.arn,
+                scp_count = scps_slice.len(),
+                "SCP ceiling produced ExplicitDeny"
+            );
+        }
         return Decision::ExplicitDeny;
     }
     let boundary_decision = boundary.map(|policies| evaluate_inner(policies, request, false));
@@ -440,7 +478,44 @@ fn intersect_layers(
     let session_allows = session_decision
         .map(|d| matches!(d, Decision::Allow))
         .unwrap_or(true);
-    if identity_allows && boundary_allows && session_allows {
+    let scp_allows = scp_decision
+        .map(|d| matches!(d, Decision::Allow))
+        .unwrap_or(true);
+    if identity_allows && boundary_allows && session_allows && scp_allows {
+        Decision::Allow
+    } else {
+        if scps.is_some() && !scp_allows {
+            tracing::debug!(
+                target: "fakecloud::iam::audit",
+                action = %request.action,
+                principal_arn = %request.principal.arn,
+                "SCP ceiling did not allow action; capped to ImplicitDeny"
+            );
+        }
+        Decision::ImplicitDeny
+    }
+}
+
+/// Walk an ordered SCP chain (root OU -> descendant OUs -> account)
+/// and intersect the per-document decisions. Each document is its own
+/// gate: an explicit Deny anywhere wins, otherwise every document
+/// must evaluate to Allow for the chain to allow.
+fn evaluate_scp_chain(scps: &[PolicyDocument], request: &EvalRequest<'_>) -> Decision {
+    if scps.is_empty() {
+        // `Some(&[])` means the org exists and applies but no SCPs
+        // are attached up the chain. Preserve AWS's deny-by-default
+        // ceiling semantics: nothing allowed.
+        return Decision::ImplicitDeny;
+    }
+    let mut all_allow = true;
+    for doc in scps {
+        match evaluate_inner(std::slice::from_ref(doc), request, false) {
+            Decision::ExplicitDeny => return Decision::ExplicitDeny,
+            Decision::Allow => {}
+            Decision::ImplicitDeny => all_allow = false,
+        }
+    }
+    if all_allow {
         Decision::Allow
     } else {
         Decision::ImplicitDeny
@@ -504,13 +579,40 @@ pub fn evaluate_with_resource_policy_and_gates(
     request: &EvalRequest<'_>,
     resource_account_id: &str,
 ) -> Decision {
+    evaluate_with_resource_policy_and_gates_and_scps(
+        identity_policies,
+        boundary,
+        session,
+        None,
+        resource_policy,
+        request,
+        resource_account_id,
+    )
+}
+
+/// Full-chain variant of
+/// [`evaluate_with_resource_policy_and_gates`] that also applies an
+/// SCP ceiling on the identity side. SCPs never apply to the
+/// resource-policy branch — AWS evaluates the resource policy in the
+/// resource's account, and the caller's SCPs have no authority there.
+pub fn evaluate_with_resource_policy_and_gates_and_scps(
+    identity_policies: &[PolicyDocument],
+    boundary: Option<&[PolicyDocument]>,
+    session: Option<&[PolicyDocument]>,
+    scps: Option<&[PolicyDocument]>,
+    resource_policy: Option<&PolicyDocument>,
+    request: &EvalRequest<'_>,
+    resource_account_id: &str,
+) -> Decision {
     let identity_raw = evaluate_inner(identity_policies, request, false);
     if matches!(identity_raw, Decision::ExplicitDeny) {
         return Decision::ExplicitDeny;
     }
-    // Apply boundary and session gates to the identity side. An
-    // ExplicitDeny from either layer short-circuits the whole call.
-    let identity_gated = intersect_layers(identity_raw, boundary, session, request);
+    // Apply boundary, session, and SCP gates to the identity side.
+    // SCPs only apply to the identity side (never to the resource
+    // policy branch) — they are the caller-account ceiling, and AWS
+    // evaluates the resource policy in the resource's account.
+    let identity_gated = intersect_layers(identity_raw, boundary, session, scps, request);
     if matches!(identity_gated, Decision::ExplicitDeny) {
         return Decision::ExplicitDeny;
     }
@@ -2610,6 +2712,184 @@ mod tests {
                 "123456789012"
             ),
             Decision::ExplicitDeny
+        );
+    }
+
+    // --- Batch 4: SCP ceiling layer -------------------------------------
+
+    #[test]
+    fn scp_caps_identity_allow_all() {
+        let p = principal_user("arn:aws:iam::123456789012:user/alice");
+        let identity = [allow_all()];
+        let scps = [allow_get_object()];
+        assert_eq!(
+            evaluate_with_gates_and_scps(
+                &identity,
+                None,
+                None,
+                Some(&scps),
+                &req(&p, "s3:GetObject", "arn:aws:s3:::bucket/key"),
+            ),
+            Decision::Allow
+        );
+        assert_eq!(
+            evaluate_with_gates_and_scps(
+                &identity,
+                None,
+                None,
+                Some(&scps),
+                &req(&p, "s3:PutObject", "arn:aws:s3:::bucket/key"),
+            ),
+            Decision::ImplicitDeny
+        );
+    }
+
+    #[test]
+    fn scp_explicit_deny_wins() {
+        let p = principal_user("arn:aws:iam::123456789012:user/alice");
+        let identity = [allow_all()];
+        let scps = [deny_put_object()];
+        assert_eq!(
+            evaluate_with_gates_and_scps(
+                &identity,
+                None,
+                None,
+                Some(&scps),
+                &req(&p, "s3:PutObject", "arn:aws:s3:::bucket/key"),
+            ),
+            Decision::ExplicitDeny
+        );
+    }
+
+    #[test]
+    fn scp_empty_chain_denies_everything() {
+        let p = principal_user("arn:aws:iam::123456789012:user/alice");
+        let identity = [allow_all()];
+        let scps: [PolicyDocument; 0] = [];
+        // Some(&[]) means the org applies but no SCP allow-all reaches
+        // the account path (e.g. FullAWSAccess detached and nothing
+        // else attached). Deny-by-default.
+        assert_eq!(
+            evaluate_with_gates_and_scps(
+                &identity,
+                None,
+                None,
+                Some(&scps),
+                &req(&p, "s3:GetObject", "arn:aws:s3:::bucket/key"),
+            ),
+            Decision::ImplicitDeny
+        );
+    }
+
+    #[test]
+    fn scp_none_preserves_identity_only_decision() {
+        // None = off-by-default. Evaluation must match the no-SCP
+        // path bit-for-bit, preserving the zero-behavior-change
+        // contract when no organization exists.
+        let p = principal_user("arn:aws:iam::123456789012:user/alice");
+        let identity = [allow_all()];
+        let with_scps = evaluate_with_gates_and_scps(
+            &identity,
+            None,
+            None,
+            None,
+            &req(&p, "s3:GetObject", "arn:aws:s3:::bucket/key"),
+        );
+        let without = evaluate_with_gates(
+            &identity,
+            None,
+            None,
+            &req(&p, "s3:GetObject", "arn:aws:s3:::bucket/key"),
+        );
+        assert_eq!(with_scps, without);
+        assert_eq!(with_scps, Decision::Allow);
+    }
+
+    #[test]
+    fn scp_chain_intersects_across_ancestors() {
+        // Two SCPs up the path: outer Allow *, inner Allow only
+        // s3:GetObject. AWS intersects — action must be in every one.
+        let p = principal_user("arn:aws:iam::123456789012:user/alice");
+        let identity = [allow_all()];
+        let scps = [allow_all(), allow_get_object()];
+        assert_eq!(
+            evaluate_with_gates_and_scps(
+                &identity,
+                None,
+                None,
+                Some(&scps),
+                &req(&p, "s3:GetObject", "arn:aws:s3:::bucket/key"),
+            ),
+            Decision::Allow
+        );
+        assert_eq!(
+            evaluate_with_gates_and_scps(
+                &identity,
+                None,
+                None,
+                Some(&scps),
+                &req(&p, "s3:PutObject", "arn:aws:s3:::bucket/key"),
+            ),
+            Decision::ImplicitDeny
+        );
+    }
+
+    #[test]
+    fn scp_intersects_with_boundary_and_session() {
+        let p = principal_user("arn:aws:iam::123456789012:user/alice");
+        let identity = [allow_all()];
+        let boundary = [allow_all()];
+        let session = [allow_all()];
+        let scps = [allow_get_object()];
+        assert_eq!(
+            evaluate_with_gates_and_scps(
+                &identity,
+                Some(&boundary),
+                Some(&session),
+                Some(&scps),
+                &req(&p, "s3:PutObject", "arn:aws:s3:::bucket/key"),
+            ),
+            Decision::ImplicitDeny
+        );
+        assert_eq!(
+            evaluate_with_gates_and_scps(
+                &identity,
+                Some(&boundary),
+                Some(&session),
+                Some(&scps),
+                &req(&p, "s3:GetObject", "arn:aws:s3:::bucket/key"),
+            ),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn scp_caps_identity_side_of_resource_policy() {
+        // Cross-account resource policy grants PutObject; caller's SCP
+        // allows only GetObject. Identity side is gated by SCP →
+        // cross-account AND means the whole thing denies.
+        let p = principal_user("arn:aws:iam::111111111111:user/alice");
+        let identity = [allow_all()];
+        let resource = doc(serde_json::json!({
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": "*",
+                "Action": "s3:PutObject",
+                "Resource": "arn:aws:s3:::bucket/*"
+            }]
+        }));
+        let scps = [allow_get_object()];
+        assert_eq!(
+            evaluate_with_resource_policy_and_gates_and_scps(
+                &identity,
+                None,
+                None,
+                Some(&scps),
+                Some(&resource),
+                &req(&p, "s3:PutObject", "arn:aws:s3:::bucket/key"),
+                "222222222222",
+            ),
+            Decision::ImplicitDeny
         );
     }
 }

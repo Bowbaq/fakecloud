@@ -337,16 +337,23 @@ pub trait IamPolicyEvaluator: Send + Sync {
     /// `principal`, using `context` for `Condition` block resolution.
     /// `session_policies` are the raw JSON session-policy documents
     /// from the STS call that minted the caller's credential (empty
-    /// for IAM user access keys).
+    /// for IAM user access keys). `scps` are the inherited SCP
+    /// documents (root-OU first, account-direct last) that form the
+    /// top-of-chain allow-list ceiling; `None` means no org exists
+    /// for this principal or the principal is exempt (management,
+    /// service-linked role) and the layer is a pass-through.
     fn evaluate(
         &self,
         principal: &Principal,
         action: &IamAction,
         context: &ConditionContext,
         session_policies: &[String],
+        scps: Option<&[String]>,
     ) -> IamDecision;
 
     /// Evaluate with resource-policy + session-policy intersection.
+    /// `scps` follows the same semantics as in [`Self::evaluate`].
+    #[allow(clippy::too_many_arguments)]
     fn evaluate_with_resource_policy(
         &self,
         principal: &Principal,
@@ -355,7 +362,26 @@ pub trait IamPolicyEvaluator: Send + Sync {
         resource_policy_json: Option<&str>,
         resource_account_id: &str,
         session_policies: &[String],
+        scps: Option<&[String]>,
     ) -> IamDecision;
+}
+
+/// Abstraction over "given a principal, return the inherited SCP
+/// documents that form the top-of-chain allow-list ceiling for the
+/// principal's account". Implemented by `fakecloud-organizations`.
+///
+/// Returning `None` means SCPs do not apply (no org exists for this
+/// fakecloud process, or the principal is the management account, or
+/// the principal is a service-linked role, or the account is not
+/// enrolled in the organization). Dispatch plumbs the returned slice
+/// straight into [`IamPolicyEvaluator`].
+///
+/// The ordered list puts root-OU-attached policies first, then each
+/// descendant OU down to the account's parent, and account-direct
+/// attachments last — the evaluator treats each entry as a separate
+/// gate that must allow (intersection), matching AWS SCP semantics.
+pub trait ScpResolver: Send + Sync {
+    fn scps_for(&self, principal: &Principal) -> Option<Vec<String>>;
 }
 
 /// Abstraction over "given a service + a fully-qualified resource ARN,
