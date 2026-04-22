@@ -112,10 +112,12 @@ pub async fn dispatch(
     let sigv4_info = header_info.or(presigned_info);
     let access_key_id = sigv4_info.as_ref().map(|info| info.access_key.clone());
 
-    // LocalStack-style Host (`<svc>.<region>.localhost.localstack.cloud[:port]`,
-    // or `<bucket>.s3.<region>.…` for virtual-hosted S3) is a secondary
-    // region source and carries the bucket for virtual-hosted S3 path rewrite.
-    let host_info = protocol::parse_localstack_host_from_headers(&parts.headers);
+    // Host-header routing hint: LocalStack-shaped
+    // `<svc>.<region>.localhost.localstack.cloud[:port]`, real-AWS
+    // `<svc>.<region>.amazonaws.com`, and every S3 virtual-hosted variant
+    // of both. Secondary region source and carries the bucket for
+    // virtual-hosted S3 path rewrite.
+    let host_info = protocol::parse_routing_host_from_headers(&parts.headers);
 
     let region = sigv4_info
         .map(|info| info.region)
