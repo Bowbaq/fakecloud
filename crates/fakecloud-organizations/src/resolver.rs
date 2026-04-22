@@ -114,15 +114,61 @@ impl ScpResolver for OrganizationsScpResolver {
         // Account-direct attachments come last.
         path.push(principal.account_id.clone());
 
+        // AWS semantics: SCPs attached to the **same** target are
+        // unioned (OR across the policies' statements), and the union
+        // documents across **different** ancestor levels are then
+        // intersected (AND). Our evaluator models each slice entry as
+        // an intersection gate, so emit one entry per target level
+        // with its per-level union already merged. Identified by cubic.
         let mut docs: Vec<String> = Vec::new();
         for target_id in &path {
-            if let Some(policy_ids) = org.attachments.get(target_id) {
-                for pid in policy_ids {
-                    if let Some(policy) = org.policies.get(pid) {
-                        docs.push(policy.content.clone());
+            let Some(policy_ids) = org.attachments.get(target_id) else {
+                continue;
+            };
+            if policy_ids.is_empty() {
+                continue;
+            }
+            let mut statements: Vec<serde_json::Value> = Vec::new();
+            for pid in policy_ids {
+                let Some(policy) = org.policies.get(pid) else {
+                    continue;
+                };
+                let parsed: serde_json::Value = match serde_json::from_str(&policy.content) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::debug!(
+                            target: "fakecloud::iam::audit",
+                            policy_id = %pid,
+                            error = %e,
+                            "SCP content failed to parse at resolve time; skipping policy"
+                        );
+                        continue;
+                    }
+                };
+                match parsed.get("Statement") {
+                    Some(serde_json::Value::Array(arr)) => {
+                        statements.extend(arr.iter().cloned());
+                    }
+                    Some(single @ serde_json::Value::Object(_)) => {
+                        statements.push(single.clone());
+                    }
+                    _ => {
+                        tracing::debug!(
+                            target: "fakecloud::iam::audit",
+                            policy_id = %pid,
+                            "SCP has no Statement array; skipping"
+                        );
                     }
                 }
             }
+            if statements.is_empty() {
+                continue;
+            }
+            let merged = serde_json::json!({
+                "Version": "2012-10-17",
+                "Statement": statements,
+            });
+            docs.push(merged.to_string());
         }
         Some(docs)
     }
@@ -255,8 +301,50 @@ mod tests {
 
         let resolver = OrganizationsScpResolver::new(shared(org));
         let docs = resolver.scps_for(&user_principal("222222222222")).unwrap();
-        // Chain: FullAWSAccess@root + P_Root + P_Parent + P_Child + P_Account.
-        assert_eq!(docs.len(), 5);
+        // One merged document per level: root (FullAWSAccess + P_Root),
+        // parent OU (P_Parent), child OU (P_Child), account (P_Account).
+        assert_eq!(docs.len(), 4);
+    }
+
+    #[test]
+    fn same_target_scps_are_unioned_into_one_document() {
+        // Two SCPs attached to the same target must fold their
+        // statements into a single document so the evaluator sees one
+        // entry for that level. AWS semantics: same-target = OR,
+        // across-levels = AND. (Identified by cubic.)
+        let mut org = OrganizationState::bootstrap("111111111111");
+        let root = org.root_id.clone();
+        org.detach_policy(crate::state::FULL_AWS_ACCESS_POLICY_ID, &root)
+            .unwrap();
+        let a = org
+            .create_policy(
+                "A",
+                "",
+                r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"*"}]}"#,
+                crate::state::POLICY_TYPE_SCP,
+            )
+            .unwrap();
+        let b = org
+            .create_policy(
+                "B",
+                "",
+                r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:PutObject","Resource":"*"}]}"#,
+                crate::state::POLICY_TYPE_SCP,
+            )
+            .unwrap();
+        org.attach_policy(&a.id, &root).unwrap();
+        org.attach_policy(&b.id, &root).unwrap();
+        org.enroll_account_if_missing("222222222222");
+        let resolver = OrganizationsScpResolver::new(shared(org));
+        let docs = resolver.scps_for(&user_principal("222222222222")).unwrap();
+        assert_eq!(
+            docs.len(),
+            1,
+            "same-target SCPs must merge into one document"
+        );
+        let merged: serde_json::Value = serde_json::from_str(&docs[0]).unwrap();
+        let stmts = merged["Statement"].as_array().unwrap();
+        assert_eq!(stmts.len(), 2);
     }
 
     #[test]
