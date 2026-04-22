@@ -243,19 +243,25 @@ fn parse_aws_prefix(prefix: &str) -> Option<RoutingHost> {
         }
     }
 
+    // Legacy global S3: last label is `s3`, no region present. `s3` on its
+    // own is the path-style global endpoint; anything preceding it is the
+    // bucket (including dotted names like `a.b.s3.amazonaws.com`).
+    if last == "s3" {
+        if labels.len() == 1 {
+            return Some(RoutingHost {
+                service: "s3".to_string(),
+                region: "us-east-1".to_string(),
+                bucket: None,
+            });
+        }
+        return Some(RoutingHost {
+            service: "s3".to_string(),
+            region: "us-east-1".to_string(),
+            bucket: Some(labels[..labels.len() - 1].join(".")),
+        });
+    }
+
     match labels.len() {
-        // `s3` on its own: legacy S3 global endpoint, implicit us-east-1.
-        1 if labels[0] == "s3" => Some(RoutingHost {
-            service: "s3".to_string(),
-            region: "us-east-1".to_string(),
-            bucket: None,
-        }),
-        // `<bucket>.s3`: legacy virtual-hosted S3, implicit us-east-1.
-        2 if labels[1] == "s3" => Some(RoutingHost {
-            service: "s3".to_string(),
-            region: "us-east-1".to_string(),
-            bucket: Some(labels[0].to_string()),
-        }),
         // `<service>.<region>` — the common case. Covers `s3.<region>`
         // path-style S3 too, since the service label falls through here.
         2 => Some(RoutingHost {
@@ -796,6 +802,16 @@ mod tests {
         assert_eq!(h.service, "s3");
         assert_eq!(h.region, "us-east-1");
         assert_eq!(h.bucket.as_deref(), Some("my-bucket"));
+    }
+
+    #[test]
+    fn parse_routing_host_aws_s3_legacy_global_dotted_bucket() {
+        // AWS allows buckets with dots (e.g. `a.b.c`) and still serves them
+        // via the legacy `<bucket>.s3.amazonaws.com` global endpoint.
+        let h = parse_routing_host("a.b.c.s3.amazonaws.com").unwrap();
+        assert_eq!(h.service, "s3");
+        assert_eq!(h.region, "us-east-1");
+        assert_eq!(h.bucket.as_deref(), Some("a.b.c"));
     }
 
     #[test]

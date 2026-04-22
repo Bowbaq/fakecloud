@@ -388,6 +388,37 @@ async fn s3_virtual_hosted_put_get_via_aws_legacy_global() {
 }
 
 #[tokio::test]
+async fn s3_virtual_hosted_legacy_global_dotted_bucket() {
+    // `a.b.c.s3.amazonaws.com` — dotted bucket name on the legacy
+    // us-east-1 global endpoint. AWS accepts it; fakecloud must too.
+    let server = TestServer::start().await;
+    let s3 = server.s3_client().await;
+    s3.create_bucket().bucket("a.b.c").send().await.unwrap();
+    s3.put_object()
+        .bucket("a.b.c")
+        .key("obj")
+        .body(ByteStream::from_static(b"dotted-legacy"))
+        .send()
+        .await
+        .unwrap();
+
+    let http = reqwest::Client::new();
+    let resp = http
+        .get(format!("{}/obj", server.endpoint()))
+        .header("Host", "a.b.c.s3.amazonaws.com")
+        .header(
+            "authorization",
+            "AWS4-HMAC-SHA256 Credential=test/20240101/us-east-1/s3/aws4_request, \
+             SignedHeaders=host, Signature=fake",
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.text().await.unwrap(), "dotted-legacy");
+}
+
+#[tokio::test]
 async fn s3_virtual_hosted_put_get_via_aws_dash_separated() {
     // The older `<bucket>.s3-<region>.amazonaws.com` form AWS still serves
     // — some long-lived fixtures encode it.
