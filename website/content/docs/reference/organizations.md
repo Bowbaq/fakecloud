@@ -1,12 +1,12 @@
 +++
 title = "AWS Organizations"
-description = "Organizations control plane: organization, OU tree, account membership, SCP CRUD. Enforcement ships in Batch 4."
+description = "Organizations control plane + SCP enforcement as the top-of-chain IAM evaluator layer."
 weight = 6
 +++
 
 fakecloud ships a minimal AWS Organizations implementation. Its purpose is to let you attach Service Control Policies (SCPs) to accounts and organizational units so your tests can exercise the full IAM evaluation hierarchy — SCP ceiling, permission boundary, session policy, identity policy, resource policy — end to end.
 
-The current surface: organization lifecycle, OU tree, member-account listing, and SCP CRUD + attachment. SCP enforcement through the IAM evaluator lands in Batch 4.
+Both the control plane and SCP enforcement are live. SCPs act as the top-of-chain allow-list ceiling: see the [security reference](/docs/reference/security#phase-6-service-control-policies-scps) for the full evaluation order and the management-account and service-linked-role exemptions.
 
 ## Model
 
@@ -48,11 +48,11 @@ The current surface: organization lifecycle, OU tree, member-account listing, an
 
 ## SCP semantics
 
-Policies are JSON documents of the same shape as identity policies. In Batch 3 the control plane validates that the document is parseable JSON; deeper semantic validation happens alongside enforcement in Batch 4, so there is no divergence between what the control plane accepts and what the evaluator actually enforces.
+Policies are JSON documents of the same shape as identity policies. The control plane validates structural parseability; the evaluator applies the same document at request time, so there is no divergence between what the control plane accepts and what actually gates traffic.
 
 `FullAWSAccess` (`p-FullAWSAccess`) is created and attached to the root OU on `CreateOrganization` and is immutable: `UpdatePolicy` and `DeletePolicy` return `PolicyChangesNotAllowedException` for it. You can still `DetachPolicy` it from the root — AWS permits this, and tests that want to exercise a restrictive SCP posture rely on being able to drop the AWS-managed allow-all.
 
-SCP enforcement in the IAM evaluator is in active development. See the security reference for where SCPs sit in the full evaluation hierarchy.
+SCPs are enforced through the IAM evaluator when `FAKECLOUD_IAM` is `soft` or `strict`. Off by default when no organization exists or the resolver returns a non-member / management / service-linked-role principal. See the [security reference](/docs/reference/security#phase-6-service-control-policies-scps) for the full evaluation chain.
 
 ## Usage
 
@@ -67,4 +67,4 @@ println!("{} managed by {}", org.id().unwrap(), org.master_account_id().unwrap()
 
 ## Behavior under `FAKECLOUD_IAM=off`
 
-Organizations control plane works identically regardless of the `FAKECLOUD_IAM` setting. SCP enforcement — once it ships — is gated on IAM being enabled, so creating an organization with `FAKECLOUD_IAM=off` is allowed but has no effect on evaluation.
+Organizations control plane works identically regardless of the `FAKECLOUD_IAM` setting. SCP enforcement is gated on IAM being enabled, so creating an organization with `FAKECLOUD_IAM=off` is allowed but has no effect on evaluation — the resolver is still wired, but the evaluator it feeds is never called.

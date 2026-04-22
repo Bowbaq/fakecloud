@@ -381,6 +381,16 @@ pub async fn dispatch(
                         // same-account by using the caller's account.
                         let resource_account_id = parse_account_from_arn(&iam_action.resource)
                             .unwrap_or_else(|| principal.account_id.clone());
+                        // SCP ceiling: resolve the inherited SCP chain
+                        // for this principal (management accounts and
+                        // service-linked roles come back as `None`, in
+                        // which case the evaluator treats the layer as
+                        // absent). Audit breadcrumbs emitted by the
+                        // resolver itself, not here.
+                        let scps = config
+                            .scp_resolver
+                            .as_ref()
+                            .and_then(|r| r.scps_for(principal));
                         let decision = evaluator.evaluate_with_resource_policy(
                             principal,
                             &iam_action,
@@ -388,6 +398,7 @@ pub async fn dispatch(
                             resource_policy_json.as_deref(),
                             &resource_account_id,
                             &caller_session_policies,
+                            scps.as_deref(),
                         );
                         if !decision.is_allow() {
                             tracing::warn!(
@@ -526,6 +537,13 @@ pub struct DispatchConfig {
     /// dispatch then behaves as if no resource policy is attached to
     /// any resource, identical to the Phase 1 behavior.
     pub resource_policy_provider: Option<Arc<dyn ResourcePolicyProvider>>,
+    /// Resolves the ordered SCP chain that applies to a principal's
+    /// account (root-OU first, account-direct last). `None` means no
+    /// organizations resolver has been registered — SCPs never gate
+    /// any request in that case. Off-by-default matches the Batch 4
+    /// contract: zero behavior change until a user calls
+    /// `CreateOrganization` and the resolver is wired.
+    pub scp_resolver: Option<Arc<dyn crate::auth::ScpResolver>>,
 }
 
 impl std::fmt::Debug for DispatchConfig {
@@ -556,6 +574,10 @@ impl std::fmt::Debug for DispatchConfig {
                     .as_ref()
                     .map(|_| "<ResourcePolicyProvider>"),
             )
+            .field(
+                "scp_resolver",
+                &self.scp_resolver.as_ref().map(|_| "<ScpResolver>"),
+            )
             .finish()
     }
 }
@@ -572,6 +594,7 @@ impl DispatchConfig {
             credential_resolver: None,
             policy_evaluator: None,
             resource_policy_provider: None,
+            scp_resolver: None,
         }
     }
 }
@@ -1042,9 +1065,11 @@ mod tests {
             credential_resolver: None,
             policy_evaluator: None,
             resource_policy_provider: None,
+            scp_resolver: None,
         };
         assert!(cfg.verify_sigv4);
         assert!(cfg.iam_mode.is_strict());
         assert!(cfg.resource_policy_provider.is_none());
+        assert!(cfg.scp_resolver.is_none());
     }
 }

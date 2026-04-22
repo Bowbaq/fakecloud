@@ -2078,6 +2078,11 @@ async fn main() {
                 ),
             ],
         )),
+        scp_resolver: Some(
+            fakecloud_organizations::resolver::OrganizationsScpResolver::shared(
+                organizations_state.clone(),
+            ),
+        ),
     };
 
     let service_names: Vec<String> = registry

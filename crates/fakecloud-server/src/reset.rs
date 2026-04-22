@@ -691,7 +691,8 @@ mod tests {
             action: "ListBuckets",
             resource: "*".to_string(),
         };
-        let decision = evaluator.evaluate(&principal, &action, &ConditionContext::default(), &[]);
+        let decision =
+            evaluator.evaluate(&principal, &action, &ConditionContext::default(), &[], None);
         assert_eq!(
             decision,
             IamDecision::Allow,
