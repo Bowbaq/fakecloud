@@ -986,12 +986,9 @@ fn extract_function_arg<'a>(expr: &'a str, func_name: &str) -> Option<&'a str> {
     Some(inner.trim())
 }
 
-#[allow(clippy::only_used_in_recursion)]
 fn evaluate_key_condition(
     expr: &str,
     item: &HashMap<String, AttributeValue>,
-    hash_key_name: &str,
-    range_key_name: Option<&str>,
     expr_attr_names: &HashMap<String, String>,
     expr_attr_values: &HashMap<String, Value>,
 ) -> bool {
@@ -1000,36 +997,16 @@ fn evaluate_key_condition(
     let parts = split_on_and(trimmed);
     if parts.len() > 1 {
         return parts.iter().all(|part| {
-            evaluate_key_condition(
-                part.trim(),
-                item,
-                hash_key_name,
-                range_key_name,
-                expr_attr_names,
-                expr_attr_values,
-            )
+            evaluate_key_condition(part.trim(), item, expr_attr_names, expr_attr_values)
         });
     }
 
     let stripped = strip_outer_parens(trimmed);
     if stripped != trimmed {
-        return evaluate_key_condition(
-            stripped,
-            item,
-            hash_key_name,
-            range_key_name,
-            expr_attr_names,
-            expr_attr_values,
-        );
+        return evaluate_key_condition(stripped, item, expr_attr_names, expr_attr_values);
     }
 
-    evaluate_single_key_condition(
-        trimmed,
-        item,
-        hash_key_name,
-        expr_attr_names,
-        expr_attr_values,
-    )
+    evaluate_single_key_condition(trimmed, item, expr_attr_names, expr_attr_values)
 }
 
 /// Split a DynamoDB condition expression on a top-level keyword (``" AND "``,
@@ -1077,7 +1054,6 @@ fn split_on_or(expr: &str) -> Vec<&str> {
 fn evaluate_single_key_condition(
     part: &str,
     item: &HashMap<String, AttributeValue>,
-    _hash_key_name: &str,
     expr_attr_names: &HashMap<String, String>,
     expr_attr_values: &HashMap<String, Value>,
 ) -> bool {
@@ -1431,7 +1407,7 @@ fn evaluate_single_filter_condition(
         return evaluate_in_match(actual, &value_refs, expr_attr_values);
     }
 
-    evaluate_single_key_condition(part, item, "", expr_attr_names, expr_attr_values)
+    evaluate_single_key_condition(part, item, expr_attr_names, expr_attr_values)
 }
 
 /// `begins_with(path, :val)` — only S (string) operands. Returns false on
@@ -1725,11 +1701,12 @@ fn apply_set_assignment(
     // key inside an M-typed attribute. Only plain-value RHS is supported for
     // now (no `if_not_exists` / `list_append` / arithmetic into a nested
     // path — those shapes aren't common and can be added when needed).
+    // An unresolvable RHS is a ValidationException, not a silent no-op —
+    // silent drops are exactly the class of bug this file already fights.
     if is_dotted_path(left_trimmed) {
-        if let Some(v) = resolve_value(right, item, expr_attr_names, expr_attr_values) {
-            return assign_nested_path(item, left_trimmed, expr_attr_names, v);
-        }
-        return Ok(());
+        let v = resolve_value(right, item, expr_attr_names, expr_attr_values)
+            .ok_or_else(invalid_document_path)?;
+        return assign_nested_path(item, left_trimmed, expr_attr_names, v);
     }
 
     // Split off a trailing `[N]` list-index suffix so we can resolve the
@@ -2854,8 +2831,6 @@ mod tests {
         assert!(evaluate_key_condition(
             "pk = :pk",
             &item,
-            "pk",
-            Some("sk"),
             &HashMap::new(),
             &expr_values,
         ));
@@ -5012,7 +4987,7 @@ mod tests {
         let values: HashMap<String, Value> = HashMap::new();
 
         assert!(
-            !evaluate_single_key_condition("GARBAGE NONSENSE", &item, "", &names, &values),
+            !evaluate_single_key_condition("GARBAGE NONSENSE", &item, &names, &values),
             "unrecognized expression must return false"
         );
     }
