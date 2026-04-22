@@ -205,6 +205,7 @@ fn parse_amz_target(target: &str) -> Option<DetectedRequest> {
         s if s.starts_with("AWSCognitoIdentityProviderService") => "cognito-idp",
         s if s.starts_with("Kinesis_20131202") => "kinesis",
         s if s.starts_with("AWSStepFunctions") => "states",
+        s if s.starts_with("AWSOrganizationsV") => "organizations",
         _ => return None,
     };
 
@@ -464,6 +465,12 @@ mod tests {
                 .unwrap()
                 .service,
             "states"
+        );
+        assert_eq!(
+            parse_amz_target("AWSOrganizationsV20161128.CreateOrganization")
+                .unwrap()
+                .service,
+            "organizations"
         );
         assert!(parse_amz_target("UnknownServicePrefix.Action").is_none());
     }

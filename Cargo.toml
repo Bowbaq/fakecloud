@@ -7,6 +7,7 @@ members = [
     "crates/fakecloud-sns",
     "crates/fakecloud-eventbridge",
     "crates/fakecloud-iam",
+    "crates/fakecloud-organizations",
     "crates/fakecloud-ssm",
     "crates/fakecloud-s3",
     "crates/fakecloud-dynamodb",
@@ -85,6 +86,7 @@ fakecloud-sqs = { path = "crates/fakecloud-sqs", version = "0.9.2" }
 fakecloud-sns = { path = "crates/fakecloud-sns", version = "0.9.2" }
 fakecloud-eventbridge = { path = "crates/fakecloud-eventbridge", version = "0.9.2" }
 fakecloud-iam = { path = "crates/fakecloud-iam", version = "0.9.2" }
+fakecloud-organizations = { path = "crates/fakecloud-organizations", version = "0.9.2" }
 fakecloud-ssm = { path = "crates/fakecloud-ssm", version = "0.9.2" }
 fakecloud-s3 = { path = "crates/fakecloud-s3", version = "0.9.2" }
 fakecloud-dynamodb = { path = "crates/fakecloud-dynamodb", version = "0.9.2" }
