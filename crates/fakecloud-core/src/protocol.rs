@@ -46,8 +46,9 @@ pub fn detect_service(
 
     // 2. Check for Query protocol (Action parameter in query string or form body)
     if let Some(action) = query_params.get("Action") {
-        let service =
-            extract_service_from_auth(headers).or_else(|| infer_service_from_action(action));
+        let service = extract_service_from_auth(headers)
+            .or_else(|| infer_service_from_action(action))
+            .or_else(|| parse_localstack_host_from_headers(headers).map(|h| h.service));
         if let Some(service) = service {
             return Some(DetectedRequest {
                 service,
@@ -62,8 +63,9 @@ pub fn detect_service(
         let form_params = decode_form_urlencoded(body);
 
         if let Some(action) = form_params.get("Action") {
-            let service =
-                extract_service_from_auth(headers).or_else(|| infer_service_from_action(action));
+            let service = extract_service_from_auth(headers)
+                .or_else(|| infer_service_from_action(action))
+                .or_else(|| parse_localstack_host_from_headers(headers).map(|h| h.service));
             if let Some(service) = service {
                 return Some(DetectedRequest {
                     service,
@@ -115,7 +117,75 @@ pub fn detect_service(
         });
     }
 
+    // 7. Fallback: unsigned REST-style request carrying a LocalStack-shaped
+    //    Host header. Lets fixtures and curl-style probes reach the right
+    //    service without SigV4; signed requests were already handled in step 4.
+    if let Some(host_info) = parse_localstack_host_from_headers(headers) {
+        if let Some(protocol) = rest_protocol_for(&host_info.service) {
+            return Some(DetectedRequest {
+                service: host_info.service,
+                action: String::new(),
+                protocol,
+            });
+        }
+    }
+
     None
+}
+
+/// Service + region (and optional bucket) decoded from a LocalStack-style
+/// Host header: `<service>.<region>.localhost.localstack.cloud[:port]`, or
+/// `<bucket>.s3.<region>.localhost.localstack.cloud[:port]` for
+/// virtual-hosted-style S3.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalStackHost {
+    pub service: String,
+    pub region: String,
+    /// Set only for virtual-hosted-style S3 hostnames.
+    pub bucket: Option<String>,
+}
+
+const LOCALSTACK_SUFFIX: &str = ".localhost.localstack.cloud";
+
+/// Parse a `Host` header value for the LocalStack hostname convention.
+/// Returns `None` for anything that doesn't match — callers fall through
+/// to their existing detection path.
+pub fn parse_localstack_host(host: &str) -> Option<LocalStackHost> {
+    let hostname = host.split(':').next()?;
+    if hostname.is_empty() {
+        return None;
+    }
+    let hostname = hostname.to_ascii_lowercase();
+    let prefix = hostname.strip_suffix(LOCALSTACK_SUFFIX)?;
+    if prefix.is_empty() {
+        return None;
+    }
+    let labels: Vec<&str> = prefix.split('.').collect();
+    if labels.iter().any(|l| l.is_empty()) {
+        return None;
+    }
+    match labels.len() {
+        2 => Some(LocalStackHost {
+            service: labels[0].to_string(),
+            region: labels[1].to_string(),
+            bucket: None,
+        }),
+        n if n >= 3 && labels[n - 2] == "s3" => {
+            let bucket = labels[..n - 2].join(".");
+            Some(LocalStackHost {
+                service: "s3".to_string(),
+                region: labels[n - 1].to_string(),
+                bucket: Some(bucket),
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Pull the `Host` header and parse it with [`parse_localstack_host`].
+pub fn parse_localstack_host_from_headers(headers: &HeaderMap) -> Option<LocalStackHost> {
+    let host = headers.get("host")?.to_str().ok()?;
+    parse_localstack_host(host)
 }
 
 /// Parse `X-Amz-Target: AWSEvents.PutEvents` -> service=events, action=PutEvents
@@ -536,5 +606,156 @@ mod tests {
         let query = HashMap::new();
         let body = Bytes::new();
         assert!(detect_service(&headers, &query, &body).is_none());
+    }
+
+    #[test]
+    fn parse_localstack_host_basic() {
+        let h = parse_localstack_host("sqs.us-east-1.localhost.localstack.cloud").unwrap();
+        assert_eq!(h.service, "sqs");
+        assert_eq!(h.region, "us-east-1");
+        assert!(h.bucket.is_none());
+    }
+
+    #[test]
+    fn parse_localstack_host_with_port() {
+        let h = parse_localstack_host("lambda.eu-west-1.localhost.localstack.cloud:4566").unwrap();
+        assert_eq!(h.service, "lambda");
+        assert_eq!(h.region, "eu-west-1");
+        assert!(h.bucket.is_none());
+    }
+
+    #[test]
+    fn parse_localstack_host_case_insensitive() {
+        let h = parse_localstack_host("SQS.US-EAST-1.LOCALHOST.LOCALSTACK.CLOUD:4566").unwrap();
+        assert_eq!(h.service, "sqs");
+        assert_eq!(h.region, "us-east-1");
+    }
+
+    #[test]
+    fn parse_localstack_host_s3_virtual_hosted() {
+        let h = parse_localstack_host("my-bucket.s3.us-east-1.localhost.localstack.cloud:4566")
+            .unwrap();
+        assert_eq!(h.service, "s3");
+        assert_eq!(h.region, "us-east-1");
+        assert_eq!(h.bucket.as_deref(), Some("my-bucket"));
+    }
+
+    #[test]
+    fn parse_localstack_host_s3_vhost_bucket_with_dots() {
+        let h = parse_localstack_host("a.b.c.s3.us-east-1.localhost.localstack.cloud").unwrap();
+        assert_eq!(h.service, "s3");
+        assert_eq!(h.region, "us-east-1");
+        assert_eq!(h.bucket.as_deref(), Some("a.b.c"));
+    }
+
+    #[test]
+    fn parse_localstack_host_rejects_amazonaws_com() {
+        assert!(parse_localstack_host("s3.us-east-1.amazonaws.com").is_none());
+        assert!(parse_localstack_host("my-bucket.s3.us-east-1.amazonaws.com").is_none());
+    }
+
+    #[test]
+    fn parse_localstack_host_rejects_plain_localhost() {
+        assert!(parse_localstack_host("localhost:4566").is_none());
+        assert!(parse_localstack_host("127.0.0.1:4566").is_none());
+    }
+
+    #[test]
+    fn parse_localstack_host_empty_and_malformed_rejected() {
+        assert!(parse_localstack_host("").is_none());
+        assert!(parse_localstack_host(".localhost.localstack.cloud").is_none());
+        assert!(parse_localstack_host("..localhost.localstack.cloud").is_none());
+        assert!(parse_localstack_host("sqs.localhost.localstack.cloud").is_none());
+        assert!(parse_localstack_host("foo.bar.baz.localhost.localstack.cloud").is_none());
+    }
+
+    #[test]
+    fn detect_service_via_host_for_rest_service() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "host",
+            "s3.us-east-1.localhost.localstack.cloud:4566"
+                .parse()
+                .unwrap(),
+        );
+        let query = HashMap::new();
+        let body = Bytes::new();
+        let detected = detect_service(&headers, &query, &body).unwrap();
+        assert_eq!(detected.service, "s3");
+        assert_eq!(detected.protocol, AwsProtocol::Rest);
+    }
+
+    #[test]
+    fn detect_service_via_host_for_rest_json_service() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "host",
+            "lambda.us-east-1.localhost.localstack.cloud:4566"
+                .parse()
+                .unwrap(),
+        );
+        let query = HashMap::new();
+        let body = Bytes::new();
+        let detected = detect_service(&headers, &query, &body).unwrap();
+        assert_eq!(detected.service, "lambda");
+        assert_eq!(detected.protocol, AwsProtocol::RestJson);
+    }
+
+    #[test]
+    fn detect_service_via_host_plus_query_action() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "host",
+            "sqs.us-east-1.localhost.localstack.cloud:4566"
+                .parse()
+                .unwrap(),
+        );
+        let mut query = HashMap::new();
+        query.insert("Action".to_string(), "ListQueues".to_string());
+        let body = Bytes::new();
+        let detected = detect_service(&headers, &query, &body).unwrap();
+        assert_eq!(detected.service, "sqs");
+        assert_eq!(detected.action, "ListQueues");
+        assert_eq!(detected.protocol, AwsProtocol::Query);
+    }
+
+    #[test]
+    fn detect_service_sigv4_wins_over_host() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            "AWS4-HMAC-SHA256 Credential=AKID/20240101/us-east-1/s3/aws4_request, \
+             SignedHeaders=host, Signature=abc"
+                .parse()
+                .unwrap(),
+        );
+        headers.insert(
+            "host",
+            "lambda.us-east-1.localhost.localstack.cloud:4566"
+                .parse()
+                .unwrap(),
+        );
+        let query = HashMap::new();
+        let body = Bytes::new();
+        let detected = detect_service(&headers, &query, &body).unwrap();
+        // SigV4 credential scope says s3; Host header says lambda. SigV4 wins.
+        assert_eq!(detected.service, "s3");
+        assert_eq!(detected.protocol, AwsProtocol::Rest);
+    }
+
+    #[test]
+    fn detect_service_host_for_virtual_hosted_s3() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "host",
+            "my-bucket.s3.us-east-1.localhost.localstack.cloud:4566"
+                .parse()
+                .unwrap(),
+        );
+        let query = HashMap::new();
+        let body = Bytes::new();
+        let detected = detect_service(&headers, &query, &body).unwrap();
+        assert_eq!(detected.service, "s3");
+        assert_eq!(detected.protocol, AwsProtocol::Rest);
     }
 }

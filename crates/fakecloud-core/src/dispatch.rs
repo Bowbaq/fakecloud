@@ -111,8 +111,15 @@ pub async fn dispatch(
     };
     let sigv4_info = header_info.or(presigned_info);
     let access_key_id = sigv4_info.as_ref().map(|info| info.access_key.clone());
+
+    // LocalStack-style Host (`<svc>.<region>.localhost.localstack.cloud[:port]`,
+    // or `<bucket>.s3.<region>.…` for virtual-hosted S3) is a secondary
+    // region source and carries the bucket for virtual-hosted S3 path rewrite.
+    let host_info = protocol::parse_localstack_host_from_headers(&parts.headers);
+
     let region = sigv4_info
         .map(|info| info.region)
+        .or_else(|| host_info.as_ref().map(|h| h.region.clone()))
         .or_else(|| extract_region_from_user_agent(&parts.headers))
         .unwrap_or_else(|| config.region.clone());
 
@@ -226,8 +233,28 @@ pub async fn dispatch(
         }
     }
 
-    // Build path segments
-    let path = parts.uri.path().to_string();
+    // Build path segments. For S3 virtual-hosted-style requests the bucket
+    // lives in the Host header, not the path — prepend it so the S3 handler
+    // sees a uniform path-style request. SigV4 verification above already
+    // ran against the wire path, so this rewrite is signature-safe.
+    let wire_path = parts.uri.path();
+    let path = if detected.service == "s3" {
+        if let Some(bucket) = host_info.as_ref().and_then(|h| h.bucket.as_deref()) {
+            let prefix_with_slash = format!("/{bucket}/");
+            let is_bucket_root = wire_path.trim_end_matches('/') == format!("/{bucket}");
+            if wire_path.starts_with(&prefix_with_slash) || is_bucket_root {
+                wire_path.to_string()
+            } else if wire_path == "/" || wire_path.is_empty() {
+                format!("/{bucket}")
+            } else {
+                format!("/{bucket}{wire_path}")
+            }
+        } else {
+            wire_path.to_string()
+        }
+    } else {
+        wire_path.to_string()
+    };
     let raw_query = parts.uri.query().unwrap_or("").to_string();
     let path_segments: Vec<String> = path
         .split('/')
