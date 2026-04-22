@@ -3318,11 +3318,14 @@ async fn main() {
             "/_fakecloud/iam/create-admin",
             axum::routing::post({
                 let iam = iam_state.clone();
+                let orgs = organizations_state.clone();
                 move |axum::Json(body): axum::Json<types::CreateAdminRequest>| {
                     let iam = iam.clone();
+                    let orgs = orgs.clone();
                     async move {
                         axum::Json(reset::create_admin_in_account(
                             &iam,
+                            &orgs,
                             &body.account_id,
                             &body.user_name,
                         ))
