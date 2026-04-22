@@ -451,22 +451,53 @@ fn cli_available(cli: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Prefix that `fakecloud-server` prints before the bound port on stdout.
+/// Must stay in sync with `PORT_HANDSHAKE_PREFIX` in
+/// `crates/fakecloud-server/src/main.rs`.
+const PORT_HANDSHAKE_PREFIX: &str = "FAKECLOUD_PORT=";
+
+/// Scan a reader for the `FAKECLOUD_PORT=<n>` handshake line, skipping any
+/// non-handshake lines. Returns `None` on EOF or I/O error before a valid
+/// line is seen. Extracted from `read_bound_port` so it can be unit tested
+/// without spawning a real fakecloud process.
+fn scan_for_handshake<R: std::io::BufRead>(reader: &mut R) -> Option<u16> {
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) | Err(_) => return None,
+            Ok(_) => {
+                if let Some(rest) = line.trim().strip_prefix(PORT_HANDSHAKE_PREFIX) {
+                    if let Ok(port) = rest.parse::<u16>() {
+                        return Some(port);
+                    }
+                }
+                // Non-handshake line — ignore and keep reading.
+            }
+        }
+    }
+}
+
 /// Read the port that fakecloud printed to stdout after binding.
 ///
-/// fakecloud prints one line — the port number — to stdout immediately after
-/// `TcpListener::bind` succeeds. Reading this line tells us both that the TCP
-/// port is bound (no racy "find port, release, rebind" window) and what the
-/// actual OS-assigned port is when `--addr 0.0.0.0:0` is used.
+/// fakecloud prints a tagged handshake line — `FAKECLOUD_PORT=<n>` —
+/// immediately after `TcpListener::bind` succeeds. Scanning for the
+/// prefix (rather than parsing the first line blindly) means a future
+/// startup log line on stdout won't break this handshake.
+///
+/// Once the port is found, the remaining stdout is drained on a
+/// background thread. Without that, a later `println!` in the server
+/// would eventually fill the OS pipe buffer and block the server.
 async fn read_bound_port(child: &mut Child) -> Option<u16> {
-    use std::io::BufRead;
     let stdout = child.stdout.take()?;
     let result = tokio::task::spawn_blocking(move || {
         let mut reader = std::io::BufReader::new(stdout);
-        let mut line = String::new();
-        match reader.read_line(&mut line) {
-            Ok(0) | Err(_) => None,
-            Ok(_) => line.trim().parse::<u16>().ok(),
-        }
+        let port = scan_for_handshake(&mut reader)?;
+        std::thread::spawn(move || {
+            let mut sink = std::io::sink();
+            let _ = std::io::copy(&mut reader, &mut sink);
+        });
+        Some(port)
     });
     match tokio::time::timeout(Duration::from_secs(30), result).await {
         Ok(Ok(Some(port))) => Some(port),
@@ -601,5 +632,60 @@ impl TestServer {
             .force_path_style(true)
             .build();
         aws_sdk_s3::Client::from_conf(s3_config)
+    }
+}
+
+#[cfg(test)]
+mod handshake_tests {
+    use super::*;
+    use std::io::BufReader;
+
+    #[test]
+    fn handshake_on_first_line() {
+        let input = b"FAKECLOUD_PORT=4566\n";
+        let mut reader = BufReader::new(&input[..]);
+        assert_eq!(scan_for_handshake(&mut reader), Some(4566));
+    }
+
+    #[test]
+    fn handshake_after_unrelated_lines() {
+        // Simulate a future scenario where something prints to stdout
+        // before the handshake — scanner must skip and keep reading.
+        let input = b"startup banner\n\
+                     some other log\n\
+                     FAKECLOUD_PORT=38291\n";
+        let mut reader = BufReader::new(&input[..]);
+        assert_eq!(scan_for_handshake(&mut reader), Some(38291));
+    }
+
+    #[test]
+    fn returns_none_on_eof_without_handshake() {
+        let input = b"no port here\nnope\n";
+        let mut reader = BufReader::new(&input[..]);
+        assert_eq!(scan_for_handshake(&mut reader), None);
+    }
+
+    #[test]
+    fn returns_none_on_empty_stream() {
+        let input: &[u8] = b"";
+        let mut reader = BufReader::new(input);
+        assert_eq!(scan_for_handshake(&mut reader), None);
+    }
+
+    #[test]
+    fn ignores_malformed_port_value() {
+        // A line with the prefix but an invalid port is skipped rather
+        // than accepted — prefix is necessary but not sufficient.
+        let input = b"FAKECLOUD_PORT=not-a-number\n\
+                     FAKECLOUD_PORT=70000\n\
+                     FAKECLOUD_PORT=5000\n";
+        let mut reader = BufReader::new(&input[..]);
+        assert_eq!(scan_for_handshake(&mut reader), Some(5000));
+    }
+
+    #[test]
+    fn prefix_matches_server_contract() {
+        // Guards against accidental drift from the server-side constant.
+        assert_eq!(PORT_HANDSHAKE_PREFIX, "FAKECLOUD_PORT=");
     }
 }

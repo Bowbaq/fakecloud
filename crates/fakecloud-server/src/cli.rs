@@ -111,26 +111,6 @@ pub(crate) struct Cli {
 }
 
 impl Cli {
-    /// Derive the public-facing endpoint URL from the configured bind address.
-    /// Wildcard hosts (``0.0.0.0`` / ``[::]``) are rewritten to ``localhost`` so
-    /// the URL is meaningful when handed back to clients.
-    ///
-    /// **Note:** when ``--addr`` uses port ``0`` the OS assigns the real port at
-    /// bind time; in that case ``main`` computes the URL directly from the
-    /// bound ``SocketAddr`` rather than calling this method.
-    #[cfg(test)]
-    pub fn endpoint_url(&self) -> String {
-        let addr = &self.addr;
-        let port = addr.rsplit(':').next().unwrap_or("4566");
-        let host = addr.rsplit_once(':').map(|(h, _)| h).unwrap_or("0.0.0.0");
-        let host = if host == "0.0.0.0" || host == "[::]" {
-            "localhost"
-        } else {
-            host
-        };
-        format!("http://{host}:{port}")
-    }
-
     /// Resolve the IAM mode as the cross-crate [`IamMode`] type.
     pub fn iam_mode(&self) -> IamMode {
         self.iam_mode.into()
@@ -179,24 +159,6 @@ mod tests {
     #[test]
     fn iam_flag_rejects_garbage() {
         assert!(Cli::try_parse_from(["fakecloud", "--iam", "allow"]).is_err());
-    }
-
-    #[test]
-    fn endpoint_url_rewrites_wildcard_v4() {
-        let cli = Cli::try_parse_from(["fakecloud", "--addr", "0.0.0.0:4566"]).unwrap();
-        assert_eq!(cli.endpoint_url(), "http://localhost:4566");
-    }
-
-    #[test]
-    fn endpoint_url_rewrites_wildcard_v6() {
-        let cli = Cli::try_parse_from(["fakecloud", "--addr", "[::]:4566"]).unwrap();
-        assert_eq!(cli.endpoint_url(), "http://localhost:4566");
-    }
-
-    #[test]
-    fn endpoint_url_preserves_explicit_host() {
-        let cli = Cli::try_parse_from(["fakecloud", "--addr", "127.0.0.1:9999"]).unwrap();
-        assert_eq!(cli.endpoint_url(), "http://127.0.0.1:9999");
     }
 
     #[test]
