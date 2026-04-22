@@ -1,0 +1,276 @@
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use http::StatusCode;
+use serde_json::{json, Value};
+
+use fakecloud_core::service::{AwsRequest, AwsResponse, AwsService, AwsServiceError};
+
+use crate::state::{OrganizationState, SharedOrganizationsState, FEATURE_SET_ALL};
+
+/// Single source of truth for supported Organizations actions. Expanded
+/// across subsequent batches (OUs, Policy CRUD, attachment ops).
+pub static ORGANIZATIONS_ACTIONS: &[&str] = &[
+    "CreateOrganization",
+    "DescribeOrganization",
+    "DeleteOrganization",
+];
+
+pub struct OrganizationsService {
+    state: SharedOrganizationsState,
+}
+
+impl OrganizationsService {
+    pub fn new(state: SharedOrganizationsState) -> Self {
+        Self { state }
+    }
+
+    pub fn shared() -> (Arc<Self>, SharedOrganizationsState) {
+        let state: SharedOrganizationsState = Arc::new(parking_lot::RwLock::new(None));
+        (Arc::new(Self::new(state.clone())), state)
+    }
+
+    fn create_organization(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let body = req.json_body();
+        let feature_set = body
+            .get("FeatureSet")
+            .and_then(|v| v.as_str())
+            .unwrap_or(FEATURE_SET_ALL);
+        if feature_set != FEATURE_SET_ALL {
+            // fakecloud ships SCP enforcement which requires the ALL
+            // feature set. CONSOLIDATED_BILLING disables SCPs in AWS,
+            // and we don't simulate that distinction — reject up front
+            // rather than silently lie about which feature set is on.
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "UnsupportedAPIEndpointException",
+                "fakecloud only supports the ALL feature set for organizations",
+            ));
+        }
+
+        let mut guard = self.state.write();
+        if guard.is_some() {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "AlreadyInOrganizationException",
+                "The AWS account is already a member of an organization.",
+            ));
+        }
+        let org = OrganizationState::bootstrap(&req.account_id);
+        let resp_value = organization_payload(&org);
+        *guard = Some(org);
+        Ok(AwsResponse::ok_json(json!({ "Organization": resp_value })))
+    }
+
+    fn describe_organization(&self, _req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let guard = self.state.read();
+        let org = guard.as_ref().ok_or_else(organizations_not_in_use)?;
+        Ok(AwsResponse::ok_json(
+            json!({ "Organization": organization_payload(org) }),
+        ))
+    }
+
+    fn delete_organization(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        let mut guard = self.state.write();
+        let org = guard.as_ref().ok_or_else(organizations_not_in_use)?;
+        if !org.is_management(&req.account_id) {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::FORBIDDEN,
+                "AccessDeniedException",
+                "Only the management account can delete the organization.",
+            ));
+        }
+        // Match AWS: delete fails if any member accounts besides the
+        // management account remain. In Batch 1 only the management is
+        // enrolled, so this check is a no-op; Batch 2 starts populating
+        // real member accounts.
+        let non_mgmt = org
+            .accounts
+            .keys()
+            .filter(|id| id.as_str() != org.management_account_id)
+            .count();
+        if non_mgmt > 0 {
+            return Err(AwsServiceError::aws_error(
+                StatusCode::BAD_REQUEST,
+                "OrganizationNotEmptyException",
+                "The organization still has member accounts. Remove them first.",
+            ));
+        }
+        *guard = None;
+        Ok(AwsResponse::ok_json(Value::Null))
+    }
+}
+
+#[async_trait]
+impl AwsService for OrganizationsService {
+    fn service_name(&self) -> &str {
+        "organizations"
+    }
+
+    async fn handle(&self, req: AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+        match req.action.as_str() {
+            "CreateOrganization" => self.create_organization(&req),
+            "DescribeOrganization" => self.describe_organization(&req),
+            "DeleteOrganization" => self.delete_organization(&req),
+            _ => Err(AwsServiceError::action_not_implemented(
+                "organizations",
+                &req.action,
+            )),
+        }
+    }
+
+    fn supported_actions(&self) -> &[&str] {
+        ORGANIZATIONS_ACTIONS
+    }
+}
+
+fn organizations_not_in_use() -> AwsServiceError {
+    AwsServiceError::aws_error(
+        StatusCode::BAD_REQUEST,
+        "AWSOrganizationsNotInUseException",
+        "Your account is not a member of an organization.",
+    )
+}
+
+fn organization_payload(org: &OrganizationState) -> Value {
+    json!({
+        "Id": org.org_id,
+        "Arn": org.org_arn,
+        "FeatureSet": org.feature_set,
+        "MasterAccountArn": org.management_account_arn,
+        "MasterAccountId": org.management_account_id,
+        "MasterAccountEmail": org.management_account_email,
+        "AvailablePolicyTypes": [
+            {"Type": "SERVICE_CONTROL_POLICY", "Status": "ENABLED"}
+        ],
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::Bytes;
+    use http::{HeaderMap, Method};
+    use std::collections::HashMap;
+
+    fn req_with(account: &str, action: &str, body: Value) -> AwsRequest {
+        AwsRequest {
+            service: "organizations".to_string(),
+            action: action.to_string(),
+            region: "us-east-1".to_string(),
+            account_id: account.to_string(),
+            request_id: "test".to_string(),
+            headers: HeaderMap::new(),
+            query_params: HashMap::new(),
+            body: Bytes::from(serde_json::to_vec(&body).unwrap()),
+            path_segments: vec![],
+            raw_path: String::new(),
+            raw_query: String::new(),
+            method: Method::POST,
+            is_query_protocol: false,
+            access_key_id: None,
+            principal: None,
+        }
+    }
+
+    fn body_json(resp: &AwsResponse) -> Value {
+        serde_json::from_slice(resp.body.expect_bytes()).unwrap()
+    }
+
+    fn expect_err(r: Result<AwsResponse, AwsServiceError>) -> AwsServiceError {
+        match r {
+            Ok(_) => panic!("expected error"),
+            Err(e) => e,
+        }
+    }
+
+    #[tokio::test]
+    async fn create_organization_succeeds_once() {
+        let (svc, state) = OrganizationsService::shared();
+        let resp = svc
+            .handle(req_with("111111111111", "CreateOrganization", json!({})))
+            .await
+            .unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+        let v = body_json(&resp);
+        assert_eq!(v["Organization"]["MasterAccountId"], "111111111111");
+        assert!(state.read().is_some());
+    }
+
+    #[tokio::test]
+    async fn create_organization_twice_errors() {
+        let (svc, _state) = OrganizationsService::shared();
+        svc.handle(req_with("111111111111", "CreateOrganization", json!({})))
+            .await
+            .unwrap();
+        let err = expect_err(
+            svc.handle(req_with("222222222222", "CreateOrganization", json!({})))
+                .await,
+        );
+        assert_eq!(err.code(), "AlreadyInOrganizationException");
+    }
+
+    #[tokio::test]
+    async fn describe_without_org_errors() {
+        let (svc, _state) = OrganizationsService::shared();
+        let err = expect_err(
+            svc.handle(req_with("111111111111", "DescribeOrganization", json!({})))
+                .await,
+        );
+        assert_eq!(err.code(), "AWSOrganizationsNotInUseException");
+    }
+
+    #[tokio::test]
+    async fn describe_round_trips_create() {
+        let (svc, _state) = OrganizationsService::shared();
+        svc.handle(req_with("111111111111", "CreateOrganization", json!({})))
+            .await
+            .unwrap();
+        let resp = svc
+            .handle(req_with("111111111111", "DescribeOrganization", json!({})))
+            .await
+            .unwrap();
+        let v = body_json(&resp);
+        assert_eq!(v["Organization"]["MasterAccountId"], "111111111111");
+        assert_eq!(v["Organization"]["FeatureSet"], "ALL");
+    }
+
+    #[tokio::test]
+    async fn delete_requires_management() {
+        let (svc, _state) = OrganizationsService::shared();
+        svc.handle(req_with("111111111111", "CreateOrganization", json!({})))
+            .await
+            .unwrap();
+        let err = expect_err(
+            svc.handle(req_with("222222222222", "DeleteOrganization", json!({})))
+                .await,
+        );
+        assert_eq!(err.code(), "AccessDeniedException");
+    }
+
+    #[tokio::test]
+    async fn delete_clears_state() {
+        let (svc, state) = OrganizationsService::shared();
+        svc.handle(req_with("111111111111", "CreateOrganization", json!({})))
+            .await
+            .unwrap();
+        svc.handle(req_with("111111111111", "DeleteOrganization", json!({})))
+            .await
+            .unwrap();
+        assert!(state.read().is_none());
+    }
+
+    #[tokio::test]
+    async fn create_with_consolidated_billing_rejected() {
+        let (svc, _state) = OrganizationsService::shared();
+        let err = expect_err(
+            svc.handle(req_with(
+                "111111111111",
+                "CreateOrganization",
+                json!({"FeatureSet": "CONSOLIDATED_BILLING"}),
+            ))
+            .await,
+        );
+        assert_eq!(err.code(), "UnsupportedAPIEndpointException");
+    }
+}

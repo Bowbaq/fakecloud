@@ -562,6 +562,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-organizations"
+version = "1.113.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2dcc51ddb264f7a391858ac8408b1f509eb665703d1230dbf821b9ec2caa2df"
+dependencies = [
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http 0.63.6",
+ "aws-smithy-json 0.62.5",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 0.2.12",
+ "http 1.4.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-rds"
 version = "1.130.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1974,6 +1998,7 @@ dependencies = [
  "fakecloud-kms",
  "fakecloud-lambda",
  "fakecloud-logs",
+ "fakecloud-organizations",
  "fakecloud-persistence",
  "fakecloud-rds",
  "fakecloud-s3",
@@ -2222,6 +2247,7 @@ dependencies = [
  "aws-sdk-kinesis",
  "aws-sdk-kms",
  "aws-sdk-lambda",
+ "aws-sdk-organizations",
  "aws-sdk-rds",
  "aws-sdk-s3",
  "aws-sdk-scheduler",
@@ -2396,6 +2422,23 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "fakecloud-organizations"
+version = "0.9.2"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "chrono",
+ "fakecloud-core",
+ "http 1.4.0",
+ "parking_lot",
+ "serde",
+ "serde_json",
  "tokio",
  "tracing",
  "uuid",

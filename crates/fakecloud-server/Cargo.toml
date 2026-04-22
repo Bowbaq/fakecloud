@@ -20,6 +20,7 @@ fakecloud-sqs = { workspace = true }
 fakecloud-sns = { workspace = true }
 fakecloud-eventbridge = { workspace = true }
 fakecloud-iam = { workspace = true }
+fakecloud-organizations = { workspace = true }
 fakecloud-ssm = { workspace = true }
 fakecloud-s3 = { workspace = true }
 fakecloud-dynamodb = { workspace = true }

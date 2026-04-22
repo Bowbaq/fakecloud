@@ -44,6 +44,8 @@ use fakecloud_kinesis::service::KinesisService;
 use fakecloud_kms::service::KmsService;
 use fakecloud_lambda::service::LambdaService;
 use fakecloud_logs::service::LogsService;
+use fakecloud_organizations::service::OrganizationsService;
+use fakecloud_organizations::state::SharedOrganizationsState;
 use fakecloud_rds::service::RdsService;
 use fakecloud_s3::service::S3Service;
 use fakecloud_scheduler::service::SchedulerService;
@@ -1166,6 +1168,14 @@ async fn main() {
         kms_service = kms_service.with_snapshot_store(store);
     }
     registry.register(Arc::new(kms_service));
+
+    // Organizations state is a global singleton (one org per fakecloud
+    // process) — not wrapped in MultiAccountState because an AWS org is
+    // a cross-account construct. `None` until CreateOrganization runs.
+    let organizations_state: SharedOrganizationsState = Arc::new(parking_lot::RwLock::new(None));
+    registry.register(Arc::new(OrganizationsService::new(
+        organizations_state.clone(),
+    )));
     let mut shared_body_cache: Option<Arc<fakecloud_persistence::cache::BodyCache>> = None;
     let s3_store: Arc<dyn fakecloud_persistence::S3Store> = match persistence_config.mode {
         fakecloud_persistence::StorageMode::Persistent => {
