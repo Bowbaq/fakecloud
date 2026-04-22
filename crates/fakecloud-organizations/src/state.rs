@@ -264,6 +264,227 @@ impl OrganizationState {
         account.parent_id = dest_parent.to_string();
         Ok(())
     }
+
+    /// Create a customer-managed SCP. Returns the created policy on
+    /// success.
+    ///
+    /// Errors:
+    /// - `PolicyTypeNotSupportedException` — `policy_type` isn't SCP.
+    /// - `MalformedPolicyDocumentException` — `content` doesn't parse
+    ///   as JSON.
+    /// - `DuplicatePolicyException` — another SCP with the same name.
+    pub fn create_policy(
+        &mut self,
+        name: &str,
+        description: &str,
+        content: &str,
+        policy_type: &str,
+    ) -> Result<Policy, OrgError> {
+        if policy_type != POLICY_TYPE_SCP {
+            return Err(OrgError::PolicyTypeNotSupported(policy_type.to_string()));
+        }
+        if serde_json::from_str::<serde_json::Value>(content).is_err() {
+            return Err(OrgError::MalformedPolicyDocument);
+        }
+        let dup = self
+            .policies
+            .values()
+            .any(|p| p.policy_type == POLICY_TYPE_SCP && p.name == name);
+        if dup {
+            return Err(OrgError::DuplicatePolicy(name.to_string()));
+        }
+        let id = format!("p-{}", random_id(8));
+        let arn = format!(
+            "arn:aws:organizations::{}:policy/{}/service_control_policy/{}",
+            self.management_account_id, self.org_id, id
+        );
+        let policy = Policy {
+            id: id.clone(),
+            arn,
+            name: name.to_string(),
+            description: description.to_string(),
+            policy_type: POLICY_TYPE_SCP.to_string(),
+            aws_managed: false,
+            content: content.to_string(),
+        };
+        self.policies.insert(id, policy.clone());
+        Ok(policy)
+    }
+
+    /// Update an existing customer-managed SCP. Any `Option::Some`
+    /// field overrides the stored value; `None` leaves it untouched.
+    /// AWS-managed policies (e.g. `FullAWSAccess`) are immutable.
+    pub fn update_policy(
+        &mut self,
+        id: &str,
+        name: Option<&str>,
+        description: Option<&str>,
+        content: Option<&str>,
+    ) -> Result<Policy, OrgError> {
+        let policy = self
+            .policies
+            .get(id)
+            .ok_or_else(|| OrgError::PolicyNotFound(id.to_string()))?;
+        if policy.aws_managed {
+            return Err(OrgError::PolicyChangesNotAllowed(id.to_string()));
+        }
+        if let Some(new_name) = name {
+            let dup = self
+                .policies
+                .values()
+                .any(|p| p.id != id && p.policy_type == POLICY_TYPE_SCP && p.name == new_name);
+            if dup {
+                return Err(OrgError::DuplicatePolicy(new_name.to_string()));
+            }
+        }
+        if let Some(c) = content {
+            if serde_json::from_str::<serde_json::Value>(c).is_err() {
+                return Err(OrgError::MalformedPolicyDocument);
+            }
+        }
+        let policy = self.policies.get_mut(id).unwrap();
+        if let Some(n) = name {
+            policy.name = n.to_string();
+        }
+        if let Some(d) = description {
+            policy.description = d.to_string();
+        }
+        if let Some(c) = content {
+            policy.content = c.to_string();
+        }
+        Ok(policy.clone())
+    }
+
+    /// Delete a customer-managed SCP. Fails with `PolicyInUseException`
+    /// if the policy is still attached to any target.
+    pub fn delete_policy(&mut self, id: &str) -> Result<(), OrgError> {
+        let policy = self
+            .policies
+            .get(id)
+            .ok_or_else(|| OrgError::PolicyNotFound(id.to_string()))?;
+        if policy.aws_managed {
+            return Err(OrgError::PolicyChangesNotAllowed(id.to_string()));
+        }
+        let attached = self.attachments.values().any(|set| set.contains(id));
+        if attached {
+            return Err(OrgError::PolicyInUse(id.to_string()));
+        }
+        self.policies.remove(id);
+        Ok(())
+    }
+
+    /// Verify `target_id` is one of root, an OU, or a member account.
+    pub fn target_exists(&self, target_id: &str) -> bool {
+        target_id == self.root_id
+            || self.ous.contains_key(target_id)
+            || self.accounts.contains_key(target_id)
+    }
+
+    /// Type tag for target listings (`ROOT`, `ORGANIZATIONAL_UNIT`,
+    /// `ACCOUNT`). Returns `None` when the target is unknown.
+    pub fn target_type(&self, target_id: &str) -> Option<&'static str> {
+        if target_id == self.root_id {
+            Some("ROOT")
+        } else if self.ous.contains_key(target_id) {
+            Some("ORGANIZATIONAL_UNIT")
+        } else if self.accounts.contains_key(target_id) {
+            Some("ACCOUNT")
+        } else {
+            None
+        }
+    }
+
+    /// Attach a policy to a target. No-op if already attached (AWS
+    /// treats re-attach as success; matches the documented idempotent
+    /// behaviour).
+    pub fn attach_policy(&mut self, policy_id: &str, target_id: &str) -> Result<(), OrgError> {
+        if !self.policies.contains_key(policy_id) {
+            return Err(OrgError::PolicyNotFound(policy_id.to_string()));
+        }
+        if !self.target_exists(target_id) {
+            return Err(OrgError::TargetNotFound(target_id.to_string()));
+        }
+        self.attachments
+            .entry(target_id.to_string())
+            .or_default()
+            .insert(policy_id.to_string());
+        Ok(())
+    }
+
+    /// Detach a policy from a target.
+    ///
+    /// Errors:
+    /// - `PolicyNotFoundException`
+    /// - `TargetNotFoundException`
+    /// - `PolicyNotAttachedException` — policy is known but not
+    ///   attached to `target_id`.
+    pub fn detach_policy(&mut self, policy_id: &str, target_id: &str) -> Result<(), OrgError> {
+        if !self.policies.contains_key(policy_id) {
+            return Err(OrgError::PolicyNotFound(policy_id.to_string()));
+        }
+        if !self.target_exists(target_id) {
+            return Err(OrgError::TargetNotFound(target_id.to_string()));
+        }
+        let set = self
+            .attachments
+            .get_mut(target_id)
+            .ok_or_else(|| OrgError::PolicyNotAttached(policy_id.to_string()))?;
+        if !set.remove(policy_id) {
+            return Err(OrgError::PolicyNotAttached(policy_id.to_string()));
+        }
+        if set.is_empty() {
+            self.attachments.remove(target_id);
+        }
+        Ok(())
+    }
+
+    /// All SCPs attached directly to `target_id` (no inheritance).
+    pub fn policies_for_target(&self, target_id: &str) -> Result<Vec<&Policy>, OrgError> {
+        if !self.target_exists(target_id) {
+            return Err(OrgError::TargetNotFound(target_id.to_string()));
+        }
+        let ids = match self.attachments.get(target_id) {
+            Some(s) => s,
+            None => return Ok(Vec::new()),
+        };
+        Ok(ids.iter().filter_map(|id| self.policies.get(id)).collect())
+    }
+
+    /// All targets that carry a direct attachment of `policy_id`. Each
+    /// entry pairs the target id with its type tag so callers can
+    /// render the full AWS response shape.
+    pub fn targets_for_policy(
+        &self,
+        policy_id: &str,
+    ) -> Result<Vec<(&str, &str, &'static str)>, OrgError> {
+        if !self.policies.contains_key(policy_id) {
+            return Err(OrgError::PolicyNotFound(policy_id.to_string()));
+        }
+        let mut out = Vec::new();
+        for (target_id, set) in &self.attachments {
+            if set.contains(policy_id) {
+                let ttype = self
+                    .target_type(target_id)
+                    .expect("attachment target must still exist");
+                let name = match ttype {
+                    "ROOT" => self.root_name.as_str(),
+                    "ORGANIZATIONAL_UNIT" => self
+                        .ous
+                        .get(target_id)
+                        .map(|o| o.name.as_str())
+                        .unwrap_or(""),
+                    "ACCOUNT" => self
+                        .accounts
+                        .get(target_id)
+                        .map(|a| a.name.as_str())
+                        .unwrap_or(""),
+                    _ => "",
+                };
+                out.push((target_id.as_str(), name, ttype));
+            }
+        }
+        Ok(out)
+    }
 }
 
 /// Typed errors used by organization state mutations so the service
@@ -277,6 +498,14 @@ pub enum OrgError {
     AccountNotFound(String),
     SourceParentNotFound(String),
     DestinationParentNotFound(String),
+    PolicyNotFound(String),
+    DuplicatePolicy(String),
+    MalformedPolicyDocument,
+    PolicyTypeNotSupported(String),
+    PolicyChangesNotAllowed(String),
+    PolicyInUse(String),
+    PolicyNotAttached(String),
+    TargetNotFound(String),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -478,5 +707,214 @@ mod tests {
         assert!(matches!(err, OrgError::DuplicateOrganizationalUnit(_)));
         // Renaming in place is fine.
         org.rename_ou(&a.id, "a").unwrap();
+    }
+
+    const CONTENT_ALL: &str =
+        r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}"#;
+
+    #[test]
+    fn create_policy_assigns_id_and_arn() {
+        let mut org = OrganizationState::bootstrap("111111111111");
+        let p = org
+            .create_policy("AllowAll", "d", CONTENT_ALL, POLICY_TYPE_SCP)
+            .unwrap();
+        assert!(p.id.starts_with("p-"));
+        assert!(p.arn.contains("service_control_policy"));
+        assert_eq!(p.policy_type, POLICY_TYPE_SCP);
+        assert!(!p.aws_managed);
+    }
+
+    #[test]
+    fn create_policy_rejects_non_scp_type() {
+        let mut org = OrganizationState::bootstrap("111111111111");
+        let err = org
+            .create_policy("x", "d", CONTENT_ALL, "TAG_POLICY")
+            .unwrap_err();
+        assert!(matches!(err, OrgError::PolicyTypeNotSupported(_)));
+    }
+
+    #[test]
+    fn create_policy_rejects_malformed_json() {
+        let mut org = OrganizationState::bootstrap("111111111111");
+        let err = org
+            .create_policy("x", "d", "not-json", POLICY_TYPE_SCP)
+            .unwrap_err();
+        assert!(matches!(err, OrgError::MalformedPolicyDocument));
+    }
+
+    #[test]
+    fn create_policy_duplicate_name_rejected() {
+        let mut org = OrganizationState::bootstrap("111111111111");
+        org.create_policy("AllowAll", "d", CONTENT_ALL, POLICY_TYPE_SCP)
+            .unwrap();
+        let err = org
+            .create_policy("AllowAll", "other", CONTENT_ALL, POLICY_TYPE_SCP)
+            .unwrap_err();
+        assert!(matches!(err, OrgError::DuplicatePolicy(_)));
+    }
+
+    #[test]
+    fn update_policy_overrides_fields() {
+        let mut org = OrganizationState::bootstrap("111111111111");
+        let p = org
+            .create_policy("a", "old", CONTENT_ALL, POLICY_TYPE_SCP)
+            .unwrap();
+        let updated = org
+            .update_policy(&p.id, Some("b"), Some("new"), None)
+            .unwrap();
+        assert_eq!(updated.name, "b");
+        assert_eq!(updated.description, "new");
+        assert_eq!(updated.content, CONTENT_ALL);
+    }
+
+    #[test]
+    fn update_policy_rejects_aws_managed() {
+        let mut org = OrganizationState::bootstrap("111111111111");
+        let err = org
+            .update_policy(FULL_AWS_ACCESS_POLICY_ID, Some("x"), None, None)
+            .unwrap_err();
+        assert!(matches!(err, OrgError::PolicyChangesNotAllowed(_)));
+    }
+
+    #[test]
+    fn update_policy_rejects_malformed_content() {
+        let mut org = OrganizationState::bootstrap("111111111111");
+        let p = org
+            .create_policy("a", "d", CONTENT_ALL, POLICY_TYPE_SCP)
+            .unwrap();
+        let err = org
+            .update_policy(&p.id, None, None, Some("{bad"))
+            .unwrap_err();
+        assert!(matches!(err, OrgError::MalformedPolicyDocument));
+    }
+
+    #[test]
+    fn update_policy_duplicate_name_rejected() {
+        let mut org = OrganizationState::bootstrap("111111111111");
+        let a = org
+            .create_policy("a", "d", CONTENT_ALL, POLICY_TYPE_SCP)
+            .unwrap();
+        let b = org
+            .create_policy("b", "d", CONTENT_ALL, POLICY_TYPE_SCP)
+            .unwrap();
+        let err = org.update_policy(&b.id, Some("a"), None, None).unwrap_err();
+        assert!(matches!(err, OrgError::DuplicatePolicy(_)));
+        // Rename to its own name is fine (idempotent).
+        org.update_policy(&a.id, Some("a"), None, None).unwrap();
+    }
+
+    #[test]
+    fn delete_policy_rejects_in_use() {
+        let mut org = OrganizationState::bootstrap("111111111111");
+        let root = org.root_id.clone();
+        let p = org
+            .create_policy("p", "d", CONTENT_ALL, POLICY_TYPE_SCP)
+            .unwrap();
+        org.attach_policy(&p.id, &root).unwrap();
+        let err = org.delete_policy(&p.id).unwrap_err();
+        assert!(matches!(err, OrgError::PolicyInUse(_)));
+    }
+
+    #[test]
+    fn delete_policy_rejects_aws_managed() {
+        let mut org = OrganizationState::bootstrap("111111111111");
+        let err = org.delete_policy(FULL_AWS_ACCESS_POLICY_ID).unwrap_err();
+        assert!(matches!(err, OrgError::PolicyChangesNotAllowed(_)));
+    }
+
+    #[test]
+    fn attach_detach_roundtrip() {
+        let mut org = OrganizationState::bootstrap("111111111111");
+        let root = org.root_id.clone();
+        let p = org
+            .create_policy("p", "d", CONTENT_ALL, POLICY_TYPE_SCP)
+            .unwrap();
+        let ou = org.create_ou(&root, "team").unwrap();
+        org.attach_policy(&p.id, &ou.id).unwrap();
+        let targets = org.targets_for_policy(&p.id).unwrap();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].0, ou.id);
+        assert_eq!(targets[0].2, "ORGANIZATIONAL_UNIT");
+        org.detach_policy(&p.id, &ou.id).unwrap();
+        assert!(org.targets_for_policy(&p.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn attach_rejects_unknown_target_and_policy() {
+        let mut org = OrganizationState::bootstrap("111111111111");
+        let p = org
+            .create_policy("p", "d", CONTENT_ALL, POLICY_TYPE_SCP)
+            .unwrap();
+        let err = org.attach_policy(&p.id, "ou-bogus").unwrap_err();
+        assert!(matches!(err, OrgError::TargetNotFound(_)));
+        let root = org.root_id.clone();
+        let err = org.attach_policy("p-bogus", &root).unwrap_err();
+        assert!(matches!(err, OrgError::PolicyNotFound(_)));
+    }
+
+    #[test]
+    fn detach_unattached_policy_fails() {
+        let mut org = OrganizationState::bootstrap("111111111111");
+        let root = org.root_id.clone();
+        let p = org
+            .create_policy("p", "d", CONTENT_ALL, POLICY_TYPE_SCP)
+            .unwrap();
+        let err = org.detach_policy(&p.id, &root).unwrap_err();
+        assert!(matches!(err, OrgError::PolicyNotAttached(_)));
+    }
+
+    #[test]
+    fn policies_for_target_returns_attached_only() {
+        let mut org = OrganizationState::bootstrap("111111111111");
+        let root = org.root_id.clone();
+        let p = org
+            .create_policy("p", "d", CONTENT_ALL, POLICY_TYPE_SCP)
+            .unwrap();
+        org.attach_policy(&p.id, &root).unwrap();
+        // Root starts with FullAWSAccess + new p attached.
+        let list = org.policies_for_target(&root).unwrap();
+        assert_eq!(list.len(), 2);
+    }
+
+    #[test]
+    fn policies_for_target_unknown_target() {
+        let org = OrganizationState::bootstrap("111111111111");
+        let err = org.policies_for_target("ou-bogus").unwrap_err();
+        assert!(matches!(err, OrgError::TargetNotFound(_)));
+    }
+
+    #[test]
+    fn targets_for_policy_identifies_target_types() {
+        let mut org = OrganizationState::bootstrap("111111111111");
+        let root = org.root_id.clone();
+        let ou = org.create_ou(&root, "team").unwrap();
+        let p = org
+            .create_policy("p", "d", CONTENT_ALL, POLICY_TYPE_SCP)
+            .unwrap();
+        org.enroll_account_if_missing("222222222222");
+        org.attach_policy(&p.id, &root).unwrap();
+        org.attach_policy(&p.id, &ou.id).unwrap();
+        org.attach_policy(&p.id, "222222222222").unwrap();
+        let mut types: Vec<_> = org
+            .targets_for_policy(&p.id)
+            .unwrap()
+            .into_iter()
+            .map(|(_, _, t)| t)
+            .collect();
+        types.sort();
+        assert_eq!(types, vec!["ACCOUNT", "ORGANIZATIONAL_UNIT", "ROOT"]);
+    }
+
+    #[test]
+    fn attach_is_idempotent() {
+        let mut org = OrganizationState::bootstrap("111111111111");
+        let root = org.root_id.clone();
+        let p = org
+            .create_policy("p", "d", CONTENT_ALL, POLICY_TYPE_SCP)
+            .unwrap();
+        org.attach_policy(&p.id, &root).unwrap();
+        org.attach_policy(&p.id, &root).unwrap();
+        let targets = org.targets_for_policy(&p.id).unwrap();
+        assert_eq!(targets.len(), 1);
     }
 }

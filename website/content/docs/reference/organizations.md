@@ -1,12 +1,12 @@
 +++
 title = "AWS Organizations"
-description = "Minimal Organizations control plane: organization, OU tree, account membership. SCP CRUD and enforcement ship in later batches."
+description = "Organizations control plane: organization, OU tree, account membership, SCP CRUD. Enforcement ships in Batch 4."
 weight = 6
 +++
 
 fakecloud ships a minimal AWS Organizations implementation. Its purpose is to let you attach Service Control Policies (SCPs) to accounts and organizational units so your tests can exercise the full IAM evaluation hierarchy — SCP ceiling, permission boundary, session policy, identity policy, resource policy — end to end.
 
-The current surface: organization lifecycle, OU tree, and member-account listing. SCP CRUD lands in Batch 3, and SCP enforcement through the IAM evaluator lands in Batch 4.
+The current surface: organization lifecycle, OU tree, member-account listing, and SCP CRUD + attachment. SCP enforcement through the IAM evaluator lands in Batch 4.
 
 ## Model
 
@@ -36,8 +36,23 @@ The current surface: organization lifecycle, OU tree, and member-account listing
 | `ListAccountsForParent` | ✅ | |
 | `DescribeAccount` | ✅ | |
 | `MoveAccount` | ✅ | Enforces exact source-parent match |
+| `CreatePolicy` | ✅ | `Type=SERVICE_CONTROL_POLICY` only; structural JSON validation |
+| `UpdatePolicy` | ✅ | Blocks mutation of AWS-managed policies (`FullAWSAccess`) |
+| `DeletePolicy` | ✅ | Blocks deletion when attached or AWS-managed |
+| `DescribePolicy` | ✅ | |
+| `ListPolicies` | ✅ | `Filter` required and must be `SERVICE_CONTROL_POLICY` |
+| `AttachPolicy` | ✅ | Idempotent re-attach; targets = root / OU / account |
+| `DetachPolicy` | ✅ | Returns `PolicyNotAttachedException` on missing attachment |
+| `ListPoliciesForTarget` | ✅ | |
+| `ListTargetsForPolicy` | ✅ | |
 
-SCP CRUD and enforcement are in active development. See the security reference for the IAM evaluation hierarchy.
+## SCP semantics
+
+Policies are JSON documents of the same shape as identity policies. In Batch 3 the control plane validates that the document is parseable JSON; deeper semantic validation happens alongside enforcement in Batch 4, so there is no divergence between what the control plane accepts and what the evaluator actually enforces.
+
+`FullAWSAccess` (`p-FullAWSAccess`) is created and attached to the root OU on `CreateOrganization` and is immutable: `UpdatePolicy` and `DeletePolicy` return `PolicyChangesNotAllowedException` for it. You can still `DetachPolicy` it from the root — AWS permits this, and tests that want to exercise a restrictive SCP posture rely on being able to drop the AWS-managed allow-all.
+
+SCP enforcement in the IAM evaluator is in active development. See the security reference for where SCPs sit in the full evaluation hierarchy.
 
 ## Usage
 

@@ -243,3 +243,133 @@ async fn non_management_member_cannot_create_ou() {
         .unwrap_err();
     assert!(format!("{err:?}").contains("AccessDeniedException"));
 }
+
+const SCP_ALLOW_ALL: &str =
+    r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}"#;
+
+#[tokio::test]
+async fn scp_create_attach_detach_delete_roundtrip() {
+    let server = start().await;
+    let (akid, secret) = server.create_admin(ACCOUNT_A, "admin-a").await;
+    let cfg = config_with(&server, &akid, &secret).await;
+    let orgs = OrgsClient::new(&cfg);
+
+    orgs.create_organization().send().await.unwrap();
+    let root_id = orgs.list_roots().send().await.unwrap().roots()[0]
+        .id()
+        .unwrap()
+        .to_string();
+
+    // CreatePolicy -> returned id starts with p-.
+    let created = orgs
+        .create_policy()
+        .name("CustomGuardrail")
+        .description("test SCP")
+        .r#type(aws_sdk_organizations::types::PolicyType::ServiceControlPolicy)
+        .content(SCP_ALLOW_ALL)
+        .send()
+        .await
+        .unwrap();
+    let policy_id = created
+        .policy()
+        .unwrap()
+        .policy_summary()
+        .unwrap()
+        .id()
+        .unwrap()
+        .to_string();
+    assert!(policy_id.starts_with("p-"));
+
+    // Attach to root.
+    orgs.attach_policy()
+        .policy_id(&policy_id)
+        .target_id(&root_id)
+        .send()
+        .await
+        .unwrap();
+
+    // Delete attached -> fails.
+    let err = orgs
+        .delete_policy()
+        .policy_id(&policy_id)
+        .send()
+        .await
+        .unwrap_err();
+    assert!(format!("{err:?}").contains("PolicyInUseException"));
+
+    // ListPoliciesForTarget sees Custom + FullAWSAccess.
+    let list = orgs
+        .list_policies_for_target()
+        .target_id(&root_id)
+        .filter(aws_sdk_organizations::types::PolicyType::ServiceControlPolicy)
+        .send()
+        .await
+        .unwrap();
+    let names: Vec<String> = list
+        .policies()
+        .iter()
+        .map(|p| p.name().unwrap().to_string())
+        .collect();
+    assert!(names.contains(&"CustomGuardrail".to_string()));
+    assert!(names.contains(&"FullAWSAccess".to_string()));
+
+    // ListTargetsForPolicy sees the root.
+    let targets = orgs
+        .list_targets_for_policy()
+        .policy_id(&policy_id)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(targets.targets().len(), 1);
+    assert_eq!(targets.targets()[0].target_id().unwrap(), root_id);
+
+    // Detach + delete succeed.
+    orgs.detach_policy()
+        .policy_id(&policy_id)
+        .target_id(&root_id)
+        .send()
+        .await
+        .unwrap();
+    orgs.delete_policy()
+        .policy_id(&policy_id)
+        .send()
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn scp_full_aws_access_is_immutable() {
+    let server = start().await;
+    let (akid, secret) = server.create_admin(ACCOUNT_A, "admin-a").await;
+    let cfg = config_with(&server, &akid, &secret).await;
+    let orgs = OrgsClient::new(&cfg);
+
+    orgs.create_organization().send().await.unwrap();
+    let err = orgs
+        .delete_policy()
+        .policy_id("p-FullAWSAccess")
+        .send()
+        .await
+        .unwrap_err();
+    assert!(format!("{err:?}").contains("PolicyChangesNotAllowedException"));
+}
+
+#[tokio::test]
+async fn scp_reject_non_scp_policy_type() {
+    let server = start().await;
+    let (akid, secret) = server.create_admin(ACCOUNT_A, "admin-a").await;
+    let cfg = config_with(&server, &akid, &secret).await;
+    let orgs = OrgsClient::new(&cfg);
+
+    orgs.create_organization().send().await.unwrap();
+    let err = orgs
+        .create_policy()
+        .name("TagGuard")
+        .description("won't work")
+        .r#type(aws_sdk_organizations::types::PolicyType::TagPolicy)
+        .content("{}")
+        .send()
+        .await
+        .unwrap_err();
+    assert!(format!("{err:?}").contains("PolicyTypeNotSupportedException"));
+}
