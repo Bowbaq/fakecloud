@@ -26,6 +26,7 @@ pub(crate) struct ResetState {
     pub scheduler: fakecloud_scheduler::state::SharedSchedulerState,
     pub apigatewayv2: fakecloud_apigatewayv2::state::SharedApiGatewayV2State,
     pub bedrock: fakecloud_bedrock::state::SharedBedrockState,
+    pub organizations: fakecloud_organizations::state::SharedOrganizationsState,
     pub container_runtime: Option<Arc<fakecloud_lambda::runtime::ContainerRuntime>>,
     pub rds_runtime: Option<Arc<fakecloud_rds::runtime::RdsRuntime>>,
     pub elasticache_runtime: Option<Arc<fakecloud_elasticache::runtime::ElastiCacheRuntime>>,
@@ -121,6 +122,9 @@ impl ResetState {
             }
             "bedrock" | "bedrock-runtime" => {
                 self.bedrock.write().reset();
+            }
+            "organizations" => {
+                *self.organizations.write() = None;
             }
             _ => {
                 return Err(format!("Unknown service: {service}"));
@@ -324,6 +328,10 @@ impl ResetState {
         self.scheduler.write().reset();
         self.apigatewayv2.write().reset();
         self.bedrock.write().reset();
+        // Organizations is a cross-account singleton (not MultiAccountState);
+        // a full reset drops the org entirely so subsequent runs start
+        // with no org, matching the no-in-use default state.
+        *self.organizations.write() = None;
         tracing::info!("state reset via reset API");
         axum::Json(types::ResetResponse {
             status: "ok".to_string(),
@@ -594,6 +602,7 @@ mod tests {
                     "http://localhost:4566",
                 ),
             )),
+            organizations: Arc::new(parking_lot::RwLock::new(None)),
             container_runtime: None,
             rds_runtime: None,
             elasticache_runtime: None,

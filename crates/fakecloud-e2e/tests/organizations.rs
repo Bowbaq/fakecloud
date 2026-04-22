@@ -102,12 +102,16 @@ async fn only_management_can_delete_organization() {
     // Account A creates the organization -> A is the management account.
     orgs_a.create_organization().send().await.unwrap();
 
-    // Account B attempts delete -> AccessDenied.
+    // Account B is not a member of the organization, so both
+    // DescribeOrganization and DeleteOrganization must look exactly
+    // like "no org exists" — we don't leak org metadata to non-members.
+    let err = orgs_b.describe_organization().send().await.unwrap_err();
+    assert!(format!("{err:?}").contains("AWSOrganizationsNotInUseException"));
     let err = orgs_b.delete_organization().send().await.unwrap_err();
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("AccessDeniedException"),
-        "expected AccessDeniedException, got: {msg}"
+        msg.contains("AWSOrganizationsNotInUseException"),
+        "expected AWSOrganizationsNotInUseException, got: {msg}"
     );
 
     // Management account deletes successfully.

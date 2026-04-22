@@ -262,6 +262,11 @@ async fn main() {
         ),
     ));
 
+    // Organizations state is a global singleton (one org per fakecloud
+    // process) — not wrapped in MultiAccountState because an AWS org is
+    // a cross-account construct. `None` until CreateOrganization runs.
+    let organizations_state: SharedOrganizationsState = Arc::new(parking_lot::RwLock::new(None));
+
     let scheduler_state: fakecloud_scheduler::state::SharedSchedulerState = Arc::new(
         parking_lot::RwLock::new(fakecloud_core::multi_account::MultiAccountState::new(
             &cli.account_id,
@@ -463,6 +468,7 @@ async fn main() {
         scheduler: scheduler_state.clone(),
         apigatewayv2: apigatewayv2_state.clone(),
         bedrock: bedrock_state.clone(),
+        organizations: organizations_state.clone(),
         container_runtime: container_runtime.clone(),
         rds_runtime: rds_runtime.clone(),
         elasticache_runtime: elasticache_runtime.clone(),
@@ -1169,10 +1175,6 @@ async fn main() {
     }
     registry.register(Arc::new(kms_service));
 
-    // Organizations state is a global singleton (one org per fakecloud
-    // process) — not wrapped in MultiAccountState because an AWS org is
-    // a cross-account construct. `None` until CreateOrganization runs.
-    let organizations_state: SharedOrganizationsState = Arc::new(parking_lot::RwLock::new(None));
     registry.register(Arc::new(OrganizationsService::new(
         organizations_state.clone(),
     )));

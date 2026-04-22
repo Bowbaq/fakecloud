@@ -62,9 +62,16 @@ impl OrganizationsService {
         Ok(AwsResponse::ok_json(json!({ "Organization": resp_value })))
     }
 
-    fn describe_organization(&self, _req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
+    fn describe_organization(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let guard = self.state.read();
         let org = guard.as_ref().ok_or_else(organizations_not_in_use)?;
+        // AWS scopes DescribeOrganization to members of the organization.
+        // Non-members must not learn that an org exists at all — return
+        // the same `AWSOrganizationsNotInUseException` the no-org path
+        // returns so org metadata doesn't leak across account boundaries.
+        if !org.accounts.contains_key(&req.account_id) {
+            return Err(organizations_not_in_use());
+        }
         Ok(AwsResponse::ok_json(
             json!({ "Organization": organization_payload(org) }),
         ))
@@ -73,6 +80,12 @@ impl OrganizationsService {
     fn delete_organization(&self, req: &AwsRequest) -> Result<AwsResponse, AwsServiceError> {
         let mut guard = self.state.write();
         let org = guard.as_ref().ok_or_else(organizations_not_in_use)?;
+        // Non-members get the same "not in use" error as callers in a
+        // process with no org at all — they should not be able to tell
+        // the difference.
+        if !org.accounts.contains_key(&req.account_id) {
+            return Err(organizations_not_in_use());
+        }
         if !org.is_management(&req.account_id) {
             return Err(AwsServiceError::aws_error(
                 StatusCode::FORBIDDEN,
@@ -236,11 +249,63 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_requires_management() {
+    async fn non_member_describe_returns_not_in_use() {
         let (svc, _state) = OrganizationsService::shared();
         svc.handle(req_with("111111111111", "CreateOrganization", json!({})))
             .await
             .unwrap();
+        let err = expect_err(
+            svc.handle(req_with("222222222222", "DescribeOrganization", json!({})))
+                .await,
+        );
+        assert_eq!(err.code(), "AWSOrganizationsNotInUseException");
+    }
+
+    #[tokio::test]
+    async fn non_member_delete_returns_not_in_use() {
+        let (svc, _state) = OrganizationsService::shared();
+        svc.handle(req_with("111111111111", "CreateOrganization", json!({})))
+            .await
+            .unwrap();
+        let err = expect_err(
+            svc.handle(req_with("222222222222", "DeleteOrganization", json!({})))
+                .await,
+        );
+        assert_eq!(err.code(), "AWSOrganizationsNotInUseException");
+    }
+
+    #[tokio::test]
+    async fn member_non_management_delete_returns_access_denied() {
+        let (svc, state) = OrganizationsService::shared();
+        svc.handle(req_with("111111111111", "CreateOrganization", json!({})))
+            .await
+            .unwrap();
+        // Simulate Batch 2 membership by enrolling a second account
+        // directly in state (auto-enrollment lands in Batch 2).
+        {
+            let mut guard = state.write();
+            let org = guard.as_mut().unwrap();
+            let account_id = "222222222222".to_string();
+            let parent_id = org.root_id.clone();
+            let org_id = org.org_id.clone();
+            let arn = format!(
+                "arn:aws:organizations::111111111111:account/{}/{}",
+                org_id, &account_id
+            );
+            org.accounts.insert(
+                account_id.clone(),
+                crate::state::MemberAccount {
+                    id: account_id.clone(),
+                    arn,
+                    email: "member@example.com".to_string(),
+                    name: "member".to_string(),
+                    status: "ACTIVE".to_string(),
+                    joined_method: "INVITED".to_string(),
+                    joined_timestamp: chrono::Utc::now(),
+                    parent_id,
+                },
+            );
+        }
         let err = expect_err(
             svc.handle(req_with("222222222222", "DeleteOrganization", json!({})))
                 .await,
