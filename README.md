@@ -43,6 +43,7 @@ Other install options (Cargo, Docker, Docker Compose, source) are documented at 
 - **Single binary.** ~19 MB, ~10 MiB idle memory, ~500ms startup. No Docker required to run fakecloud itself (only to exercise the services that need real containers).
 - **First-party test SDKs** for TypeScript, Python, Go, PHP, Java, and Rust. Assert on what your code called without writing raw HTTP.
 - **Opt-in SigV4 verification and IAM enforcement.** Off by default so tests just work; turn on `--verify-sigv4` for real cryptographic signature checking and `--iam soft|strict` for identity-policy evaluation (Allow/Deny with Deny precedence, Action/Resource wildcards, user/group/role policies, `Condition` blocks with all 28 AWS operators against global keys like `aws:username` / `aws:SourceIp` / `aws:CurrentTime`, plus resource-based policies for S3 bucket, SNS topic, and Lambda function policies with AWS's cross-account combining semantics) across IAM, STS, SQS, SNS, and S3. See [the security docs](https://fakecloud.dev/docs/reference/security/).
+- **LocalStack URL compatibility.** `*.localhost.localstack.cloud` Host headers decode to service + region for routing, and `<bucket>.s3.<region>.localhost.localstack.cloud` hostnames are accepted as virtual-hosted-style S3. Persisted queue URLs, presigned URLs, and dev scripts from LocalStack replay against fakecloud unchanged.
 
 ## Supported services
 
